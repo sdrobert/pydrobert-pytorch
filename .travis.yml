@@ -1,0 +1,46 @@
+language: python
+sudo: required
+services: docker
+
+python:
+  - 2.7
+  - 3.5
+  - 3.6
+
+matrix:
+  include:
+    - python: 3.7
+      dist: xenial
+      sudo: true
+
+install:
+  - pip install -U pip setuptools setuptools_scm
+  - pip install -r requirements.txt
+
+script:
+  - python setup.py test
+
+before_deploy:
+  - if [ "${TRAVIS_PYTHON_VERSION}" = "3.6" ]; then
+      python setup.py bdist_wheel sdist;
+      chmod +x recipe/build_conda.sh;
+      docker pull continuumio/miniconda3;
+      docker run
+        -v `pwd`:/io
+        -e "TRAVIS=true"
+        -e "TRAVIS_BRANCH=${TRAVIS_BRANCH}"
+        -e "TRAVIS_BUILD_NUMBER=${TRAVIS_BUILD_NUMBER}"
+        continuumio/miniconda3 /io/recipe/build_conda.sh /io/dist;
+    fi
+  - zip -r dist.zip dist
+
+deploy:
+  provider: releases
+  api_key:
+    secure: GsJwcI6qknUVCsnPVW79yNL7SSikPmbA79oFYTUn9yDRfQ4jEUm0AwaRwm3AuKXRslzKmwXO6Iln5oTviR163IkPxey+1xkWKfOgzUM8vm18IOL5YaXMSnIwyhVbVsZeEFEkuU9EJQp7pjMpy1Bih/pKeMXleWKltyM/+TN7hs88WT3PSd9dsH2kxj9jXxMF8B2CcJoKDA8v3KR4QanegNwbuuDLs3KaFhNhyhmAnKEstDwTl1cWe8no/nz5RAJpdtx+0JlNXbgiNw+zblF62oXDw21o9qHu/L5Aq9CtHpZ+goxSAkgBew+RYyb36yKQI5h07FdSV1GP4Ins+jFX9SRH/mpV8m+0+T7Wn3hylstcjjz3sbQ1eoTbqEStqMwa6+haRVCGaSq26kDdOJler+FFKAbrLJwHUKyFOfOdPCOH/GYE4JFoDjMrgXItRLCHBlPjYDLy9RquScP7BdQNnF1Ct6V5SNWf+EMyVaisttFEv2IXyvU4oBB6iMw+SdFEIFeru+pwECCEIhkdeim5k3oJrNTs374vdMygARYVVJ1oiFZFUscCAuQQQztSBkgzLegkzr320wehwe+GIFC/HYlEVLgm4w77eLBsShW96Wr1JOX3hfZx0dn55VBNt8QDWsPd4cJS0E87GfhLoNx3j87/mE4yCDfj19o11ycvs2U=
+  file: dist.zip
+  skip_cleanup: true
+  on:
+    tags: true
+    branch: master
+    condition: $TRAVIS_PYTHON_VERSION = 3.6
