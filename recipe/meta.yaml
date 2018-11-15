@@ -56,7 +56,7 @@ test:
 
 about:
   home: https://github.com/sdrobert/pydrobert-pytorch
-  license: Apache-2.0
+  license: Apach License 2.0
   license_family: Apache
   license_file: LICENSE
   summary: PyTorch utilities for ML, specifically speech

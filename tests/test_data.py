@@ -244,8 +244,10 @@ def test_context_window_seq_to_batch(feat_sizes, include_ali):
         alis = repeat(None)
     seq = zip(feats, alis)
     batch_feats, batch_ali = data.context_window_seq_to_batch(seq)
-    assert tuple(batch_feats.size()) == (
-        num_frames, *feat_sizes[0][int(includes_frames):])
+    assert (
+        tuple(batch_feats.size()) ==
+        (num_frames,) + feat_sizes[0][int(includes_frames):]
+    )
     if include_ali:
         assert tuple(batch_ali.size()) == (num_frames,)
         # FIXME(sdrobert): casting to floats because of a bug in torch.allclose
