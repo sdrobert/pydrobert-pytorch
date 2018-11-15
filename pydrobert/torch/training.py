@@ -364,7 +364,8 @@ class TrainingStateController(object):
         '''
         if self.state_dir is None:
             return
-        os.makedirs(self.state_dir, exist_ok=True)
+        if not os.path.isdir(self.state_dir):
+            os.makedirs(self.state_dir)
         model_basename = self.params.saved_model_fmt.format(**info)
         optimizer_basename = self.params.saved_optimizer_fmt.format(
             **info)

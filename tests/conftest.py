@@ -42,9 +42,10 @@ def populate_torch_dir():
         torch.manual_seed(seed)
         feats_dir = os.path.join(dr, 'feats')
         ali_dir = os.path.join(dr, 'ali')
-        os.makedirs(feats_dir, exist_ok=True)
-        if include_ali:
-            os.makedirs(ali_dir, exist_ok=True)
+        if not os.path.isdir(feats_dir):
+            os.makedirs(feats_dir)
+        if include_ali and not os.path.isdir(ali_dir):
+            os.makedirs(ali_dir)
         feats, feat_sizes, utt_ids = [], [], []
         alis = [] if include_ali else None
         utt_id_fmt_str = '{{:0{}d}}'.format(int(math.log10(num_utts)) + 1)

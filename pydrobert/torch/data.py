@@ -166,7 +166,7 @@ class SpectDataSet(torch.utils.data.Dataset):
                 if x.startswith(self.file_prefix) and
                 x.endswith(self.file_suffix)
             )
-        except FileNotFoundError:
+        except OSError:
             assert not self.has_ali
             ali_utt_ids = set()
         if ali_utt_ids:
@@ -217,7 +217,8 @@ class SpectDataSet(torch.utils.data.Dataset):
         if isinstance(utt, int):
             utt = self.utt_ids[utt]
         pdfs_dir = os.path.join(self.data_dir, 'pdfs')
-        os.makedirs(pdfs_dir, exist_ok=True)
+        if not os.path.isdir(pdfs_dir):
+            os.makedirs(pdfs_dir)
         torch.save(
             pdf.cpu().float(),
             os.path.join(pdfs_dir, self.file_prefix + utt + self.file_suffix)

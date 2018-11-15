@@ -145,7 +145,7 @@ def test_controller_best(temp_dir):
     controller.update_for_epoch(model_2, optimizer_2, 1, 1)
     assert controller.get_best_epoch() == 1
     controller.update_for_epoch(model_2, optimizer_2, 1, 1)
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(IOError):
         # neither best nor last
         controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 2)
     controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 1)
@@ -166,6 +166,6 @@ def test_controller_best(temp_dir):
     for parameter_1, parameter_3 in zip(
             model_1.parameters(), model_3.parameters()):
         assert torch.allclose(parameter_1, parameter_3)
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(IOError):
         # no longer the best
         controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 1)
