@@ -19,6 +19,8 @@ source:
 
 build:
   noarch: python
+  entry_points:
+    - get-torch-spect-data-dir-info = pydrobert.torch.command_line:get_torch_spect_data_dir_info
 
 requirements:
   build:
