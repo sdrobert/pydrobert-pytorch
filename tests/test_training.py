@@ -169,3 +169,24 @@ def test_controller_best(temp_dir):
     with pytest.raises(IOError):
         # no longer the best
         controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 1)
+    # ensure we're keeping track of the last when the model name is not
+    # unique
+    controller = training.TrainingStateController(
+        training.TrainingStateParams(
+            saved_model_fmt='model.pt',
+        ),
+        state_dir=temp_dir
+    )
+    model_1.reset_parameters()
+    model_2.reset_parameters()
+    controller.update_for_epoch(model_1, optimizer_1, .6, .6)
+    controller.update_for_epoch(model_2, optimizer_2, .4, .4)
+    controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 2)
+    for parameter_2, parameter_3 in zip(
+            model_2.parameters(), model_3.parameters()):
+        assert torch.allclose(parameter_2, parameter_3)
+    controller.update_for_epoch(model_1, optimizer_1, .5, .5)
+    controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 3)
+    for parameter_1, parameter_3 in zip(
+            model_1.parameters(), model_3.parameters()):
+        assert torch.allclose(parameter_1, parameter_3)

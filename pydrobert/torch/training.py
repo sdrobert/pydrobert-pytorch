@@ -20,8 +20,10 @@ from __future__ import print_function
 
 import os
 import math
+import warnings
 
 from csv import DictReader, writer
+from string import Formatter
 
 import torch
 import param
@@ -195,6 +197,13 @@ class TrainingStateController(object):
     def __init__(self, params, state_csv_path=None, state_dir=None):
         super(TrainingStateController, self).__init__()
         self.params = params
+        for s in (
+                self.params.saved_model_fmt, self.params.saved_optimizer_fmt):
+            if not any(x[1] == 'epoch' for x in Formatter().parse(s)):
+                warnings.warn(
+                    'State format string "{}" does not contain "epoch" field, '
+                    'so is possibly not unique. In this case, only the state '
+                    'of the last epoch will persist'.format(s))
         self.state_csv_path = state_csv_path
         self.state_dir = state_dir
         self.cache_hist = dict()
@@ -541,11 +550,17 @@ class TrainingStateController(object):
         info["epoch"] = epoch
         info["val_met"] = val_met
         info["train_met"] = train_met
-        self.save_model_and_optimizer_with_info(model, optimizer, info)
-        self.save_info_to_hist(info)
+        # in the unlikely event that there's a SIGTERM here, this block tries
+        # its best to maintain a valid history on exit. We have to delete the
+        # old states first in case the file names match the new states
+        self.cache_hist[info['epoch']] = info
         cur_best = self.get_best_epoch()
-        if self.params.keep_last_and_best_only and cur_best != epoch - 1:
-            self.delete_model_and_optimizer_for_epoch(epoch - 1)
-        if self.params.keep_last_and_best_only and cur_best != last_best:
-            self.delete_model_and_optimizer_for_epoch(last_best)
+        try:
+            if self.params.keep_last_and_best_only and cur_best != epoch - 1:
+                self.delete_model_and_optimizer_for_epoch(epoch - 1)
+            if self.params.keep_last_and_best_only and cur_best != last_best:
+                self.delete_model_and_optimizer_for_epoch(last_best)
+        finally:
+            self.save_model_and_optimizer_with_info(model, optimizer, info)
+            self.save_info_to_hist(info)
         return continue_training
