@@ -198,10 +198,10 @@ class SpectDataSet(torch.utils.data.Dataset):
             ali = None
         return feats, ali
 
-    def write_pdf(self, utt, pdf):
+    def write_pdf(self, utt, pdf, pdfs_dir=None):
         '''Write a pdf FloatTensor to the data directory
 
-        This method writes a pdf matrix to the directory ``data_dir/pdfs``
+        This method writes a pdf matrix to the directory `pdfs_dir`
         with the name ``<file_prefix><utt><file_suffix>``
 
         Parameters
@@ -213,10 +213,14 @@ class SpectDataSet(torch.utils.data.Dataset):
         pdf : torch.Tensor
             The tensor to write. It will be converted to a ``FloatTensor``
             using the command ``pdf.cpu().float()``
+        pdfs_dir : str or None, optional
+            The directory pdfs are written to. If ``None``, it will be set to
+            ``self.data_dir + '/pdfs'``
         '''
         if isinstance(utt, int):
             utt = self.utt_ids[utt]
-        pdfs_dir = os.path.join(self.data_dir, 'pdfs')
+        if pdfs_dir is None:
+            pdfs_dir = os.path.join(self.data_dir, 'pdfs')
         if not os.path.isdir(pdfs_dir):
             os.makedirs(pdfs_dir)
         torch.save(

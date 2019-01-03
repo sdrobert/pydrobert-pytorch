@@ -117,6 +117,8 @@ def test_spect_data_write_pdf(temp_dir, device):
     assert torch.allclose(zp, z.float())
     data_set.write_pdf(0, torch.rand(10, 4))
     assert os.path.exists(os.path.join(temp_dir, 'pdfs', 'a.pt'))
+    data_set.write_pdf('c', z, pdfs_dir=os.path.join(temp_dir, 'foop'))
+    assert os.path.exists(os.path.join(temp_dir, 'foop', 'c.pt'))
 
 
 @pytest.mark.cpu
