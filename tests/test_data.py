@@ -270,14 +270,14 @@ def test_context_window_seq_to_batch(feat_sizes, include_ali):
 @pytest.mark.cpu
 def test_training_data_loader(temp_dir, populate_torch_dir):
     populate_torch_dir(temp_dir, 5, num_filts=2)
-    p = data.SpectDataSetParams(
+    p = data.ContextWindowDataSetParams(
         context_left=1,
         context_right=1,
         batch_size=5,
         seed=2,
         drop_last=True,
     )
-    data_loader = data.TrainingDataLoader(temp_dir, p)
+    data_loader = data.ContextWindowTrainingDataLoader(temp_dir, p)
     total_windows_ep0 = 0
     for feat, ali in data_loader:
         assert tuple(feat.size()) == (5, 3, 2)
@@ -293,7 +293,7 @@ def test_training_data_loader(temp_dir, populate_torch_dir):
         alis_ep1_a.append(ali)
         total_windows_ep1 += 5
     assert total_windows_ep0 == total_windows_ep1
-    data_loader = data.TrainingDataLoader(
+    data_loader = data.ContextWindowTrainingDataLoader(
         temp_dir, p,
         init_epoch=1,
         num_workers=4,
@@ -336,7 +336,7 @@ def test_evaluation_data_loader(temp_dir, device, populate_torch_dir):
     ali_dir = os.path.join(temp_dir, 'ali')
     os.makedirs(feats_dir)
     os.makedirs(ali_dir)
-    p = data.SpectDataSetParams(
+    p = data.ContextWindowDataSetParams(
         context_left=1,
         context_right=1,
         batch_size=5,
@@ -355,8 +355,9 @@ def test_evaluation_data_loader(temp_dir, device, populate_torch_dir):
             assert torch.allclose(
                 b_alis.float(), torch.cat(alis[cur_idx:cur_idx + 5]).float())
             cur_idx += 5
-    data_loader = data.EvaluationDataLoader(temp_dir, p)
+    data_loader = data.ContextWindowEvaluationDataLoader(temp_dir, p)
     _compare_data_loader(data_loader)
     _compare_data_loader(data_loader)
-    data_loader = data.EvaluationDataLoader(temp_dir, p, num_workers=4)
+    data_loader = data.ContextWindowEvaluationDataLoader(
+        temp_dir, p, num_workers=4)
     _compare_data_loader(data_loader)

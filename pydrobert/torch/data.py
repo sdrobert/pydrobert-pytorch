@@ -26,9 +26,11 @@ __all__ = [
     'context_window_seq_to_batch',
     'DataSetParams',
     'SpectDataParams',
+    'ContextWindowDataParams',
     'SpectDataSetParams',
-    'TrainingDataLoader',
-    'EvaluationDataLoader',
+    'ContextWindowDataSetParams',
+    'ContextWindowTrainingDataLoader',
+    'ContextWindowEvaluationDataLoader',
 ]
 
 
@@ -516,6 +518,10 @@ class DataSetParams(param.Parameterized):
 
 class SpectDataParams(param.Parameterized):
     '''Parameters for spectral data'''
+    pass
+
+
+class ContextWindowDataParams(SpectDataParams):
     # context windows are more model parameters than data parameters, but
     # we're going to extract them as part of the data loading process, which
     # is easily parallelized by the DataLoader
@@ -536,7 +542,11 @@ class SpectDataSetParams(SpectDataParams, DataSetParams):
     pass
 
 
-class TrainingDataLoader(torch.utils.data.DataLoader):
+class ContextWindowDataSetParams(ContextWindowDataParams, SpectDataSetParams):
+    pass
+
+
+class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     '''Serve batches of context windows randomly for training
 
     Parameters
@@ -553,7 +563,7 @@ class TrainingDataLoader(torch.utils.data.DataLoader):
                     <file_prefix><utt1><file_suffix>
                     <file_prefix><utt2><file_suffix>
                     ...
-    params : SpectDataSetParams
+    params : ContextWindowDataSetParams
         Parameters for things like context window size, batch size, and
         seed. For this loader, the batch size equals the number of context
         windows
@@ -610,7 +620,7 @@ class TrainingDataLoader(torch.utils.data.DataLoader):
             self.data_source, init_epoch=init_epoch, base_seed=params.seed)
         batch_sampler = torch.utils.data.BatchSampler(
             self.__sampler, params.batch_size, drop_last=params.drop_last)
-        super(TrainingDataLoader, self).__init__(
+        super(ContextWindowTrainingDataLoader, self).__init__(
             self.data_source,
             batch_sampler=batch_sampler,
             collate_fn=context_window_seq_to_batch,
@@ -627,7 +637,7 @@ class TrainingDataLoader(torch.utils.data.DataLoader):
         self.__sampler.epoch = val
 
 
-class EvaluationDataLoader(torch.utils.data.DataLoader):
+class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     '''Serves batches of context windows over sequential utterances
 
     Parameters
@@ -679,12 +689,13 @@ class EvaluationDataLoader(torch.utils.data.DataLoader):
         (``sum(feat_sizes) == N``). ``utt_ids`` is a tuple of size
         ``params.batch_size`` naming the utterances in the batch
     '''
-    class EvaluationDataSet(UtteranceContextWindowDataSet):
+    class CWEvalDataSet(UtteranceContextWindowDataSet):
         '''Append feat_size and utt_id to each sample's tuple'''
 
         def __getitem__(self, idx):
             feats, alis = super(
-                EvaluationDataLoader.EvaluationDataSet, self).__getitem__(idx)
+                ContextWindowEvaluationDataLoader.CWEvalDataSet, self
+            ).__getitem__(idx)
             feat_size = feats.size()[0]
             utt_id = self.utt_ids[idx]
             return feats, alis, feat_size, utt_id
@@ -708,12 +719,12 @@ class EvaluationDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)))
         self.data_dir = data_dir
         self.params = params
-        self.data_source = self.EvaluationDataSet(
+        self.data_source = self.CWEvalDataSet(
             data_dir, params.context_left, params.context_right,
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
         )
-        super(EvaluationDataLoader, self).__init__(
+        super(ContextWindowEvaluationDataLoader, self).__init__(
             self.data_source,
             batch_size=params.batch_size,
             shuffle=False,
