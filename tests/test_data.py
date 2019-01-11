@@ -280,18 +280,20 @@ def test_training_data_loader(temp_dir, populate_torch_dir):
     data_loader = data.ContextWindowTrainingDataLoader(temp_dir, p)
     total_windows_ep0 = 0
     for feat, ali in data_loader:
-        assert tuple(feat.size()) == (5, 3, 2)
-        assert tuple(ali.size()) == (5,)
-        total_windows_ep0 += 5
+        windows = feat.size()[0]
+        assert tuple(feat.size()) == (windows, 3, 2)
+        assert tuple(ali.size()) == (windows,)
+        total_windows_ep0 += windows
     assert total_windows_ep0 >= 5
     feats_ep1_a, alis_ep1_a = [], []
     total_windows_ep1 = 0
     for feat, ali in data_loader:
-        assert tuple(feat.size()) == (5, 3, 2)
-        assert tuple(ali.size()) == (5,)
+        windows = feat.size()[0]
+        assert tuple(feat.size()) == (windows, 3, 2)
+        assert tuple(ali.size()) == (windows,)
         feats_ep1_a.append(feat)
         alis_ep1_a.append(ali)
-        total_windows_ep1 += 5
+        total_windows_ep1 += windows
     assert total_windows_ep0 == total_windows_ep1
     data_loader = data.ContextWindowTrainingDataLoader(
         temp_dir, p,
@@ -300,8 +302,6 @@ def test_training_data_loader(temp_dir, populate_torch_dir):
     )
     feats_ep1_b, alis_ep1_b = [], []
     for feat, ali in data_loader:
-        assert tuple(feat.size()) == (5, 3, 2)
-        assert tuple(ali.size()) == (5,)
         feats_ep1_b.append(feat)
         alis_ep1_b.append(ali)
     assert all(
@@ -315,8 +315,6 @@ def test_training_data_loader(temp_dir, populate_torch_dir):
     data_loader.epoch = 1
     feats_ep1_c, alis_ep1_c = [], []
     for feat, ali in data_loader:
-        assert tuple(feat.size()) == (5, 3, 2)
-        assert tuple(ali.size()) == (5,)
         feats_ep1_c.append(feat)
         alis_ep1_c.append(ali)
     assert all(

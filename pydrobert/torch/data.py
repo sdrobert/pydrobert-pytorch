@@ -501,9 +501,8 @@ class DataSetParams(param.Parameterized):
     '''General parameters for a single partition of data'''
     batch_size = param.Integer(
         10, bounds=(1, None),
-        doc='Number of elements in a batch. For training, this is the total '
-        'number of context windows in a batch. For validation/testing, this '
-        'is the number of utterances to process at once'
+        doc='Number of elements in a batch, which equals the number of '
+        'utterances in the batch'
     )
     seed = param.Integer(
         None,
@@ -547,7 +546,7 @@ class ContextWindowDataSetParams(ContextWindowDataParams, SpectDataSetParams):
 
 
 class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
-    '''Serve batches of context windows randomly for training
+    '''Serve batches of context windows over a random order of utterances
 
     Parameters
     ----------
@@ -589,10 +588,12 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     Yields
     ------
     feats, alis : tensor, tensor, tuple, tuple
-        `feats` is a ``FloatTensor`` of size ``(params.batch_size, C, F)``,
-        where ``param.batch_size`` is the number of context windows, ``C`` is
+        `feats` is a ``FloatTensor`` of size ``(N, C, F)``, where ``N`` is the
+        number of context windows, ``C`` is
         the context window size, and ``F`` is the number of filters per frame.
-        `ali` is a ``LongTensor`` of size ``(params.batch_size,)``
+        `ali` is a ``LongTensor`` of size ``(N,)``. Note that ``N`` corresponds
+        to the sum of the number of context windows from ``params.batch_size``
+        utterances.
     '''
 
     def __init__(
@@ -607,7 +608,12 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)))
         self.data_dir = data_dir
         self.params = params
-        self.data_source = SingleContextWindowDataSet(
+        # self.data_source = SingleContextWindowDataSet(
+        #     data_dir, params.context_left, params.context_right,
+        #     file_prefix=file_prefix, file_suffix=file_suffix,
+        #     warn_on_missing=warn_on_missing,
+        # )
+        self.data_source = UtteranceContextWindowDataSet(
             data_dir, params.context_left, params.context_right,
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
