@@ -76,6 +76,17 @@ def test_valid_spect_data_set(
         for ((feat_a, ali_a), (feat_b, ali_b))
         in zip(zip(feats, alis), data_set)
     )
+    subset_ids = data_set.utt_ids[:num_utts // 2]
+    data_set = data.SpectDataSet(
+        temp_dir, file_prefix=file_prefix, subset_ids=set(subset_ids))
+    assert all(
+        utt_a == utt_b for (utt_a, utt_b) in zip(subset_ids, data_set.utt_ids))
+    assert all(
+        torch.allclose(ali_a.float(), ali_b.float()) and
+        torch.allclose(feat_a, feat_b)
+        for ((feat_a, ali_a), (feat_b, ali_b))
+        in zip(zip(feats[:num_utts // 2], alis[:num_utts // 2]), data_set)
+    )
 
 
 @pytest.mark.cpu

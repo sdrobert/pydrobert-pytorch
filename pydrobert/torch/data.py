@@ -114,6 +114,9 @@ class SpectDataSet(torch.utils.data.Dataset):
         there's a mismatch between the utterances in ``feats/`` and ``ali/``,
         and `warn_on_missing` is ``True``, a warning will be issued
         (via ``warnings``) regarding each such mismatch
+    subset_ids : set, optional
+        If set, only utterances with ids listed in this set will count towards
+        the data set. The rest will be ignored
 
     Attributes
     ----------
@@ -125,12 +128,13 @@ class SpectDataSet(torch.utils.data.Dataset):
         A tuple of all utterance ids extracted from the data directory. They
         are stored in the same order as features and alignments via
         ``__getitem__``. If the ``ali/`` directory exists, `utt_ids`
-        contains only the utterances in the intersection of each directory.
+        contains only the utterances in the intersection of each directory
+        (and `subset_ids`, if it was specified)
     '''
 
     def __init__(
             self, data_dir, file_prefix='', file_suffix='.pt',
-            warn_on_missing=True):
+            warn_on_missing=True, subset_ids=None):
         super(SpectDataSet, self).__init__()
         self.data_dir = data_dir
         self.file_prefix = file_prefix
@@ -142,7 +146,7 @@ class SpectDataSet(torch.utils.data.Dataset):
                 if x.startswith(file_prefix) and x.endswith(file_suffix)
             ))
         self.utt_ids = tuple(sorted(
-            self.find_utt_ids(warn_on_missing)))
+            self.find_utt_ids(warn_on_missing, subset_ids=subset_ids)))
 
     def __len__(self):
         return len(self.utt_ids)
@@ -150,7 +154,7 @@ class SpectDataSet(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return self.get_utterance_pair(idx)
 
-    def find_utt_ids(self, warn_on_missing):
+    def find_utt_ids(self, warn_on_missing, subset_ids=None):
         '''Iterator : all utterance ids from data_dir'''
         neg_fsl = -len(self.file_suffix)
         if not neg_fsl:
@@ -161,6 +165,9 @@ class SpectDataSet(torch.utils.data.Dataset):
             for x in os.listdir(os.path.join(self.data_dir, 'feats'))
             if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
         )
+        if subset_ids is not None and utt_ids:
+            utt_ids = set(utt_ids)
+            utt_ids &= subset_ids
         try:
             ali_utt_ids = set(
                 os.path.basename(x)[fpl:neg_fsl]
@@ -171,6 +178,8 @@ class SpectDataSet(torch.utils.data.Dataset):
         except OSError:
             assert not self.has_ali
             ali_utt_ids = set()
+        if subset_ids is not None and ali_utt_ids:
+            ali_utt_ids &= subset_ids
         if ali_utt_ids:
             utt_ids = set(utt_ids)
             if warn_on_missing:
@@ -513,6 +522,11 @@ class DataSetParams(param.Parameterized):
         False,
         doc='Whether to drop the last batch if it does reach batch_size'
     )
+    subset_ids = param.List(
+        [], class_=str, bounds=None,
+        doc='A list of utterance ids. If non-empty, the data set will be '
+        'restricted to these utterances'
+    )
 
 
 class SpectDataParams(param.Parameterized):
@@ -617,6 +631,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
             data_dir, params.context_left, params.context_right,
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
+            subset_ids=set(params.subset_ids) if params.subset_ids else None
         )
         if not self.data_source.has_ali:
             raise ValueError(
@@ -729,6 +744,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
             data_dir, params.context_left, params.context_right,
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
+            subset_ids=set(params.subset_ids) if params.subset_ids else None
         )
         super(ContextWindowEvaluationDataLoader, self).__init__(
             self.data_source,
