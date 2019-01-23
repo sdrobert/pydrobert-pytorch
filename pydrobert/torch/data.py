@@ -34,7 +34,7 @@ __all__ = [
 ]
 
 
-def extract_window(signal, frame_idx, left, right):
+def extract_window(signal, frame_idx, left, right, reverse=False):
     '''Slice the signal to extract a context window
 
     Parameters
@@ -50,6 +50,8 @@ def extract_window(signal, frame_idx, left, right):
     right : int
         The number of frames in the window to the right (after) the center
         frame. Any frames above ``T`` are edge-padded
+    reverse : bool, optional
+        If ``True``, flip the window along the time/frame axis
 
     Returns
     -------
@@ -70,6 +72,8 @@ def extract_window(signal, frame_idx, left, right):
             window[-right_pad:] = signal[-1]
     else:
         window = signal[frame_idx - left:frame_idx + right + 1]
+    if reverse:
+        window = torch.flip(window, [0])
     return window
 
 
@@ -321,6 +325,9 @@ class UtteranceContextWindowDataSet(SpectDataSet):
     file_prefix : str, optional
     file_suffix : str, optional
     warn_on_missing : bool, optional
+    reverse : bool, optional
+        If ``True``, context windows will be reversed along the time
+        dimension
 
     Attributes
     ----------
@@ -329,12 +336,14 @@ class UtteranceContextWindowDataSet(SpectDataSet):
     right : int
     has_ali : bool
     utt_ids : tuple
+    reverse : bool
     '''
 
-    def __init__(self, data_dir, left, right, **kwargs):
+    def __init__(self, data_dir, left, right, reverse=False, **kwargs):
         super(UtteranceContextWindowDataSet, self).__init__(data_dir, **kwargs)
         self.left = left
         self.right = right
+        self.reverse = reverse
 
     def get_windowed_utterance(self, idx):
         '''Get pair of features (w/ context window) and alignments'''
@@ -344,7 +353,8 @@ class UtteranceContextWindowDataSet(SpectDataSet):
             num_frames, 1 + self.left + self.right, num_filts)
         for center_frame in range(num_frames):
             windowed[center_frame] = extract_window(
-                feats, center_frame, self.left, self.right)
+                feats, center_frame, self.left, self.right,
+                reverse=self.reverse)
         return windowed, ali
 
     def __getitem__(self, idx):
@@ -368,6 +378,18 @@ class SingleContextWindowDataSet(SpectDataSet):
     whereas the 4th index (3) of the data set points to the context window of
     "b"'s second frame (1).
 
+    Parameters
+    ----------
+    data_dir : str
+    left : int
+    right : int
+    file_prefix : str, optional
+    file_suffix : str, optional
+    warn_on_missing : bool, optional
+    reverse : bool, optional
+        If ``True``, context windows will be reversed along the time
+        dimension
+
     Attributes
     ----------
     data_dir : str
@@ -379,10 +401,11 @@ class SingleContextWindowDataSet(SpectDataSet):
         A tuple containing the number of frames of each utterance (i.e. ``T``)
     '''
 
-    def __init__(self, data_dir, left, right, **kwargs):
+    def __init__(self, data_dir, left, right, reverse=False, **kwargs):
         super(SingleContextWindowDataSet, self).__init__(data_dir, **kwargs)
         self.left = left
         self.right = right
+        self.reverse = reverse
         self.utt_lens = tuple(
             torch.load(os.path.join(
                 self.data_dir, 'feats', x + self.file_suffix)).size()[0]
@@ -548,6 +571,11 @@ class ContextWindowDataParams(SpectDataParams):
         doc='How many frames to the right of (after) the current frame are '
         'included when determining the class of the current frame'
     )
+    reverse = param.Boolean(
+        False,
+        doc='Whether to reverse each context window along the time/frame '
+        'dimension'
+    )
 
 
 class SpectDataSetParams(SpectDataParams, DataSetParams):
@@ -629,6 +657,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
         # )
         self.data_source = UtteranceContextWindowDataSet(
             data_dir, params.context_left, params.context_right,
+            reverse=params.reverse,
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None
@@ -742,6 +771,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
         self.params = params
         self.data_source = self.CWEvalDataSet(
             data_dir, params.context_left, params.context_right,
+            reverse=params.reverse,
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None

@@ -174,19 +174,29 @@ def test_spect_data_set_validity(temp_dir):
 
 
 @pytest.mark.cpu
-def test_utterance_context_window_data_set(temp_dir):
+@pytest.mark.parametrize('reverse', [True, False])
+def test_utterance_context_window_data_set(temp_dir, reverse):
     torch.manual_seed(1)
     feats_dir = os.path.join(temp_dir, 'feats')
     os.makedirs(feats_dir)
     a = torch.rand(2, 10)
     torch.save(a, os.path.join(feats_dir, 'a.pt'))
-    data_set = data.UtteranceContextWindowDataSet(temp_dir, 1, 1)
+    data_set = data.UtteranceContextWindowDataSet(
+        temp_dir, 1, 1, reverse=reverse)
     windowed, _ = data_set[0]
     assert tuple(windowed.size()) == (2, 3, 10)
-    assert torch.allclose(a[0], windowed[0, :2])
-    assert torch.allclose(a[1], windowed[0, 2])
-    assert torch.allclose(a[0], windowed[1, 0])
-    assert torch.allclose(a[1], windowed[1, 1:])
+    if reverse:
+        # [[a1, a0, a0], [a1, a1, a0]]
+        assert torch.allclose(a[0], windowed[0, 1:])
+        assert torch.allclose(a[1], windowed[0, 0])
+        assert torch.allclose(a[0], windowed[1, 2])
+        assert torch.allclose(a[1], windowed[1, :2])
+    else:
+        # [[a0, a0, a1], [a0, a1, a1]]
+        assert torch.allclose(a[0], windowed[0, :2])
+        assert torch.allclose(a[1], windowed[0, 2])
+        assert torch.allclose(a[0], windowed[1, 0])
+        assert torch.allclose(a[1], windowed[1, 1:])
 
 
 @pytest.mark.cpu
