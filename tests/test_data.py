@@ -160,7 +160,7 @@ def test_spect_data_set_validity(temp_dir):
         data.validate_spect_data_set(data_set)
     torch.save(torch.rand(4, 4), feats_b_pt)
     data.validate_spect_data_set(data_set)
-    torch.save(torch.randint(10, (4,)), ali_b_pt)
+    torch.save(torch.randint(10, (4,)).int(), ali_b_pt)
     with pytest.raises(ValueError, match='is not a LongTensor'):
         data.validate_spect_data_set(data_set)
     torch.save(torch.randint(10, (4, 1)).long(), ali_b_pt)
