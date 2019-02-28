@@ -89,7 +89,7 @@ class TrainingStateParams(param.Parameterized):
         doc='Number of epochs after reducing the learning rate before we '
         'resume checking improvements'
     )
-    reduce_lr_log10_epsilon = param.Integer(
+    reduce_lr_log10_epsilon = param.Number(
         -8, bounds=(None, 0),
         doc='The log10 absolute difference between error rates that, below '
         'which, reducing the error rate is considered meaningless'
