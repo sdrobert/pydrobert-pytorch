@@ -85,9 +85,9 @@ def to_b(z, dist):
     b : torch.FloatTensor
     '''
     if dist in {"bern", "Bern", "bernoulli", "Bernoulli"}:
-        b = z.gt(0.).long()
+        b = z.gt(0.).to(z)
     elif dist in {"cat", "Cat", "categorical", "Categorical"}:
-        b = z.argmax(dim=-1)
+        b = z.argmax(dim=-1).to(z)
     else:
         raise ValueError("Unknown distribution {}".format(dist))
     return b
@@ -130,6 +130,5 @@ def reinforce(fb, b, logits):
             b.float())
     else:
         raise ValueError('Do not know which distribution matches b and logits')
-    g, = torch.autograd.grad(
-        [log_pb], [logits], grad_outputs=fb.float())
+    g, = torch.autograd.grad([log_pb], [logits], grad_outputs=fb.float())
     return g

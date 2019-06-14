@@ -38,7 +38,7 @@ def test_z(dist, seed):
     torch.manual_seed(seed)
     logits = torch.randn(2, 2, 4)
     exp = _expectation(lambda b: b, logits, dist)
-    logits = logits[None, ...].expand((1000000,) + logits.shape)
+    logits = logits[None, ...].expand((10000,) + logits.shape)
     b = estimators.to_b(estimators.to_z(logits, dist), dist)
     act = b.float().mean(0)
     assert exp.shape == act.shape
@@ -49,22 +49,26 @@ def test_z(dist, seed):
 @pytest.mark.parametrize("seed", [1, 2, 3])
 @pytest.mark.parametrize("dist", ["bern", "cat"])
 @pytest.mark.parametrize("est", ["reinforce"])
-def test_bias(seed, dist, est):
+@pytest.mark.parametrize("objective", [
+    lambda b: (b - 1) ** 2,
+    lambda b: torch.exp(b),
+], ids=[
+    "squared error",
+    "exponent"
+])
+def test_bias(seed, dist, est, objective):
     torch.manual_seed(seed)
     logits = torch.randn(1, 4)
     logits.requires_grad_(True)
-
-    def f(b):
-        return (b - 1) ** 2
-    exp = _expectation(f, logits, dist)
+    exp = _expectation(objective, logits, dist)
     exp, = torch.autograd.grad(
         [exp], [logits], grad_outputs=torch.ones_like(exp))
-    logits = logits[None, ...].expand((100000,) + logits.shape)
+    logits = logits[None, ...].expand((10000,) + logits.shape)
     z = estimators.to_z(logits, dist)
     b = estimators.to_b(z, dist)
     if est == 'reinforce':
         fb = torch.stack([
-            f(b_i) for b_i in b
+            objective(b_i) for b_i in b
         ], dim=0)
         g = estimators.reinforce(fb, b, logits)
     g = g.mean(0)
