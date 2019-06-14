@@ -68,7 +68,7 @@ def to_z(logits, dist):
         z = logits.detach() - torch.log(-torch.log(u))
     else:
         raise ValueError("Unknown distribution {}".format(dist))
-    z.requires_grad_(logits.requires_grad)
+    z.requires_grad_(True)
     return z
 
 
@@ -85,7 +85,7 @@ def to_b(z, dist):
     b : torch.FloatTensor
     '''
     if dist in {"bern", "Bern", "bernoulli", "Bernoulli"}:
-        b = z.gt(0.)
+        b = z.gt(0.).long()
     elif dist in {"cat", "Cat", "categorical", "Categorical"}:
         b = z.argmax(dim=-1)
     else:
@@ -96,3 +96,40 @@ def to_b(z, dist):
 def to_fb(b, f):
     '''Simply call f(b)'''
     return f(b)
+
+
+def reinforce(fb, b, logits):
+    r'''Perform REINFORCE gradient estimation
+
+    Arguments
+    ---------
+    fb : torch.Tensor
+        The output of the function we're trying to optimize (`f(b)`). Should
+        match the shape of b
+    b : torch.Tensor
+        The sample ``b \sim logits``
+    logits : torch.Tensor
+        The logit parameterization
+
+    Returns
+    -------
+    g : torch.tensor
+        A tensor with the same shape as `logits` representing the estimate
+        of ``d fb / d logits``
+    '''
+    fb = fb.detach()
+    b = b.detach()
+    logits = logits.detach().requires_grad_(True)
+    if fb.shape != b.shape:
+        raise ValueError('fb does not have the same shape as b')
+    if logits.shape == b.shape:
+        log_pb = torch.distributions.Bernoulli(logits=logits).log_prob(
+            b.float())
+    elif b.shape == logits.shape[:-1]:
+        log_pb = torch.distributions.Categorical(logits=logits).log_prob(
+            b.float())
+    else:
+        raise ValueError('Do not know which distribution matches b and logits')
+    g, = torch.autograd.grad(
+        [log_pb], [logits], grad_outputs=fb.float())
+    return g
