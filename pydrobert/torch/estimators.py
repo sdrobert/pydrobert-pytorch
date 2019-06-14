@@ -19,7 +19,7 @@ Much of this code has been adapted from `David Duvenaud's repo
 
 The goal of this module is to find some estimate
 
-.. math:: g \approx d fb / d \theta
+.. math:: g \approx \partial fb / \partial \theta
 
 where `fb` is assumed not to be differentiable with respect to :math:`\theta`
 as it relies on some :math:`b \sim \theta`. Instead of :math:`\theta`, we use
@@ -101,6 +101,12 @@ def to_fb(b, f):
 def reinforce(fb, b, logits):
     r'''Perform REINFORCE gradient estimation
 
+    REINFORCE, or the score function, has a single-sample implementation as
+
+    .. math:: g = f(b) \partial \log Pr(b; logits) / \partial logits
+
+    It is an unbiased estimate of the derivative of the expectation.
+
     Arguments
     ---------
     fb : torch.Tensor
@@ -116,6 +122,21 @@ def reinforce(fb, b, logits):
     g : torch.tensor
         A tensor with the same shape as `logits` representing the estimate
         of ``d fb / d logits``
+
+    Notes
+    -----
+    It is common (such as in A2C) to include a baseline to minimize the
+    variance of the estimate. It's incorporated as `c` in
+
+    .. math:: g = (f(b) - c) \log Pr(b; logits) / \partial logits
+
+    Note that :math:`c_i` should be conditionally independent of :math:`b_i`
+    for `g` to be unbiased. You can, however, condition on any preceding
+    outputs :math:`b_{i - j}, j > 0` and all of `logits`.
+
+    To get this functionality, simply subtract `c` from `fb` before passing it
+    to this method. If `c` is the output of a neural network, a common (but
+    sub-optimal) loss function is the mean-squared error between `fb` and `c`.
     '''
     fb = fb.detach()
     b = b.detach()
