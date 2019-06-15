@@ -48,7 +48,7 @@ def test_z(dist, seed):
 @pytest.mark.cpu
 @pytest.mark.parametrize("seed", [1, 2, 3])
 @pytest.mark.parametrize("dist", ["bern", "cat"])
-@pytest.mark.parametrize("est", ["reinforce"])
+@pytest.mark.parametrize("est", ["reinforce", "relax"])
 @pytest.mark.parametrize("objective", [
     lambda b: (b - 1) ** 2,
     lambda b: torch.exp(b),
@@ -58,19 +58,21 @@ def test_z(dist, seed):
 ])
 def test_bias(seed, dist, est, objective):
     torch.manual_seed(seed)
-    logits = torch.randn(1, 4)
+    logits = torch.randn(2, 4)
     logits.requires_grad_(True)
     exp = _expectation(objective, logits, dist)
     exp, = torch.autograd.grad(
         [exp], [logits], grad_outputs=torch.ones_like(exp))
-    logits = logits[None, ...].expand((10000,) + logits.shape)
+    n_samples = 100000 if est == "relax" else 1000
+    logits = logits[None, ...].expand((n_samples,) + logits.shape)
     z = estimators.to_z(logits, dist)
     b = estimators.to_b(z, dist)
+    fb = estimators.to_fb(objective, b)
     if est == 'reinforce':
-        fb = torch.stack([
-            objective(b_i) for b_i in b
-        ], dim=0)
-        g = estimators.reinforce(fb, b, logits)
+        g = estimators.reinforce(fb, b, logits, dist)
+    elif est == "relax":
+        surrogate = lambda z : objective(z.sum(-1)) if dist == "cat" else z
+        g = estimators.relax(fb, b, logits, z, surrogate, dist)
     g = g.mean(0)
     assert exp.shape == g.shape
     assert torch.allclose(exp, g, atol=1e-1)

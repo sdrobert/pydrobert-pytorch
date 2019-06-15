@@ -48,6 +48,9 @@ __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
 
+BERNOULLI_SYNONYMS = {"bern", "Bern", "bernoulli", "Bernoulli"}
+CATEGORICAL_SYNONYMS = {"cat", "Cat", "categorical", "Categorical"}
+
 
 def to_z(logits, dist):
     '''Samples random noise, then injects it into logits to produce z
@@ -62,9 +65,11 @@ def to_z(logits, dist):
     z : torch.FloatTensor
     '''
     u = torch.distributions.utils.clamp_probs(torch.rand_like(logits))
-    if dist in {"bern", "Bern", "bernoulli", "Bernoulli"}:
+    # it's okay to detach logits here, since dz / dlogits = 1. No info
+    # will be lost by just differentiating up to z
+    if dist in BERNOULLI_SYNONYMS:
         z = logits.detach() + torch.log(u) - torch.log1p(-u)
-    elif dist in {"cat", "Cat", "categorical", "Categorical"}:
+    elif dist in CATEGORICAL_SYNONYMS:
         z = logits.detach() - torch.log(-torch.log(u))
     else:
         raise ValueError("Unknown distribution {}".format(dist))
@@ -84,21 +89,21 @@ def to_b(z, dist):
     -------
     b : torch.FloatTensor
     '''
-    if dist in {"bern", "Bern", "bernoulli", "Bernoulli"}:
+    if dist in BERNOULLI_SYNONYMS:
         b = z.gt(0.).to(z)
-    elif dist in {"cat", "Cat", "categorical", "Categorical"}:
+    elif dist in CATEGORICAL_SYNONYMS:
         b = z.argmax(dim=-1).to(z)
     else:
         raise ValueError("Unknown distribution {}".format(dist))
     return b
 
 
-def to_fb(b, f):
+def to_fb(f, b):
     '''Simply call f(b)'''
     return f(b)
 
 
-def reinforce(fb, b, logits):
+def reinforce(fb, b, logits, dist):
     r'''Perform REINFORCE gradient estimation
 
     REINFORCE, or the score function, has a single-sample implementation as
@@ -110,12 +115,9 @@ def reinforce(fb, b, logits):
     Arguments
     ---------
     fb : torch.Tensor
-        The output of the function we're trying to optimize (`f(b)`). Should
-        match the shape of b
     b : torch.Tensor
-        The sample ``b \sim logits``
     logits : torch.Tensor
-        The logit parameterization
+    dist : {"bern", "cat"}
 
     Returns
     -------
@@ -141,15 +143,62 @@ def reinforce(fb, b, logits):
     fb = fb.detach()
     b = b.detach()
     logits = logits.detach().requires_grad_(True)
-    if fb.shape != b.shape:
-        raise ValueError('fb does not have the same shape as b')
-    if logits.shape == b.shape:
-        log_pb = torch.distributions.Bernoulli(logits=logits).log_prob(
-            b.float())
-    elif b.shape == logits.shape[:-1]:
-        log_pb = torch.distributions.Categorical(logits=logits).log_prob(
-            b.float())
+    if dist in BERNOULLI_SYNONYMS:
+        log_pb = torch.distributions.Bernoulli(logits=logits).log_prob(b)
+    elif dist in CATEGORICAL_SYNONYMS:
+        log_pb = torch.distributions.Categorical(logits=logits).log_prob(b)
     else:
-        raise ValueError('Do not know which distribution matches b and logits')
+        raise ValueError("Unknown distribution {}".format(dist))
     g, = torch.autograd.grad([log_pb], [logits], grad_outputs=fb.float())
+    return g
+
+
+def _to_z_tilde(logits, b, dist):
+    v = torch.distributions.utils.clamp_probs(torch.rand_like(logits))
+    # z_tilde ~ Pr(z|b, logits)
+    # see REBAR paper for more details
+    if dist in BERNOULLI_SYNONYMS:
+        om_theta = torch.sigmoid(-logits)  # 1 - \theta
+        v_prime = b * (v * (1 - om_theta) + om_theta) + (1. - b) * v * om_theta
+        z_tilde = logits + torch.log(v_prime) - torch.log1p(-v_prime)
+    elif dist in CATEGORICAL_SYNONYMS:
+        b = b.long()
+        theta = torch.softmax(logits, dim=-1)
+        mask = torch.zeros_like(logits, dtype=torch.uint8)
+        mask.scatter_(-1, b[..., None], 1)
+        log_v = v.log()
+        z_tilde = torch.where(
+            mask,
+            -torch.log(-log_v),
+            -torch.log(-log_v / theta - log_v.gather(-1, b[..., None])),
+        )
+    else:
+        raise ValueError("Unknown distribution {}".format(dist))
+    return z_tilde
+
+
+def relax(fb, b, logits, z, surrogate, dist):
+    fb = fb.detach()
+    b = b.detach()
+    logits = logits.detach().requires_grad_(True)
+    # warning! d z_tilde / d logits is non-trivial. Needs graph from logits
+    z_tilde = _to_z_tilde(logits, b, dist)
+    c_z = surrogate(z)
+    c_z_tilde = surrogate(z_tilde)
+    diff = fb - c_z_tilde
+    if dist in BERNOULLI_SYNONYMS:
+        log_pb = torch.distributions.Bernoulli(logits=logits).log_prob(b)
+    elif dist in CATEGORICAL_SYNONYMS:
+        log_pb = torch.distributions.Categorical(logits=logits).log_prob(b)
+        diff = diff.unsqueeze(-1)
+    else:
+        raise ValueError("Unknown distribution {}".format(dist))
+    # reminder: d c_z / d logits = d c_z / d z * d z / d logits = d c_z / d z
+    ones = torch.ones_like(c_z)
+    dlog_pb, = torch.autograd.grad([log_pb], [logits], grad_outputs=ones)
+    dc_z, = torch.autograd.grad(
+        [c_z], [z], retain_graph=True, grad_outputs=ones)
+    dc_z_tilde, = torch.autograd.grad(
+        [c_z_tilde], [logits], retain_graph=True, grad_outputs=ones)
+    g = diff * dlog_pb + dc_z - dc_z_tilde
     return g
