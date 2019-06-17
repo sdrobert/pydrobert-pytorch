@@ -41,6 +41,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import warnings
+
 import torch
 
 __author__ = "Sean Robertson"
@@ -52,25 +54,35 @@ BERNOULLI_SYNONYMS = {"bern", "Bern", "bernoulli", "Bernoulli"}
 CATEGORICAL_SYNONYMS = {"cat", "Cat", "categorical", "Categorical"}
 
 
-def to_z(logits, dist):
+def to_z(logits, dist, warn=True):
     '''Samples random noise, then injects it into logits to produce z
 
     Parameters
     ----------
-    logits : torch.FloatTensor
+    logits : torch.Tensor
     dist : {"bern", "cat"}
+    warn : bool, optional
+        Estimators that require `z` as an argument will likely need to
+        propagate through `z` to get a derivative w.r.t. `logits`. If `warn` is
+        true and ``not logits.requires_grad``, a warning will be issued through
+        the ``warnings`` module.
 
     Returns
     -------
-    z : torch.FloatTensor
+    z : torch.Tensor
     '''
+    if warn and not logits.requires_grad:
+        warnings.warn(
+            "logits.requires_grad is False. This will likely cause an error "
+            "with estimators that require z. To suppress this warning, set "
+            "warn to False"
+        )
     u = torch.distributions.utils.clamp_probs(torch.rand_like(logits))
-    # it's okay to detach logits here, since dz / dlogits = 1. No info
-    # will be lost by just differentiating up to z
     if dist in BERNOULLI_SYNONYMS:
-        z = logits.detach() + torch.log(u) - torch.log1p(-u)
+        z = logits + torch.log(u) - torch.log1p(-u)
     elif dist in CATEGORICAL_SYNONYMS:
-        z = logits.detach() - torch.log(-torch.log(u))
+        log_theta = torch.nn.functional.log_softmax(logits, dim=-1)
+        z = log_theta - torch.log(-torch.log(u))
     else:
         raise ValueError("Unknown distribution {}".format(dist))
     z.requires_grad_(True)
@@ -82,12 +94,12 @@ def to_b(z, dist):
 
     Parameters
     ----------
-    z : torch.FloatTensor
+    z : torch.Tensor
     dist : {"bern", "cat"}
 
     Returns
     -------
-    b : torch.FloatTensor
+    b : torch.Tensor
     '''
     if dist in BERNOULLI_SYNONYMS:
         b = z.gt(0.).to(z)
@@ -110,10 +122,13 @@ def reinforce(fb, b, logits, dist):
 
     .. math:: g = f(b) \partial \log Pr(b; logits) / \partial logits
 
-    It is an unbiased estimate of the derivative of the expectation.
+    It is an unbiased estimate of the derivative of the expectation w.r.t
+    `logits`.
 
-    Arguments
-    ---------
+    Though simple, it is often cited as high variance.
+
+    Parameters
+    ----------
     fb : torch.Tensor
     b : torch.Tensor
     logits : torch.Tensor
@@ -142,7 +157,6 @@ def reinforce(fb, b, logits, dist):
     '''
     fb = fb.detach()
     b = b.detach()
-    logits = logits.detach().requires_grad_(True)
     if dist in BERNOULLI_SYNONYMS:
         log_pb = torch.distributions.Bernoulli(logits=logits).log_prob(b)
     elif dist in CATEGORICAL_SYNONYMS:
@@ -178,9 +192,40 @@ def _to_z_tilde(logits, b, dist):
 
 
 def relax(fb, b, logits, z, surrogate, dist):
+    r'''Perform RELAX gradient estimation
+
+    RELAX has a single-sample implementation as
+
+    .. math::
+
+        g = (f(b) - c(\widetilde{z}))
+                \partial \log Pr(b; logits) / \partial logits
+            + \partial c(z) / \partial logits
+            - \partial c(\widetilde{z}) / \partial logits
+
+    where :math:`b = H(z)`, :math:`\widetilde{z} \sim Pr(z|b, logits)`, and
+    ``c = surrogate`` where `surrogate` can be any differentiable function.
+    It is an unbiased estimate of the derivative of the expectation w.r.t
+    `logits`.
+
+    Parameters
+    ----------
+    fb : torch.Tensor
+    b : torch.Tensor
+    logits : torch.Tensor
+    z : torch.Tensor
+    surrogate : callable
+        A module or function that accepts input of the shape of `z` and outputs
+        a tensor of the same shape if modelling a Bernoulli, or of shape
+        ``z[..., 0]`` (minus the last dimension) if Categorical.
+    dist : {"bern", "cat"}
+
+    Returns
+    -------
+    g : torch.Tensor
+    '''
     fb = fb.detach()
     b = b.detach()
-    logits = logits.detach().requires_grad_(True)
     # warning! d z_tilde / d logits is non-trivial. Needs graph from logits
     z_tilde = _to_z_tilde(logits, b, dist)
     c_z = surrogate(z)
@@ -193,11 +238,10 @@ def relax(fb, b, logits, z, surrogate, dist):
         diff = diff.unsqueeze(-1)
     else:
         raise ValueError("Unknown distribution {}".format(dist))
-    # reminder: d c_z / d logits = d c_z / d z * d z / d logits = d c_z / d z
     ones = torch.ones_like(c_z)
     dlog_pb, = torch.autograd.grad([log_pb], [logits], grad_outputs=ones)
     dc_z, = torch.autograd.grad(
-        [c_z], [z], retain_graph=True, grad_outputs=ones)
+        [c_z], [logits], retain_graph=True, grad_outputs=ones)
     dc_z_tilde, = torch.autograd.grad(
         [c_z_tilde], [logits], retain_graph=True, grad_outputs=ones)
     g = diff * dlog_pb + dc_z - dc_z_tilde
