@@ -191,7 +191,7 @@ def _to_z_tilde(logits, b, dist):
     return z_tilde
 
 
-def relax(fb, b, logits, z, surrogate, dist):
+def relax(fb, b, logits, z, surrogate, dist, components=False):
     r'''Perform RELAX gradient estimation
 
     RELAX has a single-sample implementation as
@@ -208,6 +208,14 @@ def relax(fb, b, logits, z, surrogate, dist):
     It is an unbiased estimate of the derivative of the expectation w.r.t
     `logits`.
 
+    `g` is itself differentiable with respect to the parameters of the
+    surrogate. If the surrogate is trainable, an easy choice for its loss is to
+    minimize the variance of `g` via ``(g ** 2).sum().backward()``. Propagating
+    directly from `g` should be suitable for most situations. Insofar as the
+    loss cannot be directly computed from `g`, setting the argument for
+    `components` to true will return a tuple containing the terms of `g`
+    instead.
+
     Parameters
     ----------
     fb : torch.Tensor
@@ -219,10 +227,16 @@ def relax(fb, b, logits, z, surrogate, dist):
         a tensor of the same shape if modelling a Bernoulli, or of shape
         ``z[..., 0]`` (minus the last dimension) if Categorical.
     dist : {"bern", "cat"}
+    components : bool, optional
 
     Returns
     -------
-    g : torch.Tensor
+    g : torch.Tensor or tuple
+        If `components` is ``False``, `g` will be the gradient estimate with
+        respect to `logits`. Otherwise, a tuple will be returned of
+        ``(diff, dlog_pb, dc_z, dc_z_tilde)`` which correspond to the terms
+        in the above equation and can reconstruct `g` as
+        ``g = diff * dlog_pb + dc_z - dc_z_tilde``.
     '''
     fb = fb.detach()
     b = b.detach()
@@ -240,9 +254,15 @@ def relax(fb, b, logits, z, surrogate, dist):
         raise ValueError("Unknown distribution {}".format(dist))
     ones = torch.ones_like(c_z)
     dlog_pb, = torch.autograd.grad([log_pb], [logits], grad_outputs=ones)
+    # we need `create_graph` to be true here or backpropagation through the
+    # surrogate will not include the derivative terms except as scalar values
     dc_z, = torch.autograd.grad(
-        [c_z], [logits], retain_graph=True, grad_outputs=ones)
+        [c_z], [logits],
+        create_graph=True, retain_graph=True, grad_outputs=ones)
     dc_z_tilde, = torch.autograd.grad(
-        [c_z_tilde], [logits], retain_graph=True, grad_outputs=ones)
-    g = diff * dlog_pb + dc_z - dc_z_tilde
-    return g
+        [c_z_tilde], [logits],
+        create_graph=True, retain_graph=True, grad_outputs=ones)
+    if components:
+        return (diff, dlog_pb, dc_z, dc_z_tilde)
+    else:
+        return diff * dlog_pb + dc_z - dc_z_tilde

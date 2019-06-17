@@ -45,8 +45,26 @@ def test_z(dist, seed):
     assert torch.allclose(exp, act, atol=1e-1)
 
 
+class Surrogate(torch.nn.Module):
+
+    def __init__(self, dist):
+        super(Surrogate, self).__init__()
+        self.dist = dist
+        self.weight = torch.nn.Parameter(torch.Tensor(1))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        self.weight.data.uniform_(-1., 1.)
+
+    def forward(self, inp):
+        outp = inp * self.weight
+        if self.dist == "cat":
+            outp = outp.sum(-1)
+        return outp
+
+
 @pytest.mark.cpu
-@pytest.mark.parametrize("seed", [1, 2, 3])
+@pytest.mark.parametrize("seed", [4, 5, 6])
 @pytest.mark.parametrize("dist", ["bern", "cat"])
 @pytest.mark.parametrize("est", ["reinforce", "relax"])
 @pytest.mark.parametrize("objective", [
@@ -58,25 +76,49 @@ def test_z(dist, seed):
 ])
 def test_bias(seed, dist, est, objective):
     torch.manual_seed(seed)
-    logits = torch.randn(2, 4)
-    logits.requires_grad_(True)
+    logits = torch.randn(2, 4, requires_grad=True)
     exp = _expectation(objective, logits, dist)
     exp, = torch.autograd.grad(
         [exp], [logits], grad_outputs=torch.ones_like(exp))
-    logits = logits[None, ...].expand((10000,) + logits.shape)
+    # if these tests fail, the number of markov samples might be too low. If
+    # you keep raising this but it appears unable to meet the tolerance,
+    # it's probably bias
+    logits = logits[None, ...].expand((30000,) + logits.shape)
     z = estimators.to_z(logits, dist)
     b = estimators.to_b(z, dist)
     fb = estimators.to_fb(objective, b)
     if est == 'reinforce':
         g = estimators.reinforce(fb, b, logits, dist)
     elif est == "relax":
-
-        def surrogate(z):
-            if dist == "cat":
-                return z.sum(-1)
-            else:
-                return z
-        g = estimators.relax(fb, b, logits, z, surrogate, dist)
+        g = estimators.relax(fb, b, logits, z, Surrogate(dist), dist)
     g = g.mean(0)
     assert exp.shape == g.shape
     assert torch.allclose(exp, g, atol=1e-1)
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("dist", ["bern", "cat"])
+def test_relax_surrogate_backprop(dist):
+    torch.manual_seed(1)
+    logits = torch.randn(10, 5, 4, requires_grad=True)
+    z = estimators.to_z(logits, dist)
+    b = estimators.to_b(z, dist)
+    fb = torch.rand_like(b)
+    surrogate = Surrogate(dist)
+    diff, dlog_pb, dc_z, dc_z_tilde = estimators.relax(
+        fb, b, logits, z, surrogate, dist, components=True)
+    torch.autograd.grad(
+        [diff], [logits], retain_graph=True,
+        grad_outputs=torch.ones_like(diff))
+    # for bernoulli, grad is
+    torch.autograd.grad(
+        [dc_z], [logits], retain_graph=True,
+        grad_outputs=torch.ones_like(dc_z),
+        allow_unused=True,
+    )
+    torch.autograd.grad(
+        [dc_z_tilde], [logits], retain_graph=True,
+        grad_outputs=torch.ones_like(dc_z_tilde))
+    g = diff * dlog_pb + dc_z - dc_z_tilde
+    (g ** 2).sum().backward()
+    surrogate.weight.grad
