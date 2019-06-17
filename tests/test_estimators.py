@@ -65,28 +65,41 @@ class Surrogate(torch.nn.Module):
 
 @pytest.mark.cpu
 @pytest.mark.parametrize("seed", [4, 5, 6])
-@pytest.mark.parametrize("dist", ["bern", "cat"])
+@pytest.mark.parametrize(
+    "dist,one_hot", [("bern", False), ("cat", True), ("cat", False)])
 @pytest.mark.parametrize("est", ["reinforce", "relax"])
 @pytest.mark.parametrize("objective", [
-    lambda b: (b - 1) ** 2,
+    lambda b: b ** 2,
     lambda b: torch.exp(b),
 ], ids=[
     "squared error",
     "exponent"
 ])
-def test_bias(seed, dist, est, objective):
+def test_bias(seed, dist, est, objective, one_hot):
     torch.manual_seed(seed)
     logits = torch.randn(2, 4, requires_grad=True)
-    exp = _expectation(objective, logits, dist)
+
+    def objective2(b):
+        if one_hot:
+            # in the one-hot scenario, we have to make position meaningful to
+            # the objective. Otherwise, that sum means the objective will be
+            # constant. Hence, we add the logits
+            return objective(
+                estimators.to_one_hot_b(b, logits) + logits.detach()).sum(-1)
+        else:
+            return objective(b)
+    exp = _expectation(objective2, logits, dist)
+    assert not torch.allclose(exp, torch.zeros(1))
     exp, = torch.autograd.grad(
         [exp], [logits], grad_outputs=torch.ones_like(exp))
+    assert not torch.allclose(exp, torch.zeros(1))
     # if these tests fail, the number of markov samples might be too low. If
     # you keep raising this but it appears unable to meet the tolerance,
     # it's probably bias
     logits = logits[None, ...].expand((30000,) + logits.shape)
     z = estimators.to_z(logits, dist)
     b = estimators.to_b(z, dist)
-    fb = estimators.to_fb(objective, b)
+    fb = estimators.to_fb(objective2, b)
     if est == 'reinforce':
         g = estimators.reinforce(fb, b, logits, dist)
     elif est == "relax":

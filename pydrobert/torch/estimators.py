@@ -115,6 +115,23 @@ def to_fb(f, b):
     return f(b)
 
 
+def to_one_hot_b(b, logits):
+    '''From index-based sample, return one-hot sample
+
+    Note that if ``b.shape`` matches ``logits.shape``, it is assumed that `b`
+    is already one-hot.
+
+    Warning
+    -------
+    Only use this when computing `fb`. Further, make sure `fb` has the same
+    shape as the indexed sample.
+    '''
+    if b.shape == logits.shape:
+        return b
+    else:
+        return torch.zeros_like(logits).scatter_(-1, b[..., None].long(), 1)
+
+
 def reinforce(fb, b, logits, dist):
     r'''Perform REINFORCE gradient estimation
 
