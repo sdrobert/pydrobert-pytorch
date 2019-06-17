@@ -208,7 +208,7 @@ def _to_z_tilde(logits, b, dist):
     return z_tilde
 
 
-def relax(fb, b, logits, z, surrogate, dist, components=False):
+def relax(fb, b, logits, z, c, dist, components=False):
     r'''Perform RELAX gradient estimation
 
     RELAX has a single-sample implementation as
@@ -220,13 +220,12 @@ def relax(fb, b, logits, z, surrogate, dist, components=False):
             + \partial c(z) / \partial logits
             - \partial c(\widetilde{z}) / \partial logits
 
-    where :math:`b = H(z)`, :math:`\widetilde{z} \sim Pr(z|b, logits)`, and
-    ``c = surrogate`` where `surrogate` can be any differentiable function.
-    It is an unbiased estimate of the derivative of the expectation w.r.t
-    `logits`.
+    where :math:`b = H(z)`, :math:`\widetilde{z} \sim Pr(z|b, logits)`, and `c`
+    can be any differentiable function. It is an unbiased estimate of the
+    derivative of the expectation w.r.t `logits`.
 
-    `g` is itself differentiable with respect to the parameters of the
-    surrogate. If the surrogate is trainable, an easy choice for its loss is to
+    `g` is itself differentiable with respect to the parameters of the control
+    variate `c`. If the c is trainable, an easy choice for its loss is to
     minimize the variance of `g` via ``(g ** 2).sum().backward()``. Propagating
     directly from `g` should be suitable for most situations. Insofar as the
     loss cannot be directly computed from `g`, setting the argument for
@@ -239,7 +238,7 @@ def relax(fb, b, logits, z, surrogate, dist, components=False):
     b : torch.Tensor
     logits : torch.Tensor
     z : torch.Tensor
-    surrogate : callable
+    c : callable
         A module or function that accepts input of the shape of `z` and outputs
         a tensor of the same shape if modelling a Bernoulli, or of shape
         ``z[..., 0]`` (minus the last dimension) if Categorical.
@@ -259,8 +258,8 @@ def relax(fb, b, logits, z, surrogate, dist, components=False):
     b = b.detach()
     # warning! d z_tilde / d logits is non-trivial. Needs graph from logits
     z_tilde = _to_z_tilde(logits, b, dist)
-    c_z = surrogate(z)
-    c_z_tilde = surrogate(z_tilde)
+    c_z = c(z)
+    c_z_tilde = c(z_tilde)
     diff = fb - c_z_tilde
     if dist in BERNOULLI_SYNONYMS:
         log_pb = torch.distributions.Bernoulli(logits=logits).log_prob(b)
@@ -272,7 +271,8 @@ def relax(fb, b, logits, z, surrogate, dist, components=False):
     ones = torch.ones_like(c_z)
     dlog_pb, = torch.autograd.grad([log_pb], [logits], grad_outputs=ones)
     # we need `create_graph` to be true here or backpropagation through the
-    # surrogate will not include the derivative terms except as scalar values
+    # control variate will not include the derivative terms except as scalar
+    # values
     dc_z, = torch.autograd.grad(
         [c_z], [logits],
         create_graph=True, retain_graph=True, grad_outputs=ones)

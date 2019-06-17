@@ -45,10 +45,10 @@ def test_z(dist, seed):
     assert torch.allclose(exp, act, atol=1e-1)
 
 
-class Surrogate(torch.nn.Module):
+class ControlVariate(torch.nn.Module):
 
     def __init__(self, dist):
-        super(Surrogate, self).__init__()
+        super(ControlVariate, self).__init__()
         self.dist = dist
         self.weight = torch.nn.Parameter(torch.Tensor(1))
         self.reset_parameters()
@@ -103,7 +103,7 @@ def test_bias(seed, dist, est, objective, one_hot):
     if est == 'reinforce':
         g = estimators.reinforce(fb, b, logits, dist)
     elif est == "relax":
-        g = estimators.relax(fb, b, logits, z, Surrogate(dist), dist)
+        g = estimators.relax(fb, b, logits, z, ControlVariate(dist), dist)
     g = g.mean(0)
     assert exp.shape == g.shape
     assert torch.allclose(exp, g, atol=1e-1)
@@ -111,15 +111,15 @@ def test_bias(seed, dist, est, objective, one_hot):
 
 @pytest.mark.cpu
 @pytest.mark.parametrize("dist", ["bern", "cat"])
-def test_relax_surrogate_backprop(dist):
+def test_relax_c_backprop(dist):
     torch.manual_seed(1)
     logits = torch.randn(10, 5, 4, requires_grad=True)
     z = estimators.to_z(logits, dist)
     b = estimators.to_b(z, dist)
     fb = torch.rand_like(b)
-    surrogate = Surrogate(dist)
+    c = ControlVariate(dist)
     diff, dlog_pb, dc_z, dc_z_tilde = estimators.relax(
-        fb, b, logits, z, surrogate, dist, components=True)
+        fb, b, logits, z, c, dist, components=True)
     torch.autograd.grad(
         [diff], [logits], retain_graph=True,
         grad_outputs=torch.ones_like(diff))
@@ -134,4 +134,4 @@ def test_relax_surrogate_backprop(dist):
         grad_outputs=torch.ones_like(dc_z_tilde))
     g = diff * dlog_pb + dc_z - dc_z_tilde
     (g ** 2).sum().backward()
-    surrogate.weight.grad
+    c.weight.grad
