@@ -114,20 +114,25 @@ def test_bias(seed, dist, est, objective):
 
 
 @pytest.mark.cpu
-@pytest.mark.parametrize("dist", ["bern", "cat"])
-def test_relax_c_backprop(dist):
+@pytest.mark.parametrize("dist", ["bern", "onehot"])
+def test_rebar_backprop(dist):
     torch.manual_seed(1)
     logits = torch.randn(10, 5, 4, requires_grad=True)
     z = estimators.to_z(logits, dist)
     b = estimators.to_b(z, dist)
-    fb = torch.rand_like(b)
-    c = ControlVariate(dist)
+
+    def f(x):
+        if dist == "onehot":
+            return x[..., -1]
+        else:
+            return x
+    fb = f(b)
+    c = estimators.REBARControlVariate(f, dist)
     diff, dlog_pb, dc_z, dc_z_tilde = estimators.relax(
         fb, b, logits, z, c, dist, components=True)
     torch.autograd.grad(
         [diff], [logits], retain_graph=True,
         grad_outputs=torch.ones_like(diff))
-    # for bernoulli, grad is
     torch.autograd.grad(
         [dc_z], [logits], retain_graph=True,
         grad_outputs=torch.ones_like(dc_z),
@@ -138,4 +143,4 @@ def test_relax_c_backprop(dist):
         grad_outputs=torch.ones_like(dc_z_tilde))
     g = diff * dlog_pb + dc_z - dc_z_tilde
     (g ** 2).sum().backward()
-    c.weight.grad
+    assert c.log_temp.grad

@@ -269,11 +269,23 @@ def relax(fb, b, logits, z, c, dist, components=False):
         in the above equation and can reconstruct `g` as
         ``g = diff * dlog_pb + dc_z - dc_z_tilde``.
 
+    Notes
+    -----
+    RELAX is a generalized version of REBAR [2]_. For the REBAR estimator, use
+    an instance of ``REBARControlVariate`` for `c`. See the class for more
+    details.
+
     References
     ----------
     .. [1] W. Grathwohl, D. Choi, Y. Wu, G. Roeder, and D. K. Duvenaud,
        "Backpropagation through the Void: Optimizing control variates for
        black-box gradient estimation," CoRR, vol. abs/1711.00123, 2017.
+    .. [2] G. Tucker, A. Mnih, C. J. Maddison, J. Lawson, and J.
+       Sohl-Dickstein, "REBAR: Low-variance, unbiased gradient estimates for
+       discrete latent variable models," in Advances in Neural Information
+       Processing Systems 30, I. Guyon, U. V. Luxburg, S. Bengio, H. Wallach,
+       R. Fergus, S. Vishwanathan, and R. Garnett, Eds. Curran Associates,
+       Inc., 2017, pp. 2627–2636.
     '''
     fb = fb.detach()
     b = b.detach()
@@ -297,8 +309,7 @@ def relax(fb, b, logits, z, c, dist, components=False):
     dlog_pb, = torch.autograd.grad(
         [log_pb], [logits], grad_outputs=torch.ones_like(log_pb))
     # we need `create_graph` to be true here or backpropagation through the
-    # control variate will not include the derivative terms except as scalar
-    # values
+    # control variate will not include the graphs of the derivative terms
     dc_z, = torch.autograd.grad(
         [c_z], [logits], create_graph=True, retain_graph=True,
         grad_outputs=torch.ones_like(c_z))
@@ -309,6 +320,100 @@ def relax(fb, b, logits, z, c, dist, components=False):
         return (diff, dlog_pb, dc_z, dc_z_tilde)
     else:
         return diff * dlog_pb + dc_z - dc_z_tilde
+
+
+class REBARControlVariate(torch.nn.Module):
+    r'''The REBAR control variate, for use in RELAX
+
+    REBAR [1]_ has a single sample implementation as:
+
+    .. math::
+
+        g = (f(b) - \eta f(\sigma_\lambda(\widetilde{z})))
+                \partial \log Pr(b; logits) / \partial logits
+            + \eta \partial f(\sigma_\lambda(z)) / \partial logits
+            - \eta \partial f(\sigma_\lambda(\widetilde{z})) / \partial logits
+
+    where :math:`b = H(z)`, :math:`\widetilde{z} \sim Pr(z|b, logits)`, and
+    :math:`\sigma` is the Concrete relaxation [2]_ of the discrete
+    distribution. It is an unbiased estimate of the derivative of the
+    expectation w.r.t `logits`.
+
+    As remarked in [3]_, REBAR can be considered a special case of RELAX with
+    :math:`c(x) = \eta f(\sigma_\lambda(x))`. An instance of this class can
+    be fed to the ``relax`` function as the argument ``c``. To optimize the
+    temperature :math:`\lambda` and importance :math:`\eta` simultaneously
+    with :math:``logits``, one can take the output of ``g = relax(...)`` and
+    call ``(g ** 2).sum().backward()``.
+
+    Parameters
+    ----------
+    f : function or torch.nn.Module
+        The objective whose expectation we seek to minimize
+    dist: {"bern", "cat", "onehot"}
+    start_temp : float, optional
+        The initial value for :math:`\lambda \in (0,\infty)`
+    start_eta : float, optional
+        The initial value for :math:`\eta \in R`
+    warn : bool, optional
+        If ``True``, a warning will be issued when ``dist == "cat"``.
+        :math:`z` will be continuous relaxations of one-hot samples of
+        categorical distributions, but the discrete samples are index-based
+        when ``dist == "cat"``. This might cause unexpected behaviours.
+
+    References
+    ----------
+    .. [1] G. Tucker, A. Mnih, C. J. Maddison, J. Lawson, and J.
+       Sohl-Dickstein, "REBAR: Low-variance, unbiased gradient estimates for
+       discrete latent variable models," in Advances in Neural Information
+       Processing Systems 30, I. Guyon, U. V. Luxburg, S. Bengio, H. Wallach,
+       R. Fergus, S. Vishwanathan, and R. Garnett, Eds. Curran Associates,
+       Inc., 2017, pp. 2627–2636.
+    .. [2] C. J. Maddison, A. Mnih, and Y. W. Teh, "The Concrete Distribution:
+       A Continuous Relaxation of Discrete Random Variables," CoRR, vol.
+       abs/1611.00712, 2016.
+    .. [3] W. Grathwohl, D. Choi, Y. Wu, G. Roeder, and D. K. Duvenaud,
+       "Backpropagation through the Void: Optimizing control variates for
+       black-box gradient estimation," CoRR, vol. abs/1711.00123, 2017.
+    '''
+
+    def __init__(self, f, dist, start_temp=0.1, start_eta=1.0, warn=True):
+        if start_temp <= 0.:
+            raise ValueError("start_temp must be positive")
+        super(REBARControlVariate, self).__init__()
+        self.dist = dist
+        self.f = f
+        if dist in BERNOULLI_SYNONYMS:
+            self._bernoulli = True
+        elif dist in ONEHOT_SYNONYMS:
+            self._bernoulli = False
+        elif dist in CATEGORICAL_SYNONYMS:
+            self._bernoulli = False
+            if warn:
+                warnings.warn(
+                    "'{}' implies categorical samples are index-based, but "
+                    "this instance will call 'f' with continuous relaxations "
+                    "of one-hot samples. It is likely that you want dist to "
+                    "be 'onehot' instead. To suppress this warning, set "
+                    "warn=False".format(dist))
+        else:
+            raise ValueError("Unknown distribution {}".format(dist))
+        self.start_temp = start_temp
+        self.start_eta = start_eta
+        self.log_temp = torch.nn.Parameter(torch.Tensor(1))
+        self.eta = torch.nn.Parameter(torch.Tensor(1))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        self.log_temp.data.fill_(self.start_temp).log_()
+        self.eta.data.fill_(self.start_eta)
+
+    def forward(self, z):
+        z_temp = z / torch.exp(self.log_temp)
+        if self._bernoulli:
+            return self.f(torch.sigmoid(z_temp))
+        else:
+            return self.f(torch.softmax(z_temp, -1))
 
 
 def _to_z_tilde(logits, b, dist):
