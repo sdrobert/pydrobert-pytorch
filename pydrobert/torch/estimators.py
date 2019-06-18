@@ -17,24 +17,55 @@ r'''Gradient estimators
 Much of this code has been adapted from `David Duvenaud's repo
 <https://github.com/duvenaud/relax>`_.
 
+Sometimes we wish to parameterize a discrete probability distribution and
+backpropagate through it, and the loss/reward function we use :math:`f: R^D \to
+R` is calculated on samples :math:`b \sim logits` instead of directly on the
+parameterization `logits`, for example, in reinforcement learning. A reasonable
+approach is to marginalize out the sample by optimizing the expectation
+
+.. math:: L = E_b[f] = \sum_b f(n) Pr(b ; logits)
+
+If that sum is combinatorially infeasible, one can use gradient estimates to
+get an error signal for `logits`.
+
 The goal of this module is to find some estimate
 
-.. math:: g \approx \partial fb / \partial \theta
+.. math:: g \approx \partial E_b[f(b)] / \partial logits
 
-where `fb` is assumed not to be differentiable with respect to :math:`\theta`
-as it relies on some :math:`b \sim \theta`. Instead of :math:`\theta`, we use
-`logits`, where :math:`logits = \log(\theta / (1 - \theta))` when `\theta`
-parameterizes Bernoullis in the usual way, and :math:`logits = \log(\theta)`
-when `\theta` parameterizes categorical distributions in the usual way. `g` can
-be plugged into backpropagation via something like ``logits.backward(g)``.
-In this way, `logits` can be the output of a neural layer.
+which can be plugged into the "backward" call to logits as a surrogate error
+signal.
 
-Different estimators require different arguments. In general, you'll need to
-know what distribution you're parameterizing, the tensor containing the
-parametrization, and have the function definition `f`. There are a number of
-utility functions in this module with the template ``to_x`` that can convert
-between these as necessary. This isn't done automatically, because `logits`,
-`b`, and `fb` are not always available all at once.
+Different estimators require different arguments. The following are common to
+most.
+
+- `logits` is the distribution parameterization. `logits` are supposed to
+  represent a parameterization with an unbounded domain.
+- `b` is a tensor of samples drawn from the distribution parametrized by
+  `logits`
+- `dist` specifies the distribution that `logits` parameterizes. Currently,
+  there are three.
+  1. The value ``"bern"`` corresponds to the Bernoulli
+     distribution, which, for parameterizations
+     :math:`logits \in R^{A \times B \ldots}` produces samples
+     :math:`b \in \{0,1\}^{A \times B \ldots}` whose individual elements
+     :math:`b_i` are drawn i.i.d. from :math:`Pr(b_i;logits_i)`. The value
+  2. ``"cat"`` corresponds to the Categorical distribution. If the last
+     dimension of :math:`logits \in R^{A \times B \times \ldots \times D}`
+     is of size :math:`D` and :math:`i` indexes all other dimensions, then
+     :math:`b \in [0, D-1]^{A \times B \ldots}` whose individual elements
+     are i.i.d. :math:`b_i \sim Pr(b_i = d; logits_{i,d})`
+  3. ``"onehot"`` is also Categorical, but
+     :math:`b' \in \{0,1\}^{A \times B \times \ldots \times D}` is a one-hot
+     representation of the categorical :math:`b` s.t.
+     `b'_{i,d} = 1 \Leftrightarrow b_i = d`.
+- `fb` is a tensor of the values of :math:`f(b)`. In general, `fb` should be
+  the same size as `b`, meaning one evaluation per sample. The exception is
+  ``"onehot"``: `fb` should not have the final dimension of `b` as ``b[i, :]``
+  corresponds to a single sample
+
+`b` can be sampled by first calling ``z = to_z(logits, dist)``, then
+``b = to_b(z, dist)``. Other arguments can be acquired using functions with
+similar patterns.
 '''
 
 from __future__ import absolute_import
@@ -49,6 +80,14 @@ __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
+
+__all__ = [
+    "to_z",
+    "to_b",
+    "to_fb",
+    "reinforce",
+    "relax",
+]
 
 BERNOULLI_SYNONYMS = {"bern", "Bern", "bernoulli", "Bernoulli"}
 CATEGORICAL_SYNONYMS = {"cat", "Cat", "categorical", "Categorical"}
@@ -122,7 +161,8 @@ def to_fb(f, b):
 def reinforce(fb, b, logits, dist):
     r'''Perform REINFORCE gradient estimation
 
-    REINFORCE, or the score function, has a single-sample implementation as
+    REINFORCE [1]_, or the score function, has a single-sample implementation
+    as
 
     .. math:: g = f(b) \partial \log Pr(b; logits) / \partial logits
 
@@ -158,6 +198,12 @@ def reinforce(fb, b, logits, dist):
     To get this functionality, simply subtract `c` from `fb` before passing it
     to this method. If `c` is the output of a neural network, a common (but
     sub-optimal) loss function is the mean-squared error between `fb` and `c`.
+
+    References
+    ----------
+    .. [1] R. J. Williams, "Simple statistical gradient-following algorithms
+       for connectionist reinforcement learning," Machine Learning, vol. 8,
+       no. 3, pp. 229–256, May 1992.
     '''
     fb = fb.detach()
     b = b.detach()
@@ -177,44 +223,10 @@ def reinforce(fb, b, logits, dist):
     return g
 
 
-def _to_z_tilde(logits, b, dist):
-    v = torch.distributions.utils.clamp_probs(torch.rand_like(logits))
-    # z_tilde ~ Pr(z|b, logits)
-    # see REBAR paper for more details
-    if dist in BERNOULLI_SYNONYMS:
-        om_theta = torch.sigmoid(-logits)  # 1 - \theta
-        v_prime = b * (v * (1 - om_theta) + om_theta) + (1. - b) * v * om_theta
-        z_tilde = logits + torch.log(v_prime) - torch.log1p(-v_prime)
-    elif dist in CATEGORICAL_SYNONYMS:
-        b = b.long()
-        theta = torch.softmax(logits, dim=-1)
-        mask = torch.zeros_like(logits, dtype=torch.uint8).scatter_(
-            -1, b[..., None], 1)
-        log_v = v.log()
-        z_tilde = torch.where(
-            mask,
-            -torch.log(-log_v),
-            -torch.log(-log_v / theta - log_v.gather(-1, b[..., None])),
-        )
-    elif dist in ONEHOT_SYNONYMS:
-        b = b.byte()
-        theta = torch.softmax(logits, dim=-1)
-        log_v = v.log()
-        z_tilde = torch.where(
-            b,
-            -torch.log(-log_v),
-            -torch.log(
-                -log_v / theta - log_v.gather(-1, b.argmax(-1, keepdim=True))),
-        )
-    else:
-        raise ValueError("Unknown distribution {}".format(dist))
-    return z_tilde
-
-
 def relax(fb, b, logits, z, c, dist, components=False):
     r'''Perform RELAX gradient estimation
 
-    RELAX has a single-sample implementation as
+    RELAX [1]_ has a single-sample implementation as
 
     .. math::
 
@@ -256,6 +268,12 @@ def relax(fb, b, logits, z, c, dist, components=False):
         ``(diff, dlog_pb, dc_z, dc_z_tilde)`` which correspond to the terms
         in the above equation and can reconstruct `g` as
         ``g = diff * dlog_pb + dc_z - dc_z_tilde``.
+
+    References
+    ----------
+    .. [1] W. Grathwohl, D. Choi, Y. Wu, G. Roeder, and D. K. Duvenaud,
+       "Backpropagation through the Void: Optimizing control variates for
+       black-box gradient estimation," CoRR, vol. abs/1711.00123, 2017.
     '''
     fb = fb.detach()
     b = b.detach()
@@ -291,3 +309,37 @@ def relax(fb, b, logits, z, c, dist, components=False):
         return (diff, dlog_pb, dc_z, dc_z_tilde)
     else:
         return diff * dlog_pb + dc_z - dc_z_tilde
+
+
+def _to_z_tilde(logits, b, dist):
+    v = torch.distributions.utils.clamp_probs(torch.rand_like(logits))
+    # z_tilde ~ Pr(z|b, logits)
+    # see REBAR paper for more details
+    if dist in BERNOULLI_SYNONYMS:
+        om_theta = torch.sigmoid(-logits)  # 1 - \theta
+        v_prime = b * (v * (1 - om_theta) + om_theta) + (1. - b) * v * om_theta
+        z_tilde = logits + torch.log(v_prime) - torch.log1p(-v_prime)
+    elif dist in CATEGORICAL_SYNONYMS:
+        b = b.long()
+        theta = torch.softmax(logits, dim=-1)
+        mask = torch.zeros_like(logits, dtype=torch.uint8).scatter_(
+            -1, b[..., None], 1)
+        log_v = v.log()
+        z_tilde = torch.where(
+            mask,
+            -torch.log(-log_v),
+            -torch.log(-log_v / theta - log_v.gather(-1, b[..., None])),
+        )
+    elif dist in ONEHOT_SYNONYMS:
+        b = b.byte()
+        theta = torch.softmax(logits, dim=-1)
+        log_v = v.log()
+        z_tilde = torch.where(
+            b,
+            -torch.log(-log_v),
+            -torch.log(
+                -log_v / theta - log_v.gather(-1, b.argmax(-1, keepdim=True))),
+        )
+    else:
+        raise ValueError("Unknown distribution {}".format(dist))
+    return z_tilde
