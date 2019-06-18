@@ -17,7 +17,7 @@ def _expectation(f, logits, dist):
             for b in product(range(2), repeat=logits.nelement())
         )
         d = torch.distributions.Bernoulli(logits=logits)
-    else:
+    elif dist == "cat":
         pop = (
             torch.FloatTensor(b).view(logits.shape[:-1])
             for b in product(
@@ -25,6 +25,15 @@ def _expectation(f, logits, dist):
                 repeat=logits.nelement() // logits.shape[-1])
         )
         d = torch.distributions.Categorical(logits=logits)
+    else:
+        pop = (
+            torch.zeros_like(logits).scatter_(
+                -1, torch.LongTensor(b).view(logits.shape[:-1] + (1,)), 1.)
+            for b in product(
+                range(logits.shape[-1]),
+                repeat=logits.nelement() // logits.shape[-1])
+        )
+        d = torch.distributions.OneHotCategorical(logits=logits)
     return sum(
         f(b) * d.log_prob(b).sum().exp()
         for b in pop
@@ -32,7 +41,7 @@ def _expectation(f, logits, dist):
 
 
 @pytest.mark.cpu
-@pytest.mark.parametrize("dist", ["bern", "cat"])
+@pytest.mark.parametrize("dist", ["bern", "cat", "onehot"])
 @pytest.mark.parametrize("seed", [1, 2, 3])
 def test_z(dist, seed):
     torch.manual_seed(seed)
@@ -58,15 +67,14 @@ class ControlVariate(torch.nn.Module):
 
     def forward(self, inp):
         outp = inp * self.weight
-        if self.dist == "cat":
+        if self.dist != "bern":
             outp = outp.sum(-1)
         return outp
 
 
 @pytest.mark.cpu
 @pytest.mark.parametrize("seed", [4, 5, 6])
-@pytest.mark.parametrize(
-    "dist,one_hot", [("bern", False), ("cat", True), ("cat", False)])
+@pytest.mark.parametrize("dist", ["bern", "cat", "onehot"])
 @pytest.mark.parametrize("est", ["reinforce", "relax"])
 @pytest.mark.parametrize("objective", [
     lambda b: b ** 2,
@@ -75,17 +83,13 @@ class ControlVariate(torch.nn.Module):
     "squared error",
     "exponent"
 ])
-def test_bias(seed, dist, est, objective, one_hot):
+def test_bias(seed, dist, est, objective):
     torch.manual_seed(seed)
     logits = torch.randn(2, 4, requires_grad=True)
 
     def objective2(b):
-        if one_hot:
-            # in the one-hot scenario, we have to make position meaningful to
-            # the objective. Otherwise, that sum means the objective will be
-            # constant. Hence, we add the logits
-            return objective(
-                estimators.to_one_hot_b(b, logits) + logits.detach()).sum(-1)
+        if dist == "onehot":
+            return objective(b)[..., 0]
         else:
             return objective(b)
     exp = _expectation(objective2, logits, dist)

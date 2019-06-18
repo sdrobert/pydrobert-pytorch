@@ -52,6 +52,7 @@ __copyright__ = "Copyright 2019 Sean Robertson"
 
 BERNOULLI_SYNONYMS = {"bern", "Bern", "bernoulli", "Bernoulli"}
 CATEGORICAL_SYNONYMS = {"cat", "Cat", "categorical", "Categorical"}
+ONEHOT_SYNONYMS = {"onehot", "OneHotCategorical"}
 
 
 def to_z(logits, dist, warn=True):
@@ -60,7 +61,7 @@ def to_z(logits, dist, warn=True):
     Parameters
     ----------
     logits : torch.Tensor
-    dist : {"bern", "cat"}
+    dist : {"bern", "cat", "onehot"}
     warn : bool, optional
         Estimators that require `z` as an argument will likely need to
         propagate through `z` to get a derivative w.r.t. `logits`. If `warn` is
@@ -80,7 +81,7 @@ def to_z(logits, dist, warn=True):
     u = torch.distributions.utils.clamp_probs(torch.rand_like(logits))
     if dist in BERNOULLI_SYNONYMS:
         z = logits + torch.log(u) - torch.log1p(-u)
-    elif dist in CATEGORICAL_SYNONYMS:
+    elif dist in CATEGORICAL_SYNONYMS | ONEHOT_SYNONYMS:
         log_theta = torch.nn.functional.log_softmax(logits, dim=-1)
         z = log_theta - torch.log(-torch.log(u))
     else:
@@ -95,7 +96,7 @@ def to_b(z, dist):
     Parameters
     ----------
     z : torch.Tensor
-    dist : {"bern", "cat"}
+    dist : {"bern", "cat", "onehot"}
 
     Returns
     -------
@@ -105,6 +106,9 @@ def to_b(z, dist):
         b = z.gt(0.).to(z)
     elif dist in CATEGORICAL_SYNONYMS:
         b = z.argmax(dim=-1).to(z)
+    elif dist in ONEHOT_SYNONYMS:
+        b = torch.zeros_like(z).scatter_(
+            -1, z.argmax(dim=-1, keepdim=True), 1.)
     else:
         raise ValueError("Unknown distribution {}".format(dist))
     return b
@@ -113,23 +117,6 @@ def to_b(z, dist):
 def to_fb(f, b):
     '''Simply call f(b)'''
     return f(b)
-
-
-def to_one_hot_b(b, logits):
-    '''From index-based sample, return one-hot sample
-
-    Note that if ``b.shape`` matches ``logits.shape``, it is assumed that `b`
-    is already one-hot.
-
-    Warning
-    -------
-    Only use this when computing `fb`. Further, make sure `fb` has the same
-    shape as the indexed sample.
-    '''
-    if b.shape == logits.shape:
-        return b
-    else:
-        return torch.zeros_like(logits).scatter_(-1, b[..., None].long(), 1)
 
 
 def reinforce(fb, b, logits, dist):
@@ -149,7 +136,7 @@ def reinforce(fb, b, logits, dist):
     fb : torch.Tensor
     b : torch.Tensor
     logits : torch.Tensor
-    dist : {"bern", "cat"}
+    dist : {"bern", "cat", "onehot"}
 
     Returns
     -------
@@ -178,9 +165,15 @@ def reinforce(fb, b, logits, dist):
         log_pb = torch.distributions.Bernoulli(logits=logits).log_prob(b)
     elif dist in CATEGORICAL_SYNONYMS:
         log_pb = torch.distributions.Categorical(logits=logits).log_prob(b)
+        fb = fb.unsqueeze(-1)
+    elif dist in ONEHOT_SYNONYMS:
+        log_pb = torch.distributions.OneHotCategorical(
+            logits=logits).log_prob(b)
+        fb = fb.unsqueeze(-1)
     else:
         raise ValueError("Unknown distribution {}".format(dist))
-    g, = torch.autograd.grad([log_pb], [logits], grad_outputs=fb.float())
+    g = fb * torch.autograd.grad(
+        [log_pb], [logits], grad_outputs=torch.ones_like(log_pb))[0]
     return g
 
 
@@ -195,13 +188,23 @@ def _to_z_tilde(logits, b, dist):
     elif dist in CATEGORICAL_SYNONYMS:
         b = b.long()
         theta = torch.softmax(logits, dim=-1)
-        mask = torch.zeros_like(logits, dtype=torch.uint8)
-        mask.scatter_(-1, b[..., None], 1)
+        mask = torch.zeros_like(logits, dtype=torch.uint8).scatter_(
+            -1, b[..., None], 1)
         log_v = v.log()
         z_tilde = torch.where(
             mask,
             -torch.log(-log_v),
             -torch.log(-log_v / theta - log_v.gather(-1, b[..., None])),
+        )
+    elif dist in ONEHOT_SYNONYMS:
+        b = b.byte()
+        theta = torch.softmax(logits, dim=-1)
+        log_v = v.log()
+        z_tilde = torch.where(
+            b,
+            -torch.log(-log_v),
+            -torch.log(
+                -log_v / theta - log_v.gather(-1, b.argmax(-1, keepdim=True))),
         )
     else:
         raise ValueError("Unknown distribution {}".format(dist))
@@ -264,21 +267,26 @@ def relax(fb, b, logits, z, c, dist, components=False):
     if dist in BERNOULLI_SYNONYMS:
         log_pb = torch.distributions.Bernoulli(logits=logits).log_prob(b)
     elif dist in CATEGORICAL_SYNONYMS:
-        log_pb = torch.distributions.Categorical(logits=logits).log_prob(b)
-        diff = diff.unsqueeze(-1)
+        log_pb = torch.distributions.Categorical(
+            logits=logits).log_prob(b)
+        diff = diff[..., None]
+    elif dist in ONEHOT_SYNONYMS:
+        log_pb = torch.distributions.OneHotCategorical(
+            logits=logits).log_prob(b)
+        diff = diff[..., None]
     else:
         raise ValueError("Unknown distribution {}".format(dist))
-    ones = torch.ones_like(c_z)
-    dlog_pb, = torch.autograd.grad([log_pb], [logits], grad_outputs=ones)
+    dlog_pb, = torch.autograd.grad(
+        [log_pb], [logits], grad_outputs=torch.ones_like(log_pb))
     # we need `create_graph` to be true here or backpropagation through the
     # control variate will not include the derivative terms except as scalar
     # values
     dc_z, = torch.autograd.grad(
-        [c_z], [logits],
-        create_graph=True, retain_graph=True, grad_outputs=ones)
+        [c_z], [logits], create_graph=True, retain_graph=True,
+        grad_outputs=torch.ones_like(c_z))
     dc_z_tilde, = torch.autograd.grad(
-        [c_z_tilde], [logits],
-        create_graph=True, retain_graph=True, grad_outputs=ones)
+        [c_z_tilde], [logits], create_graph=True, retain_graph=True,
+        grad_outputs=torch.ones_like(c_z_tilde))
     if components:
         return (diff, dlog_pb, dc_z, dc_z_tilde)
     else:
