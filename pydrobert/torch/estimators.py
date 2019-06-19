@@ -411,9 +411,9 @@ class REBARControlVariate(torch.nn.Module):
     def forward(self, z):
         z_temp = z / torch.exp(self.log_temp)
         if self._bernoulli:
-            return self.f(torch.sigmoid(z_temp))
+            return self.eta * self.f(torch.sigmoid(z_temp))
         else:
-            return self.f(torch.softmax(z_temp, -1))
+            return self.eta * self.f(torch.softmax(z_temp, -1))
 
 
 def _to_z_tilde(logits, b, dist):

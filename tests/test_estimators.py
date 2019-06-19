@@ -142,3 +142,86 @@ def test_rebar_backprop(dist, device):
     g = diff * dlog_pb + dc_z - dc_z_tilde
     (g ** 2).sum().backward()
     assert c.log_temp.grad
+
+
+@pytest.mark.parametrize("markov", [10, 1000])
+@pytest.mark.parametrize("num_latents", [2])
+@pytest.mark.parametrize("dist,num_cat", [
+    ("bern", 2),
+    ("onehot", 3),
+])
+@pytest.mark.parametrize("est", ["reinforce", "rebar", "relax"])
+def test_convergence(markov, num_latents, device, dist, num_cat, est):
+    torch.manual_seed(7)
+    # the objective is to minimize the expectation of the mean-squared error of
+    # samples with the latent distribution parametrization. This will push
+    # logits to maximize the chance of sampling the most likely value, not to
+    # match the latents themselves
+    max_iters = 20000
+    if dist == "bern":
+        latents = torch.rand(num_latents).to(device)
+        mult_mask = torch.where(
+            latents.gt(.5),
+            torch.ones(1).to(device),
+            -torch.ones(1).to(device)
+        )
+        logits = torch.randn(num_latents, requires_grad=True, device=device)
+
+        def f(b):
+            return (b - latents) ** 2
+
+        def convergence():
+            return torch.all((mult_mask * logits.detach()).gt(1.))
+    else:
+        latents = torch.rand(num_latents, num_cat).to(device)
+        latents /= latents.sum(-1, keepdim=True)
+        mask = torch.zeros_like(latents).scatter_(
+            -1, latents.argmax(-1, keepdim=True), 1.).byte()
+        logits = torch.randn(
+            num_latents, num_cat, requires_grad=True, device=device)
+
+        def f(b):
+            return ((b - latents) ** 2).sum(-1)
+
+        def convergence():
+            return torch.all(torch.log_softmax(
+                logits.detach(), -1).masked_select(mask).gt(-.05))
+    logit_optimizer = torch.optim.Adam([logits])
+    if est == "rebar":
+        c = estimators.REBARControlVariate(f, dist).to(device)
+        tune_optimizer = torch.optim.Adam(c.parameters())
+    elif est == "relax":
+        c = torch.nn.Sequential(
+            torch.nn.Linear(num_cat, 1),
+            torch.nn.ReLU(),
+            ControlVariate(dist)
+        ).to(device)
+        tune_optimizer = torch.optim.Adam(c.parameters())
+    else:
+        tune_optimizer = None
+    for iter in range(1, max_iters + 1):
+        logit_optimizer.zero_grad()
+        if tune_optimizer:
+            tune_optimizer.zero_grad()
+        markov_logits = logits[None, ...].expand((markov,) + logits.shape)
+        z = estimators.to_z(markov_logits, dist)
+        b = estimators.to_b(z, dist)
+        fb = f(b)
+        if est == 'reinforce':
+            g = estimators.reinforce(fb, b, markov_logits, dist)
+        else:
+            g = estimators.relax(fb, b, markov_logits, z, c, dist)
+        g = g.mean(0)
+        logits.backward(g)
+        if tune_optimizer:
+            (g ** 2).sum().backward()
+            tune_optimizer.step()
+        logit_optimizer.step()
+        del z, b, fb, markov_logits, g
+        if convergence():
+            print("Converged in {} iterations".format(iter))
+            break
+    print(latents, logits)
+    if est == "rebar":
+        print(c.log_temp, c.eta)
+    assert convergence()
