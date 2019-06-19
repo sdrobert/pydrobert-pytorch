@@ -203,7 +203,7 @@ def reinforce(fb, b, logits, dist):
     ----------
     .. [1] R. J. Williams, "Simple statistical gradient-following algorithms
        for connectionist reinforcement learning," Machine Learning, vol. 8,
-       no. 3, pp. 229–256, May 1992.
+       no. 3, pp. 229-256, May 1992.
     '''
     fb = fb.detach()
     b = b.detach()
@@ -285,7 +285,7 @@ def relax(fb, b, logits, z, c, dist, components=False):
        discrete latent variable models," in Advances in Neural Information
        Processing Systems 30, I. Guyon, U. V. Luxburg, S. Bengio, H. Wallach,
        R. Fergus, S. Vishwanathan, and R. Garnett, Eds. Curran Associates,
-       Inc., 2017, pp. 2627–2636.
+       Inc., 2017, pp. 2627-2636.
     '''
     fb = fb.detach()
     b = b.detach()
@@ -368,7 +368,7 @@ class REBARControlVariate(torch.nn.Module):
        discrete latent variable models," in Advances in Neural Information
        Processing Systems 30, I. Guyon, U. V. Luxburg, S. Bengio, H. Wallach,
        R. Fergus, S. Vishwanathan, and R. Garnett, Eds. Curran Associates,
-       Inc., 2017, pp. 2627–2636.
+       Inc., 2017, pp. 2627-2636.
     .. [2] C. J. Maddison, A. Mnih, and Y. W. Teh, "The Concrete Distribution:
        A Continuous Relaxation of Discrete Random Variables," CoRR, vol.
        abs/1611.00712, 2016.
