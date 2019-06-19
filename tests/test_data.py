@@ -29,7 +29,7 @@ def test_extract_window(left, right, T):
         window = data.extract_window(signal, frame_idx, left, right)
         left_pad = max(left - frame_idx, 0)
         right_pad = max(frame_idx + right + 1 - T, 0)
-        assert tuple(window.size()) == (1 + left + right, 10)
+        assert tuple(window.shape) == (1 + left + right, 10)
         if left_pad:
             assert torch.allclose(window[:left_pad], torch.tensor([0]).float())
         if right_pad:
@@ -49,32 +49,35 @@ def test_extract_window(left, right, T):
 @pytest.mark.parametrize('file_prefix', ['prefix_', ''])
 def test_valid_spect_data_set(
         temp_dir, num_utts, file_prefix, populate_torch_dir):
-    feats, alis, _, utt_ids = populate_torch_dir(
-        temp_dir, num_utts, file_prefix=file_prefix, include_ali=False)
+    feats, _, _, _, _, utt_ids = populate_torch_dir(
+        temp_dir, num_utts, file_prefix=file_prefix,
+        include_ali=False, include_ref=False)
     # note that this'll just resave the same features if there's no file
     # prefix. If there is, these ought to be ignored by the data set
-    populate_torch_dir(temp_dir, num_utts, include_ali=False)
+    populate_torch_dir(
+        temp_dir, num_utts, include_ali=False, include_ref=False)
     data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix)
-    assert not data_set.has_ali
+    assert not data_set.has_ali and not data_set.has_ref
     assert len(utt_ids) == len(data_set.utt_ids)
     assert all(
         utt_a == utt_b for (utt_a, utt_b) in zip(utt_ids, data_set.utt_ids))
     assert all(
-        ali_b is None and torch.allclose(feat_a, feat_b)
-        for (feat_a, (feat_b, ali_b)) in zip(feats, data_set)
+        ali_b is None and ref_b is None and torch.allclose(feat_a, feat_b)
+        for (feat_a, (feat_b, ali_b, ref_b)) in zip(feats, data_set)
     )
-    feats, alis, _, utt_ids = populate_torch_dir(
-        temp_dir, num_utts, file_prefix=file_prefix, include_ali=True)
+    feats, alis, refs, _, _, utt_ids = populate_torch_dir(
+        temp_dir, num_utts, file_prefix=file_prefix)
     data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix)
-    assert data_set.has_ali
+    assert data_set.has_ali and data_set.has_ref
     assert len(utt_ids) == len(data_set.utt_ids)
     assert all(
         utt_a == utt_b for (utt_a, utt_b) in zip(utt_ids, data_set.utt_ids))
     assert all(
-        torch.allclose(ali_a.float(), ali_b.float()) and
+        torch.all(ali_a == ali_b) and
+        torch.all(ref_a == ref_b) and
         torch.allclose(feat_a, feat_b)
-        for ((feat_a, ali_a), (feat_b, ali_b))
-        in zip(zip(feats, alis), data_set)
+        for ((feat_a, ali_a, ref_a), (feat_b, ali_b, ref_b))
+        in zip(zip(feats, alis, refs), data_set)
     )
     subset_ids = data_set.utt_ids[:num_utts // 2]
     data_set = data.SpectDataSet(
@@ -82,10 +85,16 @@ def test_valid_spect_data_set(
     assert all(
         utt_a == utt_b for (utt_a, utt_b) in zip(subset_ids, data_set.utt_ids))
     assert all(
-        torch.allclose(ali_a.float(), ali_b.float()) and
+        torch.all(ali_a == ali_b) and
+        torch.all(ref_a == ref_b) and
         torch.allclose(feat_a, feat_b)
-        for ((feat_a, ali_a), (feat_b, ali_b))
-        in zip(zip(feats[:num_utts // 2], alis[:num_utts // 2]), data_set)
+        for ((feat_a, ali_a, ref_a), (feat_b, ali_b, ref_b))
+        in zip(
+            zip(
+                feats[:num_utts // 2],
+                alis[:num_utts // 2],
+                refs[:num_utts // 2]),
+            data_set)
     )
 
 
@@ -132,6 +141,26 @@ def test_spect_data_write_pdf(temp_dir, device):
     assert os.path.exists(os.path.join(temp_dir, 'foop', 'c.pt'))
 
 
+def test_spect_data_write_hyp(temp_dir, device):
+    torch.manual_seed(1)
+    feats_dir = os.path.join(temp_dir, 'feats')
+    os.makedirs(feats_dir)
+    torch.save(torch.rand(3, 3), os.path.join(feats_dir, 'a.pt'))
+    data_set = data.SpectDataSet(temp_dir)
+    z = torch.randint(10, (4, 3))
+    if device == 'cuda':
+        data_set.write_hyp('b', z.cuda())
+    else:
+        data_set.write_hyp('b', z)
+    zp = torch.load(os.path.join(temp_dir, 'hyp', 'b.pt'))
+    assert isinstance(zp, torch.LongTensor)
+    assert torch.all(zp == z.long())
+    data_set.write_hyp(0, torch.randint(10, (11, 3)))
+    assert os.path.exists(os.path.join(temp_dir, 'hyp', 'a.pt'))
+    data_set.write_hyp('c', z, hyp_dir=os.path.join(temp_dir, 'foop'))
+    assert os.path.exists(os.path.join(temp_dir, 'foop', 'c.pt'))
+
+
 @pytest.mark.cpu
 def test_spect_data_set_validity(temp_dir):
     torch.manual_seed(1)
@@ -175,16 +204,15 @@ def test_spect_data_set_validity(temp_dir):
 
 @pytest.mark.cpu
 @pytest.mark.parametrize('reverse', [True, False])
-def test_utterance_context_window_data_set(temp_dir, reverse):
+def test_context_window_data_set(temp_dir, reverse):
     torch.manual_seed(1)
     feats_dir = os.path.join(temp_dir, 'feats')
     os.makedirs(feats_dir)
     a = torch.rand(2, 10)
     torch.save(a, os.path.join(feats_dir, 'a.pt'))
-    data_set = data.UtteranceContextWindowDataSet(
-        temp_dir, 1, 1, reverse=reverse)
+    data_set = data.ContextWindowDataSet(temp_dir, 1, 1, reverse=reverse)
     windowed, _ = data_set[0]
-    assert tuple(windowed.size()) == (2, 3, 10)
+    assert tuple(windowed.shape) == (2, 3, 10)
     if reverse:
         # [[a1, a0, a0], [a1, a1, a0]]
         assert torch.allclose(a[0], windowed[0, 1:])
@@ -197,37 +225,6 @@ def test_utterance_context_window_data_set(temp_dir, reverse):
         assert torch.allclose(a[1], windowed[0, 2])
         assert torch.allclose(a[0], windowed[1, 0])
         assert torch.allclose(a[1], windowed[1, 1:])
-
-
-@pytest.mark.cpu
-def test_single_context_window_data_set(temp_dir):
-    torch.manual_seed(1)
-    feats_dir = os.path.join(temp_dir, 'feats')
-    ali_dir = os.path.join(temp_dir, 'ali')
-    os.makedirs(feats_dir)
-    os.makedirs(ali_dir)
-    a = torch.rand(2, 5)
-    b = torch.rand(4, 5)
-    torch.save(a, os.path.join(feats_dir, 'a.pt'))
-    torch.save(b, os.path.join(feats_dir, 'b.pt'))
-    data_set = data.SingleContextWindowDataSet(temp_dir, 1, 1)
-    assert len(data_set) == 6
-    assert all(feats.size() == (3, 5) for (feats, ali) in data_set)
-    assert torch.allclose(a[0], data_set[0][0][:2])
-    assert torch.allclose(a[1], data_set[0][0][2])
-    assert torch.allclose(a[0], data_set[1][0][0])
-    assert torch.allclose(a[1], data_set[1][0][1:])
-    assert torch.allclose(b[0], data_set[2][0][:2])
-    assert torch.allclose(b[1], data_set[2][0][2])
-    assert torch.allclose(b[:3], data_set[3][0])
-    assert torch.allclose(b[1:], data_set[4][0])
-    assert torch.allclose(b[2], data_set[5][0][0])
-    assert torch.allclose(b[3], data_set[5][0][1:])
-    assert torch.allclose(data_set[1][0], data_set[-5][0])
-    torch.save(torch.arange(2).long(), os.path.join(ali_dir, 'a.pt'))
-    torch.save(torch.arange(2, 6).long(), os.path.join(ali_dir, 'b.pt'))
-    data_set = data.SingleContextWindowDataSet(temp_dir, 1, 1)
-    assert tuple(ali for (feats, ali) in data_set) == tuple(range(6))
 
 
 @pytest.mark.cpu
@@ -249,43 +246,28 @@ def test_epoch_random_sampler(temp_dir):
 @pytest.mark.cpu
 @pytest.mark.parametrize('feat_sizes', [
     ((3, 5, 4), (4, 5, 4), (1, 5, 4)),
-    ((2, 10),) * 10,
-])
+    ((2, 10, 5),) * 10,
+], ids=['short', 'long'])
 @pytest.mark.parametrize('include_ali', [True, False])
 def test_context_window_seq_to_batch(feat_sizes, include_ali):
     torch.manual_seed(1)
     includes_frames = len(feat_sizes[0]) == 3
     feats = tuple(torch.rand(*x) for x in feat_sizes)
-    if includes_frames:
-        num_frames = sum(x[0] for x in feat_sizes)
-        alis = tuple(torch.randint(10, (x[0],)).long() for x in feat_sizes)
-    else:
-        num_frames = len(feat_sizes)
-        alis = tuple(
-            x.item() for x in torch.randint(10, (num_frames,)).long())
+    num_frames = sum(x[0] for x in feat_sizes)
+    alis = tuple(torch.randint(10, (x[0],)).long() for x in feat_sizes)
     if not include_ali:
         alis = repeat(None)
     seq = zip(feats, alis)
     batch_feats, batch_ali = data.context_window_seq_to_batch(seq)
     assert (
-        tuple(batch_feats.size()) ==
+        tuple(batch_feats.shape) ==
         (num_frames,) + feat_sizes[0][int(includes_frames):]
     )
+    assert torch.allclose(torch.cat(feats), batch_feats)
     if include_ali:
-        assert tuple(batch_ali.size()) == (num_frames,)
-        # FIXME(sdrobert): casting to floats because of a bug in torch.allclose
-        # fix when fixed
-        batch_ali = batch_ali.float()
+        assert torch.all(torch.cat(alis) == batch_ali)
     else:
-        assert not batch_ali
-    if includes_frames:
-        assert torch.allclose(torch.cat(feats), batch_feats)
-        if include_ali:
-            assert torch.allclose(torch.cat(alis).float(), batch_ali)
-    else:
-        assert torch.allclose(torch.stack(feats), batch_feats)
-        if include_ali:
-            assert torch.allclose(torch.tensor(alis).float(), batch_ali)
+        assert batch_ali is None
 
 
 @pytest.mark.cpu
@@ -301,17 +283,17 @@ def test_training_data_loader(temp_dir, populate_torch_dir):
     data_loader = data.ContextWindowTrainingDataLoader(temp_dir, p)
     total_windows_ep0 = 0
     for feat, ali in data_loader:
-        windows = feat.size()[0]
-        assert tuple(feat.size()) == (windows, 3, 2)
-        assert tuple(ali.size()) == (windows,)
+        windows = feat.shape[0]
+        assert tuple(feat.shape) == (windows, 3, 2)
+        assert tuple(ali.shape) == (windows,)
         total_windows_ep0 += windows
     assert total_windows_ep0 >= 5
     feats_ep1_a, alis_ep1_a = [], []
     total_windows_ep1 = 0
     for feat, ali in data_loader:
-        windows = feat.size()[0]
-        assert tuple(feat.size()) == (windows, 3, 2)
-        assert tuple(ali.size()) == (windows,)
+        windows = feat.shape[0]
+        assert tuple(feat.shape) == (windows, 3, 2)
+        assert tuple(ali.shape) == (windows,)
         feats_ep1_a.append(feat)
         alis_ep1_a.append(ali)
         total_windows_ep1 += windows
@@ -349,7 +331,7 @@ def test_training_data_loader(temp_dir, populate_torch_dir):
 
 
 @pytest.mark.cpu
-def test_evaluation_data_loader(temp_dir, device, populate_torch_dir):
+def test_window_evaluation_data_loader(temp_dir, device, populate_torch_dir):
     torch.manual_seed(1)
     feats_dir = os.path.join(temp_dir, 'feats')
     ali_dir = os.path.join(temp_dir, 'ali')
@@ -360,23 +342,24 @@ def test_evaluation_data_loader(temp_dir, device, populate_torch_dir):
         context_right=1,
         batch_size=5,
     )
-    feats, alis, feat_sizes, utt_ids = populate_torch_dir(temp_dir, 20)
+    feats, alis, _, feat_sizes, _, utt_ids = populate_torch_dir(
+        temp_dir, 20, include_ref=False)
 
     def _compare_data_loader(data_loader):
         assert len(data_loader) == 4
         cur_idx = 0
         for b_feats, b_alis, b_feat_sizes, b_utt_ids in data_loader:
-            assert tuple(b_feats.size()[1:]) == (3, 5)
-            assert b_feats.size()[0] == sum(b_feat_sizes)
+            assert tuple(b_feats.shape[1:]) == (3, 5)
+            assert b_feats.shape[0] == sum(b_feat_sizes)
             assert tuple(b_utt_ids) == tuple(utt_ids[cur_idx:cur_idx + 5])
             assert torch.allclose(
                 b_feats[:, 1], torch.cat(feats[cur_idx:cur_idx + 5]))
-            assert torch.allclose(
-                b_alis.float(), torch.cat(alis[cur_idx:cur_idx + 5]).float())
+            assert torch.all(
+                b_alis == torch.cat(alis[cur_idx:cur_idx + 5]))
             cur_idx += 5
     data_loader = data.ContextWindowEvaluationDataLoader(temp_dir, p)
     _compare_data_loader(data_loader)
-    _compare_data_loader(data_loader)
+    _compare_data_loader(data_loader)  # order should not change
     data_loader = data.ContextWindowEvaluationDataLoader(
         temp_dir, p, num_workers=4)
-    _compare_data_loader(data_loader)
+    _compare_data_loader(data_loader)  # order should still not change

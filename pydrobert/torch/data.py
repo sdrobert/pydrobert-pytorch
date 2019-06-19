@@ -20,8 +20,7 @@ __all__ = [
     'extract_window',
     'SpectDataSet',
     'validate_spect_data_set',
-    'UtteranceContextWindowDataSet',
-    'SingleContextWindowDataSet',
+    'ContextWindowDataSet',
     'EpochRandomSampler',
     'context_window_seq_to_batch',
     'DataSetParams',
@@ -58,7 +57,7 @@ def extract_window(signal, frame_idx, left, right, reverse=False):
     window : torch.Tensor
         Of shape ``(1 + left + right, F)``
     '''
-    T, F = signal.size()
+    T, F = signal.shape
     if frame_idx - left < 0 or frame_idx + right + 1 > T:
         win_size = 1 + left + right
         window = signal.new(win_size, F)
@@ -85,25 +84,38 @@ class SpectDataSet(torch.utils.data.Dataset):
     ::
         data_dir/
             feats/
-                <file_prefix><uttid1><file_suffix>
-                <file_prefix><uttid2><file_suffix>
+                <file_prefix><utt_ids[0]><file_suffix>
+                <file_prefix><utt_ids[1]><file_suffix>
                 ...
             [
             ali/
-                <file_prefix><uttid1><file_suffix>
-                <file_prefix><uttid2><file_suffix>
+                <file_prefix><utt_ids[0]><file_suffix>
+                <file_prefix><utt_ids[1]><file_suffix>
+                ...
+            ]
+            [
+            ref/
+                <file_prefix><utt_ids[0]><file_suffix>
+                <file_prefix><utt_ids[1]><file_suffix>
                 ...
             ]
 
     The ``feats`` dir stores filter bank data in the form of
     ``torch.FloatTensor``s of size ``(T, F)``, where ``T`` is the time
-    dimension and ``F`` is the filter/log-frequency dimension. ``ali`` stores
-    ``torch.LongTensor`s of size ``(T,)`` indicating the pdf-id of the most
-    likely target. ``ali/`` is optional.
+    dimension and ``F`` is the filter/log-frequency dimension. ``feats`` is
+    the only required directory.
 
-    As a ``Sequence``, the ``i``th index of a ``SpectDataSet`` instance
-    returns a pair of ``feat[uttids[i]], ali[uttids[i]]``. If ``ali/`` did not
-    exist on initialization, the second element of the pair will be ``None``
+    ``ali`` stores ``torch.LongTensor``s of size ``(T,)``, indicating the
+    pdf-id of the most likely target. ``ali`` is suitable for discriminative
+    training of DNNs in hybrid DNN-HMM recognition, or any frame-wise loss.
+    ``ali/`` is optional.
+
+    ``ref`` stores ``torch.LongTensor``s of size ``(R,3)``, indicating
+    reference transcriptions. Letting ``r`` be such a tensor, ``r[..., 0]``
+    is the sequence of token ids for the utterance and ``r[..., 1:]`` are
+    the 0-indexed frames they start (inclusive) and end (exclusive) at,
+    respectively. Negative values can be used when the start and end frames are
+    unknown. ``ref`` is suitable for end-to-end training. ``ref/`` is optional.
 
     Parameters
     ----------
@@ -114,41 +126,73 @@ class SpectDataSet(torch.utils.data.Dataset):
     file_suffix : str, optional
         The suffix that indicates that the file counts toward the data set
     warn_on_missing : bool, optional
-        If some files with ``file_suffix`` exist in the ``ali/`` dir,
-        there's a mismatch between the utterances in ``feats/`` and ``ali/``,
-        and `warn_on_missing` is ``True``, a warning will be issued
-        (via ``warnings``) regarding each such mismatch
+        If ``ali/`` or ``ref/`` exist, there's a mismatch between the
+        utterances in the directories, and `warn_on_missing` is ``True``, a
+        warning will be issued (via ``warnings``) regarding each such mismatch
     subset_ids : set, optional
         If set, only utterances with ids listed in this set will count towards
         the data set. The rest will be ignored
+    feats_subdir, ali_subdir, ref_subdir : str, optional
+        Change the names of the subdirectories under which feats, alignments,
+        and references are stored. If `ali_subdir` or `ref_subdir` is ``None``,
+        they will not be searched for
 
     Attributes
     ----------
     data_dir : str
+    feats_subdir : str
+    ali_subdir : str
+    ref_subdir : str
     file_suffix : str
     has_ali : bool
         Whether alignment data exist
+    has_ref : bool
+        Whether reference data exist
     utt_ids : tuple
         A tuple of all utterance ids extracted from the data directory. They
         are stored in the same order as features and alignments via
-        ``__getitem__``. If the ``ali/`` directory exists, `utt_ids`
-        contains only the utterances in the intersection of each directory
-        (and `subset_ids`, if it was specified)
+        ``__getitem__``. If the ``ali/`` or ``ref/`` directories exist,
+        `utt_ids` contains only the utterances in the intersection of each
+        directory (and `subset_ids`, if it was specified)
+
+    Yields
+    ------
+    feat, ali, ref : tuple
+    For the i-th yielded item, `feat` corresponds to the features at
+    ``utt_ids[i]``, `ali` the alignments, and `ref` the reference sequence.
+    If ``ali/`` or ``ref/`` did not exist on initialization, `ali` or `ref`
+    will be ``None``
     '''
 
     def __init__(
             self, data_dir, file_prefix='', file_suffix='.pt',
-            warn_on_missing=True, subset_ids=None):
+            warn_on_missing=True, subset_ids=None,
+            feats_subdir='feats', ali_subdir='ali', ref_subdir='ref'):
         super(SpectDataSet, self).__init__()
         self.data_dir = data_dir
+        self.feats_subdir = feats_subdir
+        self.ali_subdir = ali_subdir
+        self.ref_subdir = ref_subdir
         self.file_prefix = file_prefix
         self.file_suffix = file_suffix
-        self.has_ali = os.path.isdir(os.path.join(data_dir, 'ali'))
+        if ali_subdir:
+            self.has_ali = os.path.isdir(os.path.join(data_dir, ali_subdir))
+        else:
+            self.has_ali = False
+        if ref_subdir:
+            self.has_ref = os.path.isdir(os.path.join(data_dir, ref_subdir))
+        else:
+            self.has_ref = False
         if self.has_ali:
-            self.has_ali = bool(sum(
-                1 for x in os.listdir(os.path.join(data_dir, 'ali'))
-                if x.startswith(file_prefix) and x.endswith(file_suffix)
-            ))
+            self.has_ali = any(
+                x.startswith(file_prefix) and x.endswith(file_suffix)
+                for x in os.listdir(os.path.join(data_dir, ali_subdir))
+            )
+        if self.has_ref:
+            self.has_ref = any(
+                x.startswith(file_prefix) and x.endswith(file_suffix)
+                for x in os.listdir(os.path.join(data_dir, ref_subdir))
+            )
         self.utt_ids = tuple(sorted(
             self.find_utt_ids(warn_on_missing, subset_ids=subset_ids)))
 
@@ -156,62 +200,84 @@ class SpectDataSet(torch.utils.data.Dataset):
         return len(self.utt_ids)
 
     def __getitem__(self, idx):
-        return self.get_utterance_pair(idx)
+        return self.get_utterance_tuple(idx)
 
     def find_utt_ids(self, warn_on_missing, subset_ids=None):
-        '''Iterator : all utterance ids from data_dir'''
+        '''Returns a set of all utterance ids from data_dir'''
         neg_fsl = -len(self.file_suffix)
         if not neg_fsl:
             neg_fsl = None
         fpl = len(self.file_prefix)
-        utt_ids = (
+        utt_ids = set(
             os.path.basename(x)[fpl:neg_fsl]
-            for x in os.listdir(os.path.join(self.data_dir, 'feats'))
+            for x in os.listdir(os.path.join(self.data_dir, self.feats_subdir))
             if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
         )
-        if subset_ids is not None and utt_ids:
-            utt_ids = set(utt_ids)
+        if subset_ids is not None:
             utt_ids &= subset_ids
-        try:
+        if self.has_ali:
             ali_utt_ids = set(
                 os.path.basename(x)[fpl:neg_fsl]
-                for x in os.listdir(os.path.join(self.data_dir, 'ali'))
+                for x in os.listdir(
+                    os.path.join(self.data_dir, self.ali_subdir))
                 if x.startswith(self.file_prefix) and
                 x.endswith(self.file_suffix)
             )
-        except OSError:
-            assert not self.has_ali
-            ali_utt_ids = set()
-        if subset_ids is not None and ali_utt_ids:
-            ali_utt_ids &= subset_ids
-        if ali_utt_ids:
-            utt_ids = set(utt_ids)
+            if subset_ids is not None:
+                ali_utt_ids &= subset_ids
             if warn_on_missing:
                 for utt_id in utt_ids.difference(ali_utt_ids):
                     warnings.warn("Missing ali for uttid: '{}'".format(utt_id))
                 for utt_id in ali_utt_ids.difference(utt_ids):
                     warnings.warn(
                         "Missing feats for uttid: '{}'".format(utt_id))
+        if self.has_ref:
+            ref_utt_ids = set(
+                os.path.basename(x)[fpl:neg_fsl]
+                for x in os.listdir(
+                    os.path.join(self.data_dir, self.ref_subdir))
+                if x.startswith(self.file_prefix) and
+                x.endswith(self.file_suffix)
+            )
+            if subset_ids is not None:
+                ref_utt_ids &= subset_ids
+            if warn_on_missing:
+                for utt_id in utt_ids.difference(ref_utt_ids):
+                    warnings.warn("Missing ref for uttid: '{}'".format(utt_id))
+                for utt_id in ref_utt_ids.difference(utt_ids):
+                    warnings.warn(
+                        "Missing feats for uttid: '{}'".format(utt_id))
+        if self.has_ali:
             utt_ids &= ali_utt_ids
+        if self.has_ref:
+            utt_ids &= ref_utt_ids
         return utt_ids
 
-    def get_utterance_pair(self, idx):
-        '''Get a pair of features, alignments'''
+    def get_utterance_tuple(self, idx):
+        '''Get a tuple of features, alignments, and references'''
         utt_id = self.utt_ids[idx]
         feats = torch.load(
             os.path.join(
                 self.data_dir,
-                'feats',
+                self.feats_subdir,
                 self.file_prefix + utt_id + self.file_suffix))
         if self.has_ali:
             ali = torch.load(
                 os.path.join(
                     self.data_dir,
-                    'ali',
+                    self.ali_subdir,
                     self.file_prefix + utt_id + self.file_suffix))
         else:
             ali = None
-        return feats, ali
+        if self.has_ref:
+            ref = torch.load(
+                os.path.join(
+                    self.data_dir,
+                    self.ref_subdir,
+                    self.file_prefix + utt_id + self.file_suffix))
+        else:
+            ref = None
+        return feats, ali, ref
 
     def write_pdf(self, utt, pdf, pdfs_dir=None):
         '''Write a pdf FloatTensor to the data directory
@@ -243,6 +309,36 @@ class SpectDataSet(torch.utils.data.Dataset):
             os.path.join(pdfs_dir, self.file_prefix + utt + self.file_suffix)
         )
 
+    def write_hyp(self, utt, hyp, hyp_dir=None):
+        '''Write hypothesis LongTensor to the data directory
+
+        This method writes a sequence of hypothesis tokens to the directory
+        `hyp_dir` with the name ``<file_prefix><utt><file_suffix>``
+
+        Parameters
+        ----------
+        utt : str or int
+            The name of the utterance to write. If an integer is specified,
+            `utt` is assumed to index an utterance id specified in
+            ``self.utt_ids``
+        hyp : torch.Tensor
+            The tensor to write. It will be converted to a ``LongTensor``
+            using the command ``pdf.cpu().long()``
+        hyp_dir : str or None, optional
+            The directory pdfs are written to. If ``None``, it will be set to
+            ``self.data_dir + '/hyp'``
+        '''
+        if isinstance(utt, int):
+            utt = self.utt_ids[utt]
+        if hyp_dir is None:
+            hyp_dir = os.path.join(self.data_dir, 'hyp')
+        if not os.path.isdir(hyp_dir):
+            os.makedirs(hyp_dir)
+        torch.save(
+            hyp.cpu().long(),
+            os.path.join(hyp_dir, self.file_prefix + utt + self.file_suffix)
+        )
+
 
 def validate_spect_data_set(data_set):
     '''Validate SpectDataSet data directory
@@ -252,70 +348,107 @@ def validate_spect_data_set(data_set):
      1. All features are ``FloatTensor`` instances
      2. All features have two axes
      3. All features have the same size second axis
-     4. All alignments (if present) are ``LongTensor`` instances
-     5. All alignments (if present) have one axis
-     6. Features and alignments (if present) have the same size first
-        axes for a given utterance id
+     4. If alignments are present
+        1. All alignments are ``LongTensor`` instances
+        2. All alignments have one axis
+        3. Features and alignments have the same size first axes for a given
+           utterance id
+     5. If reference sequences are present
+        1. All references are ``LongTensor`` instances
+        2. All alignments have two axes, the second of size 3
+        3. For the start and end points of a reference token, ``r[i, 1:]``,
+           either both of them are negative (indicating no alignment), or
+           ``0 <= r[i, 1] < r[i, 2] <= T``, where ``T`` is the number of
+           frames in the utterance. We do not enforce tokens be
+           non-overlapping
 
     Raises a ``ValueError`` if a condition is violated
     '''
     num_filts = None
     for idx in range(len(data_set.utt_ids)):
-        feats, ali = data_set.get_utterance_pair(idx)
+        feats, ali, ref = data_set.get_utterance_tuple(idx)
         if not isinstance(feats, torch.FloatTensor):
             raise ValueError(
                 "'{}' (index {}) in '{}' is not a FloatTensor".format(
                     data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                    os.path.join(data_set.data_dir, 'feats')))
+                    os.path.join(data_set.data_dir, data_set.feats_subdir)))
         if len(feats.size()) != 2:
             raise ValueError(
                 "'{}' (index {}) in '{}' does not have two axes".format(
                     data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                    os.path.join(data_set.data_dir, 'feats')
+                    os.path.join(data_set.data_dir, data_set.feats_subdir)
                 ))
         if num_filts is None:
-            num_filts = feats.size()[1]
-        elif feats.size()[1] != num_filts:
+            num_filts = feats.shape[1]
+        elif feats.shape[1] != num_filts:
             raise ValueError(
                 "'{}' (index {}) in '{}' has second axis size {}, which "
                 "does not match prior utterance ('{}') size of {}".format(
                     data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                    os.path.join(data_set.data_dir, 'feats'),
-                    feats.size()[1],
+                    os.path.join(data_set.data_dir, data_set.feats_subdir),
+                    feats.shape[1],
                     data_set.utt_ids[idx - 1] + data_set.file_suffix,
                     num_filts))
-        if ali is None:
-            continue
-        if not isinstance(ali, torch.LongTensor):
-            raise ValueError(
-                "'{}' (index {}) in '{}' is not a LongTensor".format(
-                    data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                    os.path.join(data_set.data_dir, 'ali')))
-        if len(ali.size()) != 1:
-            raise ValueError(
-                "'{}' (index {}) in '{}' does not have one axis".format(
-                    data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                    os.path.join(data_set.data_dir, 'ali')))
-        if ali.size()[0] != feats.size()[0]:
-            raise ValueError(
-                "'{}' (index {}) in '{}' does not have the same first axis "
-                "size ({}) as it's companion in '{}' ({})".format(
-                    data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                    os.path.join(data_set.data_dir, 'feats'),
-                    feats.size()[0],
-                    os.path.join(data_set.data_dir, 'ali'),
-                    ali.size()[0]))
+        if ali is not None:
+            if not isinstance(ali, torch.LongTensor):
+                raise ValueError(
+                    "'{}' (index {}) in '{}' is not a LongTensor".format(
+                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                        os.path.join(data_set.data_dir, data_set.ali_subdir)))
+            if len(ali.shape) != 1:
+                raise ValueError(
+                    "'{}' (index {}) in '{}' does not have one axis".format(
+                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                        os.path.join(data_set.data_dir, data_set.ali_subdir)))
+            if ali.shape[0] != feats.shape[0]:
+                raise ValueError(
+                    "'{}' (index {}) in '{}' does not have the same first axis"
+                    " size ({}) as it's companion in '{}' ({})".format(
+                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                        os.path.join(data_set.data_dir, data_set.feats_subdir),
+                        feats.shape[0],
+                        os.path.join(data_set.data_dir, data_set.ali_subdir),
+                        ali.shape[0]))
+        if ref is not None:
+            if not isinstance(ref, torch.LongTensor):
+                raise ValueError(
+                    "'{}' (index {}) in '{}' is not a LongTensor".format(
+                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                        os.path.join(data_set.data_dir, data_set.ref_subdir)))
+            if len(ref.shape) != 2 or ref.shape[1] != 3:
+                raise ValueError(
+                    "'{}' (index {}) in '{}' does not have shape (D, 3)"
+                    "".format(
+                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                        os.path.join(data_set.data_dir, data_set.ref_subdir)))
+            for idx2, r in enum(ref):
+                if not (r[1] < 0 and r[2] < 0) or not (
+                        0 <= r[1] < r[2] < feats.shape[0]):
+                    raise ValueError(
+                        "'{}' (index {}) in '{}', has a reference token "
+                        "(index {}) with bounds outside the utterance"
+                        "".format(
+                            data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                            os.path.join(
+                                data_set.data_dir, data_set.ref_subdir),
+                            idx2))
 
 
-class UtteranceContextWindowDataSet(SpectDataSet):
+class ContextWindowDataSet(SpectDataSet):
     '''SpectDataSet, extracting fixed-width windows over the utterance
 
-    Like a ``SpectDataSet``, ``UtteranceContextWindowDataSet`` indexes pairs of
+    Like a ``SpectDataSet``, ``ContextWindowDataSet`` indexes tuples of
     features and alignments. Instead of returning features of shape ``(T, F)``,
     instances return features of shape ``(T, 1 + left + right, F)``, where the
     ``T`` axis indexes the so-called center frame and the ``1 + left + right``
     axis contains frame vectors (size ``F``) including the center frame,
-    ``left`` frames in time before the center frame, and ``right`` frames after
+    ``left`` frames in time before the center frame, and ``right`` frames
+    after.
+
+    ``ContextWindowDataSet`` does not have support for reference token
+    subdirectories as it is unclear how to always pair tokens with context
+    windows. If tokens are one-to-one with frames, it is suggested that
+    ``ali/`` be re-used for this purpose.
 
     Parameters
     ----------
@@ -325,6 +458,7 @@ class UtteranceContextWindowDataSet(SpectDataSet):
     file_prefix : str, optional
     file_suffix : str, optional
     warn_on_missing : bool, optional
+    feats_subdir, ali_subdir : str, optional
     reverse : bool, optional
         If ``True``, context windows will be reversed along the time
         dimension
@@ -335,20 +469,37 @@ class UtteranceContextWindowDataSet(SpectDataSet):
     left : int
     right : int
     has_ali : bool
+    has_ref : bool
+        Always ``False``
     utt_ids : tuple
     reverse : bool
+
+    Yields
+    ------
+    windowed, ali : tuple
     '''
 
-    def __init__(self, data_dir, left, right, reverse=False, **kwargs):
-        super(UtteranceContextWindowDataSet, self).__init__(data_dir, **kwargs)
+    def __init__(
+            self, data_dir, left, right, file_prefix='',
+            file_suffix='.pt', warn_on_missing=True, subset_ids=None,
+            feats_subdir='feats', ali_subdir='ali', reverse=False):
+        super(ContextWindowDataSet, self).__init__(
+            data_dir, file_prefix=file_prefix, file_suffix=file_suffix,
+            warn_on_missing=warn_on_missing, subset_ids=subset_ids,
+            feats_subdir=feats_subdir, ali_subdir=ali_subdir,
+            ref_subdir=None)
         self.left = left
         self.right = right
         self.reverse = reverse
 
+    def get_utterance_tuple(self, idx):
+        '''Get a tuple of features and alignments'''
+        return super(ContextWindowDataSet, self).get_utterance_tuple(idx)[:2]
+
     def get_windowed_utterance(self, idx):
         '''Get pair of features (w/ context window) and alignments'''
-        feats, ali = self.get_utterance_pair(idx)
-        num_frames, num_filts = feats.size()
+        feats, ali = self.get_utterance_tuple(idx)
+        num_frames, num_filts = feats.shape
         windowed = torch.empty(
             num_frames, 1 + self.left + self.right, num_filts)
         for center_frame in range(num_frames):
@@ -359,82 +510,6 @@ class UtteranceContextWindowDataSet(SpectDataSet):
 
     def __getitem__(self, idx):
         return self.get_windowed_utterance(idx)
-
-
-class SingleContextWindowDataSet(SpectDataSet):
-    '''SpectDataSet, returning a single context window per index
-
-    Like ``SpectDataSet``, ``SingleContextWindowDataSet`` indexes pairs of
-    features and alignments. Instead of indexing features of shape ``(T, F)``
-    and alignments of shape ``T``, instances break down each utterance into
-    ``T`` separate context windows and ``T`` integers and indexes those. For
-    the ``t``-th context window of features, we have a tensor of size ``(1 +
-    left + right, F)``, where ``window[left]`` is the "center frame",
-    ``window[:left]`` are the frames before it, and ``window[left + 1:]`` are
-    those after. Context windows are ordered first by utterance, second by
-    center frame idx. For example, if there are only two utterances, "a" and
-    "b" of sizes ``(2, 5)`` and ``(4, 5)``, respectively, then the first index
-    (0) of the data set would be the context window of "a"'s first frame,
-    whereas the 4th index (3) of the data set points to the context window of
-    "b"'s second frame (1).
-
-    Parameters
-    ----------
-    data_dir : str
-    left : int
-    right : int
-    file_prefix : str, optional
-    file_suffix : str, optional
-    warn_on_missing : bool, optional
-    reverse : bool, optional
-        If ``True``, context windows will be reversed along the time
-        dimension
-
-    Attributes
-    ----------
-    data_dir : str
-    left : int
-    right : int
-    has_ali : bool
-    utt_ids : tuple
-    utt_lens : tuple
-        A tuple containing the number of frames of each utterance (i.e. ``T``)
-    '''
-
-    def __init__(self, data_dir, left, right, reverse=False, **kwargs):
-        super(SingleContextWindowDataSet, self).__init__(data_dir, **kwargs)
-        self.left = left
-        self.right = right
-        self.reverse = reverse
-        self.utt_lens = tuple(
-            torch.load(os.path.join(
-                self.data_dir, 'feats', x + self.file_suffix)).size()[0]
-            for x in self.utt_ids
-        )
-
-    def __len__(self):
-        return sum(self.utt_lens)
-
-    def get_context_window(self, idx):
-        idx_err_msg = 'list index out of range'
-        if idx < 0:
-            idx += len(self)
-            if idx < 0:
-                raise IndexError(idx_err_msg)
-        utt_idx = 0
-        for utt_len in self.utt_lens:
-            if idx < utt_len:
-                break
-            idx -= utt_len
-            utt_idx += 1
-        if utt_idx == len(self.utt_ids):
-            raise IndexError(idx_err_msg)
-        feats, ali = self.get_utterance_pair(utt_idx)
-        window = extract_window(feats, idx, self.left, self.right)
-        return window, ali[idx].item() if ali is not None else ali
-
-    def __getitem__(self, idx):
-        return self.get_context_window(idx)
 
 
 class EpochRandomSampler(torch.utils.data.Sampler):
@@ -491,16 +566,19 @@ class EpochRandomSampler(torch.utils.data.Sampler):
 
 
 def context_window_seq_to_batch(seq):
-    '''Convert a sequence of context window elements to a batch
+    r'''Convert a sequence of context window elements to a batch
 
-    Given a sequence of ``feats, ali`` pairs, where ``feats`` is either of size
-    ``(T, C, F)`` or ``(C, F)``, where ``T`` is some number of windows (which
-    can vary across elements in the sequence), ``C`` is the window size, and
-    ``F`` is some number filters, and ``ali`` is either of size ``(T,)`` or is
-    an integer, this method batches all the elements of the sequence into a
-    pair of ``batch_feats, batch_ali``, where ``batch_feats`` is of size
-    ``(N, C, F)``, ``N`` being the total number of windows, and ``batch_ali``
-    is of size ``(N,)``
+    Assume `seq` is a fixed length sequence of pairs of ``feats, ali``,
+    where ``feats`` is of size ``(T, C, F)``, where ``T`` is some number of
+    windows (which can vary across elements in the sequence), ``C`` is the
+    window size, and ``F`` is some number filters, and ``ali`` is of
+    size ``(T,)``, and ``ref`` is of size ``(R, 3)``. This method batches
+    all the elements of the sequence into a pair of ``batch_feats,
+    batch_ali``, where `batch_feats` and `batch_ali` will have shapes
+    ``(N, C, F)`` and ``(N,)`` resp., where :math:`N = \sum T` is the total
+    number of context windows over the utterances.
+
+    If ``ali`` is ``None`` in any element, `batch_ali` will also be ``None``
 
     Parameters
     ----------
@@ -508,20 +586,16 @@ def context_window_seq_to_batch(seq):
 
     Returns
     -------
-    batch_feats, batch_ali : torch.FloatTensor, torch.LongTensor or None
+    batch_feats, batch_ali : tuple
     '''
     batch_feats = []
     batch_ali = []
     for feats, ali in seq:
-        if len(feats.size()) == 2:
-            feats = feats.unsqueeze(0)
         batch_feats.append(feats)
         if ali is None:
             # assume every remaining ali will be none
             batch_ali = None
         else:
-            if isinstance(ali, int):
-                ali = torch.tensor([ali])
             batch_ali.append(ali)
     batch_feats = torch.cat(batch_feats)
     if batch_ali is not None:
@@ -584,6 +658,7 @@ class SpectDataSetParams(SpectDataParams, DataSetParams):
 
 
 class ContextWindowDataSetParams(ContextWindowDataParams, SpectDataSetParams):
+    '''Data set parameters for specific partition of windowed spectral data'''
     pass
 
 
@@ -593,30 +668,11 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     Parameters
     ----------
     data_dir : str
-        Path to the torch data directory. Should have the format
-        ::
-            data_dir/
-                feats/
-                    <file_prefix><utt1><file_suffix>
-                    <file_prefix><utt2><file_suffix>
-                    ...
-                ali/
-                    <file_prefix><utt1><file_suffix>
-                    <file_prefix><utt2><file_suffix>
-                    ...
     params : ContextWindowDataSetParams
-        Parameters for things like context window size, batch size, and
-        seed. For this loader, the batch size equals the number of context
-        windows
     file_prefix : str, optional
-        The prefix that indicates that the file counts toward the data set
     file_suffix : str, optional
-        The suffix that indicates that the file counts toward the data set
     warn_on_missing : bool, optional
-        If some files with ``file_suffix`` exist in the ``ali/`` dir,
-        there's a mismatch between the utterances in ``feats/`` and ``ali/``,
-        and `warn_on_missing` is ``True``, a warning will be issued
-        (via ``warnings``) regarding each such mismatch
+    feats_subdir, ali_subdir : str, optional
     init_epoch : int, optional
         Where training should resume from
     kwargs : keyword arguments, optional
@@ -629,18 +685,18 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    feats, alis : tensor, tensor, tuple, tuple
+    feats, alis
         `feats` is a ``FloatTensor`` of size ``(N, C, F)``, where ``N`` is the
-        number of context windows, ``C`` is
-        the context window size, and ``F`` is the number of filters per frame.
-        `ali` is a ``LongTensor`` of size ``(N,)``. Note that ``N`` corresponds
-        to the sum of the number of context windows from ``params.batch_size``
-        utterances.
+        number of context windows, ``C`` is the context window size, and ``F``
+        is the number of filters per frame. `ali` is a ``LongTensor`` of size
+        ``(N,)``, where ``N`` corresponds to the sum of the number of context
+        windows from ``params.batch_size`` utterances.
     '''
 
     def __init__(
             self, data_dir, params, init_epoch=0, file_prefix='',
-            file_suffix='.pt', warn_on_missing=True, **kwargs):
+            file_suffix='.pt', warn_on_missing=True,
+            feats_subdir='feats', ali_subdir='ali', **kwargs):
         for bad_kwarg in (
                 'batch_size', 'sampler', 'batch_sampler', 'shuffle',
                 'collate_fn'):
@@ -650,17 +706,13 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)))
         self.data_dir = data_dir
         self.params = params
-        # self.data_source = SingleContextWindowDataSet(
-        #     data_dir, params.context_left, params.context_right,
-        #     file_prefix=file_prefix, file_suffix=file_suffix,
-        #     warn_on_missing=warn_on_missing,
-        # )
-        self.data_source = UtteranceContextWindowDataSet(
+        self.data_source = ContextWindowDataSet(
             data_dir, params.context_left, params.context_right,
             reverse=params.reverse,
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
-            subset_ids=set(params.subset_ids) if params.subset_ids else None
+            subset_ids=set(params.subset_ids) if params.subset_ids else None,
+            feats_subdir=feats_subdir, ali_subdir=ali_subdir,
         )
         if not self.data_source.has_ali:
             raise ValueError(
@@ -693,30 +745,11 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     Parameters
     ----------
     data_dir : str
-        Path to the torch data directory. Should have the format
-        ::
-            data_dir/
-                feats/
-                    <file_prefix><utt1><file_suffix>
-                    <file_prefix><utt2><file_suffix>
-                    ...
-                [ali/
-                    <file_prefix><utt1><file_suffix>
-                    <file_prefix><utt2><file_suffix>
-                    ...]
-        Where the alignment directory is optional
-    params : SpectDataSetParams
-        Parameters for things like context window size, batch size, and
-        seed. For this loader, the batch size equals the number of utterances
+    params : ContextWindowDataSetParams
     file_prefix : str, optional
-        The prefix that indicates that the file counts toward the data set
     file_suffix : str, optional
-        The suffix that indicates that the file counts toward the data set
     warn_on_missing : bool, optional
-        If some files with ``file_suffix`` exist in the ``ali/`` dir,
-        there's a mismatch between the utterances in ``feats/`` and ``ali/``,
-        and `warn_on_missing` is ``True``, a warning will be issued
-        (via ``warnings``) regarding each such mismatch
+    feats_subdir, ali_subdir : str, optional
     kwargs : keyword arguments, optional
         Additional ``DataLoader`` arguments
 
@@ -727,19 +760,19 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    feats, alis, feat_sizes, utt_ids : tensor, tensor, tuple, tuple
+    feats, alis, feat_sizes, utt_ids
         `feats` is a ``FloatTensor`` of size ``(N, C, F)``, where ``N`` is
         the number of context windows, ``C`` is the context window size, and
         ``F`` is the number of filters per frame. `ali` is a ``LongTensor``
         of size ``(N,)`` (or ``None`` if the ``ali`` dir was not specified).
-        `feat_sizes` is a tuple of size ``params.batch_size``
-        specifying the number of context windows per utterance in the batch.
+        `feat_sizes` is a tuple of size ``params.batch_size`` specifying the
+        number of context windows per utterance in the batch.
         ``feats[sum(feat_sizes[:i]):sum(feat_sizes[:i+1])]`` are the context
         windows for the ``i``-th utterance in the batch
-        (``sum(feat_sizes) == N``). ``utt_ids`` is a tuple of size
+        (``sum(feat_sizes) == N``). utt_ids` is a tuple of size
         ``params.batch_size`` naming the utterances in the batch
     '''
-    class CWEvalDataSet(UtteranceContextWindowDataSet):
+    class CWEvalDataSet(ContextWindowDataSet):
         '''Append feat_size and utt_id to each sample's tuple'''
 
         def __getitem__(self, idx):
@@ -755,11 +788,12 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
         '''Update context_window_seq_to_batch to handle feat_sizes, utt_ids'''
         feats, alis, feat_sizes, utt_ids = zip(*seq)
         feats, alis = context_window_seq_to_batch(zip(feats, alis))
-        return feats, alis, tuple(feat_sizes), tuple(utt_ids)
+        return (feats, alis, tuple(feat_sizes), tuple(utt_ids))
 
     def __init__(
             self, data_dir, params, file_prefix='', file_suffix='.pt',
-            warn_on_missing=True, **kwargs):
+            warn_on_missing=True, feats_subdir='feats', ali_subdir='ali',
+            **kwargs):
         for bad_kwarg in (
                 'batch_size', 'sampler', 'batch_sampler', 'shuffle',
                 'collate_fn'):
@@ -774,7 +808,8 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
             reverse=params.reverse,
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
-            subset_ids=set(params.subset_ids) if params.subset_ids else None
+            subset_ids=set(params.subset_ids) if params.subset_ids else None,
+            feats_subdir=feats_subdir, ali_subdir=ali_subdir,
         )
         super(ContextWindowEvaluationDataLoader, self).__init__(
             self.data_source,
