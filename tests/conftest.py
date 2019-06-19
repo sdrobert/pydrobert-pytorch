@@ -29,7 +29,7 @@ def temp_dir():
     pytest.param('cuda', marks=pytest.mark.gpu),
 ], scope='session')
 def device(request):
-    return request.param
+    return torch.device(request.param)
 
 
 @pytest.fixture(scope='session')
