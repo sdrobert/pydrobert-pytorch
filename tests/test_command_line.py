@@ -16,11 +16,13 @@ __copyright__ = "Copyright 2018 Sean Robertson"
 
 @pytest.mark.cpu
 def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
-    _, alis, feat_sizes, _ = populate_torch_dir(
+    _, alis, _, feat_sizes, _, _ = populate_torch_dir(
         temp_dir, 19, num_filts=5, max_class=10)
     # add one with class idx 10 to ensure all classes are accounted for
     torch.save(torch.rand(1, 5), os.path.join(temp_dir, 'feats', 'utt19.pt'))
     torch.save(torch.tensor([10]), os.path.join(temp_dir, 'ali', 'utt19.pt'))
+    torch.save(
+        torch.tensor([[0, 0, 1]]), os.path.join(temp_dir, 'ref', 'utt19.pt'))
     feat_sizes += (1,)
     alis = torch.cat(alis + [torch.tensor([10])])
     alis = [class_idx.item() for class_idx in alis]

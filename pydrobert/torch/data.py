@@ -421,9 +421,9 @@ def validate_spect_data_set(data_set):
                     "".format(
                         data_set.utt_ids[idx] + data_set.file_suffix, idx,
                         os.path.join(data_set.data_dir, data_set.ref_subdir)))
-            for idx2, r in enum(ref):
-                if not (r[1] < 0 and r[2] < 0) or not (
-                        0 <= r[1] < r[2] < feats.shape[0]):
+            for idx2, r in enumerate(ref):
+                if not (r[1] < 0 and r[2] < 0) and not (
+                        0 <= r[1] < r[2] <= feats.shape[0]):
                     raise ValueError(
                         "'{}' (index {}) in '{}', has a reference token "
                         "(index {}) with bounds outside the utterance"

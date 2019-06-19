@@ -271,7 +271,7 @@ def test_context_window_seq_to_batch(feat_sizes, include_ali):
 
 
 @pytest.mark.cpu
-def test_training_data_loader(temp_dir, populate_torch_dir):
+def test_window_training_data_loader(temp_dir, populate_torch_dir):
     populate_torch_dir(temp_dir, 5, num_filts=2)
     p = data.ContextWindowDataSetParams(
         context_left=1,

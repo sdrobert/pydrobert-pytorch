@@ -74,11 +74,21 @@ def get_torch_spect_data_dir_info(args=None):
                 <file_prefix><utt1><file_suffix>
                 ...
             ]
+            [ref/
+                <file_prefix><utt1><file_suffix>
+                <file_prefix><utt1><file_suffix>
+                ...
+            ]
 
     Where ``feats`` contains ``FloatTensor``s of shape ``(N, F)``, where
     ``N`` is the number of frames (variable) and ``F`` is the number of
-    filters (fixed) and ``ali``, if there, contains ``LongTensor``s of shape
-    ``(N,)`` indicating the appropriate class labels.
+    filters (fixed), ``ali``, if there, contains ``LongTensor``s of shape
+    ``(N,)`` indicating the appropriate class labels (likely pdf-ids for
+    discriminative training in an DNN-HMM), and ``ref``, if there,
+    contains ``LongTensor``s of shape ``(R, 3)`` indicating a sequence of
+    reference tokens where element indexed by ``[i, 0]`` is a token id,
+    ``[i, 1]`` is the inclusive start frame of the token (or a negative value
+    if unknown), and ``[i, 2]`` is the exclusive end frame of the token.
 
     This command writes the following space-delimited key-value pairs to an
     output file in sorted order:
@@ -114,7 +124,7 @@ def get_torch_spect_data_dir_info(args=None):
     }
     counts = dict()
     max_class_idx = -1
-    for feat, ali in data_set:
+    for feat, ali, ref in data_set:
         info_dict['num_filts'] = feat.size()[1]
         info_dict['total_frames'] += feat.size()[0]
         if ali is not None:

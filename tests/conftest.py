@@ -70,11 +70,11 @@ def populate_torch_dir():
                     ali_dir, file_prefix + utt_id + file_suffix))
                 alis.append(ali)
             if include_ref:
-                ref_size = torch.randint(1, max_width + 1, (1,)).long().item()
-                max_ref_length = torch.randint(1, max_width, (1,)).long()
+                ref_size = torch.randint(1, feat_size + 1, (1,)).long().item()
+                max_ref_length = torch.randint(1, feat_size + 1, (1,)).long()
                 max_ref_length = max_ref_length.item()
                 ref_starts = torch.randint(
-                    max_width - max_ref_length, (ref_size,)).long()
+                    feat_size - max_ref_length + 1, (ref_size,)).long()
                 ref_lengths = torch.randint(
                     1, max_ref_length + 1, (ref_size,)).long()
                 ref = torch.stack([
