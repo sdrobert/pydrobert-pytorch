@@ -27,6 +27,7 @@ def main():
         name='pydrobert-pytorch',
         description='PyTorch utilities for ML, specifically speech',
         long_description=LONG_DESCRIPTION,
+        long_description_content_type='test/markdown',
         use_scm_version=True,
         zip_safe=False,
         url='https://github.com/sdrobert/pydrobert-pytorch',
