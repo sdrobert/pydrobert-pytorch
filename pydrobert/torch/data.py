@@ -17,19 +17,22 @@ __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2018 Sean Robertson"
 __all__ = [
-    'extract_window',
-    'SpectDataSet',
-    'validate_spect_data_set',
-    'ContextWindowDataSet',
-    'EpochRandomSampler',
     'context_window_seq_to_batch',
-    'DataSetParams',
-    'SpectDataParams',
     'ContextWindowDataParams',
-    'SpectDataSetParams',
+    'ContextWindowDataSet',
     'ContextWindowDataSetParams',
-    'ContextWindowTrainingDataLoader',
     'ContextWindowEvaluationDataLoader',
+    'ContextWindowTrainingDataLoader',
+    'DataSetParams',
+    'EpochRandomSampler',
+    'extract_window',
+    'spect_seq_to_batch',
+    'SpectDataParams',
+    'SpectDataSet',
+    'SpectDataSetParams',
+    'SpectEvaluationDataLoader',
+    'SpectTrainingDataLoader',
+    'validate_spect_data_set',
 ]
 
 
@@ -727,10 +730,10 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             raise ValueError(
                 "'{}' must have either alignments or reference tokens for "
                 "training".format(data_dir))
-        self.__sampler = EpochRandomSampler(
+        epoch_sampler = EpochRandomSampler(
             self.data_source, init_epoch=init_epoch, base_seed=params.seed)
         batch_sampler = torch.utils.data.BatchSampler(
-            self.__sampler, params.batch_size, drop_last=params.drop_last)
+            epoch_sampler, params.batch_size, drop_last=params.drop_last)
         super(SpectTrainingDataLoader, self).__init__(
             self.data_source,
             batch_sampler=batch_sampler,
@@ -741,11 +744,11 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     @property
     def epoch(self):
         '''int : the current epoch'''
-        return self.__sampler.epoch
+        return self.batch_sampler.sampler.epoch
 
     @epoch.setter
     def epoch(self, val):
-        self.__sampler.epoch = val
+        self.batch_sampler.sampler.epoch = val
 
 
 class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
@@ -958,10 +961,10 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
             raise ValueError(
                 "'{}' must have alignment info for training".format(
                     data_dir))
-        self.__sampler = EpochRandomSampler(
+        epoch_sampler = EpochRandomSampler(
             self.data_source, init_epoch=init_epoch, base_seed=params.seed)
         batch_sampler = torch.utils.data.BatchSampler(
-            self.__sampler, params.batch_size, drop_last=params.drop_last)
+            epoch_sampler, params.batch_size, drop_last=params.drop_last)
         super(ContextWindowTrainingDataLoader, self).__init__(
             self.data_source,
             batch_sampler=batch_sampler,
@@ -972,11 +975,11 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     @property
     def epoch(self):
         '''int : the current epoch'''
-        return self.__sampler.epoch
+        return self.batch_sampler.sampler.epoch
 
     @epoch.setter
     def epoch(self, val):
-        self.__sampler.epoch = val
+        self.batch_sampler.sampler.epoch = val
 
 
 class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
