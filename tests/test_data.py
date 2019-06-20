@@ -273,7 +273,7 @@ def test_spect_seq_to_batch(include_ali, include_ref):
     torch.manual_seed(1)
     feat_sizes = tuple(
         torch.randint(1, 30, (1,)).long().item()
-        for _ in range(torch.randint(3, 10, (1, 0)).long().item())
+        for _ in range(torch.randint(3, 10, (1,)).long().item())
     )
     feats = tuple(torch.randn(x, 5) for x in feat_sizes)
     if include_ali:
@@ -328,6 +328,12 @@ def test_spect_training_data_loader(temp_dir, populate_torch_dir):
         batch_size=batch_size,
         seed=2,
     )
+    # check missing either ali or ref gives None in batches
+    data_loader = data.SpectTrainingDataLoader(temp_dir, p, ali_subdir=None)
+    assert next(iter(data_loader))[1] is None
+    data_loader = data.SpectTrainingDataLoader(temp_dir, p, ref_subdir=None)
+    assert next(iter(data_loader))[2] is None
+    assert next(iter(data_loader))[4] is None
     data_loader = data.SpectTrainingDataLoader(temp_dir, p)
 
     def _get_epoch(sort):
@@ -393,9 +399,67 @@ def test_spect_training_data_loader(temp_dir, populate_torch_dir):
     _compare_epochs(_get_epoch(True), _get_epoch(True), True)
     data_loader.epoch = 1
     _compare_epochs(ep1, _get_epoch(False), True)
-    data_loader = data.SpectTrainingDataLoader(temp_dir, p)
+    data_loader = data.SpectTrainingDataLoader(temp_dir, p, num_workers=4)
     _compare_epochs(ep0, _get_epoch(False), True)
     _compare_epochs(ep1, _get_epoch(False), True)
+
+
+@pytest.mark.cpu
+def test_spect_evaluation_data_loader(temp_dir, populate_torch_dir):
+    torch.manual_seed(41)
+    feats_dir = os.path.join(temp_dir, 'feats')
+    ali_dir = os.path.join(temp_dir, 'ali')
+    os.makedirs(feats_dir)
+    os.makedirs(ali_dir)
+    p = data.SpectDataSetParams(batch_size=5)
+    feats, ali, ref, feat_sizes, ref_sizes, utt_ids = populate_torch_dir(
+        temp_dir, 20)
+    # check that ali and ref can be missing
+    data_loader = data.SpectEvaluationDataLoader(
+        temp_dir, p, ali_subdir=None, ref_subdir=None)
+    assert next(iter(data_loader))[1:3] == (None, None)
+    assert next(iter(data_loader))[4] is None
+    data_loader = data.SpectEvaluationDataLoader(temp_dir, p)
+
+    def _compare_data_loader():
+        assert len(data_loader) == 4
+        cur_idx = 0
+        for (
+                b_feats, b_ali, b_ref, b_feat_sizes, b_ref_sizes, b_utt_ids
+                ) in data_loader:
+            R_star = max(b_ref_sizes)
+            assert tuple(b_feats.shape) == (5, b_feat_sizes[0], 5)
+            assert tuple(b_ali.shape) == (5, b_feat_sizes[0])
+            assert tuple(b_ref.shape) == (5, R_star, 3)
+            # sort the sub-section of the master list by feature size
+            s_feats, s_ali, s_ref, s_feat_sizes, s_ref_sizes, s_utt_ids = (
+                zip(*sorted(
+                    zip(
+                        feats[cur_idx:cur_idx + 5],
+                        ali[cur_idx:cur_idx + 5],
+                        ref[cur_idx:cur_idx + 5],
+                        feat_sizes[cur_idx:cur_idx + 5],
+                        ref_sizes[cur_idx:cur_idx + 5],
+                        utt_ids[cur_idx:cur_idx + 5]),
+                    key=lambda x: -x[3])))
+            assert b_utt_ids == s_utt_ids
+            assert b_feat_sizes == s_feat_sizes
+            assert b_ref_sizes == s_ref_sizes
+            for a, b in zip(b_feats, s_feats):
+                assert torch.allclose(a[:b.shape[0]], b)
+                assert torch.allclose(a[b.shape[0]:], torch.tensor([0.]))
+            for a, b in zip(b_ali, s_ali):
+                assert torch.all(a[:b.shape[0]] == b)
+                assert torch.all(a[b.shape[0]:] == torch.tensor([-1]))
+            for a, b in zip(b_ref, s_ref):
+                assert torch.all(a[:b.shape[0]] == b)
+                assert torch.all(a[b.shape[0]:] == torch.tensor([-1]))
+            cur_idx += 5
+
+    _compare_data_loader()
+    _compare_data_loader()  # order should not change
+    data_loader = data.SpectEvaluationDataLoader(temp_dir, p, num_workers=4)
+    _compare_data_loader()  # order should still not change
 
 
 @pytest.mark.cpu
@@ -459,7 +523,7 @@ def test_window_training_data_loader(temp_dir, populate_torch_dir):
 
 
 @pytest.mark.cpu
-def test_window_evaluation_data_loader(temp_dir, device, populate_torch_dir):
+def test_window_evaluation_data_loader(temp_dir, populate_torch_dir):
     torch.manual_seed(1)
     feats_dir = os.path.join(temp_dir, 'feats')
     ali_dir = os.path.join(temp_dir, 'ali')
@@ -485,6 +549,10 @@ def test_window_evaluation_data_loader(temp_dir, device, populate_torch_dir):
             assert torch.all(
                 b_alis == torch.cat(alis[cur_idx:cur_idx + 5]))
             cur_idx += 5
+    data_loader = data.ContextWindowEvaluationDataLoader(
+        temp_dir, p, ali_subdir=None)
+    # check batching works when alignments are empty
+    assert next(iter(data_loader))[1] is None
     data_loader = data.ContextWindowEvaluationDataLoader(temp_dir, p)
     _compare_data_loader(data_loader)
     _compare_data_loader(data_loader)  # order should not change

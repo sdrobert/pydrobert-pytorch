@@ -692,7 +692,13 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         `ali` is a ``LongTensor`` of size ``(N, T*)`` if an ``ali/`` dir
         exists, otherwise ``None``. ``feat_sizes`` is an ``N``-tuple of
         integers specifying the lengths of utterances in the batch. `refs` is
-        a ``LongTensor`` of size
+        a ``LongTensor`` of size ``(N, R*, 3)``, where ``R*`` is the maximum
+        number of reference tokens in the batch. `ref_sizes` is an ``N``-tuple
+        of integers specifying the number of reference tokens per utterance in
+        the batch. If the ``refs/`` directory does not exist, `refs` and
+        `ref_sizes` are ``None``. The first axis of each of `feats`, `alis`,
+        `refs`, `feat_sizes`, and `ref_sizes` is ordered by utterances of
+        descending frame lengths.
     '''
 
     def __init__(
@@ -717,10 +723,10 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             feats_subdir=feats_subdir, ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
         )
-        if not self.data_source.has_ali:
+        if not self.data_source.has_ali and not self.data_source.has_ref:
             raise ValueError(
-                "'{}' must have alignment info for training".format(
-                    data_dir))
+                "'{}' must have either alignments or reference tokens for "
+                "training".format(data_dir))
         self.__sampler = EpochRandomSampler(
             self.data_source, init_epoch=init_epoch, base_seed=params.seed)
         batch_sampler = torch.utils.data.BatchSampler(
@@ -740,6 +746,96 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     @epoch.setter
     def epoch(self, val):
         self.__sampler.epoch = val
+
+
+class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
+    '''Serves batches of spectral data over a fixed order of utterances
+
+    Parameters
+    ----------
+    data_dir : str
+    params : SpectDataSetParams
+    file_prefix : str, optional
+    file_suffix : str, optional
+    warn_on_missing : bool, optional
+    feats_subdir, ali_subdir, ref_subdir : str, optional
+    kwargs : keyword arguments, optional
+        Additional ``DataLoader`` arguments
+
+    Attributes
+    ----------
+    data_dir : str
+    params : SpectDataSetParams
+
+    Yields
+    ------
+    feats, alis, refs, feat_sizes, ref_sizes, utt_ids
+        `feats` is a ``FloatTensor`` of size ``(N, T*, F)``, where ``N`` is
+        ``params.batch_size``, ``T*`` is the maximum number of frames in an
+        utterance in the batch, and ``F`` is the number of filters per frame.
+        `ali` is a ``LongTensor`` of size ``(N, T*)`` if an ``ali/`` dir
+        exists, otherwise ``None``. ``feat_sizes`` is an ``N``-tuple of
+        integers specifying the lengths of utterances in the batch. `refs` is
+        a ``LongTensor`` of size ``(N, R*, 3)``, where ``R*`` is the maximum
+        number of reference tokens in the batch. `ref_sizes` is an ``N``-tuple
+        of integers specifying the number of reference tokens per utterance in
+        the batch. If the ``refs/`` directory does not exist, `refs` and
+        `ref_sizes` are ``None``. ``utt_ids`` is an ``N``-tuple specifying
+        the names of utterances in the batch. The first axis of each of
+        `feats`, `alis`, `refs`, `feat_sizes`, `ref_sizes`, and `utt_ids`
+        is ordered by utterances of descending frame lengths.
+    '''
+    class SEvalDataSet(SpectDataSet):
+        '''Append utt_id to each sample's tuple'''
+
+        def __getitem__(self, idx):
+            feats, ali, ref = super(
+                SpectEvaluationDataLoader.SEvalDataSet, self).__getitem__(idx)
+            utt_id = self.utt_ids[idx]
+            return feats, ali, ref, utt_id
+
+    @staticmethod
+    def eval_collate_fn(seq):
+        '''Update context_window_seq_to_batch to handle feat_sizes, utt_ids'''
+        feats, ali, ref, utt_ids = zip(*seq)
+        # spect_seq_to_batch sorts by descending number of frames, so we
+        # sort utt_ids here
+        utt_ids = tuple(
+            x[1]
+            for x in sorted(zip(feats, utt_ids), key=lambda x: -x[0].shape[0])
+        )
+        feats, ali, ref, feat_sizes, ref_sizes = spect_seq_to_batch(
+            zip(feats, ali, ref))
+        return feats, ali, ref, feat_sizes, ref_sizes, utt_ids
+
+    def __init__(
+            self, data_dir, params, file_prefix='', file_suffix='.pt',
+            warn_on_missing=True, feats_subdir='feats', ali_subdir='ali',
+            ref_subdir='ref', **kwargs):
+        for bad_kwarg in (
+                'batch_size', 'sampler', 'batch_sampler', 'shuffle',
+                'collate_fn'):
+            if bad_kwarg in kwargs:
+                raise TypeError(
+                    'keyword argument "{}" invalid for {} types'.format(
+                        bad_kwarg, type(self)))
+        self.data_dir = data_dir
+        self.params = params
+        self.data_source = self.SEvalDataSet(
+            data_dir,
+            file_prefix=file_prefix, file_suffix=file_suffix,
+            warn_on_missing=warn_on_missing,
+            subset_ids=set(params.subset_ids) if params.subset_ids else None,
+            feats_subdir=feats_subdir, ali_subdir=ali_subdir,
+            ref_subdir=ref_subdir,
+        )
+        super(SpectEvaluationDataLoader, self).__init__(
+            self.data_source,
+            batch_size=params.batch_size,
+            shuffle=False,
+            collate_fn=self.eval_collate_fn,
+            **kwargs
+        )
 
 
 def context_window_seq_to_batch(seq):
