@@ -662,6 +662,86 @@ def spect_seq_to_batch(seq):
     )
 
 
+class SpectTrainingDataLoader(torch.utils.data.DataLoader):
+    '''Serves batches of spectral data over random orders of utterances
+
+    Parameters
+    ----------
+    data_dir : str
+    params : SpectDataSetParams
+    file_prefix : str, optional
+    file_suffix : str, optional
+    warn_on_missing : bool, optional
+    feats_subdir, ali_subdir, ref_subdir : str, optional
+    init_epoch : int, optional
+        Where training should resume from
+    kwargs : keyword arguments, optional
+        Additional ``DataLoader`` arguments
+
+    Attributes
+    ----------
+    data_dir : str
+    params : SpectDataSetParams
+
+    Yields
+    ------
+    feats, alis, refs, feat_sizes, ref_sizes
+        `feats` is a ``FloatTensor`` of size ``(N, T*, F)``, where ``N`` is
+        ``params.batch_size``, ``T*`` is the maximum number of frames in an
+        utterance in the batch, and ``F`` is the number of filters per frame.
+        `ali` is a ``LongTensor`` of size ``(N, T*)`` if an ``ali/`` dir
+        exists, otherwise ``None``. ``feat_sizes`` is an ``N``-tuple of
+        integers specifying the lengths of utterances in the batch. `refs` is
+        a ``LongTensor`` of size
+    '''
+
+    def __init__(
+            self, data_dir, params, init_epoch=0, file_prefix='',
+            file_suffix='.pt', warn_on_missing=True,
+            feats_subdir='feats', ali_subdir='ali',
+            ref_subdir='ref', **kwargs):
+        for bad_kwarg in (
+                'batch_size', 'sampler', 'batch_sampler', 'shuffle',
+                'collate_fn'):
+            if bad_kwarg in kwargs:
+                raise TypeError(
+                    'keyword argument "{}" invalid for {} types'.format(
+                        bad_kwarg, type(self)))
+        self.data_dir = data_dir
+        self.params = params
+        self.data_source = SpectDataSet(
+            data_dir,
+            file_prefix=file_prefix, file_suffix=file_suffix,
+            warn_on_missing=warn_on_missing,
+            subset_ids=set(params.subset_ids) if params.subset_ids else None,
+            feats_subdir=feats_subdir, ali_subdir=ali_subdir,
+            ref_subdir=ref_subdir,
+        )
+        if not self.data_source.has_ali:
+            raise ValueError(
+                "'{}' must have alignment info for training".format(
+                    data_dir))
+        self.__sampler = EpochRandomSampler(
+            self.data_source, init_epoch=init_epoch, base_seed=params.seed)
+        batch_sampler = torch.utils.data.BatchSampler(
+            self.__sampler, params.batch_size, drop_last=params.drop_last)
+        super(SpectTrainingDataLoader, self).__init__(
+            self.data_source,
+            batch_sampler=batch_sampler,
+            collate_fn=spect_seq_to_batch,
+            **kwargs
+        )
+
+    @property
+    def epoch(self):
+        '''int : the current epoch'''
+        return self.__sampler.epoch
+
+    @epoch.setter
+    def epoch(self, val):
+        self.__sampler.epoch = val
+
+
 def context_window_seq_to_batch(seq):
     r'''Convert a sequence of context window elements to a batch
 
@@ -744,7 +824,8 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     Attributes
     ----------
     data_dir : str
-    params : cnn_model.params.SpectDataParams
+    params : ContextWindowDataSetParams
+    data_source : ContextWindowDataSet
 
     Yields
     ------
@@ -819,7 +900,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     Attributes
     ----------
     data_dir : str
-    params : cnn_model.params.SpectDataParams
+    params : SpectDataParams
 
     Yields
     ------

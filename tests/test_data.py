@@ -4,7 +4,7 @@ from __future__ import print_function
 
 import os
 
-from itertools import repeat
+from itertools import repeat, chain
 
 import pytest
 import torch
@@ -273,7 +273,7 @@ def test_spect_seq_to_batch(include_ali, include_ref):
     torch.manual_seed(1)
     feat_sizes = tuple(
         torch.randint(1, 30, (1,)).long().item()
-        for _ in range(torch.randint(3, 10, (1,)).long().item())
+        for _ in range(torch.randint(3, 10, (1, 0)).long().item())
     )
     feats = tuple(torch.randn(x, 5) for x in feat_sizes)
     if include_ali:
@@ -317,6 +317,85 @@ def test_spect_seq_to_batch(include_ali, include_ref):
     else:
         assert batch_ref is None
         assert batch_ref_sizes is None
+
+
+@pytest.mark.cpu
+def test_spect_training_data_loader(temp_dir, populate_torch_dir):
+    torch.manual_seed(40)
+    num_utts, batch_size, num_filts = 20, 5, 11
+    populate_torch_dir(temp_dir, num_utts, num_filts=num_filts)
+    p = data.SpectDataSetParams(
+        batch_size=batch_size,
+        seed=2,
+    )
+    data_loader = data.SpectTrainingDataLoader(temp_dir, p)
+
+    def _get_epoch(sort):
+        ep_feats, ep_ali, ep_ref = [], [], []
+        ep_feat_sizes, ep_ref_sizes = [], []
+        max_T = 0
+        max_R = 0
+        for b_feats, b_ali, b_ref, b_feat_sizes, b_ref_sizes in data_loader:
+            max_T = max(max_T, b_feat_sizes[0])
+            R_star = max(b_ref_sizes)
+            max_R = max(max_R, R_star)
+            assert b_feats.shape[0] == batch_size
+            assert b_ali.shape[0] == batch_size
+            assert b_ref.shape[0] == batch_size
+            assert b_feats.shape[-1] == num_filts
+            assert b_feats.shape[1] == b_feat_sizes[0]
+            assert b_ali.shape[1] == b_feat_sizes[0]
+            assert b_ref.shape[1] == R_star
+            ep_feats += tuple(b_feats)
+            ep_ali += tuple(b_ali)
+            ep_ref += tuple(b_ref)
+            ep_feat_sizes += b_feat_sizes
+            ep_ref_sizes += b_ref_sizes
+        assert len(ep_feats) == num_utts
+        assert len(ep_ali) == num_utts
+        for i in range(num_utts):
+            ep_feats[i] = torch.nn.functional.pad(
+                ep_feats[i], (0, 0, 0, max_T - ep_ali[i].shape[0]))
+            ep_ali[i] = torch.nn.functional.pad(
+                ep_ali[i], (0, max_T - ep_ali[i].shape[0]),
+                value=-1)
+            ep_ref[i] = torch.nn.functional.pad(
+                ep_ref[i], (0, 0, 0, max_R - ep_ref[i].shape[0]),
+                value=-1)
+        if sort:
+            ep_feats, ep_ali, ep_ref, ep_feat_sizes, ep_ref_sizes = zip(
+                *sorted(
+                    zip(ep_feats, ep_ali, ep_ref, ep_feat_sizes, ep_ref_sizes),
+                    key=lambda x: (-x[3], -x[4], x[0][0, 0])))
+        return ep_feats, ep_ali, ep_ref, ep_feat_sizes, ep_ref_sizes
+
+    def _compare_epochs(ep_a, ep_b, same):
+        a_feats, a_ali, a_ref, a_feat_sizes, a_ref_sizes = ep_a
+        b_feats, b_ali, b_ref, b_feat_sizes, b_ref_sizes = ep_b
+        a_feats, b_feats = torch.stack(a_feats), torch.stack(b_feats)
+        a_ali, b_ali = torch.stack(a_ali), torch.stack(b_ali)
+        a_ref, b_ref = torch.stack(a_ref), torch.stack(b_ref)
+        if same:
+            assert a_feat_sizes == b_feat_sizes
+            assert a_ref_sizes == b_ref_sizes
+            assert torch.allclose(a_feats, b_feats)
+            assert torch.all(a_ali == b_ali)
+            assert torch.all(a_ref == b_ref)
+        else:
+            assert a_feat_sizes != b_feat_sizes
+            assert a_ref_sizes != b_ref_sizes
+            assert not torch.allclose(a_feats, b_feats)
+            assert torch.any(a_ali != b_ali)
+            assert torch.any(a_ref != b_ref)
+    ep0 = _get_epoch(False)
+    ep1 = _get_epoch(False)
+    _compare_epochs(ep0, ep1, False)  # could be same by fluke
+    _compare_epochs(_get_epoch(True), _get_epoch(True), True)
+    data_loader.epoch = 1
+    _compare_epochs(ep1, _get_epoch(False), True)
+    data_loader = data.SpectTrainingDataLoader(temp_dir, p)
+    _compare_epochs(ep0, _get_epoch(False), True)
+    _compare_epochs(ep1, _get_epoch(False), True)
 
 
 @pytest.mark.cpu
