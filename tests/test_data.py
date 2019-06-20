@@ -273,7 +273,7 @@ def test_spect_seq_to_batch(include_ali, include_ref):
     torch.manual_seed(1)
     feat_sizes = tuple(
         torch.randint(1, 30, (1,)).long().item()
-        for _ in range(torch.randint(3, 10, (1,)).long().item()),
+        for _ in range(torch.randint(3, 10, (1,)).long().item())
     )
     feats = tuple(torch.randn(x, 5) for x in feat_sizes)
     if include_ali:
