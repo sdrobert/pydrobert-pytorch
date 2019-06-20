@@ -251,23 +251,72 @@ def test_epoch_random_sampler(temp_dir):
 @pytest.mark.parametrize('include_ali', [True, False])
 def test_context_window_seq_to_batch(feat_sizes, include_ali):
     torch.manual_seed(1)
-    includes_frames = len(feat_sizes[0]) == 3
     feats = tuple(torch.rand(*x) for x in feat_sizes)
     num_frames = sum(x[0] for x in feat_sizes)
-    alis = tuple(torch.randint(10, (x[0],)).long() for x in feat_sizes)
-    if not include_ali:
+    if include_ali:
+        alis = tuple(torch.randint(10, (x[0],)).long() for x in feat_sizes)
+    else:
         alis = repeat(None)
     seq = zip(feats, alis)
     batch_feats, batch_ali = data.context_window_seq_to_batch(seq)
-    assert (
-        tuple(batch_feats.shape) ==
-        (num_frames,) + feat_sizes[0][int(includes_frames):]
-    )
     assert torch.allclose(torch.cat(feats), batch_feats)
     if include_ali:
         assert torch.all(torch.cat(alis) == batch_ali)
     else:
         assert batch_ali is None
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize('include_ali', [True, False])
+@pytest.mark.parametrize('include_ref', [True, False])
+def test_spect_seq_to_batch(include_ali, include_ref):
+    torch.manual_seed(1)
+    feat_sizes = tuple(
+        torch.randint(1, 30, (1,)).long().item()
+        for _ in range(torch.randint(3, 10, (1,)).long().item()),
+    )
+    feats = tuple(torch.randn(x, 5) for x in feat_sizes)
+    if include_ali:
+        alis = tuple(torch.randint(100, (x,)).long() for x in feat_sizes)
+    else:
+        alis = repeat(None)
+    if include_ref:
+        ref_sizes = tuple(
+            torch.randint(1, 30, (1,)).long().item()
+            for _ in range(len(feat_sizes))
+        )
+        refs = tuple(torch.randint(100, (x, 3)).long() for x in ref_sizes)
+    else:
+        ref_sizes = repeat(None)
+        refs = repeat(None)
+    batch_feats, batch_ali, batch_ref, batch_feat_sizes, batch_ref_sizes = (
+        data.spect_seq_to_batch(zip(feats, alis, refs)))
+    feat_sizes, feats, alis, refs, ref_sizes = zip(*sorted(
+        zip(feat_sizes, feats, alis, refs, ref_sizes), key=lambda x: -x[0]))
+    assert feat_sizes == batch_feat_sizes
+    assert all(
+        torch.allclose(a[:b.shape[0]], b) and
+        torch.allclose(a[b.shape[0]:], torch.tensor([0.]))
+        for (a, b) in zip(batch_feats, feats)
+    )
+    if include_ali:
+        assert all(
+            torch.all(a[:b.shape[0]] == b) and
+            torch.all(a[b.shape[0]:] == torch.tensor([-1]))
+            for (a, b) in zip(batch_ali, alis)
+        )
+    else:
+        assert batch_ali is None
+    if include_ref:
+        assert ref_sizes == batch_ref_sizes
+        assert all(
+            torch.all(a[:b.shape[0]] == b) and
+            torch.all(a[b.shape[0]:] == torch.tensor([-1]))
+            for (a, b) in zip(batch_ref, refs)
+        )
+    else:
+        assert batch_ref is None
+        assert batch_ref_sizes is None
 
 
 @pytest.mark.cpu

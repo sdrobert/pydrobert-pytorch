@@ -33,49 +33,6 @@ __all__ = [
 ]
 
 
-def extract_window(signal, frame_idx, left, right, reverse=False):
-    '''Slice the signal to extract a context window
-
-    Parameters
-    ----------
-    signal : torch.Tensor
-        Of shape ``(T, F)``, where ``T`` is the time/frame axis, and ``F``
-        is the frequency axis
-    frame_idx : int
-        The "center frame" ``0 <= frame_idx < T``
-    left : int
-        The number of frames in the window to the left (before) the center
-        frame. Any frames below zero are edge-padded
-    right : int
-        The number of frames in the window to the right (after) the center
-        frame. Any frames above ``T`` are edge-padded
-    reverse : bool, optional
-        If ``True``, flip the window along the time/frame axis
-
-    Returns
-    -------
-    window : torch.Tensor
-        Of shape ``(1 + left + right, F)``
-    '''
-    T, F = signal.shape
-    if frame_idx - left < 0 or frame_idx + right + 1 > T:
-        win_size = 1 + left + right
-        window = signal.new(win_size, F)
-        left_pad = max(left - frame_idx, 0)
-        right_pad = max(frame_idx + right + 1 - T, 0)
-        window[left_pad:win_size - right_pad] = signal[
-            max(0, frame_idx - left):frame_idx + right + 1]
-        if left_pad:
-            window[:left_pad] = signal[0]
-        if right_pad:
-            window[-right_pad:] = signal[-1]
-    else:
-        window = signal[frame_idx - left:frame_idx + right + 1]
-    if reverse:
-        window = torch.flip(window, [0])
-    return window
-
-
 class SpectDataSet(torch.utils.data.Dataset):
     '''Accesses spectrographic filter data stored in a data directory
 
@@ -434,6 +391,49 @@ def validate_spect_data_set(data_set):
                             idx2))
 
 
+def extract_window(signal, frame_idx, left, right, reverse=False):
+    '''Slice the signal to extract a context window
+
+    Parameters
+    ----------
+    signal : torch.Tensor
+        Of shape ``(T, F)``, where ``T`` is the time/frame axis, and ``F``
+        is the frequency axis
+    frame_idx : int
+        The "center frame" ``0 <= frame_idx < T``
+    left : int
+        The number of frames in the window to the left (before) the center
+        frame. Any frames below zero are edge-padded
+    right : int
+        The number of frames in the window to the right (after) the center
+        frame. Any frames above ``T`` are edge-padded
+    reverse : bool, optional
+        If ``True``, flip the window along the time/frame axis
+
+    Returns
+    -------
+    window : torch.Tensor
+        Of shape ``(1 + left + right, F)``
+    '''
+    T, F = signal.shape
+    if frame_idx - left < 0 or frame_idx + right + 1 > T:
+        win_size = 1 + left + right
+        window = signal.new(win_size, F)
+        left_pad = max(left - frame_idx, 0)
+        right_pad = max(frame_idx + right + 1 - T, 0)
+        window[left_pad:win_size - right_pad] = signal[
+            max(0, frame_idx - left):frame_idx + right + 1]
+        if left_pad:
+            window[:left_pad] = signal[0]
+        if right_pad:
+            window[-right_pad:] = signal[-1]
+    else:
+        window = signal[frame_idx - left:frame_idx + right + 1]
+    if reverse:
+        window = torch.flip(window, [0])
+    return window
+
+
 class ContextWindowDataSet(SpectDataSet):
     '''SpectDataSet, extracting fixed-width windows over the utterance
 
@@ -565,44 +565,6 @@ class EpochRandomSampler(torch.utils.data.Sampler):
         return ret
 
 
-def context_window_seq_to_batch(seq):
-    r'''Convert a sequence of context window elements to a batch
-
-    Assume `seq` is a fixed length sequence of pairs of ``feats, ali``,
-    where ``feats`` is of size ``(T, C, F)``, where ``T`` is some number of
-    windows (which can vary across elements in the sequence), ``C`` is the
-    window size, and ``F`` is some number filters, and ``ali`` is of
-    size ``(T,)``, and ``ref`` is of size ``(R, 3)``. This method batches
-    all the elements of the sequence into a pair of ``batch_feats,
-    batch_ali``, where `batch_feats` and `batch_ali` will have shapes
-    ``(N, C, F)`` and ``(N,)`` resp., where :math:`N = \sum T` is the total
-    number of context windows over the utterances.
-
-    If ``ali`` is ``None`` in any element, `batch_ali` will also be ``None``
-
-    Parameters
-    ----------
-    seq : sequence
-
-    Returns
-    -------
-    batch_feats, batch_ali : tuple
-    '''
-    batch_feats = []
-    batch_ali = []
-    for feats, ali in seq:
-        batch_feats.append(feats)
-        if ali is None:
-            # assume every remaining ali will be none
-            batch_ali = None
-        else:
-            batch_ali.append(ali)
-    batch_feats = torch.cat(batch_feats)
-    if batch_ali is not None:
-        batch_ali = torch.cat(batch_ali)
-    return batch_feats, batch_ali
-
-
 class DataSetParams(param.Parameterized):
     '''General parameters for a single partition of data'''
     batch_size = param.Integer(
@@ -631,6 +593,112 @@ class SpectDataParams(param.Parameterized):
     pass
 
 
+class SpectDataSetParams(SpectDataParams, DataSetParams):
+    '''Data set parameters for a specific partition of spectral data'''
+    pass
+
+
+def spect_seq_to_batch(seq):
+    r'''Convert a sequence of spectral data to a batch
+
+    Assume `seq` is a finite length sequence of tuples ``feats, ali, ref``,
+    where ``feats`` is of size ``(T, F)``, where ``T`` is some number of frames
+    (which can vary across elements in the sequence), ``F`` is some number of
+    filters, ``ali`` is of size ``(T,)``, and ``ref`` is of size ``(R, 3)``,
+    where ``R`` is some number of reference tokens (which can vary across
+    elements in the sequence). This method batches all the elements of the
+    sequence into a tuple of ``batch_feats, batch_ali, batch_ref, feat_sizes,
+    ref_sizes``. `batch_feats` and `batch_ali` will have dimensions ``(N, T*,
+    F)``, and ``(N, T*)``, resp., where ``N`` is the batch size, and ``T*`` is
+    the maximum number of frames in `seq`. Similarly, `batch_ref` will have
+    dimensions ``(N, R*, 3)``. `feat_sizes` and `ref_sizes` are tuples of
+    ints containing the original ``T`` and ``R`` values. The batch will be
+    sorted by decreasing numbers of frames. `batch_feats` is zero-padded while
+    `batch_ali` and `batch_ref` are padded with -1
+
+    If ``ali`` or ``ref`` is ``None`` in any element, `batch_ali` or
+    `batch_ref` and `ref_sizes` will also be ``None``
+
+    Parameters
+    ----------
+    seq : sequence
+
+    Returns
+    -------
+    batch_feats, batch_ali, batch_ref, feat_sizes, ref_sizes
+    '''
+    seq = sorted(seq, key=lambda x: -x[0].shape[0])
+    T_star, F = seq[0][0].shape
+    batch_feats = torch.zeros(len(seq), T_star, F)
+    feat_sizes = []
+    has_ali = all(x[1] is not None for x in seq)
+    R_star = max(float('inf') if x[2] is None else x[2].shape[0] for x in seq)
+    has_ref = R_star < float('inf')
+    if has_ali:
+        batch_ali = torch.full((len(seq), T_star), -1, dtype=torch.long)
+    else:
+        batch_ali = None
+    if has_ref:
+        batch_ref = torch.full((len(seq), R_star, 3), -1, dtype=torch.long)
+        ref_sizes = []
+    else:
+        batch_ref = None
+        ref_sizes = None
+    for n, (feat, ali, ref) in enumerate(seq):
+        feat_size = feat.shape[0]
+        batch_feats[n, :feat_size] = feat
+        feat_sizes.append(feat_size)
+        if has_ali:
+            batch_ali[n, :feat_size] = ali
+        if has_ref:
+            ref_size = ref.shape[0]
+            ref_sizes.append(ref_size)
+            batch_ref[n, :ref_size] = ref
+
+    return (
+        batch_feats, batch_ali, batch_ref,
+        feat_sizes if feat_sizes is None else tuple(feat_sizes),
+        ref_sizes if ref_sizes is None else tuple(ref_sizes),
+    )
+
+
+def context_window_seq_to_batch(seq):
+    r'''Convert a sequence of context window elements to a batch
+
+    Assume `seq` is a finite length sequence of pairs of ``feats, ali``, where
+    ``feats`` is of size ``(T, C, F)``, where ``T`` is some number of windows
+    (which can vary across elements in the sequence), ``C`` is the window size,
+    and ``F`` is some number filters, and ``ali`` is of size ``(T,)``. This
+    method batches all the elements of the sequence into a pair of
+    ``batch_feats, batch_ali``, where `batch_feats` and `batch_ali` will have
+    shapes ``(N, C, F)`` and ``(N,)`` resp., where :math:`N = \sum T` is the
+    total number of context windows over the utterances.
+
+    If ``ali`` is ``None`` in any element, `batch_ali` will also be ``None``
+
+    Parameters
+    ----------
+    seq : sequence
+
+    Returns
+    -------
+    batch_feats, batch_ali : tuple
+    '''
+    batch_feats = []
+    batch_ali = []
+    for feats, ali in seq:
+        batch_feats.append(feats)
+        if ali is None:
+            # assume every remaining ali will be none
+            batch_ali = None
+        else:
+            batch_ali.append(ali)
+    batch_feats = torch.cat(batch_feats)
+    if batch_ali is not None:
+        batch_ali = torch.cat(batch_ali)
+    return batch_feats, batch_ali
+
+
 class ContextWindowDataParams(SpectDataParams):
     # context windows are more model parameters than data parameters, but
     # we're going to extract them as part of the data loading process, which
@@ -650,11 +718,6 @@ class ContextWindowDataParams(SpectDataParams):
         doc='Whether to reverse each context window along the time/frame '
         'dimension'
     )
-
-
-class SpectDataSetParams(SpectDataParams, DataSetParams):
-    '''Data set parameters for a specific partition of spectral data'''
-    pass
 
 
 class ContextWindowDataSetParams(ContextWindowDataParams, SpectDataSetParams):
