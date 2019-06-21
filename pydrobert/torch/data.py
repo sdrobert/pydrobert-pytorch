@@ -1,4 +1,4 @@
-'''Classes and functions related to storing/retrieving data'''
+'''Classes and functions related to storing/retrieving speech data'''
 
 from __future__ import absolute_import
 from __future__ import division
@@ -117,11 +117,58 @@ class SpectDataSet(torch.utils.data.Dataset):
 
     Yields
     ------
-    feat, ali, ref : tuple
+    feat, ali, ref
     For the i-th yielded item, `feat` corresponds to the features at
     ``utt_ids[i]``, `ali` the alignments, and `ref` the reference sequence.
     If ``ali/`` or ``ref/`` did not exist on initialization, `ali` or `ref`
     will be ``None``
+
+    Examples
+    --------
+    Creating a spectral data directory with random data
+    >>> data_dir = 'data'
+    >>> os.makedirs(data_dir + '/feats', exist_ok=True)
+    >>> os.makedirs(data_dir + '/ali', exist_ok=True)
+    >>> os.makedirs(data_dir + '/ref', exist_ok=True)
+    >>> num_filts, min_frames, max_frames, min_ref, max_ref = 40, 10, 20, 3, 10
+    >>> num_ali_classes, num_ref_classes = 100, 2000
+    >>> for utt_idx in range(30):
+    >>>     num_frames = torch.randint(
+    ...         min_frames, max_frames + 1, (1,)).long().item()
+    >>>     num_tokens = torch.randint(
+    ...         min_ref, max_ref + 1, (1,)).long().item()
+    >>>     feats = torch.randn(num_frames, num_filts)
+    >>>     torch.save(feats, data_dir + '/feats/{:02d}.pt'.format(utt_idx))
+    >>>     ali = torch.randint(num_ali_classes, (num_frames,)).long()
+    >>>     torch.save(ali, data_dir + '/ali/{:02d}.pt'.format(utt_idx))
+    >>>     # usually these would be sorted by order in utterance. Negative
+    >>>     # values represent "unknown" for start end end frames
+    >>>     ref_tokens = torch.randint(num_tokens, (num_tokens,))
+    >>>     ref_starts = torch.randint(1, num_frames // 2, (num_tokens,))
+    >>>     ref_ends = 2 * ref_starts
+    >>>     ref = torch.stack([ref_tokens, ref_starts, ref_ends], -1).long()
+    >>>     torch.save(ref, data_dir + '/ref/{:02d}.pt'.format(utt_idx))
+
+    Accessing individual elements in a spectral data directory
+    >>> data = SpectDataSet('data')
+    >>> data[0]  # random access feats, ali
+    >>> for feats, ali, ref in data:  # iterator
+    >>>     pass
+
+    Writing evaluation data back to the directory
+    >>> data = SpectDataSet('data')
+    >>> num_ali_classes, num_ref_classes, min_ref, max_ref = 100, 2000, 3, 10
+    >>> num_frames = data[3][0].shape[0]
+    >>> # pdfs (or more accurately, pms) are likelihoods of classes over data
+    >>> # per frame, used in hybrid models. Usually logits
+    >>> pdf = torch.randn(num_frames, num_ali_classes)
+    >>> data.write_pdf(3, pdf)  # will share name with data.utt_ids[3]
+    >>> # both refs and hyps are sequences of tokens, such as words or phones,
+    >>> # with optional frame alignments
+    >>> num_tokens = torch.randint(min_ref, max_ref, (1,)).long().item()
+    >>> hyp = torch.full((num_tokens, 3), -1).long()
+    >>> hyp[..., 0] = torch.randint(num_ref_classes, (num_tokens,))
+    >>> data.write_hyp('special', hyp)  # custom name
     '''
 
     def __init__(
@@ -479,7 +526,7 @@ class ContextWindowDataSet(SpectDataSet):
 
     Yields
     ------
-    windowed, ali : tuple
+    windowed, ali
     '''
 
     def __init__(
@@ -707,6 +754,51 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         `ref_sizes` are ``None``. The first axis of each of `feats`, `alis`,
         `refs`, `feat_sizes`, and `ref_sizes` is ordered by utterances of
         descending frame lengths.
+
+    Examples
+    --------
+    Training on alignments for one epoch
+    >>> # see 'SpectDataSet' to initialize data set
+    >>> num_filts, num_ali_classes = 40, 100
+    >>> model = torch.nn.LSTM(num_filts, num_ali_classes)
+    >>> optim = torch.optim.Adam(model.parameters())
+    >>> loss = torch.nn.CrossEntropyLoss()
+    >>> params = SpectDataSetParams()
+    >>> loader = SpectTrainingDataLoader('data', params)
+    >>> for feats, ali, _, feat_sizes, _ in loader:
+    >>>     optim.zero_grad()
+    >>>     feat_sizes = torch.tensor(feat_sizes)
+    >>>     packed_feats = torch.nn.utils.rnn.pack_padded_sequence(
+    ...         feats, feat_sizes, batch_first=True)
+    >>>     packed_ali = torch.nn.utils.rnn.pack_padded_sequence(
+    ...         ali, feat_sizes, batch_first=True)
+    >>>     packed_logits, _ = model(packed_feats)
+    >>>     # no need to unpack: loss is the same as if we ignored padded vals
+    >>>     loss(packed_logits.data, packed_ali.data).backward()
+    >>>     optim.step()
+
+    Training on reference tokens with CTC for one epoch
+    >>> num_filts, num_ref_classes, kern = 40, 2000, 3
+    >>> # we use padding to ensure gradients are unaffected by batch padding
+    >>> model = torch.nn.Sequential(
+    ...     torch.nn.Conv2d(1, 1, kern, padding=(kern - 1) // 2),
+    ...     torch.nn.ReLU(),
+    ...     torch.nn.Linear(num_filts, num_ref_classes),
+    ...     torch.nn.LogSoftmax(-1))
+    >>> optim = torch.optim.Adam(model.parameters(), 1e-4)
+    >>> loss = torch.nn.CTCLoss()
+    >>> params = SpectDataSetParams()
+    >>> loader = SpectTrainingDataLoader('data', params)
+    >>> for feats, _, ref, feat_sizes, ref_sizes in loader:
+    >>>     optim.zero_grad()
+    >>>     feat_sizes = torch.tensor(feat_sizes)
+    >>>     ref_sizes = torch.tensor(ref_sizes)
+    >>>     feats = feats.unsqueeze(1)  # channels dim
+    >>>     log_prob = model(feats).squeeze(1)
+    >>>     loss(
+    ...         log_prob.transpose(0, 1),
+    ...         ref[..., 0], feat_sizes, ref_sizes).backward()
+    >>>     optim.step()
     '''
 
     def __init__(
@@ -792,6 +884,49 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         the names of utterances in the batch. The first axis of each of
         `feats`, `alis`, `refs`, `feat_sizes`, `ref_sizes`, and `utt_ids`
         is ordered by utterances of descending frame lengths.
+
+    Examples
+    --------
+    Computing class likelihoods and writing them to disk
+    >>> # see 'SpectDataSet' to initialize data set
+    >>> num_filts, num_ali_classes = 40, 100
+    >>> model = torch.nn.LSTM(num_filts, num_ali_classes)
+    >>> params = SpectDataSetParams()
+    >>> loader = SpectEvaluationDataLoader('data', params)
+    >>> for feats, _, _, feat_sizes, _, utt_ids in loader:
+    >>>     feat_sizes = torch.tensor(feat_sizes)
+    >>>     packed_feats = torch.nn.utils.rnn.pack_padded_sequence(
+    ...         feats, feat_sizes, batch_first=True)
+    >>>     packed_logits, _ = model(packed_feats)
+    >>>     logits, _ = torch.nn.utils.rnn.pad_packed_sequence(
+    >>>         packed_logits, batch_first=True)
+    >>>     log_probs = torch.nn.functional.log_softmax(logits, -1)
+    >>>     for pdf, feat_size, utt_id in zip(log_probs, feat_sizes, utt_ids):
+    >>>         loader.data_source.write_pdf(utt_id, pdf)
+
+    Transcribing utterances with CTC
+    >>> num_filts, num_ref_classes, kern = 40, 2000, 3
+    >>> # we use padding to ensure gradients are unaffected by batch padding
+    >>> model = torch.nn.Sequential(
+    ...     torch.nn.Conv2d(1, 1, kern, padding=(kern - 1) // 2),
+    ...     torch.nn.ReLU(),
+    ...     torch.nn.Linear(num_filts, num_ref_classes),
+    ...     torch.nn.LogSoftmax(-1)).eval()
+    >>> params = SpectDataSetParams()
+    >>> loader = SpectEvaluationDataLoader('data', params)
+    >>> for feats, _, _, feat_sizes, _, utt_ids in loader:
+    >>>     feat_sizes = torch.tensor(feat_sizes)
+    >>>     ref_sizes = torch.tensor(ref_sizes)
+    >>>     feats = feats.unsqueeze(1)  # channels dim
+    >>>     log_prob = model(feats).squeeze(1)
+    >>>     paths = log_prob.argmax(-1)  # best path decoding
+    >>>     for path, feat_size, utt_id in zip(paths, feat_sizes, utt_ids):
+    >>>         path = path[:feat_size]
+    >>>         pathpend = torch.cat([torch.tensor([-1]), path])
+    >>>         path = path.masked_select(
+    ...             (path != 0) & (path - pathpend[:-1] != 0))
+    >>>         hyp = torch.stack([path] + [torch.full_like(path, -1)] * 2)
+    >>>         loader.data_source.write_hyp(utt_id, hyp)
     '''
     class SEvalDataSet(SpectDataSet):
         '''Append utt_id to each sample's tuple'''
@@ -934,11 +1069,35 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     Yields
     ------
     feats, alis
-        `feats` is a ``FloatTensor`` of size ``(N, C, F)``, where ``N`` is the
-        number of context windows, ``C`` is the context window size, and ``F``
-        is the number of filters per frame. `ali` is a ``LongTensor`` of size
-        ``(N,)``, where ``N`` corresponds to the sum of the number of context
-        windows from ``params.batch_size`` utterances.
+        `feats` is a ``FloatTensor`` of size ``(N, C, F)``, where ``N`` is
+        the number of context windows, ``C`` is the context window size, and
+        ``F`` is the number of filters per frame. `ali` is a ``LongTensor``
+        of size ``(N,)`` (or ``None`` if the ``ali`` dir was not specified).
+        `feat_sizes` is a tuple of size ``params.batch_size`` specifying the
+        number of context windows per utterance in the batch.
+        ``feats[sum(feat_sizes[:i]):sum(feat_sizes[:i+1])]`` are the context
+        windows for the ``i``-th utterance in the batch
+        (``sum(feat_sizes) == N``)
+
+    Examples
+    --------
+    Training on alignments for one epoch
+    >>> # see 'SpectDataSet' to initialize data set
+    >>> num_filts, num_ali_classes, left, right = 40, 100, 4, 4
+    >>> window_width = left + right + 1
+    >>> model = torch.torch.nn.Linear(
+    ...     num_filts * window_width, num_ali_classes)
+    >>> optim = torch.optim.Adam(model.parameters())
+    >>> loss = torch.nn.CrossEntropyLoss()
+    >>> params = ContextWindowDataSetParams(
+    ...     context_left=left, context_right=right)
+    >>> loader = ContextWindowTrainingDataLoader('data', params)
+    >>> for feats, ali in loader:
+    >>>     optim.zero_grad()
+    >>>     feats = feats.view(-1, num_filts * window_width)  # flatten win
+    >>>     logits = model(feats)
+    >>>     loss(logits, ali).backward()
+    >>>     optim.step()
     '''
 
     def __init__(
@@ -1019,6 +1178,24 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
         windows for the ``i``-th utterance in the batch
         (``sum(feat_sizes) == N``). utt_ids` is a tuple of size
         ``params.batch_size`` naming the utterances in the batch
+
+    Examples
+    --------
+    Computing class likelihoods and writing them to disk
+    >>> # see 'SpectDataSet' to initialize data set
+    >>> num_filts, num_ali_classes, left, right = 40, 100, 4, 4
+    >>> window_width = left + right + 1
+    >>> model = torch.torch.nn.Linear(
+    ...     num_filts * window_width, num_ali_classes).eval()
+    >>> params = ContextWindowDataSetParams(
+    ...     context_left=left, context_right=right)
+    >>> loader = ContextWindowEvaluationDataLoader('data', params)
+    >>> for feats, ali, feat_sizes, utt_ids in loader:
+    >>>     feats = feats.view(-1, num_filts * window_width)  # flatten win
+    >>>     logits = model(feats)
+    >>>     log_probs = torch.nn.functional.log_softmax(logits, -1)
+    >>>     for pdf, feat_size, utt_id in zip(log_probs, feat_sizes, utt_ids):
+    >>>         loader.data_source.write_pdf(utt_id, pdf)
     '''
     class CWEvalDataSet(ContextWindowDataSet):
         '''Append feat_size and utt_id to each sample's tuple'''
