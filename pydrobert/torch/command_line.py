@@ -56,6 +56,18 @@ def _get_torch_spect_data_dir_info_parse_args(args):
         '--file-suffix', default='.pt',
         help='The file suffix indicating a torch data file'
     )
+    parser.add_argument(
+        '--feat-subdir', default='feat',
+        help='Subdirectory where features are stored'
+    )
+    parser.add_argument(
+        '--ali-subdir', default='ali',
+        help='Subdirectory where alignments are stored'
+    )
+    parser.add_argument(
+        '--ref-subdir', default='ref',
+        help='Subdirectory where reference token sequences are stored'
+    )
     return parser.parse_args(args)
 
 
@@ -65,7 +77,7 @@ def get_torch_spect_data_dir_info(args=None):
     A torch ``SpectDataSet`` data dir is of the form::
 
         dir/
-            feats/
+            feat/
                 <file_prefix><utt1><file_suffix>
                 <file_prefix><utt2><file_suffix>
                 ...
@@ -80,7 +92,7 @@ def get_torch_spect_data_dir_info(args=None):
                 ...
             ]
 
-    Where ``feats`` contains ``FloatTensor``s of shape ``(N, F)``, where
+    Where ``feat`` contains ``FloatTensor``s of shape ``(N, F)``, where
     ``N`` is the number of frames (variable) and ``F`` is the number of
     filters (fixed), ``ali``, if there, contains ``LongTensor``s of shape
     ``(N,)`` indicating the appropriate class labels (likely pdf-ids for
@@ -115,6 +127,9 @@ def get_torch_spect_data_dir_info(args=None):
         options.dir,
         file_prefix=options.file_prefix,
         file_suffix=options.file_suffix,
+        feat_subdir=options.feat_subdir,
+        ali_subdir=options.ali_subdir,
+        ref_subdir=options.ref_subdir,
     )
     if options.strict:
         data.validate_spect_data_set(data_set)
