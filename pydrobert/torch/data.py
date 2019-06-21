@@ -17,6 +17,7 @@ __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2018 Sean Robertson"
 __all__ = [
+    'ALI_PAD_VALUE',
     'context_window_seq_to_batch',
     'ContextWindowDataParams',
     'ContextWindowDataSet',
@@ -26,6 +27,7 @@ __all__ = [
     'DataSetParams',
     'EpochRandomSampler',
     'extract_window',
+    'REF_PAD_VALUE',
     'spect_seq_to_batch',
     'SpectDataParams',
     'SpectDataSet',
@@ -34,6 +36,20 @@ __all__ = [
     'SpectTrainingDataLoader',
     'validate_spect_data_set',
 ]
+
+'''The value to right-pad alignments with when batching
+
+The default value (-100) was chosen to coincide with the PyTorch 1.0 default
+for ``ignore_index`` in the likelihood losses
+'''
+ALI_PAD_VALUE = -100
+
+'''The value to right-pad token sequences with when batching
+
+The default value (-100) was chosen to coincide with the PyTorch 1.0 default
+for ``ignore_index`` in the likelihood losses
+'''
+REF_PAD_VALUE = -100
 
 
 class SpectDataSet(torch.utils.data.Dataset):
@@ -166,7 +182,7 @@ class SpectDataSet(torch.utils.data.Dataset):
     >>> # both refs and hyps are sequences of tokens, such as words or phones,
     >>> # with optional frame alignments
     >>> num_tokens = torch.randint(min_ref, max_ref, (1,)).long().item()
-    >>> hyp = torch.full((num_tokens, 3), -1).long()
+    >>> hyp = torch.full((num_tokens, 3), REF_PAD_VALUE).long()
     >>> hyp[..., 0] = torch.randint(num_ref_classes, (num_tokens,))
     >>> data.write_hyp('special', hyp)  # custom name
     '''
@@ -669,7 +685,8 @@ def spect_seq_to_batch(seq):
     dimensions ``(N, R*, 3)``. `feat_sizes` and `ref_sizes` are tuples of
     ints containing the original ``T`` and ``R`` values. The batch will be
     sorted by decreasing numbers of frames. `batch_feats` is zero-padded while
-    `batch_ali` and `batch_ref` are padded with -1
+    `batch_ali` and `batch_ref` are padded with module constants
+    ``ALI_PAD_VALUE`` and ``REF_PAD_VALUE``, respectively.
 
     If ``ali`` or ``ref`` is ``None`` in any element, `batch_ali` or
     `batch_ref` and `ref_sizes` will also be ``None``
@@ -690,11 +707,13 @@ def spect_seq_to_batch(seq):
     R_star = max(float('inf') if x[2] is None else x[2].shape[0] for x in seq)
     has_ref = R_star < float('inf')
     if has_ali:
-        batch_ali = torch.full((len(seq), T_star), -1, dtype=torch.long)
+        batch_ali = torch.full(
+            (len(seq), T_star), ALI_PAD_VALUE, dtype=torch.long)
     else:
         batch_ali = None
     if has_ref:
-        batch_ref = torch.full((len(seq), R_star, 3), -1, dtype=torch.long)
+        batch_ref = torch.full(
+            (len(seq), R_star, 3), REF_PAD_VALUE, dtype=torch.long)
         ref_sizes = []
     else:
         batch_ref = None
@@ -753,7 +772,9 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         the batch. If the ``refs/`` directory does not exist, `refs` and
         `ref_sizes` are ``None``. The first axis of each of `feats`, `alis`,
         `refs`, `feat_sizes`, and `ref_sizes` is ordered by utterances of
-        descending frame lengths.
+        descending frame lengths. Shorter utterances in `feats` are zero-padded
+        to the right, `ali` is padded with the module constant
+        ``ALI_PAD_VALUE``, and `ref` is padded with ``REF_PAD_VALUE``
 
     Examples
     --------
@@ -883,7 +904,10 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         `ref_sizes` are ``None``. ``utt_ids`` is an ``N``-tuple specifying
         the names of utterances in the batch. The first axis of each of
         `feats`, `alis`, `refs`, `feat_sizes`, `ref_sizes`, and `utt_ids`
-        is ordered by utterances of descending frame lengths.
+        is ordered by utterances of descending frame lengths. Shorter
+        utterances in `feats` are zero-padded to the right, `ali` is padded
+        with the module constant ``ALI_PAD_VALUE``, and `ref` is padded with
+        ``REF_PAD_VALUE``
 
     Examples
     --------
@@ -925,7 +949,8 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     >>>         pathpend = torch.cat([torch.tensor([-1]), path])
     >>>         path = path.masked_select(
     ...             (path != 0) & (path - pathpend[:-1] != 0))
-    >>>         hyp = torch.stack([path] + [torch.full_like(path, -1)] * 2)
+    >>>         hyp = torch.stack(
+    ...             [path] + [torch.full_like(path, REF_PAD_VALUE)] * 2)
     >>>         loader.data_source.write_hyp(utt_id, hyp)
     '''
     class SEvalDataSet(SpectDataSet):

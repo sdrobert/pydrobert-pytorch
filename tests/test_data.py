@@ -309,7 +309,7 @@ def test_spect_seq_to_batch(include_ali, include_ref):
     if include_ali:
         assert all(
             torch.all(a[:b.shape[0]] == b) and
-            torch.all(a[b.shape[0]:] == torch.tensor([-1]))
+            torch.all(a[b.shape[0]:] == torch.tensor([data.ALI_PAD_VALUE]))
             for (a, b) in zip(batch_ali, alis)
         )
     else:
@@ -318,7 +318,7 @@ def test_spect_seq_to_batch(include_ali, include_ref):
         assert ref_sizes == batch_ref_sizes
         assert all(
             torch.all(a[:b.shape[0]] == b) and
-            torch.all(a[b.shape[0]:] == torch.tensor([-1]))
+            torch.all(a[b.shape[0]:] == torch.tensor([data.REF_PAD_VALUE]))
             for (a, b) in zip(batch_ref, refs)
         )
     else:
@@ -371,10 +371,10 @@ def test_spect_training_data_loader(temp_dir, populate_torch_dir):
                 ep_feats[i], (0, 0, 0, max_T - ep_ali[i].shape[0]))
             ep_ali[i] = torch.nn.functional.pad(
                 ep_ali[i], (0, max_T - ep_ali[i].shape[0]),
-                value=-1)
+                value=data.ALI_PAD_VALUE)
             ep_ref[i] = torch.nn.functional.pad(
                 ep_ref[i], (0, 0, 0, max_R - ep_ref[i].shape[0]),
-                value=-1)
+                value=data.REF_PAD_VALUE)
         if sort:
             ep_feats, ep_ali, ep_ref, ep_feat_sizes, ep_ref_sizes = zip(
                 *sorted(
@@ -457,10 +457,12 @@ def test_spect_evaluation_data_loader(temp_dir, populate_torch_dir):
                 assert torch.allclose(a[b.shape[0]:], torch.tensor([0.]))
             for a, b in zip(b_ali, s_ali):
                 assert torch.all(a[:b.shape[0]] == b)
-                assert torch.all(a[b.shape[0]:] == torch.tensor([-1]))
+                assert torch.all(a[b.shape[0]:] == torch.tensor(
+                    [data.ALI_PAD_VALUE]))
             for a, b in zip(b_ref, s_ref):
                 assert torch.all(a[:b.shape[0]] == b)
-                assert torch.all(a[b.shape[0]:] == torch.tensor([-1]))
+                assert torch.all(a[b.shape[0]:] == torch.tensor(
+                    [data.REF_PAD_VALUE]))
             cur_idx += 5
 
     _compare_data_loader()
