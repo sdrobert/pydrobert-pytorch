@@ -41,11 +41,11 @@ def populate_torch_dir():
             include_ali=True, include_ref=True, file_prefix='',
             file_suffix='.pt', seed=1):
         torch.manual_seed(seed)
-        feats_dir = os.path.join(dr, 'feats')
+        feat_dir = os.path.join(dr, 'feat')
         ali_dir = os.path.join(dr, 'ali')
         ref_dir = os.path.join(dr, 'ref')
-        if not os.path.isdir(feats_dir):
-            os.makedirs(feats_dir)
+        if not os.path.isdir(feat_dir):
+            os.makedirs(feat_dir)
         if include_ali and not os.path.isdir(ali_dir):
             os.makedirs(ali_dir)
         if include_ref and not os.path.isdir(ref_dir):
@@ -60,7 +60,7 @@ def populate_torch_dir():
             feat_size = feat_size.item()
             feat = torch.rand(feat_size, num_filts)
             torch.save(feat, os.path.join(
-                feats_dir, file_prefix + utt_id + file_suffix))
+                feat_dir, file_prefix + utt_id + file_suffix))
             feats.append(feat)
             feat_sizes.append(feat_size)
             utt_ids.append(utt_id)

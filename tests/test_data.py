@@ -101,12 +101,12 @@ def test_valid_spect_data_set(
 @pytest.mark.cpu
 def test_spect_data_set_warnings(temp_dir):
     torch.manual_seed(1)
-    feats_dir = os.path.join(temp_dir, 'feats')
+    feat_dir = os.path.join(temp_dir, 'feat')
     ali_dir = os.path.join(temp_dir, 'ali')
-    os.makedirs(feats_dir)
+    os.makedirs(feat_dir)
     os.makedirs(ali_dir)
-    torch.save(torch.rand(3, 3), os.path.join(feats_dir, 'a.pt'))
-    torch.save(torch.rand(4, 3), os.path.join(feats_dir, 'b.pt'))
+    torch.save(torch.rand(3, 3), os.path.join(feat_dir, 'a.pt'))
+    torch.save(torch.rand(4, 3), os.path.join(feat_dir, 'b.pt'))
     torch.save(torch.randint(10, (4,)).long(), os.path.join(ali_dir, 'b.pt'))
     torch.save(torch.randint(10, (5,)).long(), os.path.join(ali_dir, 'c.pt'))
     data_set = data.SpectDataSet(temp_dir, warn_on_missing=False)
@@ -118,14 +118,14 @@ def test_spect_data_set_warnings(temp_dir):
     assert any(
         str(x.message) == "Missing ali for uttid: 'a'" for x in warnings)
     assert any(
-        str(x.message) == "Missing feats for uttid: 'c'" for x in warnings)
+        str(x.message) == "Missing feat for uttid: 'c'" for x in warnings)
 
 
 def test_spect_data_write_pdf(temp_dir, device):
     torch.manual_seed(1)
-    feats_dir = os.path.join(temp_dir, 'feats')
-    os.makedirs(feats_dir)
-    torch.save(torch.rand(3, 3), os.path.join(feats_dir, 'a.pt'))
+    feat_dir = os.path.join(temp_dir, 'feat')
+    os.makedirs(feat_dir)
+    torch.save(torch.rand(3, 3), os.path.join(feat_dir, 'a.pt'))
     data_set = data.SpectDataSet(temp_dir)
     z = torch.randint(10, (4, 5)).long()
     if device == 'cuda':
@@ -143,9 +143,9 @@ def test_spect_data_write_pdf(temp_dir, device):
 
 def test_spect_data_write_hyp(temp_dir, device):
     torch.manual_seed(1)
-    feats_dir = os.path.join(temp_dir, 'feats')
-    os.makedirs(feats_dir)
-    torch.save(torch.rand(3, 3), os.path.join(feats_dir, 'a.pt'))
+    feat_dir = os.path.join(temp_dir, 'feat')
+    os.makedirs(feat_dir)
+    torch.save(torch.rand(3, 3), os.path.join(feat_dir, 'a.pt'))
     data_set = data.SpectDataSet(temp_dir)
     z = torch.randint(10, (4, 3))
     if device == 'cuda':
@@ -164,13 +164,13 @@ def test_spect_data_write_hyp(temp_dir, device):
 @pytest.mark.cpu
 def test_spect_data_set_validity(temp_dir):
     torch.manual_seed(1)
-    feats_dir = os.path.join(temp_dir, 'feats')
+    feat_dir = os.path.join(temp_dir, 'feat')
     ali_dir = os.path.join(temp_dir, 'ali')
-    feats_a_pt = os.path.join(feats_dir, 'a.pt')
-    feats_b_pt = os.path.join(feats_dir, 'b.pt')
+    feats_a_pt = os.path.join(feat_dir, 'a.pt')
+    feats_b_pt = os.path.join(feat_dir, 'b.pt')
     ali_a_pt = os.path.join(ali_dir, 'a.pt')
     ali_b_pt = os.path.join(ali_dir, 'b.pt')
-    os.makedirs(feats_dir)
+    os.makedirs(feat_dir)
     os.makedirs(ali_dir)
     torch.save(torch.rand(10, 4), feats_a_pt)
     torch.save(torch.rand(4, 4), feats_b_pt)
@@ -206,10 +206,10 @@ def test_spect_data_set_validity(temp_dir):
 @pytest.mark.parametrize('reverse', [True, False])
 def test_context_window_data_set(temp_dir, reverse):
     torch.manual_seed(1)
-    feats_dir = os.path.join(temp_dir, 'feats')
-    os.makedirs(feats_dir)
+    feat_dir = os.path.join(temp_dir, 'feat')
+    os.makedirs(feat_dir)
     a = torch.rand(2, 10)
-    torch.save(a, os.path.join(feats_dir, 'a.pt'))
+    torch.save(a, os.path.join(feat_dir, 'a.pt'))
     data_set = data.ContextWindowDataSet(temp_dir, 1, 1, reverse=reverse)
     windowed, _ = data_set[0]
     assert tuple(windowed.shape) == (2, 3, 10)
@@ -414,9 +414,9 @@ def test_spect_training_data_loader(temp_dir, populate_torch_dir):
 @pytest.mark.cpu
 def test_spect_evaluation_data_loader(temp_dir, populate_torch_dir):
     torch.manual_seed(41)
-    feats_dir = os.path.join(temp_dir, 'feats')
+    feat_dir = os.path.join(temp_dir, 'feat')
     ali_dir = os.path.join(temp_dir, 'ali')
-    os.makedirs(feats_dir)
+    os.makedirs(feat_dir)
     os.makedirs(ali_dir)
     p = data.SpectDataSetParams(batch_size=5)
     feats, ali, ref, feat_sizes, ref_sizes, utt_ids = populate_torch_dir(
@@ -491,12 +491,12 @@ def test_window_training_data_loader(temp_dir, populate_torch_dir):
     assert total_windows_ep0 >= 5
     feats_ep1_a, alis_ep1_a = [], []
     total_windows_ep1 = 0
-    for feat, ali in data_loader:
+    for feats, alis in data_loader:
         windows = feat.shape[0]
         assert tuple(feat.shape) == (windows, 3, 2)
         assert tuple(ali.shape) == (windows,)
-        feats_ep1_a.append(feat)
-        alis_ep1_a.append(ali)
+        feats_ep1_a.append(feats)
+        alis_ep1_a.append(alis)
         total_windows_ep1 += windows
     assert total_windows_ep0 == total_windows_ep1
     data_loader = data.ContextWindowTrainingDataLoader(
@@ -505,38 +505,38 @@ def test_window_training_data_loader(temp_dir, populate_torch_dir):
         num_workers=4,
     )
     feats_ep1_b, alis_ep1_b = [], []
-    for feat, ali in data_loader:
-        feats_ep1_b.append(feat)
-        alis_ep1_b.append(ali)
+    for feats, alis in data_loader:
+        feats_ep1_b.append(feats)
+        alis_ep1_b.append(alis)
     assert all(
-        torch.allclose(feat_a, feat_b)
-        for (feat_a, feat_b) in zip(feats_ep1_a, feats_ep1_b)
+        torch.allclose(feats_a, feats_b)
+        for (feats_a, feats_b) in zip(feats_ep1_a, feats_ep1_b)
     )
     assert all(
-        torch.allclose(ali_a.float(), ali_b.float())
-        for (ali_a, ali_b) in zip(alis_ep1_a, alis_ep1_b)
+        torch.allclose(alis_a.float(), alis_b.float())
+        for (alis_a, alis_b) in zip(alis_ep1_a, alis_ep1_b)
     )
     data_loader.epoch = 1
     feats_ep1_c, alis_ep1_c = [], []
-    for feat, ali in data_loader:
-        feats_ep1_c.append(feat)
-        alis_ep1_c.append(ali)
+    for feats, alis in data_loader:
+        feats_ep1_c.append(feats)
+        alis_ep1_c.append(alis)
     assert all(
-        torch.allclose(feat_a, feat_c)
-        for (feat_a, feat_c) in zip(feats_ep1_a, feats_ep1_c)
+        torch.allclose(feats_a, feats_c)
+        for (feats_a, feats_c) in zip(feats_ep1_a, feats_ep1_c)
     )
     assert all(
-        torch.allclose(ali_a.float(), ali_c.float())
-        for (ali_a, ali_c) in zip(alis_ep1_a, alis_ep1_c)
+        torch.allclose(alis_a.float(), alis_c.float())
+        for (alis_a, alis_c) in zip(alis_ep1_a, alis_ep1_c)
     )
 
 
 @pytest.mark.cpu
 def test_window_evaluation_data_loader(temp_dir, populate_torch_dir):
     torch.manual_seed(1)
-    feats_dir = os.path.join(temp_dir, 'feats')
+    feat_dir = os.path.join(temp_dir, 'feat')
     ali_dir = os.path.join(temp_dir, 'ali')
-    os.makedirs(feats_dir)
+    os.makedirs(feat_dir)
     os.makedirs(ali_dir)
     p = data.ContextWindowDataSetParams(
         context_left=1,
