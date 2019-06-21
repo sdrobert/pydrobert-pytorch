@@ -459,6 +459,125 @@ def validate_spect_data_set(data_set):
                             idx2))
 
 
+def read_trn(trn, warn=True):
+    '''Read a NIST sclite transcript file into a list of transcripts
+
+    `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_
+    is a commonly used scoring tool for ASR.
+
+    This function converts a transcript input file ("trn" format) into a
+    list of `transcripts`, where each element is a tuple of
+    ``utt_id, transcript``. ``transcript`` is a list split by spaces.
+
+    Parameters
+    ----------
+    trn : file_ptr or str
+        The transcript input file. Will open if `trn` is a path
+    warn : bool, optional
+        The "trn" format uses curly braces and forward slashes to indicate
+        transcript alterations. This is largely for scoring purposes, such as
+        swapping between filled pauses, not for training. If `warn` is
+        ``True``, a warning will be issued via the ``warnings`` module every
+        time an alteration appears in the "trn" file. Alterations appear in
+        `transcripts` as elements of ``([[alt_1_word_1, alt_1_word_2, ...],
+        [alt_2_word_1, alt_2_word_2, ...], ...], -1, -1)`` so that
+        ``transcript_to_token`` will not attempt to process alterations as
+        token start and end times
+
+    Returns
+    -------
+    transcripts : list
+
+    Notes
+    -----
+    Any null words (``@``) in the "trn" file are encoded verbatim.
+    '''
+    # implementation note: there's a lot of weirdness here. I'm trying to
+    # match sclite's behaviour. A few things
+    # - the last parentheses are always the utterance. Everything else is
+    #   the word
+    # - An unmatched '}' is treated as a word
+    # - A '/' not within curly braces is a word
+    # - If the utterance ends without closing its alternate, the alternate is
+    #   discarded
+    # - Comments from other formats are not comments here...
+    # - ...but everything passed the last pair of parentheses is ignored...
+    # - ...and internal parentheses are treated as words
+    # - Spaces are treated as part of the utterance id
+    # - Seg faults on empty alternates
+    class AltTree(object):
+        def __init__(self, parent=None):
+            self.parent = parent
+            self.tokens = []
+            if parent is not None:
+                parent.tokens.append([self.tokens])
+
+        def new_branch(self):
+            assert self.parent
+            self.tokens = []
+            self.parent.tokens[-1].append(self.tokens)
+    if isinstance(trn, str):
+        with open(trn, 'r') as trn:
+            return read_trn(trn)
+    transcripts = []
+    for line in trn:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            last_open = line.rindex('(')
+            last_close = line.rindex(')')
+            if last_open > last_close:
+                raise ValueError()
+        except ValueError:
+            raise IOError('Line does not end in utterance id')
+        utt_id = line[last_open + 1:last_close]
+        line = line[:last_open].strip()
+        transcript = []
+        token = ''
+        alt_tree = AltTree()
+        while len(line):
+            c = line[0]
+            line = line[1:]
+            if c == '{':
+                if token:
+                    if alt_tree.parent is None:
+                        transcript.append(token)
+                    else:
+                        alt_tree.tokens.append(token)
+                    token = ''
+                alt_tree = AltTree(alt_tree)
+            elif c == '/' and alt_tree.parent is not None:
+                if token:
+                    alt_tree.tokens.append(token)
+                    token = ''
+                alt_tree.new_branch()
+            elif c == '}' and alt_tree.parent is not None:
+                if token:
+                    alt_tree.tokens.append(token)
+                    token = ''
+                if not alt_tree.tokens:
+                    raise IOError('Empty alternate found ("{ }")')
+                alt_tree = alt_tree.parent
+                if alt_tree.parent is None:
+                    assert len(alt_tree.tokens) == 1
+                    transcript.append((alt_tree.tokens[0], -1, -1))
+                    alt_tree.tokens = []
+            elif c == ' ':
+                if token:
+                    if alt_tree.parent is None:
+                        transcript.append(token)
+                    else:
+                        alt_tree.tokens.append(token)
+                    token = ''
+            else:
+                token += c
+        if token and alt_tree.parent is None:
+            transcript.append(token)
+        transcripts.append((utt_id, transcript))
+    return transcripts
+
+
 def transcript_to_token(
         transcript, token2id=None, frame_length_ms=None):
     '''Convert a transcript to a ``SpectDataSet`` token sequence

@@ -5,6 +5,7 @@ from __future__ import print_function
 import os
 
 from itertools import repeat, chain
+from io import StringIO
 
 import pytest
 import torch
@@ -200,6 +201,38 @@ def test_spect_data_set_validity(temp_dir):
         data.validate_spect_data_set(data_set)
     torch.save(torch.randint(10, (4,)).long(), ali_b_pt)
     data.validate_spect_data_set(data_set)
+
+
+@pytest.mark.cpu
+def test_read_trn():
+    trn = StringIO()
+    trn.write('''\
+here is a simple example (a)
+nothing should go wrong (b)
+''')
+    trn.seek(0)
+    act = data.read_trn(trn)
+    assert act == [
+        ('a', ['here', 'is', 'a', 'simple', 'example']),
+        ('b', ['nothing', 'should', 'go', 'wrong']),
+    ]
+    trn.seek(0)
+    trn.write('''\
+here is an { example /with} some alternates (a)
+} and /here/ is {something really / {really}} (stupid) { ignore this (b)
+''')
+    trn.seek(0)
+    act = data.read_trn(trn)
+    assert act == [
+        ('a', [
+            'here', 'is', 'an',
+            ([['example'], ['with']], -1, -1), 'some', 'alternates']),
+        ('b', [
+            '}', 'and', '/here/', 'is',
+            ([['something', 'really'], [[['really']]]], -1, -1),
+            '(stupid)'
+        ])
+    ]
 
 
 @pytest.mark.cpu
