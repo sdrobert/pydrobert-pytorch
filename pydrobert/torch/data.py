@@ -551,7 +551,12 @@ class EpochRandomSampler(torch.utils.data.Sampler):
         self.data_source = data_source
         self.epoch = init_epoch
         if base_seed is None:
-            base_seed = np.random.randint(np.iinfo(np.uint32).max)
+            # we use numpy RandomState so that we can run in parallel with
+            # torch's RandomState, but we acquire the initial random seed from
+            # torch so that we'll be deterministic with a prior call to
+            # torch.manual_seed(...)
+            base_seed = torch.randint(
+                np.iinfo(np.int32).max, (1,)).long().item()
         self.base_seed = base_seed
 
     def __len__(self):

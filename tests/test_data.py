@@ -241,6 +241,13 @@ def test_epoch_random_sampler(temp_dir):
     sampler = data.EpochRandomSampler(data_source, init_epoch=10, base_seed=1)
     assert samples_ep0 == tuple(sampler.get_samples_for_epoch(0))
     assert samples_ep1 == tuple(sampler.get_samples_for_epoch(1))
+    # should be reproducible if we set torch manual seed
+    torch.manual_seed(5)
+    sampler = data.EpochRandomSampler(data_source)
+    samples_ep0 = tuple(sampler)
+    torch.manual_seed(5)
+    sampler = data.EpochRandomSampler(data_source)
+    assert samples_ep0 == tuple(sampler)
 
 
 @pytest.mark.cpu
