@@ -34,6 +34,8 @@ __all__ = [
     'SpectDataSetParams',
     'SpectEvaluationDataLoader',
     'SpectTrainingDataLoader',
+    'token_to_transcript',
+    'transcript_to_token',
     'validate_spect_data_set',
 ]
 
@@ -502,6 +504,37 @@ def transcript_to_token(
         tok[i, 1] = start
         tok[i, 2] = end
     return tok
+
+
+def token_to_transcript(tok, id2token=None, frame_length_ms=None):
+    '''Convert a ``SpectDataSet`` token sequence to a transcript
+
+    The inverse operation of ``transcript_to_token``
+
+    Parameters
+    ----------
+    tok : torch.LongTensor
+    id2token : dict, optional
+    frame_length_ms : int, optional
+
+    Returns
+    -------
+    token : list
+    '''
+    transcript = []
+    for tup in tok:
+        id, start, end = tup.tolist()
+        if id < 0:
+            raise ValueError('id must be non-negative')
+        token = id2token.get(id, id) if id2token is not None else id
+        if start == -1 or end == -1:
+            transcript.append(token)
+        else:
+            if frame_length_ms:
+                start = start * frame_length_ms / 1000
+                end = end * frame_length_ms / 1000
+            transcript.append((token, start, end))
+    return transcript
 
 
 def extract_window(feat, frame_idx, left, right, reverse=False):

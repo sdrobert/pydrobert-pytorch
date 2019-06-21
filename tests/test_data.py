@@ -208,7 +208,7 @@ def test_spect_data_set_validity(temp_dir):
     (
         [1, 2, 3, 4],
         None,
-        torch.LongTensor([[1, -1, -1], [2, -1, -1], [3, -1, -1], [4, -1, -1]])
+        torch.LongTensor([[1, -1, -1], [2, -1, -1], [3, -1, -1], [4, -1, -1]]),
     ),
     (
         [1, ('a', 4, 10), 'a', 3],
@@ -222,6 +222,28 @@ def test_transcript_to_token(transcript, token2id, exp):
     transcript = ['foo'] + transcript
     with pytest.raises(Exception):
         data.transcript_to_token(transcript, token2id)
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize('tok,id2token,exp', [
+    (torch.LongTensor(0, 3), None, []),
+    (
+        torch.LongTensor([[1, -1, -1], [2, -1, -1], [3, -1, -1], [4, -1, -1]]),
+        None,
+        [1, 2, 3, 4],
+    ),
+    (
+        torch.LongTensor([[1, 3, 4], [3, 4, 5], [2, -1, -1]]),
+        {1: 'a', 2: 'b'},
+        [('a', 3, 4), (3, 4, 5), 'b'],
+    )
+])
+def test_token_to_transcript(tok, id2token, exp):
+    act = data.token_to_transcript(tok, id2token)
+    assert exp == act
+    tok = torch.cat([torch.full((1, 3), -1, dtype=torch.long), tok], 0)
+    with pytest.raises(Exception):
+        data.token_to_transcript(tok, id2token)
 
 
 @pytest.mark.cpu
