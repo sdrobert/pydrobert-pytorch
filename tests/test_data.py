@@ -203,6 +203,28 @@ def test_spect_data_set_validity(temp_dir):
 
 
 @pytest.mark.cpu
+@pytest.mark.parametrize('transcript,token2id,exp', [
+    ([], None, torch.LongTensor(0, 3)),
+    (
+        [1, 2, 3, 4],
+        None,
+        torch.LongTensor([[1, -1, -1], [2, -1, -1], [3, -1, -1], [4, -1, -1]])
+    ),
+    (
+        [1, ('a', 4, 10), 'a', 3],
+        {'a': 2},
+        torch.LongTensor([[1, -1, -1], [2, 4, 10], [2, -1, -1], [3, -1, -1]]),
+    ),
+])
+def test_transcript_to_token(transcript, token2id, exp):
+    act = data.transcript_to_token(transcript, token2id)
+    assert torch.all(exp == act)
+    transcript = ['foo'] + transcript
+    with pytest.raises(Exception):
+        data.transcript_to_token(transcript, token2id)
+
+
+@pytest.mark.cpu
 @pytest.mark.parametrize('reverse', [True, False])
 def test_context_window_data_set(temp_dir, reverse):
     torch.manual_seed(1)

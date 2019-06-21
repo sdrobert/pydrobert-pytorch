@@ -457,6 +457,53 @@ def validate_spect_data_set(data_set):
                             idx2))
 
 
+def transcript_to_token(
+        transcript, token2id=None, frame_length_ms=None):
+    '''Convert a transcript to a ``SpectDataSet`` token sequence
+
+    This method converts `transcript` of length ``R`` to a ``LongTensor`` `tok`
+    of shape ``(R, 3)``, the latter suitable as a reference or hypothesis token
+    sequence for an utterance of ``SpectDataSet``. An element of `transcript`
+    can either be a ``token`` or a 3-tuple of ``(token, start, end)``. ``id =
+    token2id.get(token, token) if token2id is not None else token`` dictates
+    the conversion from ``token`` to identifier. If `frame_length_ms` is
+    specified, ``start`` and ``end`` are taken as the start and end times, in
+    seconds, of the token, and will be converted to frames for `tok`. If
+    `frame_length_ms` is unspecified, ``start`` and ``end`` are assumed to
+    already be frame times. If ``start`` and ``end`` were unspecified, values
+    of ``-1``, representing unknown, will be inserted into ``r[i, 1:]``
+
+    Parameters
+    ----------
+    transcript : sequence
+    token2id : dict, optional
+    frame_length_ms : int, optional
+
+    Returns
+    -------
+    tok : LongTensor
+    '''
+    tok = torch.empty((len(transcript), 3), dtype=torch.long)
+    for i, token in enumerate(transcript):
+        start = end = -1
+        try:
+            if len(token) == 3 and np.isreal(token[1]) and np.isreal(token[2]):
+                token, start, end = token
+                if frame_length_ms:
+                    start = (1000 * start) / frame_length_ms
+                    end = (1000 * end) / frame_length_ms
+                start, end = int(start), int(end)
+        except TypeError:
+            pass
+        id = token2id.get(token, token) if token2id is not None else token
+        if id < 0:
+            raise ValueError('ID should be non-negative')
+        tok[i, 0] = id
+        tok[i, 1] = start
+        tok[i, 2] = end
+    return tok
+
+
 def extract_window(feat, frame_idx, left, right, reverse=False):
     '''Slice the feature matrix to extract a context window
 
