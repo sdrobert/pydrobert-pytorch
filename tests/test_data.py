@@ -300,7 +300,7 @@ def test_spect_seq_to_batch(include_ali, include_ref):
         data.spect_seq_to_batch(zip(feats, alis, refs)))
     feat_sizes, feats, alis, refs, ref_sizes = zip(*sorted(
         zip(feat_sizes, feats, alis, refs, ref_sizes), key=lambda x: -x[0]))
-    assert feat_sizes == batch_feat_sizes
+    assert torch.all(torch.tensor(feat_sizes) == batch_feat_sizes)
     assert all(
         torch.allclose(a[:b.shape[0]], b) and
         torch.allclose(a[b.shape[0]:], torch.tensor([0.]))
@@ -315,7 +315,7 @@ def test_spect_seq_to_batch(include_ali, include_ref):
     else:
         assert batch_ali is None
     if include_ref:
-        assert ref_sizes == batch_ref_sizes
+        assert torch.all(torch.tensor(ref_sizes) == batch_ref_sizes)
         assert all(
             torch.all(a[:b.shape[0]] == b) and
             torch.all(a[b.shape[0]:] == torch.tensor([data.REF_PAD_VALUE]))
@@ -362,8 +362,8 @@ def test_spect_training_data_loader(temp_dir, populate_torch_dir):
             ep_feats += tuple(b_feats)
             ep_ali += tuple(b_ali)
             ep_ref += tuple(b_ref)
-            ep_feat_sizes += b_feat_sizes
-            ep_ref_sizes += b_ref_sizes
+            ep_feat_sizes += tuple(b_feat_sizes)
+            ep_ref_sizes += tuple(b_ref_sizes)
         assert len(ep_feats) == num_utts
         assert len(ep_ali) == num_utts
         for i in range(num_utts):
@@ -450,8 +450,8 @@ def test_spect_evaluation_data_loader(temp_dir, populate_torch_dir):
                         utt_ids[cur_idx:cur_idx + 5]),
                     key=lambda x: -x[3])))
             assert b_utt_ids == s_utt_ids
-            assert b_feat_sizes == s_feat_sizes
-            assert b_ref_sizes == s_ref_sizes
+            assert tuple(b_feat_sizes) == s_feat_sizes
+            assert tuple(b_ref_sizes) == s_ref_sizes
             for a, b in zip(b_feats, s_feats):
                 assert torch.allclose(a[:b.shape[0]], b)
                 assert torch.allclose(a[b.shape[0]:], torch.tensor([0.]))

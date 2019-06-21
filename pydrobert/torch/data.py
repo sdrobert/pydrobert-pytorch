@@ -167,7 +167,7 @@ class SpectDataSet(torch.utils.data.Dataset):
 
     Accessing individual elements in a spectral data directory
     >>> data = SpectDataSet('data')
-    >>> data[0]  # random access feats, ali
+    >>> data[0]  # random access feat, ali, ref
     >>> for feat, ali, ref in data:  # iterator
     >>>     pass
 
@@ -691,10 +691,11 @@ def spect_seq_to_batch(seq):
     `feats` and `alis` will have dimensions ``(N, T*, F)``, and ``(N, T*)``,
     resp., where ``N`` is the batch size, and ``T*`` is the maximum number of
     frames in `seq`. Similarly, `refs` will have dimensions ``(N, R*, 3)``.
-    `feat_sizes` and `ref_sizes` are tuples of ints containing the original
-    ``T`` and ``R`` values. The batch will be sorted by decreasing numbers of
-    frames. `feats` is zero-padded while `alis` and `refs` are padded with
-    module constants ``ALI_PAD_VALUE`` and ``REF_PAD_VALUE``, respectively.
+    `feat_sizes` and `ref_sizes` are ``LongTensor``s of shape ``(N,)``
+    containing the original ``T`` and ``R`` values. The batch will be sorted by
+    decreasing numbers of frames. `feats` is zero-padded while `alis` and
+    `refs` are padded with module constants ``ALI_PAD_VALUE`` and
+    ``REF_PAD_VALUE``, respectively.
 
     If ``ali`` or ``ref`` is ``None`` in any element, `alis` or `refs` and
     `ref_sizes` will also be ``None``
@@ -739,8 +740,8 @@ def spect_seq_to_batch(seq):
 
     return (
         feats, alis, refs,
-        feat_sizes if feat_sizes is None else tuple(feat_sizes),
-        ref_sizes if ref_sizes is None else tuple(ref_sizes),
+        feat_sizes if feat_sizes is None else torch.tensor(feat_sizes),
+        ref_sizes if ref_sizes is None else torch.tensor(ref_sizes),
     )
 
 
@@ -772,12 +773,12 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         ``params.batch_size``, ``T*`` is the maximum number of frames in an
         utterance in the batch, and ``F`` is the number of filters per frame.
         `ali` is a ``LongTensor`` of size ``(N, T*)`` if an ``ali/`` dir
-        exists, otherwise ``None``. ``feat_sizes`` is an ``N``-tuple of
-        integers specifying the lengths of utterances in the batch. `refs` is
-        a ``LongTensor`` of size ``(N, R*, 3)``, where ``R*`` is the maximum
-        number of reference tokens in the batch. `ref_sizes` is an ``N``-tuple
-        of integers specifying the number of reference tokens per utterance in
-        the batch. If the ``refs/`` directory does not exist, `refs` and
+        exists, otherwise ``None``. ``feat_sizes`` is a ``LongTensor`` of shape
+        ``(N,)`` specifying the lengths of utterances in the batch. `refs` is a
+        ``LongTensor`` of size ``(N, R*, 3)``, where ``R*`` is the maximum
+        number of reference tokens in the batch. `ref_sizes is a ``LongTensor``
+        of shape ``(N,)`` specifying the number reference tokens per utterance
+        in the batch. If the ``refs/`` directory does not exist, `refs` and
         `ref_sizes` are ``None``. The first axis of each of `feats`, `alis`,
         `refs`, `feat_sizes`, and `ref_sizes` is ordered by utterances of
         descending frame lengths. Shorter utterances in `feats` are zero-padded
@@ -796,7 +797,6 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     >>> loader = SpectTrainingDataLoader('data', params)
     >>> for feats, alis, _, feat_sizes, _ in loader:
     >>>     optim.zero_grad()
-    >>>     feat_sizes = torch.tensor(feat_sizes)
     >>>     packed_feats = torch.nn.utils.rnn.pack_padded_sequence(
     ...         feats, feat_sizes, batch_first=True)
     >>>     packed_alis = torch.nn.utils.rnn.pack_padded_sequence(
@@ -820,8 +820,6 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     >>> loader = SpectTrainingDataLoader('data', params)
     >>> for feats, _, refs, feat_sizes, ref_sizes in loader:
     >>>     optim.zero_grad()
-    >>>     feat_sizes = torch.tensor(feat_sizes)
-    >>>     ref_sizes = torch.tensor(ref_sizes)
     >>>     feats = feats.unsqueeze(1)  # channels dim
     >>>     log_prob = model(feats).squeeze(1)
     >>>     loss(
@@ -903,19 +901,19 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         ``params.batch_size``, ``T*`` is the maximum number of frames in an
         utterance in the batch, and ``F`` is the number of filters per frame.
         `ali` is a ``LongTensor`` of size ``(N, T*)`` if an ``ali/`` dir
-        exists, otherwise ``None``. ``feat_sizes`` is an ``N``-tuple of
-        integers specifying the lengths of utterances in the batch. `refs` is
-        a ``LongTensor`` of size ``(N, R*, 3)``, where ``R*`` is the maximum
-        number of reference tokens in the batch. `ref_sizes` is an ``N``-tuple
-        of integers specifying the number of reference tokens per utterance in
-        the batch. If the ``refs/`` directory does not exist, `refs` and
-        `ref_sizes` are ``None``. ``utt_ids`` is an ``N``-tuple specifying
-        the names of utterances in the batch. The first axis of each of
-        `feats`, `alis`, `refs`, `feat_sizes`, `ref_sizes`, and `utt_ids`
-        is ordered by utterances of descending frame lengths. Shorter
-        utterances in `feats` are zero-padded to the right, `alis` is padded
-        with the module constant ``ALI_PAD_VALUE``, and `refs` is padded with
-        ``REF_PAD_VALUE``
+        exists, otherwise ``None``. ``feat_sizes`` is a ``LongTensor`` of shape
+        ``(N,)`` specifying the lengths of utterances in the batch. `refs` is a
+        ``LongTensor`` of size ``(N, R*, 3)``, where ``R*`` is the maximum
+        number of reference tokens in the batch. `ref_sizes is a ``LongTensor``
+        of shape ``(N,)`` specifying the number reference tokens per utterance
+        in the batch. If the ``refs/`` directory does not exist, `refs` and
+        `ref_sizes` are ``None``. The first axis of each of `feats`, `alis`,
+        `refs`, `feat_sizes`, and `ref_sizes` is ordered by utterances of
+        descending frame lengths. Shorter utterances in `feats` are zero-padded
+        to the right, `alis` is padded with the module constant
+        ``ALI_PAD_VALUE``, and `refs` is padded with ``REF_PAD_VALUE``.
+        ``utt_ids`` is an ``N``-tuple specifying the names of utterances in the
+        batch.
 
     Examples
     --------
@@ -926,7 +924,6 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     >>> params = SpectDataSetParams()
     >>> loader = SpectEvaluationDataLoader('data', params)
     >>> for feats, _, _, feat_sizes, _, utt_ids in loader:
-    >>>     feat_sizes = torch.tensor(feat_sizes)
     >>>     packed_feats = torch.nn.utils.rnn.pack_padded_sequence(
     ...         feats, feat_sizes, batch_first=True)
     >>>     packed_logits, _ = model(packed_feats)
@@ -947,8 +944,6 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     >>> params = SpectDataSetParams()
     >>> loader = SpectEvaluationDataLoader('data', params)
     >>> for feats, _, _, feat_sizes, _, utt_ids in loader:
-    >>>     feat_sizes = torch.tensor(feat_sizes)
-    >>>     ref_sizes = torch.tensor(ref_sizes)
     >>>     feats = feats.unsqueeze(1)  # channels dim
     >>>     log_prob = model(feats).squeeze(1)
     >>>     paths = log_prob.argmax(-1)  # best path decoding
@@ -1200,14 +1195,14 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     windows, alis, win_sizes, utt_ids
         `windows` is a ``FloatTensor`` of size ``(N, C, F)``, where ``N`` is
         the number of context windows, ``C`` is the context window size, and
-        ``F`` is the number of filters per frame. `alis` is a ``LongTensor``
-        of size ``(N,)`` (or ``None`` if the ``ali`` dir was not specified).
-        `win_sizes` is a tuple of size ``params.batch_size`` specifying the
-        number of context windows per utterance in the batch.
+        ``F`` is the number of filters per frame. `alis` is a ``LongTensor`` of
+        size ``(N,)`` (or ``None`` if the ``ali`` dir was not specified).
+        `win_sizes` is a ``LongTensor`` of shape ``(params.batch_size,)``
+        specifying the number of context windows per utterance in the batch.
         ``windows[sum(win_sizes[:i]):sum(win_sizes[:i+1])]`` are the context
-        windows for the ``i``-th utterance in the batch
-        (``sum(win_sizes) == N``). utt_ids` is a tuple of size
-        ``params.batch_size`` naming the utterances in the batch
+        windows for the ``i``-th utterance in the batch (``sum(win_sizes) ==
+        N``). utt_ids` is a tuple of size ``params.batch_size`` naming the
+        utterances in the batch
 
     Examples
     --------
@@ -1245,7 +1240,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
         '''Update context_window_seq_to_batch to handle feat_sizes, utt_ids'''
         windows, alis, feat_sizes, utt_ids = zip(*seq)
         windows, alis = context_window_seq_to_batch(zip(windows, alis))
-        return (windows, alis, tuple(feat_sizes), tuple(utt_ids))
+        return (windows, alis, torch.tensor(feat_sizes), tuple(utt_ids))
 
     def __init__(
             self, data_dir, params, file_prefix='', file_suffix='.pt',
