@@ -3,6 +3,7 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import warnings
 
 import pytest
 import torch
@@ -47,3 +48,34 @@ def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
     with pytest.raises(ValueError):
         command_line.get_torch_spect_data_dir_info(
             [temp_dir, table_path, '--strict'])
+
+
+@pytest.mark.cpu
+def test_trn_to_torch_token_data_dir(temp_dir):
+    trn_path = os.path.join(temp_dir, 'ref.trn')
+    token2id_path = os.path.join(temp_dir, 'token2id')
+    ref_dir = os.path.join(temp_dir, 'ref')
+    with open(token2id_path, 'w') as token2id:
+        for v in range(ord('a'), ord('z') + 1):
+            token2id.write('{} {}\n'.format(chr(v), v - ord('a')))
+    with open(trn_path, 'w') as trn:
+        trn.write('''\
+a b b c (utt1)
+(utt2)
+
+d { e / f } g (utt3)
+{{{h / i} / j} / k} (utt4)
+''')
+    with warnings.catch_warnings(record=True):
+        assert not command_line.trn_to_torch_token_data_dir(
+            [trn_path, token2id_path, ref_dir, '--alt-handler=first'])
+    act_utt1 = torch.load(os.path.join(ref_dir, 'utt1.pt'))
+    assert torch.all(act_utt1 == torch.tensor([
+        [0, -1, -1], [1, -1, -1], [1, -1, -1], [2, -1, -1]]))
+    act_utt2 = torch.load(os.path.join(ref_dir, 'utt2.pt'))
+    assert not act_utt2.numel()
+    act_utt3 = torch.load(os.path.join(ref_dir, 'utt3.pt'))
+    assert torch.all(act_utt3 == torch.tensor([
+        [3, -1, -1], [4, -1, -1], [6, -1, -1]]))
+    act_utt4 = torch.load(os.path.join(ref_dir, 'utt4.pt'))
+    assert torch.all(act_utt4 == torch.tensor([[7, -1, -1]]))

@@ -20,9 +20,13 @@ import os
 import sys
 import argparse
 import math
+import warnings
 
 import torch
 import pydrobert.torch.data as data
+
+from past.builtins import basestring
+
 
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
@@ -30,6 +34,7 @@ __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2018 Sean Robertson"
 __all__ = [
     'get_torch_spect_data_dir_info',
+    'trn_to_torch_token_data_dir',
 ]
 
 
@@ -173,4 +178,109 @@ def get_torch_spect_data_dir_info(args=None):
         options.out_file.write("{} {}\n".format(key, value))
     if options.out_file != sys.stdout:
         options.out_file.close()
+    return 0
+
+
+def _trn_to_torch_token_data_dir_parse_args(args):
+    parser = argparse.ArgumentParser(
+        description=trn_to_torch_token_data_dir.__doc__,
+    )
+    parser.add_argument(
+        'trn', type=argparse.FileType('r'),
+        help='The input trn file'
+    )
+    parser.add_argument(
+        'token2id', type=argparse.FileType('r'),
+        help='A file containing mappings from tokens (e.g. words or phones) '
+        'to unique IDs. Each line has the format ``<token> <id>``'
+    )
+    parser.add_argument(
+        'dir',
+        help='The directory to store token sequences to. If the directory '
+        'does not exist, it will be created'
+    )
+    parser.add_argument(
+        '--alt-handler', default='error', choices=('error', 'first'),
+        help='How to handle transcription alternates. If "error", error if '
+        'the "trn" file contains alternates. If "first", always treat the '
+        'alternate as canon'
+    )
+    parser.add_argument(
+        '--file-prefix', default='',
+        help='The file prefix indicating a torch data file'
+    )
+    parser.add_argument(
+        '--file-suffix', default='.pt',
+        help='The file suffix indicating a torch data file'
+    )
+    return parser.parse_args(args)
+
+
+def trn_to_torch_token_data_dir(args=None):
+    '''Convert a NIST "trn" file to the specified SpectDataSet data dir
+
+    A "trn" file is the standard transcription file without alignment
+    information used in the `sclite
+    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_
+    toolkit. It has the format::
+
+        here is a transcription (utterance_a)
+        here is another (utterance_b)
+
+    This command reads in a "trn" file and writes its contents as token
+    sequences compatible with the ``ref/`` directory of a ``SpectDataSet``.
+    See the command ``get_torch_spect_data_dir_info`` (command line
+    "get-torch-spect-data-dir-info") for more information on a
+    ``SpectDataSet``
+    '''
+    try:
+        options = _trn_to_torch_token_data_dir_parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+    os.makedirs(options.dir, exist_ok=True)
+    token2id = dict()
+    for line_no, line in enumerate(options.token2id):
+        line = line.strip()
+        if not line:
+            continue
+        ls = line.split()
+        if len(ls) != 2 or not ls[1].isnumeric():
+            print(
+                'Cannot parse line {} of {}'.format(
+                    line_no + 1, options.token2id.name),
+                file=sys.stderr,
+            )
+            return 1
+        key, value = ls
+        if key in token2id:
+            warnings.warn(
+                '{} line {}: "{}" already exists. Mapping will be '
+                'ambiguous'.format(options.token2id.name, line_no + 1, key)
+            )
+        token2id[key] = int(value)
+    transcripts = data.read_trn(options.trn)
+    # we manually search for alternates in a first pass, as we don't know what
+    # filters users have on warnings
+    for utt_id, transcript in transcripts:
+        old_transcript = transcript.copy()
+        transcript[:] = []
+        while len(old_transcript):
+            x = old_transcript.pop(0)
+            if len(x) == 3 and x[1] == -1:
+                x = x[0]
+            if isinstance(x, basestring):
+                transcript.append(x)
+            elif options.alt_handler == 'error':
+                print(
+                    'Cannot handle alternate in "{}"'.format(utt_id),
+                    file=sys.stderr)
+                return 1
+            else:  # first
+                x[0].extend(old_transcript)
+                old_transcript = x[0]
+    for utt_id, transcript in transcripts:
+        tok = data.transcript_to_token(transcript, token2id)
+        path = os.path.join(
+            options.dir, options.file_prefix + utt_id + options.file_suffix)
+        torch.save(tok, path)
     return 0

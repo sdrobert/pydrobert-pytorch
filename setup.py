@@ -56,7 +56,9 @@ def main():
         entry_points={
             'console_scripts': [
                 'get-torch-spect-data-dir-info = pydrobert.torch.command_line:'
-                'get_torch_spect_data_dir_info'
+                'get_torch_spect_data_dir_info',
+                'trn-to-torch-token-data-dir = pydrobert.torch.command_line:'
+                'trn_to_torch_token_data_dir',
             ]
         },
     )
