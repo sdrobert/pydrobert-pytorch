@@ -206,7 +206,7 @@ def test_spect_data_set_validity(temp_dir):
 @pytest.mark.cpu
 def test_read_trn():
     trn = StringIO()
-    trn.write('''\
+    trn.write(u'''\
 here is a simple example (a)
 nothing should go wrong (b)
 ''')
@@ -217,7 +217,7 @@ nothing should go wrong (b)
         ('b', ['nothing', 'should', 'go', 'wrong']),
     ]
     trn.seek(0)
-    trn.write('''\
+    trn.write(u'''\
 here is an { example /with} some alternates (a)
 } and /here/ is {something really / {really}} (stupid) { ignore this (b)
 ''')
