@@ -245,7 +245,7 @@ def trn_to_torch_token_data_dir(args=None):
         if not line:
             continue
         ls = line.split()
-        if len(ls) != 2 or not ls[1].isnumeric():
+        if len(ls) != 2 or not ls[1].isdigit():
             print(
                 'Cannot parse line {} of {}'.format(
                     line_no + 1, options.token2id.name),
