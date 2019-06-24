@@ -453,7 +453,7 @@ def validate_spect_data_set(data_set):
                         0 <= r[1] < r[2] <= feat.shape[0]):
                     raise ValueError(
                         "'{}' (index {}) in '{}', has a reference token "
-                        "(index {}) with bounds outside the utterance"
+                        "(index {}) with invalid boundaries"
                         "".format(
                             data_set.utt_ids[idx] + data_set.file_suffix, idx,
                             os.path.join(

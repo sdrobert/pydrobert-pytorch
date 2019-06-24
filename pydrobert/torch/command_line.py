@@ -105,14 +105,18 @@ def get_torch_spect_data_dir_info(args=None):
     This command writes the following space-delimited key-value pairs to an
     output file in sorted order:
 
-    1. "num_utterances", the total number of listed utterances
-    2. "num_filts", ``F``
-    3. "total_frames", ``sum(N)`` over the data dir
-    4. "count_<i>", the number of instances of the class "<i>" that appear
+    1. "max_ali_class", the maximum inclusive class id found over ``ali/``
+        (if available, ``-1`` if not)
+    2. "max_ref_class", the maximum inclussive class id found over ``ref/``
+        (if available, ``-1`` if not)
+    3. "num_utterances", the total number of listed utterances
+    4. "num_filts", ``F``
+    5. "total_frames", ``sum(N)`` over the data dir
+    6. "count_<i>", the number of instances of the class "<i>" that appear
         in ``ali`` (if available). If "count_<i>" is a valid key, then so
         are "count_<0 to i>". "count_<i>" is left-padded with zeros to ensure
         that the keys remain in the same order in the table as the class
-        indices
+        indices.  The maximum ``i`` will be equal to ``maximum_ali_class``
 
     Note that the output can be parsed as a Kaldi text table of integers.
     '''
@@ -135,26 +139,33 @@ def get_torch_spect_data_dir_info(args=None):
         data.validate_spect_data_set(data_set)
     info_dict = {
         'num_utterances': len(data_set),
-        'total_frames': 0
+        'total_frames': 0,
+        'max_ali_class': -1,
+        'max_ref_class': -1,
     }
     counts = dict()
-    max_class_idx = -1
     for feat, ali, ref in data_set:
         info_dict['num_filts'] = feat.size()[1]
         info_dict['total_frames'] += feat.size()[0]
         if ali is not None:
             for class_idx in ali:
                 class_idx = class_idx.item()
-                max_class_idx = max(class_idx, max_class_idx)
-                if max_class_idx < 0:
-                    raise ValueError('Got a negative class idx')
+                if class_idx < 0:
+                    raise ValueError('Got a negative ali class idx')
+                info_dict['max_ali_class'] = max(
+                    class_idx, info_dict['max_ali_class'])
                 counts[class_idx] = counts.get(class_idx, 0) + 1
-    if max_class_idx == 0:
+        if ref is not None:
+            if ref.min().item() < 0:
+                raise ValueError('Got a negative ref class idx')
+            info_dict['max_ref_class'] = max(
+                info_dict['max_ref_class'], ref.max().item())
+    if info_dict['max_ali_class'] == 0:
         info_dict['count_0'] = counts[0]
-    elif max_class_idx > 0:
+    elif info_dict['max_ali_class'] > 0:
         count_fmt_str = 'count_{{:0{}d}}'.format(
-            int(math.log10(max_class_idx)) + 1)
-        for class_idx in range(max_class_idx + 1):
+            int(math.log10(info_dict['max_ali_class'])) + 1)
+        for class_idx in range(info_dict['max_ali_class'] + 1):
             info_dict[count_fmt_str.format(class_idx)] = counts.get(
                 class_idx, 0)
     info_list = sorted(info_dict.items())

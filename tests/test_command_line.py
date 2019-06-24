@@ -22,7 +22,7 @@ def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
     torch.save(torch.rand(1, 5), os.path.join(temp_dir, 'feat', 'utt19.pt'))
     torch.save(torch.tensor([10]), os.path.join(temp_dir, 'ali', 'utt19.pt'))
     torch.save(
-        torch.tensor([[0, 0, 1]]), os.path.join(temp_dir, 'ref', 'utt19.pt'))
+        torch.tensor([[100, 0, 1]]), os.path.join(temp_dir, 'ref', 'utt19.pt'))
     feat_sizes += (1,)
     alis = torch.cat(alis + [torch.tensor([10])])
     alis = [class_idx.item() for class_idx in alis]
@@ -37,6 +37,8 @@ def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
     assert table['num_utterances'] == 20
     assert table['total_frames'] == sum(feat_sizes)
     assert table['num_filts'] == 5
+    assert table['max_ali_class'] == 10
+    assert table['max_ref_class'] == 100
     for class_idx in range(11):
         key = 'count_{:02d}'.format(class_idx)
         assert table[key] == alis.count(class_idx)
