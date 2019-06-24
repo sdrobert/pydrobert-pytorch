@@ -222,7 +222,7 @@ here is an { example /with} some alternates (a)
 } and /here/ is {something really / {really}} (stupid) { ignore this (b)
 ''')
     trn.seek(0)
-    act = data.read_trn(trn)
+    act = data.read_trn(trn, warn=False)
     assert act == [
         ('a', [
             'here', 'is', 'an',

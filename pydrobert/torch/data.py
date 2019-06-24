@@ -536,10 +536,12 @@ def read_trn(trn, warn=True):
         transcript = []
         token = ''
         alt_tree = AltTree()
+        found_alt = False
         while len(line):
             c = line[0]
             line = line[1:]
             if c == '{':
+                found_alt = True
                 if token:
                     if alt_tree.parent is None:
                         transcript.append(token)
@@ -574,6 +576,13 @@ def read_trn(trn, warn=True):
                 token += c
         if token and alt_tree.parent is None:
             transcript.append(token)
+        if found_alt and warn:
+            warnings.warn(
+                'Found an alternate in transcription for utt="{}". '
+                'Transcript will contain an array of alternates at that '
+                'point, and will not be compatible with transcript_to_token '
+                'until resolved. To suppress this warning, set warn=False'
+                ''.format(utt_id))
         transcripts.append((utt_id, transcript))
     return transcripts
 
