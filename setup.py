@@ -59,6 +59,8 @@ def main():
                 'get_torch_spect_data_dir_info',
                 'trn-to-torch-token-data-dir = pydrobert.torch.command_line:'
                 'trn_to_torch_token_data_dir',
+                'torch-token-data-dir-to-trn = pydrobert.torch.command_line:'
+                'torch_token_data_dir_to_trn',
             ]
         },
     )

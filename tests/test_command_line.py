@@ -85,3 +85,43 @@ d { e / f } g (utt3)
         [3, -1, -1], [4, -1, -1], [6, -1, -1]]))
     act_utt4 = torch.load(os.path.join(ref_dir, 'utt4.pt'))
     assert torch.all(act_utt4 == torch.tensor([[7, -1, -1]]))
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize('swap', [True, False])
+def test_torch_token_data_dir_to_trn(temp_dir, swap):
+    torch.manual_seed(1000)
+    num_utts = 100
+    max_tokens = 10
+    num_digits = torch.log10(torch.tensor(float(num_utts))).long().item() + 1
+    utt_fmt = 'utt{{:0{}d}}'.format(num_digits)
+    trn_path = os.path.join(temp_dir, 'ref.trn')
+    id2token_path = os.path.join(temp_dir, 'id2token')
+    ref_dir = os.path.join(temp_dir, 'ref')
+    with open(id2token_path, 'w') as id2token:
+        for v in range(ord('a'), ord('z') + 1):
+            if swap:
+                id2token.write('{} {}\n'.format(chr(v), v - ord('a')))
+            else:
+                id2token.write('{} {}\n'.format(v - ord('a'), chr(v)))
+    if not os.path.isdir(ref_dir):
+        os.makedirs(ref_dir)
+    exps = []
+    for utt_idx in range(num_utts):
+        utt_id = utt_fmt.format(utt_idx)
+        num_tokens = torch.randint(max_tokens + 1, (1,)).long().item()
+        ids = torch.randint(26, (num_tokens,)).long()
+        tok = torch.stack([ids] + ([torch.full_like(ids, -1)] * 2), -1)
+        torch.save(tok, os.path.join(ref_dir, utt_id + '.pt'))
+        transcript = ' '.join([chr(x + ord('a')) for x in ids.tolist()])
+        transcript += ' ({})'.format(utt_id)
+        exps.append(transcript)
+    assert not command_line.torch_token_data_dir_to_trn(
+        [ref_dir, id2token_path, trn_path] +
+        (['--swap'] if swap else [])
+    )
+    with open(trn_path, 'r') as trn:
+        acts = trn.readlines()
+    assert len(exps) == len(acts)
+    for exp, act in zip(exps, acts):
+        assert exp.strip() == act.strip()
