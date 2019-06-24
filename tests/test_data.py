@@ -225,6 +225,7 @@ nothing should go wrong (b)
 here is an { example /with} some alternates (a)
 } and /here/ is {something really / {really}} (stupid) { ignore this (b)
 (c)
+a11 (d)
 ''')
     trn.seek(0)
     act = data.read_trn(trn, warn=False)
@@ -238,6 +239,7 @@ here is an { example /with} some alternates (a)
             '(stupid)'
         ]),
         ('c', []),
+        ('d', ['a11'])
     ]
 
 
@@ -261,12 +263,14 @@ should get right no prob (b)
             ([['complexity', [['can']]], ['also', 'be']], 10, 4),
             'handled']),
         ('d', []),
+        ('e', ['a11']),
     ]
     data.write_trn(transcripts, trn)
     trn.seek(0)
     assert '''\
 unnecessary { complexity { can } / also be } handled ( c )
 (d)
+a11 (e)
 ''' == trn.read()
 
 
