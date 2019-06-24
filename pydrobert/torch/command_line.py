@@ -377,7 +377,7 @@ def torch_token_data_dir_to_trn(args=None):
         id2token[int(key)] = value
     fpl = len(options.file_prefix)
     neg_fsl = -len(options.file_suffix)
-    utt_ids = (
+    utt_ids = sorted(
         x[fpl:neg_fsl]
         for x in os.listdir(options.dir)
         if x.startswith(options.file_prefix) and
