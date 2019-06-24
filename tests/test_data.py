@@ -61,6 +61,10 @@ def test_valid_spect_data_set(
     # prefix. If there is, these ought to be ignored by the data set
     populate_torch_dir(
         temp_dir, num_utts, include_ali=False, include_ref=False)
+    if not os.path.isdir(os.path.join(temp_dir, 'feat', 'fake')):
+        os.makedirs(os.path.join(temp_dir, 'feat', 'fake'))
+    torch.save(torch.rand(10, 5), os.path.join(
+        temp_dir, 'feat', 'fake', file_prefix + 'fake.pt'))
     data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix)
     assert not data_set.has_ali and not data_set.has_ref
     assert len(utt_ids) == len(data_set.utt_ids)

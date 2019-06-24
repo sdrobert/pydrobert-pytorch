@@ -236,7 +236,7 @@ class SpectDataSet(torch.utils.data.Dataset):
             neg_fsl = None
         fpl = len(self.file_prefix)
         utt_ids = set(
-            os.path.basename(x)[fpl:neg_fsl]
+            x[fpl:neg_fsl]
             for x in os.listdir(os.path.join(self.data_dir, self.feat_subdir))
             if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
         )
@@ -244,7 +244,7 @@ class SpectDataSet(torch.utils.data.Dataset):
             utt_ids &= subset_ids
         if self.has_ali:
             ali_utt_ids = set(
-                os.path.basename(x)[fpl:neg_fsl]
+                x[fpl:neg_fsl]
                 for x in os.listdir(
                     os.path.join(self.data_dir, self.ali_subdir))
                 if x.startswith(self.file_prefix) and
@@ -260,7 +260,7 @@ class SpectDataSet(torch.utils.data.Dataset):
                         "Missing feat for uttid: '{}'".format(utt_id))
         if self.has_ref:
             ref_utt_ids = set(
-                os.path.basename(x)[fpl:neg_fsl]
+                x[fpl:neg_fsl]
                 for x in os.listdir(
                     os.path.join(self.data_dir, self.ref_subdir))
                 if x.startswith(self.file_prefix) and
