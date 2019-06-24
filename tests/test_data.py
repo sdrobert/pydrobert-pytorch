@@ -5,7 +5,11 @@ from __future__ import print_function
 import os
 
 from itertools import repeat, chain
-from io import StringIO
+try:
+    # we want to write string literals in 2.7, not unicode
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
 
 import pytest
 import torch
@@ -206,7 +210,7 @@ def test_spect_data_set_validity(temp_dir):
 @pytest.mark.cpu
 def test_read_trn():
     trn = StringIO()
-    trn.write(u'''\
+    trn.write('''\
 here is a simple example (a)
 nothing should go wrong (b)
 ''')
@@ -217,7 +221,7 @@ nothing should go wrong (b)
         ('b', ['nothing', 'should', 'go', 'wrong']),
     ]
     trn.seek(0)
-    trn.write(u'''\
+    trn.write('''\
 here is an { example /with} some alternates (a)
 } and /here/ is {something really / {really}} (stupid) { ignore this (b)
 (c)
@@ -246,7 +250,7 @@ def test_write_trn():
     ]
     data.write_trn(transcripts, trn)
     trn.seek(0)
-    assert u'''\
+    assert '''\
 again a simple example (a)
 should get right no prob (b)
 ''' == trn.read()
@@ -260,7 +264,7 @@ should get right no prob (b)
     ]
     data.write_trn(transcripts, trn)
     trn.seek(0)
-    assert u'''\
+    assert '''\
 unnecessary { complexity { can } / also be } handled ( c )
 (d)
 ''' == trn.read()

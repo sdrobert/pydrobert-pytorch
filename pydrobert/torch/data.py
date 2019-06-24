@@ -12,6 +12,8 @@ import torch
 import torch.utils.data
 import param
 
+from past.builtins import basestring
+
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
@@ -516,7 +518,7 @@ def read_trn(trn, warn=True):
             assert self.parent
             self.tokens = []
             self.parent.tokens[-1].append(self.tokens)
-    if isinstance(trn, str):
+    if isinstance(trn, basestring):
         with open(trn, 'r') as trn:
             return read_trn(trn)
     transcripts = []
@@ -602,12 +604,12 @@ def write_trn(transcripts, trn):
     transcripts : sequence
     trn : file_ptr or str
     '''
-    if isinstance(trn, str):
+    if isinstance(trn, basestring):
         with open(trn, 'w') as trn:
             return write_trn(transcripts, trn)
 
     def _handle_x(x):
-        if isinstance(x, str):
+        if isinstance(x, basestring):
             return x + ' '  # x was a token
         # x is a list of alternates
         ret = []
