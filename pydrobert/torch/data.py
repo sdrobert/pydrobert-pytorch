@@ -29,6 +29,7 @@ __all__ = [
     'DataSetParams',
     'EpochRandomSampler',
     'extract_window',
+    'read_trn',
     'REF_PAD_VALUE',
     'spect_seq_to_batch',
     'SpectDataParams',
@@ -39,6 +40,7 @@ __all__ = [
     'token_to_transcript',
     'transcript_to_token',
     'validate_spect_data_set',
+    'write_trn',
 ]
 
 '''The value to right-pad alignments with when batching
