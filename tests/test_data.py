@@ -220,6 +220,7 @@ nothing should go wrong (b)
     trn.write(u'''\
 here is an { example /with} some alternates (a)
 } and /here/ is {something really / {really}} (stupid) { ignore this (b)
+(c)
 ''')
     trn.seek(0)
     act = data.read_trn(trn, warn=False)
@@ -231,8 +232,38 @@ here is an { example /with} some alternates (a)
             '}', 'and', '/here/', 'is',
             ([['something', 'really'], [[['really']]]], -1, -1),
             '(stupid)'
-        ])
+        ]),
+        ('c', []),
     ]
+
+
+@pytest.mark.cpu
+def test_write_trn():
+    trn = StringIO()
+    transcripts = [
+        ('a', ['again', 'a', 'simple', 'example']),
+        ('b', ['should', 'get', 'right', 'no', 'prob']),
+    ]
+    data.write_trn(transcripts, trn)
+    trn.seek(0)
+    assert u'''\
+again a simple example (a)
+should get right no prob (b)
+''' == trn.read()
+    trn.seek(0)
+    transcripts = [
+        (' c ', [
+            ('unnecessary', -1, -1),
+            ([['complexity', [['can']]], ['also', 'be']], 10, 4),
+            'handled']),
+        ('d', []),
+    ]
+    data.write_trn(transcripts, trn)
+    trn.seek(0)
+    assert u'''\
+unnecessary { complexity { can } / also be } handled ( c )
+(d)
+''' == trn.read()
 
 
 @pytest.mark.cpu

@@ -587,6 +587,58 @@ def read_trn(trn, warn=True):
     return transcripts
 
 
+def write_trn(transcripts, trn):
+    '''From a list of transcripts, write to a NIST "trn" file
+
+    This is largely the inverse operation of ``read_trn``. In general, elements
+    of a transcript (`transcripts` contains pairs of ``utt_id, transcript``)
+    could be tokens or tuples of ``x, start, end`` (providing the start
+    and end times of tokens, respectively). However, ``start`` and ``end`` are
+    ignored when writing "trn" files. ``x`` could be the token or a list of
+    alternates, as described in ``read_trn``
+
+    Parameters
+    ----------
+    transcripts : sequence
+    trn : file_ptr or str
+    '''
+    if isinstance(trn, str):
+        with open(trn, 'w') as trn:
+            return write_trn(transcripts, trn)
+
+    def _handle_x(x):
+        if isinstance(x, str):
+            return x + ' '  # x was a token
+        # x is a list of alternates
+        ret = []
+        for alts in x:
+            elem = ''
+            for xx in alts:
+                elem += _handle_x(xx)
+            ret.append(elem)
+        ret = '{ ' + '/ '.join(ret) + '} '
+        return ret
+    for utt_id, transcript in transcripts:
+        line = ''
+        for x in transcript:
+            # first get rid of starts and ends, if possible. This is not
+            # ambiguous with numerical alternates, since alternates should
+            # always be strings and, more importantly, always have placeholder
+            # start and end values
+            try:
+                if (
+                        len(x) == 3 and np.isreal(x[1]) and
+                        np.isreal(x[2])):
+                    x = x[0]
+            except TypeError:
+                pass
+            line += _handle_x(x)
+        trn.write(line)
+        trn.write('(')
+        trn.write(utt_id)
+        trn.write(')\n')
+
+
 def transcript_to_token(
         transcript, token2id=None, frame_length_ms=None):
     '''Convert a transcript to a ``SpectDataSet`` token sequence
