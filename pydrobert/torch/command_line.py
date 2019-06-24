@@ -237,7 +237,8 @@ def trn_to_torch_token_data_dir(args=None):
         options = _trn_to_torch_token_data_dir_parse_args(args)
     except SystemExit as ex:
         return ex.code
-    os.makedirs(options.dir, exist_ok=True)
+    if not os.path.isdir(options.dir):
+        os.makedirs(options.dir)
     token2id = dict()
     for line_no, line in enumerate(options.token2id):
         line = line.strip()
