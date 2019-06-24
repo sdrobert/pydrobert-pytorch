@@ -51,13 +51,17 @@ def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
 
 
 @pytest.mark.cpu
-def test_trn_to_torch_token_data_dir(temp_dir):
+@pytest.mark.parametrize('swap', [True, False])
+def test_trn_to_torch_token_data_dir(temp_dir, swap):
     trn_path = os.path.join(temp_dir, 'ref.trn')
     token2id_path = os.path.join(temp_dir, 'token2id')
     ref_dir = os.path.join(temp_dir, 'ref')
     with open(token2id_path, 'w') as token2id:
         for v in range(ord('a'), ord('z') + 1):
-            token2id.write('{} {}\n'.format(chr(v), v - ord('a')))
+            if swap:
+                token2id.write('{} {}\n'.format(v - ord('a'), chr(v)))
+            else:
+                token2id.write('{} {}\n'.format(chr(v), v - ord('a')))
     with open(trn_path, 'w') as trn:
         trn.write('''\
 a b b c (utt1)
@@ -68,7 +72,9 @@ d { e / f } g (utt3)
 ''')
     with warnings.catch_warnings(record=True):
         assert not command_line.trn_to_torch_token_data_dir(
-            [trn_path, token2id_path, ref_dir, '--alt-handler=first'])
+            [trn_path, token2id_path, ref_dir, '--alt-handler=first'] +
+            (['--swap'] if swap else [])
+        )
     act_utt1 = torch.load(os.path.join(ref_dir, 'utt1.pt'))
     assert torch.all(act_utt1 == torch.tensor([
         [0, -1, -1], [1, -1, -1], [1, -1, -1], [2, -1, -1]]))

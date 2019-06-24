@@ -192,7 +192,9 @@ def _trn_to_torch_token_data_dir_parse_args(args):
     parser.add_argument(
         'token2id', type=argparse.FileType('r'),
         help='A file containing mappings from tokens (e.g. words or phones) '
-        'to unique IDs. Each line has the format ``<token> <id>``'
+        'to unique IDs. Each line has the format ``<token> <id>``. The flag '
+        '``--swap`` can be used to swap the expected ordering (i.e. '
+        '``<id> <token>``)'
     )
     parser.add_argument(
         'dir',
@@ -212,6 +214,10 @@ def _trn_to_torch_token_data_dir_parse_args(args):
     parser.add_argument(
         '--file-suffix', default='.pt',
         help='The file suffix indicating a torch data file'
+    )
+    parser.add_argument(
+        '--swap', action='store_true', default=False,
+        help='If set'
     )
     return parser.parse_args(args)
 
@@ -245,14 +251,17 @@ def trn_to_torch_token_data_dir(args=None):
         if not line:
             continue
         ls = line.split()
-        if len(ls) != 2 or not ls[1].isdigit():
+        if len(ls) != 2 or not ls[1 - int(options.swap)].isdigit():
             print(
                 'Cannot parse line {} of {}'.format(
                     line_no + 1, options.token2id.name),
                 file=sys.stderr,
             )
             return 1
-        key, value = ls
+        if options.swap:
+            value, key = ls
+        else:
+            key, value = ls
         if key in token2id:
             warnings.warn(
                 '{} line {}: "{}" already exists. Mapping will be '
@@ -263,7 +272,7 @@ def trn_to_torch_token_data_dir(args=None):
     # we manually search for alternates in a first pass, as we don't know what
     # filters users have on warnings
     for utt_id, transcript in transcripts:
-        old_transcript = transcript.copy()
+        old_transcript = transcript[:]
         transcript[:] = []
         while len(old_transcript):
             x = old_transcript.pop(0)
