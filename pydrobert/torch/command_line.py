@@ -1,4 +1,4 @@
-# Copyright 2018 Sean Robertson
+# Copyright 2019 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ from past.builtins import basestring
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
-__copyright__ = "Copyright 2018 Sean Robertson"
+__copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
     'ctm_to_torch_token_data_dir',
     'get_torch_spect_data_dir_info',
