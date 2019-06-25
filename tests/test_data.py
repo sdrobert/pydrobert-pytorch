@@ -292,6 +292,7 @@ again a simple example (a)
 should get right no prob (b)
 ''' == trn.read()
     trn.seek(0)
+    trn.truncate()
     transcripts = [
         (' c ', [
             ('unnecessary', -1, -1),
@@ -307,6 +308,45 @@ unnecessary { complexity { can } / also be } handled ( c )
 (d)
 a11 (e)
 ''' == trn.read()
+
+
+@pytest.mark.cpu
+def test_write_ctm():
+    ctm = StringIO()
+    transcripts = [
+        ('c', [
+            ('here', 0.1, 0.2), ('are', 0.3, 0.5), ('some', 0.2, 0.4),
+            ('unordered', 0.5, 0.5), ('tokens', 10.0, 1000)
+        ]),
+        ('b', []),
+        ('a', [('hullo', 0.0, 10.0111)]),
+    ]
+    data.write_ctm(transcripts, ctm)
+    ctm.seek(0)
+    assert '''\
+a A 0.0 10.0111 hullo
+c A 0.1 0.1 here
+c A 0.2 0.2 some
+c A 0.3 0.2 are
+c A 0.5 0.0 unordered
+c A 10.0 990.0 tokens
+''' == ctm.read()
+    ctm.seek(0)
+    ctm.truncate()
+    data.write_ctm(transcripts, ctm, {
+        'a': ('last', 'A'), 'b': ('middle', 'B'), 'c': ('first', 'C')})
+    ctm.seek(0)
+    assert '''\
+first C 0.1 0.1 here
+first C 0.2 0.2 some
+first C 0.3 0.2 are
+first C 0.5 0.0 unordered
+first C 10.0 990.0 tokens
+last A 0.0 10.0111 hullo
+''' == ctm.read()
+    transcripts.append(('foo', [('a', 0.1, 0.2), ('b', 0.2, 0.1)]))
+    with pytest.raises(ValueError):
+        data.write_ctm(transcripts, ctm)
 
 
 @pytest.mark.cpu

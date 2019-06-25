@@ -42,6 +42,7 @@ __all__ = [
     'token_to_transcript',
     'transcript_to_token',
     'validate_spect_data_set',
+    'write_ctm',
     'write_trn',
 ]
 
@@ -645,7 +646,7 @@ def write_trn(transcripts, trn):
         trn.write(')\n')
 
 
-def read_ctm(ctm, utt_map=None):
+def read_ctm(ctm, wc2utt=None):
     '''Read a NIST sclite "ctm" file into a list of transcriptions
 
     `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_
@@ -662,10 +663,10 @@ def read_ctm(ctm, utt_map=None):
     ctm : file_ptr or str
         The time-marked conversation file pointer. Will open if `ctm` is a
         path
-    utt_map : dict, optional
+    wc2utt : dict, optional
         "ctm" files identify utterances by waveform file name and channel. If
-        specified, `utt_map` consists of keys ``wfn, chan`` (e.g.
-        ``'940328', 'A'``) to unique utterance IDs. If `utt_map` is
+        specified, `wc2utt` consists of keys ``wfn, chan`` (e.g.
+        ``'940328', 'A'``) to unique utterance IDs. If `wc2utt` is
         unspecified, the waveform file names are treated as the utterance IDs,
         and the channel is ignored
 
@@ -691,7 +692,7 @@ def read_ctm(ctm, utt_map=None):
     '''
     if isinstance(ctm, str):
         with open(ctm, 'r') as ctm:
-            return read_ctm(ctm, utt_map)
+            return read_ctm(ctm, wc2utt)
     transcripts = OrderedDict()
     for line_no, line in enumerate(ctm):
         line = line.split(';;')[0].strip()
@@ -702,10 +703,10 @@ def read_ctm(ctm, utt_map=None):
             if len(line) not in {5, 6}:
                 raise ValueError()
             wfn, chan, start, dur, token = line[:5]
-            if utt_map is None:
+            if wc2utt is None:
                 utt_id = wfn
             else:
-                utt_id = utt_map[(wfn, chan)]
+                utt_id = wc2utt[(wfn, chan)]
             start = float(start)
             end = start + float(dur)
             if start < 0. or start > end:
@@ -716,12 +717,62 @@ def read_ctm(ctm, utt_map=None):
                 'Could not parse line {} of ctm'.format(line_no + 1))
         except KeyError:
             raise KeyError(
-                'ctm line {}: ({}, {}) was not found in utt_map'.format(
+                'ctm line {}: ({}, {}) was not found in wc2utt'.format(
                     line_no, wfn, chan))
     return [
         (utt_id, sorted(transcript, key=lambda x: x[1]))
         for utt_id, transcript in transcripts.items()
     ]
+
+
+def write_ctm(transcripts, ctm, utt2wc='A'):
+    '''From a list of transcripts, write to a NIST "ctm" file
+
+    This is the inverse operation of ``read_ctm``. For each element of
+    ``transcript`` within the ``utt_id, transcript`` pairs of elements in
+    `transcripts`, ``token, start, end``, ``start`` and ``end`` must be
+    non-negative
+
+    Parameters
+    ----------
+    transcripts : sequence
+    ctm : file_ptr or str
+    utt2wc : dict or str, optional
+        "ctm" files identify utterances by waveform file name and channel. If
+        specified as a dict, `utt2wc` consists of utterance IDs as keys, and
+        wavefile name and channels as values ``wfn, chan`` (e.g.
+        ``'940328', 'A'``). If `utt2wc` is a string, each utterance IDs will
+        be mapped to ``wfn`` and `utt2wc` as the channel
+    '''
+    if isinstance(ctm, str):
+        with open(ctm, 'w') as ctm:
+            return write_ctm(transcripts, ctm, utt2wc)
+    is_dict = not isinstance(utt2wc, basestring)
+    segments = []
+    for utt_id, transcript in transcripts:
+        try:
+            wfn, chan = utt2wc[utt_id] if is_dict else (utt_id, utt2wc)
+        except KeyError:
+            raise KeyError('Utt "{}" has no value in utt2wc'.format(utt_id))
+        for tup in transcript:
+            if (
+                    isinstance(tup, basestring) or
+                    len(tup) != 3 or
+                    tup[1] < 0. or
+                    tup[2] < 0.):
+                raise ValueError(
+                    'Utt "{}" contains token "{}" with no timing info'
+                    ''.format(utt_id, tup))
+            token, start, end = tup
+            duration = end - start
+            if duration < 0.:
+                raise ValueError(
+                    'Utt "{}" contains token with negative duration'
+                    ''.format(utt_id))
+            segments.append((wfn, chan, start, duration, token))
+    segments = sorted(segments)
+    for segment in segments:
+        ctm.write('{} {} {} {} {}\n'.format(*segment))
 
 
 def transcript_to_token(
