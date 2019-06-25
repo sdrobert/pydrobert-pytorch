@@ -33,6 +33,7 @@ __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2018 Sean Robertson"
 __all__ = [
+    'ctm_to_torch_token_data_dir',
     'get_torch_spect_data_dir_info',
     'torch_token_data_dir_to_trn',
     'trn_to_torch_token_data_dir',
@@ -223,6 +224,46 @@ def _trn_to_torch_token_data_dir_parse_args(args):
     return parser.parse_args(args)
 
 
+def _parse_token2id(file, swap, return_swap):
+    ret = dict()
+    ret_swapped = dict()
+    for line_no, line in enumerate(file):
+        line = line.strip()
+        if not line:
+            continue
+        ls = line.split()
+        if len(ls) != 2 or not ls[1 - int(swap)].isdigit():
+            print(
+                'Cannot parse line {} of {}'.format(line_no + 1, file.name),
+                file=sys.stderr,
+            )
+            return 1
+        key, value = ls
+        key, value = (int(key), value) if swap else (key, int(value))
+        if key in ret:
+            warnings.warn(
+                '{} line {}: "{}" already exists. Mapping will be ambiguous'
+                ''.format(file.name, line_no + 1, key))
+        if value in ret_swapped:
+            warnings.warn(
+                '{} line {}: "{}" already exists. Mapping will be ambiguous'
+                ''.format(file.name, line_no + 1, value))
+        ret[key] = value
+        ret_swapped[value] = key
+    return ret_swapped if return_swap else ret
+
+
+def _save_transcripts_to_dir(
+        transcripts, token2id, file_prefix, file_suffix, dir_,
+        frame_shift_ms=None):
+    if not os.path.isdir(dir_):
+        os.makedirs(dir_)
+    for utt_id, transcript in transcripts:
+        tok = data.transcript_to_token(transcript, token2id, frame_shift_ms)
+        path = os.path.join(dir_, file_prefix + utt_id + file_suffix)
+        torch.save(tok, path)
+
+
 def trn_to_torch_token_data_dir(args=None):
     '''Convert a NIST "trn" file to the specified SpectDataSet data dir
 
@@ -244,31 +285,8 @@ def trn_to_torch_token_data_dir(args=None):
         options = _trn_to_torch_token_data_dir_parse_args(args)
     except SystemExit as ex:
         return ex.code
-    if not os.path.isdir(options.dir):
-        os.makedirs(options.dir)
-    token2id = dict()
-    for line_no, line in enumerate(options.token2id):
-        line = line.strip()
-        if not line:
-            continue
-        ls = line.split()
-        if len(ls) != 2 or not ls[1 - int(options.swap)].isdigit():
-            print(
-                'Cannot parse line {} of {}'.format(
-                    line_no + 1, options.token2id.name),
-                file=sys.stderr,
-            )
-            return 1
-        if options.swap:
-            value, key = ls
-        else:
-            key, value = ls
-        if key in token2id:
-            warnings.warn(
-                '{} line {}: "{}" token already exists. Mapping will be '
-                'ambiguous'.format(options.token2id.name, line_no + 1, key)
-            )
-        token2id[key] = int(value)
+    token2id = _parse_token2id(
+        options.token2id, options.swap, options.swap)
     transcripts = data.read_trn(options.trn)
     # we manually search for alternates in a first pass, as we don't know what
     # filters users have on warnings
@@ -289,11 +307,9 @@ def trn_to_torch_token_data_dir(args=None):
             else:  # first
                 x[0].extend(old_transcript)
                 old_transcript = x[0]
-    for utt_id, transcript in transcripts:
-        tok = data.transcript_to_token(transcript, token2id)
-        path = os.path.join(
-            options.dir, options.file_prefix + utt_id + options.file_suffix)
-        torch.save(tok, path)
+    _save_transcripts_to_dir(
+        transcripts, token2id, options.file_prefix, options.file_suffix,
+        options.dir)
     return 0
 
 
@@ -328,6 +344,33 @@ def _torch_token_data_dir_to_trn_parse_args(args=None):
     return parser.parse_args(args)
 
 
+def _load_transcripts_from_data_dir(
+        dir_, id2token, file_prefix, file_suffix, frame_shift_ms=None):
+    fpl = len(file_prefix)
+    neg_fsl = -len(file_suffix)
+    utt_ids = sorted(
+        x[fpl:neg_fsl]
+        for x in os.listdir(dir_)
+        if x.startswith(file_prefix) and
+        x.endswith(file_suffix)
+    )
+    transcripts = []
+    for utt_id in utt_ids:
+        tok = torch.load(os.path.join(
+            dir_, file_prefix + utt_id + file_suffix))
+        transcript = data.token_to_transcript(tok, id2token, frame_shift_ms)
+        for token in transcript:
+            if len(token) == 3 and isinstance(token[1], int):
+                token = token[0]
+            if isinstance(token, int):
+                assert token not in id2token
+                print(
+                    'Utterance "{}": ID "{}" could not be found in id2token'
+                    ''.format(utt_id, token))
+        transcripts.append((utt_id, transcript))
+    return transcripts
+
+
 def torch_token_data_dir_to_trn(args=None):
     '''Convert a SpectDataSet token data dir to a NIST trn file
 
@@ -352,49 +395,133 @@ def torch_token_data_dir_to_trn(args=None):
     if not os.path.isdir(options.dir):
         print('"{}" is not a directory'.format(options.dir), file=sys.stderr)
         return 1
-    id2token = dict()
-    for line_no, line in enumerate(options.id2token):
+    id2token = _parse_token2id(
+        options.id2token, not options.swap, options.swap)
+    transcripts = _load_transcripts_from_data_dir(
+        options.dir, id2token, options.file_prefix, options.file_suffix)
+    data.write_trn(transcripts, options.trn)
+    return 0
+
+
+def _ctm_to_torch_token_data_dir_parse_args(args):
+    parser = argparse.ArgumentParser(
+        description=ctm_to_torch_token_data_dir.__doc__)
+    parser.add_argument(
+        'ctm', type=argparse.FileType('r'),
+        help='The "ctm" file to read token segments from')
+    parser.add_argument(
+        'token2id', type=argparse.FileType('r'),
+        help='A file containing mappings from tokens (e.g. words or phones) '
+        'to unique IDs. Each line has the format ``<token> <id>``. The flag '
+        '``--swap`` can be used to swap the expected ordering (i.e. '
+        '``<id> <token>``)'
+    )
+    parser.add_argument(
+        'dir', help='The directory to store token sequences to. If the '
+        'directory does not exist, it will be created'
+    )
+    parser.add_argument(
+        '--file-prefix', default='',
+        help='The file prefix indicating a torch data file'
+    )
+    parser.add_argument(
+        '--file-suffix', default='.pt',
+        help='The file suffix indicating a torch data file'
+    )
+    parser.add_argument(
+        '--swap', action='store_true', default=False,
+        help='If set, swaps the order of key and value in `token2id`'
+    )
+    parser.add_argument(
+        '--frame-shift-ms', type=int, default=10,
+        help='The number of milliseconds that have passed between consecutive '
+        'frames. Used to convert between time in seconds and frame index'
+    )
+    utt_group = parser.add_mutually_exclusive_group()
+    utt_group.add_argument(
+        '--wc2utt', type=argparse.FileType('r'), default=None,
+        help='A file mapping wavefile name and channel combinations (e.g. '
+        '``utt_1 A``) to utterance IDs. Each line of the file has the format '
+        '``<wavefile_name> <channel> <utt_id>``. If neither "--wc2utt" nor '
+        '"--utt2wc" has been specied, the wavefile name will be treated as '
+        'the utterance ID')
+    utt_group.add_argument(
+        '--utt2wc', type=argparse.FileType('r'), default=None,
+        help='A file mapping utterance IDs to wavefile name and channel '
+        'combinations (e.g. ``utt_1 A``). Each line of the file has the '
+        'format ``<utt_id> <wavefile_name> <channel>``. If neither "--wc2utt" '
+        'nor "--utt2wc" has been specied, the wavefile name will be treated '
+        'as the utterance ID')
+    return parser.parse_args(args)
+
+
+def _parse_wc2utt(file, swap, return_swap):
+    ret = dict()
+    ret_swapped = dict()
+    for line_no, line in enumerate(file):
         line = line.strip()
         if not line:
             continue
         ls = line.split()
-        if len(ls) != 2 or not ls[int(options.swap)].isdigit():
+        if len(ls) != 3:
             print(
-                'Cannot parse line {} of {}'.format(
-                    line_no + 1, options.id2token.name),
+                'Cannot parse line {} of {}'.format(line_no + 1, file.name),
                 file=sys.stderr,
             )
             return 1
-        if options.swap:
-            value, key = ls
-        else:
-            key, value = ls
-        if key in id2token:
+        first, mid, last = ls
+        key, value = ((mid, last), first) if swap else ((first, mid), last)
+        if key in ret:
             warnings.warn(
-                '{} line {}: "{}" ID already exists. Mapping will be '
-                'ambiguous'.format(options.id2token.name, line_no + 1, key)
+                '{} line {}: "{}" already exists. Mapping will be '
+                ''.format(file.name, line_no + 1, key)
             )
-        id2token[int(key)] = value
-    fpl = len(options.file_prefix)
-    neg_fsl = -len(options.file_suffix)
-    utt_ids = sorted(
-        x[fpl:neg_fsl]
-        for x in os.listdir(options.dir)
-        if x.startswith(options.file_prefix) and
-        x.endswith(options.file_suffix)
-    )
-    transcripts = []
-    for utt_id in utt_ids:
-        tok = torch.load(os.path.join(
-            options.dir, options.file_prefix + utt_id + options.file_suffix))
-        transcript = data.token_to_transcript(tok, id2token)
-        # make sure all ids have been converted to tokens
-        for token in transcript:
-            if isinstance(token, int):
-                assert token not in id2token
-                print(
-                    'Utterance "{}": ID "{}" could not be found in "{}"'
-                    ''.format(utt_id, token, options.id2token.name))
-        transcripts.append((utt_id, transcript))
-    data.write_trn(transcripts, options.trn)
+        if value in ret_swapped:
+            warnings.warn(
+                '{} line {}: "{}" already exists. Mapping will be '
+                ''.format(file.name, line_no + 1, value)
+            )
+        ret[key] = value
+        ret_swapped[value] = key
+    return ret_swapped if return_swap else ret
+
+
+def ctm_to_torch_token_data_dir(args=None):
+    '''Convert a NIST "ctm" file to a token data dir
+
+    A "ctm" file is a transcription file with token alignments (a.k.a. a
+    time-marked conversation file) used in the `sclite
+    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_ toolkit.
+    Here is the format::
+
+        utt_1 A 0.2 0.1 hi
+        utt_1 A 0.3 1.0 there  ;; comment
+        utt_2 A 0.0 1.0 next
+        utt_3 A 0.1 0.4 utterance
+
+    Where the first number specifies the token start time (in seconds) and the
+    second the duration.
+
+    This command reads in a "ctm" file and writes its contents as token
+    sequences compatible with the ``ref/`` directory of a ``SpectDataSet``.
+    See the command ``get_torch_spect_data_dir_info`` (command line
+    "get-torch-spect-data-dir-info") for more information on a
+    ``SpectDataSet``
+    '''
+    try:
+        options = _ctm_to_torch_token_data_dir_parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+    token2id = _parse_token2id(
+        options.token2id, options.swap, options.swap)
+    if options.wc2utt:
+        wc2utt = _parse_wc2utt(options.wc2utt, False, False)
+    elif options.utt2wc:
+        wc2utt = _parse_wc2utt(options.utt2wc, True, False)
+    else:
+        wc2utt = None
+    transcripts = data.read_ctm(options.ctm, wc2utt)
+    _save_transcripts_to_dir(
+        transcripts, token2id, options.file_prefix, options.file_suffix,
+        options.dir, options.frame_shift_ms)
     return 0

@@ -50,18 +50,22 @@ def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
             [temp_dir, table_path, '--strict'])
 
 
-@pytest.mark.cpu
-@pytest.mark.parametrize('swap', [True, False])
-def test_trn_to_torch_token_data_dir(temp_dir, swap):
-    trn_path = os.path.join(temp_dir, 'ref.trn')
-    token2id_path = os.path.join(temp_dir, 'token2id')
-    ref_dir = os.path.join(temp_dir, 'ref')
-    with open(token2id_path, 'w') as token2id:
+def _write_token2id(path, swap):
+    with open(path, 'w') as f:
         for v in range(ord('a'), ord('z') + 1):
             if swap:
-                token2id.write('{} {}\n'.format(v - ord('a'), chr(v)))
+                f.write('{} {}\n'.format(v - ord('a'), chr(v)))
             else:
-                token2id.write('{} {}\n'.format(chr(v), v - ord('a')))
+                f.write('{} {}\n'.format(chr(v), v - ord('a')))
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize('tokens', ['token2id', 'id2token'])
+def test_trn_to_torch_token_data_dir(temp_dir, tokens):
+    trn_path = os.path.join(temp_dir, 'ref.trn')
+    tokens_path = os.path.join(temp_dir, 'token2id')
+    ref_dir = os.path.join(temp_dir, 'ref')
+    _write_token2id(tokens_path, tokens == 'id2token')
     with open(trn_path, 'w') as trn:
         trn.write('''\
 a b b c (utt1)
@@ -72,8 +76,8 @@ d { e / f } g (utt3)
 ''')
     with warnings.catch_warnings(record=True):
         assert not command_line.trn_to_torch_token_data_dir(
-            [trn_path, token2id_path, ref_dir, '--alt-handler=first'] +
-            (['--swap'] if swap else [])
+            [trn_path, tokens_path, ref_dir, '--alt-handler=first'] +
+            (['--swap'] if tokens == 'id2token' else [])
         )
     act_utt1 = torch.load(os.path.join(ref_dir, 'utt1.pt'))
     assert torch.all(act_utt1 == torch.tensor([
@@ -88,22 +92,17 @@ d { e / f } g (utt3)
 
 
 @pytest.mark.cpu
-@pytest.mark.parametrize('swap', [True, False])
-def test_torch_token_data_dir_to_trn(temp_dir, swap):
+@pytest.mark.parametrize('tokens', ['token2id', 'id2token'])
+def test_torch_token_data_dir_to_trn(temp_dir, tokens):
     torch.manual_seed(1000)
     num_utts = 100
     max_tokens = 10
     num_digits = torch.log10(torch.tensor(float(num_utts))).long().item() + 1
     utt_fmt = 'utt{{:0{}d}}'.format(num_digits)
     trn_path = os.path.join(temp_dir, 'ref.trn')
-    id2token_path = os.path.join(temp_dir, 'id2token')
+    tokens_path = os.path.join(temp_dir, 'id2token')
     ref_dir = os.path.join(temp_dir, 'ref')
-    with open(id2token_path, 'w') as id2token:
-        for v in range(ord('a'), ord('z') + 1):
-            if swap:
-                id2token.write('{} {}\n'.format(chr(v), v - ord('a')))
-            else:
-                id2token.write('{} {}\n'.format(v - ord('a'), chr(v)))
+    _write_token2id(tokens_path, tokens == 'id2token')
     if not os.path.isdir(ref_dir):
         os.makedirs(ref_dir)
     exps = []
@@ -117,11 +116,61 @@ def test_torch_token_data_dir_to_trn(temp_dir, swap):
         transcript += ' ({})'.format(utt_id)
         exps.append(transcript)
     assert not command_line.torch_token_data_dir_to_trn(
-        [ref_dir, id2token_path, trn_path] +
-        (['--swap'] if swap else [])
+        [ref_dir, tokens_path, trn_path] +
+        (['--swap'] if tokens == 'token2id' else [])
     )
     with open(trn_path, 'r') as trn:
         acts = trn.readlines()
     assert len(exps) == len(acts)
     for exp, act in zip(exps, acts):
         assert exp.strip() == act.strip()
+
+
+def _write_wc2utt(path, swap, chan):
+    fmt = 'u_{0} w_{0} {1}\n' if swap else 'w_{0} {1} u_{0}\n'
+    with open(path, 'w') as f:
+        for utt_idx in range(1000):
+            f.write(fmt.format(utt_idx, chan))
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize('tokens', ['token2id', 'id2token'])
+@pytest.mark.parametrize('channels', ['wc2utt', 'utt2wc', None])
+def test_ctm_to_torch_token_data_dir(temp_dir, tokens, channels):
+    ctm_path = os.path.join(temp_dir, 'ref.ctm')
+    tokens_path = os.path.join(temp_dir, tokens)
+    channels_path = os.path.join(temp_dir, channels) if channels else None
+    ref_dir = os.path.join(temp_dir, 'ref')
+    _write_token2id(tokens_path, tokens == 'id2token')
+    if channels:
+        _write_wc2utt(channels_path, channels == 'utt2wc', 'A')
+    with open(ctm_path, 'w') as ctm:
+        ctm.write('''\
+;; some text
+w_1 A 0.1 1.0 a
+
+w_1 A 0.2 1.0 b
+w_1 A 0.3 1.0 c   ;; ignore this comment
+w_2 A 0.0 0.0 b
+w_3 A 0.0 1000.0 d
+w_3 A 1.0 0.1 d
+''')
+    args = [ctm_path, tokens_path, ref_dir]
+    if tokens == 'id2token':
+        args.append('--swap')
+    if channels == 'utt2wc':
+        args.append('--utt2wc={}'.format(channels_path))
+    elif channels == 'wc2utt':
+        args.append('--wc2utt={}'.format(channels_path))
+    assert not command_line.ctm_to_torch_token_data_dir(args)
+    act_utt1 = torch.load(
+        os.path.join(ref_dir, 'u_1.pt' if channels else 'w_1.pt'))
+    assert torch.all(act_utt1 == torch.tensor([
+        [0, 10, 110], [1, 20, 120], [2, 30, 130]]))
+    act_utt2 = torch.load(
+        os.path.join(ref_dir, 'u_2.pt' if channels else 'w_2.pt'))
+    assert torch.all(act_utt2 == torch.tensor([[1, 0, 0]]))
+    act_utt3 = torch.load(
+        os.path.join(ref_dir, 'u_3.pt' if channels else 'w_3.pt'))
+    assert torch.all(act_utt3 == torch.tensor([
+        [3, 0, 100000], [3, 100, 110]]))
