@@ -126,10 +126,15 @@ def test_torch_token_data_dir_to_trn(temp_dir, tokens):
         assert exp.strip() == act.strip()
 
 
-def _write_wc2utt(path, swap, chan):
-    fmt = 'u_{0} w_{0} {1}\n' if swap else 'w_{0} {1} u_{0}\n'
+def _write_wc2utt(path, swap, chan, num_utts):
+    num_digits = torch.log10(torch.tensor(float(num_utts))).long().item() + 1
+    idx_fmt = '{{0:0{}d}}'.format(num_digits)
+    if swap:
+        fmt = 'u_{0} w_{0} {{1}}\n'.format(idx_fmt)
+    else:
+        fmt = 'w_{0} {{1}} u_{0}\n'.format(idx_fmt)
     with open(path, 'w') as f:
-        for utt_idx in range(1000):
+        for utt_idx in range(num_utts):
             f.write(fmt.format(utt_idx, chan))
 
 
@@ -143,7 +148,7 @@ def test_ctm_to_torch_token_data_dir(temp_dir, tokens, channels):
     ref_dir = os.path.join(temp_dir, 'ref')
     _write_token2id(tokens_path, tokens == 'id2token')
     if channels:
-        _write_wc2utt(channels_path, channels == 'utt2wc', 'A')
+        _write_wc2utt(channels_path, channels == 'utt2wc', 'A', 5)
     with open(ctm_path, 'w') as ctm:
         ctm.write('''\
 ;; some text
@@ -174,3 +179,56 @@ w_3 A 1.0 0.1 d
         os.path.join(ref_dir, 'u_3.pt' if channels else 'w_3.pt'))
     assert torch.all(act_utt3 == torch.tensor([
         [3, 0, 100000], [3, 100, 110]]))
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize('tokens', ['token2id', 'id2token'])
+@pytest.mark.parametrize('channels', ['wc2utt', 'utt2wc', None])
+def test_torch_token_data_dir_to_ctm(temp_dir, tokens, channels):
+    torch.manual_seed(420)
+    ctm_path = os.path.join(temp_dir, 'ref.ctm')
+    tokens_path = os.path.join(temp_dir, tokens)
+    channels_path = os.path.join(temp_dir, channels) if channels else None
+    ref_dir = os.path.join(temp_dir, 'ref')
+    num_utts, max_tokens, max_start, max_dur = 100, 10, 1000, 100
+    max_tokens = 10
+    frame_shift_ms = 20
+    num_digits = torch.log10(torch.tensor(float(num_utts))).long().item() + 1
+    utt_fmt = 'u_{{:0{}d}}'.format(num_digits)
+    wfn_fmt = '{}_{{:0{}d}}'.format('w' if channels else 'u', num_digits)
+    _write_token2id(tokens_path, tokens == 'id2token')
+    if channels:
+        _write_wc2utt(channels_path, channels == 'utt2wc', 'A', num_utts)
+    if not os.path.isdir(ref_dir):
+        os.makedirs(ref_dir)
+    exps = []
+    for utt_idx in range(num_utts):
+        utt_id = utt_fmt.format(utt_idx)
+        wfn_id = wfn_fmt.format(utt_idx)
+        num_tokens = torch.randint(max_tokens + 1, (1,)).long().item()
+        ids = torch.randint(26, (num_tokens,)).long()
+        starts = torch.randint(max_start, (num_tokens,)).long()
+        durs = torch.randint(max_dur, (num_tokens,)).long()
+        ends = starts + durs
+        tok = torch.stack([ids, starts, ends], -1)
+        torch.save(tok, os.path.join(ref_dir, utt_id + '.pt'))
+        for token, start, end in sorted(tok.tolist(), key=lambda x: x[1:]):
+            start = start * frame_shift_ms / 1000
+            end = end * frame_shift_ms / 1000
+            exps.append('{} A {} {} {}'.format(
+                wfn_id, start, end - start, chr(token + ord('a'))))
+    args = [
+        ref_dir, tokens_path, ctm_path,
+        '--frame-shift-ms={}'.format(frame_shift_ms)]
+    if tokens == 'token2id':
+        args.append('--swap')
+    if channels == 'utt2wc':
+        args.append('--utt2wc={}'.format(channels_path))
+    elif channels == 'wc2utt':
+        args.append('--wc2utt={}'.format(channels_path))
+    assert not command_line.torch_token_data_dir_to_ctm(args)
+    with open(ctm_path, 'r') as ctm:
+        acts = ctm.readlines()
+    assert len(exps) == len(acts)
+    for exp, act in zip(exps, acts):
+        assert exp.strip() == act.strip()

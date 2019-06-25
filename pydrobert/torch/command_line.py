@@ -323,7 +323,7 @@ def _torch_token_data_dir_to_trn_parse_args(args=None):
         help='A file containing the mappings from unique IDs to tokens (e.g. '
         'words or phones). Each line has the format ``<id> <token>``. The '
         'flag ``--swap`` can be used to swap the expected ordering (i.e. '
-        '``<id> <token>``)'
+        '``<token> <id>``)'
     )
     parser.add_argument(
         "trn", type=argparse.FileType('w'),
@@ -487,7 +487,7 @@ def _parse_wc2utt(file, swap, return_swap):
 
 
 def ctm_to_torch_token_data_dir(args=None):
-    '''Convert a NIST "ctm" file to a token data dir
+    '''Convert a NIST "ctm" file to a SpectDataSet token data dir
 
     A "ctm" file is a transcription file with token alignments (a.k.a. a
     time-marked conversation file) used in the `sclite
@@ -524,4 +524,98 @@ def ctm_to_torch_token_data_dir(args=None):
     _save_transcripts_to_dir(
         transcripts, token2id, options.file_prefix, options.file_suffix,
         options.dir, options.frame_shift_ms)
+    return 0
+
+
+def _torch_token_data_dir_to_ctm_parse_args(args):
+    parser = argparse.ArgumentParser(
+        description=torch_token_data_dir_to_ctm.__doc__)
+    parser.add_argument(
+        'dir', help='The directory to read token sequences from')
+    parser.add_argument(
+        'id2token', type=argparse.FileType('r'),
+        help='A file containing mappings from unique IDs to tokens (e.g. '
+        'words or phones). Each line has the format ``<id> <token>``. The '
+        '``--swap`` can be used to swap the expected ordering (i.e. '
+        '``<token> <id>``)'
+    )
+    parser.add_argument(
+        'ctm', type=argparse.FileType('w'),
+        help='The "ctm" file to write token segments to')
+    parser.add_argument(
+        '--file-prefix', default='',
+        help='The file prefix indicating a torch data file'
+    )
+    parser.add_argument(
+        '--file-suffix', default='.pt',
+        help='The file suffix indicating a torch data file'
+    )
+    parser.add_argument(
+        '--swap', action='store_true', default=False,
+        help='If set, swaps the order of key and value in `id2token`'
+    )
+    parser.add_argument(
+        '--frame-shift-ms', type=int, default=10,
+        help='The number of milliseconds that have passed between consecutive '
+        'frames. Used to convert between time in seconds and frame index'
+    )
+    utt_group = parser.add_mutually_exclusive_group()
+    utt_group.add_argument(
+        '--wc2utt', type=argparse.FileType('r'), default=None,
+        help='A file mapping wavefile name and channel combinations (e.g. '
+        '``utt_1 A``) to utterance IDs. Each line of the file has the format '
+        '``<wavefile_name> <channel> <utt_id>``')
+    utt_group.add_argument(
+        '--utt2wc', type=argparse.FileType('r'), default=None,
+        help='A file mapping utterance IDs to wavefile name and channel '
+        'combinations (e.g. ``utt_1 A``). Each line of the file has the '
+        'format ``<utt_id> <wavefile_name> <channel>``')
+    utt_group.add_argument(
+        '--channel', default='A',
+        help='If neither "--wc2utt" nor "--utt2wc" is specified, utterance '
+        'IDs are treated as wavefile names and are given the value of this '
+        'flag as a channel'
+    )
+    return parser.parse_args(args)
+
+
+def torch_token_data_dir_to_ctm(args=None):
+    '''Convert a ``SpectDataSet`` token data directory to a NIST "ctm" file
+
+    A "ctm" file is a transcription file with token alignments (a.k.a. a
+    time-marked conversation file) used in the `sclite
+    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_ toolkit.
+    Here is the format::
+
+        utt_1 A 0.2 0.1 hi
+        utt_1 A 0.3 1.0 there  ;; comment
+        utt_2 A 0.0 1.0 next
+        utt_3 A 0.1 0.4 utterance
+
+    Where the first number specifies the token start time (in seconds) and the
+    second the duration.
+
+    This command scans the contents of a directory like ``ref/`` in a
+    ``SpectDataSet`` and converts each such file into a transcription. Every
+    token in a given transcription must have information about its duration.
+    Each such transcription is then written to the "ctm" file. See the command
+    ``get_torch_spect_data_dir_info`` (command line
+    "get-torch-spect-data-dir-info") for more information on a ``SpectDataSet``
+    '''
+    try:
+        options = _torch_token_data_dir_to_ctm_parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+    id2token = _parse_token2id(
+        options.id2token, not options.swap, options.swap)
+    if options.wc2utt:
+        utt2wc = _parse_wc2utt(options.wc2utt, False, True)
+    elif options.utt2wc:
+        utt2wc = _parse_wc2utt(options.utt2wc, True, True)
+    else:
+        utt2wc = options.channel
+    transcripts = _load_transcripts_from_data_dir(
+        options.dir, id2token, options.file_prefix, options.file_suffix,
+        options.frame_shift_ms)
+    data.write_ctm(transcripts, options.ctm, utt2wc)
     return 0
