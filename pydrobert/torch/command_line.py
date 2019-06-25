@@ -25,8 +25,6 @@ import warnings
 import torch
 import pydrobert.torch.data as data
 
-from past.builtins import basestring
-
 
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
@@ -297,7 +295,7 @@ def trn_to_torch_token_data_dir(args=None):
             x = old_transcript.pop(0)
             if len(x) == 3 and x[1] == -1:
                 x = x[0]
-            if isinstance(x, basestring):
+            if isinstance(x, str):
                 transcript.append(x)
             elif options.alt_handler == 'error':
                 print(

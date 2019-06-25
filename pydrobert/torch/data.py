@@ -20,14 +20,18 @@ from __future__ import print_function
 
 import os
 import warnings
+from collections import OrderedDict
+
 
 import numpy as np
 import torch
 import torch.utils.data
 import param
 
-from past.builtins import basestring
-from collections import OrderedDict
+try:
+    basestring
+except NameError:
+    basestring = str
 
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
