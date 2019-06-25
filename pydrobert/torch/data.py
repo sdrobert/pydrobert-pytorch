@@ -776,7 +776,7 @@ def write_ctm(transcripts, ctm, utt2wc='A'):
 
 
 def transcript_to_token(
-        transcript, token2id=None, frame_length_ms=None):
+        transcript, token2id=None, frame_shift_ms=None):
     '''Convert a transcript to a ``SpectDataSet`` token sequence
 
     This method converts `transcript` of length ``R`` to a ``LongTensor`` `tok`
@@ -784,10 +784,10 @@ def transcript_to_token(
     sequence for an utterance of ``SpectDataSet``. An element of `transcript`
     can either be a ``token`` or a 3-tuple of ``(token, start, end)``. ``id =
     token2id.get(token, token) if token2id is not None else token`` dictates
-    the conversion from ``token`` to identifier. If `frame_length_ms` is
+    the conversion from ``token`` to identifier. If `frame_shift_ms` is
     specified, ``start`` and ``end`` are taken as the start and end times, in
     seconds, of the token, and will be converted to frames for `tok`. If
-    `frame_length_ms` is unspecified, ``start`` and ``end`` are assumed to
+    `frame_shift_ms` is unspecified, ``start`` and ``end`` are assumed to
     already be frame times. If ``start`` and ``end`` were unspecified, values
     of ``-1``, representing unknown, will be inserted into ``r[i, 1:]``
 
@@ -795,7 +795,7 @@ def transcript_to_token(
     ----------
     transcript : sequence
     token2id : dict, optional
-    frame_length_ms : int, optional
+    frame_shift_ms : int, optional
 
     Returns
     -------
@@ -807,9 +807,9 @@ def transcript_to_token(
         try:
             if len(token) == 3 and np.isreal(token[1]) and np.isreal(token[2]):
                 token, start, end = token
-                if frame_length_ms:
-                    start = (1000 * start) / frame_length_ms
-                    end = (1000 * end) / frame_length_ms
+                if frame_shift_ms:
+                    start = (1000 * start) / frame_shift_ms
+                    end = (1000 * end) / frame_shift_ms
                 start, end = int(start), int(end)
         except TypeError:
             pass
@@ -822,7 +822,7 @@ def transcript_to_token(
     return tok
 
 
-def token_to_transcript(tok, id2token=None, frame_length_ms=None):
+def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
     '''Convert a ``SpectDataSet`` token sequence to a transcript
 
     The inverse operation of ``transcript_to_token``
@@ -831,7 +831,7 @@ def token_to_transcript(tok, id2token=None, frame_length_ms=None):
     ----------
     tok : torch.LongTensor
     id2token : dict, optional
-    frame_length_ms : int, optional
+    frame_shift_ms : int, optional
 
     Returns
     -------
@@ -846,9 +846,9 @@ def token_to_transcript(tok, id2token=None, frame_length_ms=None):
         if start == -1 or end == -1:
             transcript.append(token)
         else:
-            if frame_length_ms:
-                start = start * frame_length_ms / 1000
-                end = end * frame_length_ms / 1000
+            if frame_shift_ms:
+                start = start * frame_shift_ms / 1000
+                end = end * frame_shift_ms / 1000
             transcript.append((token, start, end))
     return transcript
 
