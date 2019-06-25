@@ -13,6 +13,7 @@ import torch.utils.data
 import param
 
 from past.builtins import basestring
+from collections import OrderedDict
 
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
@@ -29,6 +30,7 @@ __all__ = [
     'DataSetParams',
     'EpochRandomSampler',
     'extract_window',
+    'read_ctm',
     'read_trn',
     'REF_PAD_VALUE',
     'spect_seq_to_batch',
@@ -641,6 +643,85 @@ def write_trn(transcripts, trn):
         trn.write('(')
         trn.write(utt_id)
         trn.write(')\n')
+
+
+def read_ctm(ctm, utt_map=None):
+    '''Read a NIST sclite "ctm" file into a list of transcriptions
+
+    `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_
+    is a commonly used scoring tool for ASR.
+
+    This function converts a time-marked conversation file ("ctm" format) into
+    a list of `transcripts`. Each element is a tuple of ``utt_id, transcript``,
+    where ``transcript`` is itself a list of triples ``token, start, end``,
+    ``token`` being a string, ``start`` being the start time of the token
+    (in seconds), and ``end`` being the end time of the token (in seconds)
+
+    Parameters
+    ----------
+    ctm : file_ptr or str
+        The time-marked conversation file pointer. Will open if `ctm` is a
+        path
+    utt_map : dict, optional
+        "ctm" files identify utterances by waveform file name and channel. If
+        specified, `utt_map` consists of keys ``wfn, chan`` (e.g.
+        ``'940328', 'A'``) to unique utterance IDs. If `utt_map` is
+        unspecified, the waveform file names are treated as the utterance IDs,
+        and the channel is ignored
+
+    Returns
+    -------
+    transcripts : list
+
+    Notes
+    -----
+    "ctm", like "trn", has "support" for alternate transcriptions. It is, as of
+    sclite version 2.10, very buggy. For example, it cannot handle multiple
+    alternates in the same utterance. Plus, tools like Kaldi [1]_ use the Unix
+    command that the sclite documentation recommends to sort a ctm,
+    ``sort +0 -1 +1 -2 +2nb -3``, which does not maintain proper ordering for
+    alternate delimiters. Thus, ``read_ctm`` will error if it comes across
+    those delimiters
+
+    References
+    ----------
+    .. [1] D. Povey et al., "The Kaldi Speech Recognition Toolkit," in IEEE
+       2011 Workshop on Automatic Speech Recognition and Understanding,
+       Hilton Waikoloa Village, Big Island, Hawaii, US, 2011.
+    '''
+    if isinstance(ctm, str):
+        with open(ctm, 'r') as ctm:
+            return read_ctm(ctm, utt_map)
+    transcripts = OrderedDict()
+    for line_no, line in enumerate(ctm):
+        line = line.split(';;')[0].strip()
+        if not line:
+            continue
+        line = line.split()
+        try:
+            if len(line) not in {5, 6}:
+                raise ValueError()
+            wfn, chan, start, dur, token = line[:5]
+            if utt_map is None:
+                utt_id = wfn
+            else:
+                utt_id = utt_map[(wfn, chan)]
+            start = float(start)
+            end = start + float(dur)
+            if start < 0. or start > end:
+                raise ValueError()
+            transcripts.setdefault(utt_id, []).append((token, start, end))
+        except ValueError:
+            raise ValueError(
+                'Could not parse line {} of ctm'.format(line_no + 1))
+        except KeyError:
+            raise KeyError(
+                'ctm line {}: ({}, {}) was not found in utt_map'.format(
+                    line_no, wfn, chan))
+    return [
+        (utt_id, sorted(transcript, key=lambda x: x[1]))
+        for utt_id, transcript in transcripts.items()
+    ]
 
 
 def transcript_to_token(

@@ -248,6 +248,37 @@ a11 (d)
 
 
 @pytest.mark.cpu
+def test_read_ctm():
+    ctm = StringIO()
+    ctm.write('''\
+utt1 A 0.0 0.1 a
+utt1 A 0.5 0.1 c  ;; ctm files should always be ordered, but we tolerate
+                  ;; different orders
+utt2 B 0.1 1.0 d
+utt1 B 0.4 0.3 b
+;; utt2 A 0.2 1.0 f
+''')
+    ctm.seek(0)
+    act = data.read_ctm(ctm)
+    assert act == [
+        ('utt1', [('a', 0.0, 0.1), ('b', 0.4, 0.7), ('c', 0.5, 0.6)]),
+        ('utt2', [('d', 0.1, 1.1)]),
+    ]
+    ctm.seek(0)
+    act = data.read_ctm(ctm, {
+        ('utt1', 'A'): 'foo', ('utt1', 'B'): 'bar', ('utt2', 'B'): 'baz'})
+    assert act == [
+        ('foo', [('a', 0.0, 0.1), ('c', 0.5, 0.6)]),
+        ('baz', [('d', 0.1, 1.1)]),
+        ('bar', [('b', 0.4, 0.7)]),
+    ]
+    with pytest.raises(ValueError):
+        ctm.write('utt3 -0.1 1.0 woop\n')
+        ctm.seek(0)
+        data.read_ctm(ctm)
+
+
+@pytest.mark.cpu
 def test_write_trn():
     trn = StringIO()
     transcripts = [
