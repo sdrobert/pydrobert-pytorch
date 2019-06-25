@@ -55,8 +55,16 @@ def main():
         ],
         entry_points={
             'console_scripts': [
+                'ctm-to-torch-token-data-dir = pydrobert.torch.command_line:'
+                'ctm_to_torch_token_data_dir',
                 'get-torch-spect-data-dir-info = pydrobert.torch.command_line:'
-                'get_torch_spect_data_dir_info'
+                'get_torch_spect_data_dir_info',
+                'trn-to-torch-token-data-dir = pydrobert.torch.command_line:'
+                'trn_to_torch_token_data_dir',
+                'torch-token-data-dir-to-ctm = pydrobert.torch.command_line:'
+                'torch_token_data_dir_to_ctm',
+                'torch-token-data-dir-to-trn = pydrobert.torch.command_line:'
+                'torch_token_data_dir_to_trn',
             ]
         },
     )

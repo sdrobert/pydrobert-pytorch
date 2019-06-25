@@ -13,7 +13,17 @@ Functionality is split by submodule. They include
   training loops, even the most esoteric. `TrainingStateController` can be used
   to persist model and optimizer states across runs, and manage
   non-determinism.
-- `pydrobert.data`: Primarily serves as a means to manipulate speech data.
+- `pydrobert.torch.data`: Primarily serves as a means to manipulate speech
+  data. It contains subclasses of `torch.utils.data.DataLoader` for both
+  random and sequential access of speech data, as well as examples of how to
+  use them. `pydrobert.torch.data` also contains functions for transducing back
+  and forth between tensors and transcriptions. In particular, this package
+  comes with command line hooks for converting to and from
+  [NIST sclite](http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm)
+  file formats. Feature data and senone alignments from
+  [Kaldi](http://kaldi-asr.org/) can be converted to this format using the
+  command line hooks from
+  [pydrobert-kaldi](https://github.com/sdrobert/pydrobert-kaldi).
 
 Consult the submodule docstrings for more information.
 

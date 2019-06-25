@@ -38,16 +38,21 @@ def populate_torch_dir():
     def _populate_torch_dir(
             dr, num_utts, min_width=1, max_width=10, num_filts=5,
             max_class=10,
-            include_ali=True, file_prefix='', file_suffix='.pt', seed=1):
+            include_ali=True, include_ref=True, file_prefix='',
+            file_suffix='.pt', seed=1):
         torch.manual_seed(seed)
-        feats_dir = os.path.join(dr, 'feats')
+        feat_dir = os.path.join(dr, 'feat')
         ali_dir = os.path.join(dr, 'ali')
-        if not os.path.isdir(feats_dir):
-            os.makedirs(feats_dir)
+        ref_dir = os.path.join(dr, 'ref')
+        if not os.path.isdir(feat_dir):
+            os.makedirs(feat_dir)
         if include_ali and not os.path.isdir(ali_dir):
             os.makedirs(ali_dir)
+        if include_ref and not os.path.isdir(ref_dir):
+            os.makedirs(ref_dir)
         feats, feat_sizes, utt_ids = [], [], []
         alis = [] if include_ali else None
+        refs, ref_sizes = ([], []) if include_ref else (None, None)
         utt_id_fmt_str = '{{:0{}d}}'.format(int(math.log10(num_utts)) + 1)
         for utt_idx in range(num_utts):
             utt_id = utt_id_fmt_str.format(utt_idx)
@@ -55,7 +60,7 @@ def populate_torch_dir():
             feat_size = feat_size.item()
             feat = torch.rand(feat_size, num_filts)
             torch.save(feat, os.path.join(
-                feats_dir, file_prefix + utt_id + file_suffix))
+                feat_dir, file_prefix + utt_id + file_suffix))
             feats.append(feat)
             feat_sizes.append(feat_size)
             utt_ids.append(utt_id)
@@ -64,5 +69,22 @@ def populate_torch_dir():
                 torch.save(ali, os.path.join(
                     ali_dir, file_prefix + utt_id + file_suffix))
                 alis.append(ali)
-        return feats, alis, feat_sizes, utt_ids
+            if include_ref:
+                ref_size = torch.randint(1, feat_size + 1, (1,)).long().item()
+                max_ref_length = torch.randint(1, feat_size + 1, (1,)).long()
+                max_ref_length = max_ref_length.item()
+                ref_starts = torch.randint(
+                    feat_size - max_ref_length + 1, (ref_size,)).long()
+                ref_lengths = torch.randint(
+                    1, max_ref_length + 1, (ref_size,)).long()
+                ref = torch.stack([
+                    torch.randint(100, (ref_size,)).long(),
+                    ref_starts,
+                    ref_starts + ref_lengths,
+                ], dim=-1)
+                torch.save(ref, os.path.join(
+                    ref_dir, file_prefix + utt_id + file_suffix))
+                ref_sizes.append(ref_size)
+                refs.append(ref)
+        return feats, alis, refs, feat_sizes, ref_sizes, utt_ids
     return _populate_torch_dir
