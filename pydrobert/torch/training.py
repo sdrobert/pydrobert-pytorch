@@ -146,15 +146,16 @@ class TrainingStateController(object):
     >>> controller = TrainingStateController(
     ...    params,
     ...    state_csv_path='log.csv',
-    ...    state_dir='states')
+    ...    state_dir='states',
+    ...    num_epochs=5)
     >>> controller.load_model_and_optimizer_for_epoch(
-    >>>     model, optimizer, controller.get_last_epoch())  # load previous
+    ...     model, optimizer, controller.get_last_epoch())  # load previous
     >>> for epoch in range(params.num_epochs):
-    ...     # ... do training loop for epoch
-    ...     train_loss, val_loss = 0.1, 0.01
-    ...     if not controller.update_for_epoch(
+    >>>     # do training loop for epoch
+    >>>     train_loss, val_loss = 0.1, 0.01
+    >>>     if not controller.update_for_epoch(
     ...             model, optimizer, train_loss, val_loss):
-    ...         break  # early stopping
+    >>>         break  # early stopping
 
     Parameters
     ----------
