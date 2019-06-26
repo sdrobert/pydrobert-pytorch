@@ -85,6 +85,7 @@ class SpectDataSet(torch.utils.data.Dataset):
     ``SpectDataSet`` assumes that `data_dir` is structured as
 
     ::
+
         data_dir/
             feat/
                 <file_prefix><utt_ids[0]><file_suffix>
@@ -169,6 +170,7 @@ class SpectDataSet(torch.utils.data.Dataset):
     Examples
     --------
     Creating a spectral data directory with random data
+
     >>> data_dir = 'data'
     >>> os.makedirs(data_dir + '/feat', exist_ok=True)
     >>> os.makedirs(data_dir + '/ali', exist_ok=True)
@@ -193,12 +195,14 @@ class SpectDataSet(torch.utils.data.Dataset):
     >>>     torch.save(ref, data_dir + '/ref/{:02d}.pt'.format(utt_idx))
 
     Accessing individual elements in a spectral data directory
+
     >>> data = SpectDataSet('data')
     >>> data[0]  # random access feat, ali, ref
     >>> for feat, ali, ref in data:  # iterator
     >>>     pass
 
     Writing evaluation data back to the directory
+
     >>> data = SpectDataSet('data')
     >>> num_ali_classes, num_ref_classes, min_ref, max_ref = 100, 2000, 3, 10
     >>> num_frames = data[3][0].shape[0]
@@ -395,22 +399,25 @@ def validate_spect_data_set(data_set):
 
     The data directory is valid if the following conditions are observed
 
-     1. All features are ``FloatTensor`` instances
-     2. All features have two axes
-     3. All features have the same size second axis
-     4. If alignments are present
-        1. All alignments are ``LongTensor`` instances
-        2. All alignments have one axis
-        3. Features and alignments have the same size first axes for a given
-           utterance id
-     5. If reference sequences are present
-        1. All references are ``LongTensor`` instances
-        2. All alignments have two axes, the second of size 3
-        3. For the start and end points of a reference token, ``r[i, 1:]``,
-           either both of them are negative (indicating no alignment), or
-           ``0 <= r[i, 1] < r[i, 2] <= T``, where ``T`` is the number of
-           frames in the utterance. We do not enforce tokens be
-           non-overlapping
+    1. All features are ``FloatTensor`` instances
+    2. All features have two axes
+    3. All features have the same size second axis
+    4. If alignments are present
+
+       1. All alignments are ``LongTensor`` instances
+       2. All alignments have one axis
+       3. Features and alignments have the same size first axes for a given
+          utterance id
+
+    5. If reference sequences are present
+
+       1. All references are ``LongTensor`` instances
+       2. All alignments have two axes, the second of size 3
+       3. For the start and end points of a reference token, ``r[i, 1:]``,
+          either both of them are negative (indicating no alignment), or
+          ``0 <= r[i, 1] < r[i, 2] <= T``, where ``T`` is the number of
+          frames in the utterance. We do not enforce tokens be
+          non-overlapping
 
     Raises a ``ValueError`` if a condition is violated
     '''
@@ -696,17 +703,11 @@ def read_ctm(ctm, wc2utt=None):
     -----
     "ctm", like "trn", has "support" for alternate transcriptions. It is, as of
     sclite version 2.10, very buggy. For example, it cannot handle multiple
-    alternates in the same utterance. Plus, tools like Kaldi [1]_ use the Unix
-    command that the sclite documentation recommends to sort a ctm,
-    ``sort +0 -1 +1 -2 +2nb -3``, which does not maintain proper ordering for
-    alternate delimiters. Thus, ``read_ctm`` will error if it comes across
-    those delimiters
-
-    References
-    ----------
-    .. [1] D. Povey et al., "The Kaldi Speech Recognition Toolkit," in IEEE
-       2011 Workshop on Automatic Speech Recognition and Understanding,
-       Hilton Waikoloa Village, Big Island, Hawaii, US, 2011.
+    alternates in the same utterance. Plus, tools like `Kaldi
+    <http://kaldi-asr.org/>`_ use the Unix command that the sclite
+    documentation recommends to sort a ctm, ``sort +0 -1 +1 -2 +2nb -3``, which
+    does not maintain proper ordering for alternate delimiters. Thus,
+    ``read_ctm`` will error if it comes across those delimiters
     '''
     if isinstance(ctm, str):
         with open(ctm, 'r') as ctm:
@@ -960,6 +961,7 @@ class ContextWindowDataSet(SpectDataSet):
 
     Examples
     --------
+
     >>> # see 'SpectDataSet' to set up data directory
     >>> data = ContextWindowDataSet('data', 3, 3)
     >>> data[0]  # random access returns (window, ali) pairs
@@ -1024,6 +1026,7 @@ class EpochRandomSampler(torch.utils.data.Sampler):
 
     Examples
     --------
+
     >>> sampler = EpochRandomSampler(
     ...     torch.data.utils.TensorDataset(torch.arange(100)))
     >>> samples_ep0 = tuple(sampler)  # random
@@ -1177,6 +1180,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
 
     Attributes
     ----------
+    epoch
     data_dir : str
     params : SpectDataSetParams
 
@@ -1202,6 +1206,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     Examples
     --------
     Training on alignments for one epoch
+
     >>> # see 'SpectDataSet' to initialize data set
     >>> num_filts, num_ali_classes = 40, 100
     >>> model = torch.nn.LSTM(num_filts, num_ali_classes)
@@ -1221,6 +1226,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     >>>     optim.step()
 
     Training on reference tokens with CTC for one epoch
+
     >>> num_filts, num_ref_classes, kern = 40, 2000, 3
     >>> # we use padding to ensure gradients are unaffected by batch padding
     >>> model = torch.nn.Sequential(
@@ -1281,7 +1287,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
 
     @property
     def epoch(self):
-        '''int : the current epoch'''
+        '''the current epoch'''
         return self.batch_sampler.sampler.epoch
 
     @epoch.setter
@@ -1332,6 +1338,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     Examples
     --------
     Computing class likelihoods and writing them to disk
+
     >>> # see 'SpectDataSet' to initialize data set
     >>> num_filts, num_ali_classes = 40, 100
     >>> model = torch.nn.LSTM(num_filts, num_ali_classes)
@@ -1348,6 +1355,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     >>>         loader.data_source.write_pdf(utt_id, pdf)
 
     Transcribing utterances with CTC
+
     >>> num_filts, num_ref_classes, kern = 40, 2000, 3
     >>> # we use padding to ensure gradients are unaffected by batch padding
     >>> model = torch.nn.Sequential(
@@ -1504,6 +1512,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
 
     Attributes
     ----------
+    epoch
     data_dir : str
     params : ContextWindowDataSetParams
     data_source : ContextWindowDataSet
@@ -1521,6 +1530,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     Examples
     --------
     Training on alignments for one epoch
+
     >>> # see 'SpectDataSet' to initialize data set
     >>> num_filts, num_ali_classes, left, right = 40, 100, 4, 4
     >>> window_width = left + right + 1
@@ -1577,7 +1587,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
 
     @property
     def epoch(self):
-        '''int : the current epoch'''
+        '''the current epoch'''
         return self.batch_sampler.sampler.epoch
 
     @epoch.setter
@@ -1621,6 +1631,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     Examples
     --------
     Computing class likelihoods and writing them to disk
+
     >>> # see 'SpectDataSet' to initialize data set
     >>> num_filts, num_ali_classes, left, right = 40, 100, 4, 4
     >>> window_width = left + right + 1
