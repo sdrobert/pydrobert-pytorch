@@ -118,10 +118,10 @@ def get_torch_spect_data_dir_info(args=None):
     4. "num_filts", ``F``
     5. "total_frames", ``sum(N)`` over the data dir
     6. "count_<i>", the number of instances of the class "<i>" that appear
-        in ``ali`` (if available). If "count_<i>" is a valid key, then so
-        are "count_<0 to i>". "count_<i>" is left-padded with zeros to ensure
-        that the keys remain in the same order in the table as the class
-        indices.  The maximum ``i`` will be equal to ``maximum_ali_class``
+       in ``ali`` (if available). If "count_<i>" is a valid key, then so
+       are "count_<0 to i>". "count_<i>" is left-padded with zeros to ensure
+       that the keys remain in the same order in the table as the class
+       indices.  The maximum ``i`` will be equal to ``maximum_ali_class``
 
     Note that the output can be parsed as a `Kaldi <http://kaldi-asr.org/>`_
     text table of integers.
