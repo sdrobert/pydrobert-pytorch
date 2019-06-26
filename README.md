@@ -33,8 +33,8 @@ Functionality is split by submodule. They include
 
 ## API Documentation
 
-[ReadTheDocs latest](https://pydrobert-pytorch.readthedocs.io/en/latest/)
-[ReadTheDocs stable](https://pydrobert-pytorch.readthedocs.io/en/stable/)
+- [Latest](https://pydrobert-pytorch.readthedocs.io/en/latest/)
+- [Stable](https://pydrobert-pytorch.readthedocs.io/en/stable/)
 
 ## Installation
 
