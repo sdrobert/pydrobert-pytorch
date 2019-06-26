@@ -165,20 +165,22 @@ class TrainingStateController(object):
         stored values represent the state *after* updates due to epoch
         results, such as the learning rate. That way, an experiment can be
         resumed without worrying about updating the loaded results
+
         1. "epoch": the epoch associated with this row of information
         2. "es_resume_cd": the number of epochs left before the early
            stopping criterion begins/resumes
-        3. "es_patience_cd": the number of epochs left that must pass
+        3. es_patience_cd: the number of epochs left that must pass
            without much improvement before training halts due to early stopping
-        3. "rlr_resume_cd": the number of epochs left before the
+        4. "rlr_resume_cd": the number of epochs left before the
            criterion for reducing the learning rate begins/resumes
-        4. "rlr_patience_cd": the number of epochs left that must pass
+        5. "rlr_patience_cd": the number of epochs left that must pass
            without much improvement before the learning rate is reduced
-        5. "lr": the learning rate of the optimizer after any updates
-        6. "train_met": mean training metric in exponent format. The metric
+        6. "lr": the learning rate of the optimizer after any updates
+        7. "train_met": mean training metric in exponent format. The metric
            is assumed to be lower is better
-        7. "val_met": mean validation metric in exponent format. The metric
+        8. "val_met": mean validation metric in exponent format. The metric
            is assumed to be lower is better
+
         If unset, the history will not be stored/loaded
     state_dir : str, optional
         A path to a directory to store/load model and optimizer states. If

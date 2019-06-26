@@ -97,23 +97,23 @@ def get_torch_spect_data_dir_info(args=None):
                 ...
             ]
 
-    Where ``feat`` contains ``FloatTensor``s of shape ``(N, F)``, where
-    ``N`` is the number of frames (variable) and ``F`` is the number of
-    filters (fixed), ``ali``, if there, contains ``LongTensor``s of shape
-    ``(N,)`` indicating the appropriate class labels (likely pdf-ids for
-    discriminative training in an DNN-HMM), and ``ref``, if there,
-    contains ``LongTensor``s of shape ``(R, 3)`` indicating a sequence of
-    reference tokens where element indexed by ``[i, 0]`` is a token id,
-    ``[i, 1]`` is the inclusive start frame of the token (or a negative value
-    if unknown), and ``[i, 2]`` is the exclusive end frame of the token.
+    Where ``feat`` contains ``FloatTensor`` of shape ``(N, F)``, where ``N``
+    is the number of frames (variable) and ``F`` is the number of filters
+    (fixed), ``ali``, if there, contains ``LongTensor`` of shape ``(N,)``
+    indicating the appropriate class labels (likely pdf-ids for discriminative
+    training in an DNN-HMM), and ``ref``, if there, contains ``LongTensor`` of
+    shape ``(R, 3)`` indicating a sequence of reference tokens where element
+    indexed by ``[i, 0]`` is a token id, ``[i, 1]`` is the inclusive start
+    frame of the token (or a negative value if unknown), and ``[i, 2]`` is the
+    exclusive end frame of the token.
 
     This command writes the following space-delimited key-value pairs to an
     output file in sorted order:
 
     1. "max_ali_class", the maximum inclusive class id found over ``ali/``
-        (if available, ``-1`` if not)
+       (if available, ``-1`` if not)
     2. "max_ref_class", the maximum inclussive class id found over ``ref/``
-        (if available, ``-1`` if not)
+       (if available, ``-1`` if not)
     3. "num_utterances", the total number of listed utterances
     4. "num_filts", ``F``
     5. "total_frames", ``sum(N)`` over the data dir
@@ -123,7 +123,8 @@ def get_torch_spect_data_dir_info(args=None):
         that the keys remain in the same order in the table as the class
         indices.  The maximum ``i`` will be equal to ``maximum_ali_class``
 
-    Note that the output can be parsed as a Kaldi text table of integers.
+    Note that the output can be parsed as a `Kaldi <http://kaldi-asr.org/>`_
+    text table of integers.
     '''
     try:
         options = _get_torch_spect_data_dir_info_parse_args(args)

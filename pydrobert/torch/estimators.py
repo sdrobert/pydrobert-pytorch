@@ -44,6 +44,7 @@ most.
   `logits`
 - `dist` specifies the distribution that `logits` parameterizes. Currently,
   there are three.
+
   1. The value ``"bern"`` corresponds to the Bernoulli
      distribution, which, for parameterizations
      :math:`logits \in R^{A \times B \ldots}` produces samples
@@ -58,6 +59,7 @@ most.
      :math:`b' \in \{0,1\}^{A \times B \times \ldots \times D}` is a one-hot
      representation of the categorical :math:`b` s.t.
      `b'_{i,d} = 1 \Leftrightarrow b_i = d`.
+
 - `fb` is a tensor of the values of :math:`f(b)`. In general, `fb` should be
   the same size as `b`, meaning one evaluation per sample. The exception is
   ``"onehot"``: `fb` should not have the final dimension of `b` as ``b[i, :]``
@@ -66,6 +68,25 @@ most.
 `b` can be sampled by first calling ``z = to_z(logits, dist)``, then
 ``b = to_b(z, dist)``. Other arguments can be acquired using functions with
 similar patterns.
+
+References
+----------
+
+.. [williams1992] R. J. Williams, "Simple statistical gradient-following
+   algorithms for connectionist reinforcement learning," Machine Learning,
+   vol. 8, no. 3, pp. 229-256, May 1992.
+.. [maddison2016] C. J. Maddison, A. Mnih, and Y. W. Teh, "The Concrete
+   Distribution: A Continuous Relaxation of Discrete Random Variables," CoRR,
+   vol. abs/1611.00712, 2016.
+.. [grathwohl2017] W. Grathwohl, D. Choi, Y. Wu, G. Roeder, and D. K. Duvenaud,
+   "Backpropagation through the Void: Optimizing control variates for
+   black-box gradient estimation," CoRR, vol. abs/1711.00123, 2017.
+.. [tucker2017] G. Tucker, A. Mnih, C. J. Maddison, J. Lawson, and J.
+   Sohl-Dickstein, "REBAR: Low-variance, unbiased gradient estimates for
+   discrete latent variable models," in Advances in Neural Information
+   Processing Systems 30, I. Guyon, U. V. Luxburg, S. Bengio, H. Wallach,
+   R. Fergus, S. Vishwanathan, and R. Garnett, Eds. Curran Associates,
+   Inc., 2017, pp. 2627-2636.
 '''
 
 from __future__ import absolute_import
@@ -162,8 +183,8 @@ def to_fb(f, b):
 def reinforce(fb, b, logits, dist):
     r'''Perform REINFORCE gradient estimation
 
-    REINFORCE [1]_, or the score function, has a single-sample implementation
-    as
+    REINFORCE [williams1992]_, or the score function, has a single-sample
+    implementation as
 
     .. math:: g = f(b) \partial \log Pr(b; logits) / \partial logits
 
@@ -190,7 +211,7 @@ def reinforce(fb, b, logits, dist):
     It is common (such as in A2C) to include a baseline to minimize the
     variance of the estimate. It's incorporated as `c` in
 
-    .. math:: g = (f(b) - c) \log Pr(b; logits) / \partial logits
+    .. math:: g = (f(b) - c) \partial \log Pr(b; logits) / \partial logits
 
     Note that :math:`c_i` should be conditionally independent of :math:`b_i`
     for `g` to be unbiased. You can, however, condition on any preceding
@@ -199,12 +220,6 @@ def reinforce(fb, b, logits, dist):
     To get this functionality, simply subtract `c` from `fb` before passing it
     to this method. If `c` is the output of a neural network, a common (but
     sub-optimal) loss function is the mean-squared error between `fb` and `c`.
-
-    References
-    ----------
-    .. [1] R. J. Williams, "Simple statistical gradient-following algorithms
-       for connectionist reinforcement learning," Machine Learning, vol. 8,
-       no. 3, pp. 229-256, May 1992.
     '''
     fb = fb.detach()
     b = b.detach()
@@ -227,7 +242,7 @@ def reinforce(fb, b, logits, dist):
 def relax(fb, b, logits, z, c, dist, components=False):
     r'''Perform RELAX gradient estimation
 
-    RELAX [1]_ has a single-sample implementation as
+    RELAX [grathwohl2017]_ has a single-sample implementation as
 
     .. math::
 
@@ -272,21 +287,9 @@ def relax(fb, b, logits, z, c, dist, components=False):
 
     Notes
     -----
-    RELAX is a generalized version of REBAR [2]_. For the REBAR estimator, use
-    an instance of ``REBARControlVariate`` for `c`. See the class for more
-    details.
-
-    References
-    ----------
-    .. [1] W. Grathwohl, D. Choi, Y. Wu, G. Roeder, and D. K. Duvenaud,
-       "Backpropagation through the Void: Optimizing control variates for
-       black-box gradient estimation," CoRR, vol. abs/1711.00123, 2017.
-    .. [2] G. Tucker, A. Mnih, C. J. Maddison, J. Lawson, and J.
-       Sohl-Dickstein, "REBAR: Low-variance, unbiased gradient estimates for
-       discrete latent variable models," in Advances in Neural Information
-       Processing Systems 30, I. Guyon, U. V. Luxburg, S. Bengio, H. Wallach,
-       R. Fergus, S. Vishwanathan, and R. Garnett, Eds. Curran Associates,
-       Inc., 2017, pp. 2627-2636.
+    RELAX is a generalized version of REBAR [tucker2017]_. For the REBAR
+    estimator, use an instance of ``REBARControlVariate`` for `c`. See the
+    class for more details.
     '''
     fb = fb.detach()
     b = b.detach()
@@ -326,7 +329,7 @@ def relax(fb, b, logits, z, c, dist, components=False):
 class REBARControlVariate(torch.nn.Module):
     r'''The REBAR control variate, for use in RELAX
 
-    REBAR [1]_ has a single sample implementation as:
+    REBAR [tucker2017]_ has a single sample implementation as:
 
     .. math::
 
@@ -336,16 +339,16 @@ class REBARControlVariate(torch.nn.Module):
             - \eta \partial f(\sigma_\lambda(\widetilde{z})) / \partial logits
 
     where :math:`b = H(z)`, :math:`\widetilde{z} \sim Pr(z|b, logits)`, and
-    :math:`\sigma` is the Concrete relaxation [2]_ of the discrete
+    :math:`\sigma` is the Concrete relaxation [maddison2016]_ of the discrete
     distribution. It is an unbiased estimate of the derivative of the
     expectation w.r.t `logits`.
 
-    As remarked in [3]_, REBAR can be considered a special case of RELAX with
-    :math:`c(x) = \eta f(\sigma_\lambda(x))`. An instance of this class can
-    be fed to the ``relax`` function as the argument ``c``. To optimize the
-    temperature :math:`\lambda` and importance :math:`\eta` simultaneously
-    with :math:``logits``, one can take the output of ``g = relax(...)`` and
-    call ``(g ** 2).sum().backward()``.
+    As remarked in [grathwohl2017]_, REBAR can be considered a special case of
+    RELAX with :math:`c(x) = \eta f(\sigma_\lambda(x))`. An instance of this
+    class can be fed to the ``relax`` function as the argument ``c``. To
+    optimize the temperature :math:`\lambda` and importance :math:`\eta`
+    simultaneously with :math:``logits``, one can take the output of ``g =
+    relax(...)`` and call ``(g ** 2).sum().backward()``.
 
     Parameters
     ----------
@@ -361,21 +364,6 @@ class REBARControlVariate(torch.nn.Module):
         :math:`z` will be continuous relaxations of one-hot samples of
         categorical distributions, but the discrete samples are index-based
         when ``dist == "cat"``. This might cause unexpected behaviours.
-
-    References
-    ----------
-    .. [1] G. Tucker, A. Mnih, C. J. Maddison, J. Lawson, and J.
-       Sohl-Dickstein, "REBAR: Low-variance, unbiased gradient estimates for
-       discrete latent variable models," in Advances in Neural Information
-       Processing Systems 30, I. Guyon, U. V. Luxburg, S. Bengio, H. Wallach,
-       R. Fergus, S. Vishwanathan, and R. Garnett, Eds. Curran Associates,
-       Inc., 2017, pp. 2627-2636.
-    .. [2] C. J. Maddison, A. Mnih, and Y. W. Teh, "The Concrete Distribution:
-       A Continuous Relaxation of Discrete Random Variables," CoRR, vol.
-       abs/1611.00712, 2016.
-    .. [3] W. Grathwohl, D. Choi, Y. Wu, G. Roeder, and D. K. Duvenaud,
-       "Backpropagation through the Void: Optimizing control variates for
-       black-box gradient estimation," CoRR, vol. abs/1711.00123, 2017.
     '''
 
     def __init__(self, f, dist, start_temp=0.1, start_eta=1.0, warn=True):
