@@ -67,3 +67,5 @@ else:
 html_static_path = ['_static']
 
 highlight_language = 'none'
+
+master_doc = 'index'
