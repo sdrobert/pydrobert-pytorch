@@ -140,14 +140,13 @@ class TrainingStateController(object):
     Examples
     --------
 
-    >>> params = TrainingStateParams()
+    >>> params = TrainingStateParams(num_epochs=5)
     >>> model = torch.nn.Linear(10, 1)
     >>> optimizer = torch.optim.Adam(model.parameters())
     >>> controller = TrainingStateController(
     ...    params,
     ...    state_csv_path='log.csv',
-    ...    state_dir='states',
-    ...    num_epochs=5)
+    ...    state_dir='states')
     >>> controller.load_model_and_optimizer_for_epoch(
     ...     model, optimizer, controller.get_last_epoch())  # load previous
     >>> for epoch in range(params.num_epochs):
