@@ -1,3 +1,7 @@
+[![Build Status](https://travis-ci.com/sdrobert/pydrobert-pytorch.svg?branch=master)](https://travis-ci.com/sdrobert/pydrobert-pytorch)
+[![Documentation Status](https://readthedocs.org/projects/pydrobert-pytorch/badge/?version=latest)](https://pydrobert-pytorch.readthedocs.io/en/latest/?badge=latest)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 # pydrobert-pytorch
 
 PyTorch utilities for Machine Learning. This is an eclectic mix of utilities
@@ -6,7 +10,7 @@ as possible.
 
 **This is student-driven code, so don't expect a stable API. I'll try to use
 semantic versioning, but the best way to keep functionality stable is by
-forking.**
+pinning the version in the requirements or by forking.**
 
 ## Overview
 
@@ -31,7 +35,7 @@ Functionality is split by submodule. They include
   command line hooks from
   [pydrobert-kaldi](https://github.com/sdrobert/pydrobert-kaldi).
 
-## API Documentation
+## Documentation
 
 - [Latest](https://pydrobert-pytorch.readthedocs.io/en/latest/)
 - [Stable](https://pydrobert-pytorch.readthedocs.io/en/stable/)
