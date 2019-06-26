@@ -12,12 +12,14 @@
 #
 import os
 import sys
+import param
+
 sys.path.insert(0, os.path.abspath('../..'))
+
 
 autodoc_mock_imports = [
     'numpy',
     'torch',
-    'param',   # right now, dynamic docstrings are illegible. See param #197
 ]
 
 
@@ -69,3 +71,51 @@ html_static_path = ['_static']
 highlight_language = 'none'
 
 master_doc = 'index'
+
+# this is a hack until param issue #197 is resolved
+# param.parameterized.docstring_signature = False
+ipython_colours = {
+    (param.ipython.red % ' ').split()[0],
+    (param.ipython.green % ' ').split()[0],
+    (param.ipython.blue % ' ').split()[0],
+    (param.ipython.cyan % ' ').split()[0],
+    (param.ipython.cyan % ' ').split()[1],
+}
+
+
+def my_handler(app, what, name, obj, options, lines):
+    if 'Params' in name.split('.')[-1]:
+        found_bounds, found_docs, idx = False, False, 0
+        while idx < len(lines):
+            line = lines[idx]
+            if '===' in line:
+                lines.pop(idx)
+                continue
+            if found_docs:
+                for colour in ipython_colours:
+                    line = line.replace(colour, '')
+                if not line.strip():
+                    lines.pop(idx)
+                    continue
+                name = line.split(':')[0].strip()
+                param = obj.params()[name]
+                doc = param.doc
+                deft = param.default
+                bounds = param.bounds if hasattr(param, 'bounds') else None
+                lines[idx] = '**{}**: {} *default={}{}*'.format(
+                    name, doc, deft,
+                    ', bounds={}'.format(bounds) if bounds else '')
+                lines.insert(idx + 1, '')
+                lines.insert(idx + 1, '')
+                idx += 3
+            elif 'Parameter docstrings' in line:
+                found_docs = True
+                lines[idx] = ''
+                idx += 1
+            else:
+                lines.pop(idx)
+        options['undoc-members'] = False
+
+
+def setup(app):
+    app.connect('autodoc-process-docstring', my_handler)
