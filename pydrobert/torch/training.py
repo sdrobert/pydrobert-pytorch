@@ -36,7 +36,7 @@ __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
     'TrainingStateParams',
-    'TrainingStateController'
+    'TrainingStateController',
 ]
 
 

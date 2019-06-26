@@ -19,7 +19,7 @@ __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
     'command_line',
     'data',
-    'estimators'
+    'estimators',
     'training',
     'util',
 ]

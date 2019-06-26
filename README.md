@@ -4,6 +4,10 @@ PyTorch utilities for Machine Learning. This is an eclectic mix of utilities
 that I've used in my various projects, but have been tailored to be as generic
 as possible.
 
+**This is student-driven code, so don't expect a stable API. I'll try to use
+semantic versioning, but the best way to keep functionality stable is by
+forking.**
+
 Functionality is split by submodule. They include
 
 - `pydrobert.torch.estimators`: Implements a number of popular gradient

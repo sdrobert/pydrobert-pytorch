@@ -87,7 +87,7 @@ __all__ = [
     "to_fb",
     "reinforce",
     "relax",
-    "REBARControlVariate"
+    "REBARControlVariate",
 ]
 
 BERNOULLI_SYNONYMS = {"bern", "Bern", "bernoulli", "Bernoulli"}
