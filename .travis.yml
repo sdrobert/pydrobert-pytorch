@@ -15,3 +15,7 @@ install:
 
 script:
   - python setup.py test --addopts="-m cpu"
+
+branches:
+  except:
+    - docs
