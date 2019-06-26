@@ -8,6 +8,8 @@ as possible.
 semantic versioning, but the best way to keep functionality stable is by
 forking.**
 
+## Overview
+
 Functionality is split by submodule. They include
 
 - `pydrobert.torch.estimators`: Implements a number of popular gradient
@@ -29,7 +31,10 @@ Functionality is split by submodule. They include
   command line hooks from
   [pydrobert-kaldi](https://github.com/sdrobert/pydrobert-kaldi).
 
-Consult the submodule docstrings for more information.
+## API Documentation
+
+[ReadTheDocs latest](https://pydrobert-pytorch.readthedocs.io/en/latest/)
+[ReadTheDocs stable](https://pydrobert-pytorch.readthedocs.io/en/stable/)
 
 ## Installation
 
