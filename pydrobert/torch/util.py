@@ -289,12 +289,12 @@ def error_rate(
     else:
         dist[0, ...] = torch.arange(
             max_hyp_steps + 1, device=device).unsqueeze(1) * ins_cost
-    for ref_idx in range(1, max_ref_steps + 1):
-        for hyp_idx in range(1, max_hyp_steps + 1):
-            if padding is not None:
-                ins = torch.where(hyp[hyp_idx - 1] == padding, zero, ins_cost)
-            else:
-                ins = ins_cost
+    for hyp_idx in range(1, max_hyp_steps + 1):
+        if padding is not None:
+            ins = torch.where(hyp[hyp_idx - 1] == padding, zero, ins_cost)
+        else:
+            ins = ins_cost
+        for ref_idx in range(1, max_ref_steps + 1):
             sub = torch.where(
                 hyp[hyp_idx - 1] == ref[ref_idx - 1], zero, sub_cost)
             dist[ref_idx, hyp_idx] = torch.min(
