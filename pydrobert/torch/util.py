@@ -276,36 +276,38 @@ def error_rate(
     del_cost = torch.tensor(float(del_cost), device=device)
     sub_cost = torch.tensor(float(sub_cost), device=device)
     zero = torch.tensor(0., device=device)
-    dist = torch.empty(
-        (max_ref_steps + 1, max_hyp_steps + 1, batch_size),
-        device=device, dtype=torch.float,
-    )
-    dist[:, 0, :] = torch.arange(
-        max_ref_steps + 1, device=device).unsqueeze(1) * del_cost
     if padding is not None:
-        for hyp_idx in range(1, max_hyp_steps + 1):
-            dist[0, hyp_idx] = dist[0, hyp_idx - 1] + torch.where(
-                hyp[hyp_idx - 1] == padding, zero, ins_cost)
-    else:
-        dist[0, ...] = torch.arange(
-            max_hyp_steps + 1, device=device).unsqueeze(1) * ins_cost
+        padding = torch.tensor(padding, device=device)
+    # direct row down corresponds to insertion
+    # direct col right corresponds to a deletion
+    row = torch.arange(
+        max_ref_steps + 1, device=device, dtype=torch.float
+    ).unsqueeze(1).expand(max_ref_steps + 1, batch_size)
+    last_row = torch.empty_like(row)
+    # we vectorize as much as we can. Neither substitutions nor insertions
+    # require values from the current row to be computed, and since the last
+    # row can't be altered, we can easily vectorize there. We can't do the same
+    # with deletions because they rely on what came before in the row
     for hyp_idx in range(1, max_hyp_steps + 1):
+        last_row = row
+        row = last_row + ins_cost
         if padding is not None:
-            ins = torch.where(hyp[hyp_idx - 1] == padding, zero, ins_cost)
-        else:
-            ins = ins_cost
-        for ref_idx in range(1, max_ref_steps + 1):
-            sub = torch.where(
-                hyp[hyp_idx - 1] == ref[ref_idx - 1], zero, sub_cost)
-            dist[ref_idx, hyp_idx] = torch.min(
-                torch.min(
-                    dist[ref_idx - 1, hyp_idx] + del_cost,
-                    dist[ref_idx, hyp_idx - 1] + ins,
-                ),
-                dist[ref_idx - 1, hyp_idx - 1] + sub
+            row = torch.where(
+                (hyp[hyp_idx - 1] == padding) | (hyp_lens < hyp_idx),
+                last_row,
+                row,
             )
-    er = dist[ref_lens, hyp_lens, range(batch_size)]
+        sub_row = torch.where(
+            ref == hyp[hyp_idx - 1],
+            last_row[:-1],
+            last_row[:-1] + sub_cost,
+        )
+        row[1:] = torch.min(row[1:], sub_row)
+        for ref_idx in range(1, max_ref_steps + 1):
+            row[ref_idx] = torch.min(row[ref_idx], row[ref_idx - 1] + del_cost)
+    er = row[ref_lens, range(batch_size)]
     if norm:
+        er = er / ref_lens.float()
         zero_mask = ref_lens.eq(0.)
         if zero_mask.any():
             if warn:
@@ -316,10 +318,8 @@ def error_rate(
             er = torch.where(
                 zero_mask,
                 hyp_lens.gt(0).float(),
-                er / ref_lens.float(),
+                er,
             )
-        else:
-            er /= ref_lens.float()
     return er
 
 
