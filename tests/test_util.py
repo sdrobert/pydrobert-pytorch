@@ -113,3 +113,89 @@ def test_beam_search_advance_steps(device):
     # non-negligible gradient
     assert abs(g[0, 0, 1].item()) > 1e-4
     assert abs(g[1, 1, 1].item()) > 1e-4
+
+
+@pytest.mark.parametrize('norm', [True, False])
+@pytest.mark.parametrize('lens', [True, False])
+def test_error_rate(device, norm, lens):
+    padding, eos = -1, 0
+    pairs = (
+        (
+            (1, 2, 3),
+            (1, 2, 3),
+            0,
+        ), (
+            (   2, 3),
+            (1, 2, 3),
+            1,
+        ), (
+            (1,    3),
+            (1, 2, 3),
+            1,
+        ), (
+            (      3,),
+            (1, 2, 3),
+            2,
+        ), (
+            (1, 2, 3),
+            (1,    3),
+            1,
+        ), (
+            (1, 2, 3),
+            (1, 2,  ),
+            1,
+        ), (
+            (1, 2, 3),
+            (1,     ),
+            2,
+        ), (
+            (1, 3, 1, 2, 3),
+            (1, 2, 3),
+            2,
+        ), (
+            (1, 2, 3),
+            (4, 5, 6),
+            3,
+        ), (
+            (2, 2, 2),
+            (2,),
+            2,
+        ), (
+            (    1,     2,         3,     4,   ),
+            (-1, 1, -1, 2, -1, -1, 3, -1, 5, -1),
+            1,
+        ), (
+            tuple(),
+            (1,),
+            1,
+        ), (
+            tuple(),
+            tuple(),
+            0,
+        )
+    )
+    ref_lens = torch.tensor([len(x[0]) for x in pairs], device=device)
+    hyp_lens = torch.tensor([len(x[1]) for x in pairs], device=device)
+    ref = torch.nn.utils.rnn.pad_sequence(
+        [torch.tensor(x[0]) for x in pairs],
+        padding_value=eos,
+    ).to(device)
+    hyp = torch.nn.utils.rnn.pad_sequence(
+        [torch.tensor(x[1]) for x in pairs],
+        padding_value=eos,
+    ).to(device)
+    exp = torch.tensor([float(x[2]) for x in pairs], device=device)
+    if norm:
+        exp = torch.where(
+            ref_lens == 0,
+            hyp_lens.ne(0).float(),
+            exp / ref_lens.float()
+        )
+    if lens:
+        eos = None
+    else:
+        ref_lens = hyp_lens = None
+    act = util.error_rate(
+        ref, hyp, ref_lens=ref_lens, hyp_lens=hyp_lens, eos=eos, warn=False,
+        norm=norm, padding=padding)
+    assert torch.allclose(exp, act)

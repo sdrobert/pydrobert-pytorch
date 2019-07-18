@@ -18,6 +18,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import warnings
+
 import torch
 
 __author__ = "Sean Robertson"
@@ -26,6 +28,7 @@ __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
     'beam_search_advance',
+    'error_rate',
     'optimizer_to',
 ]
 
@@ -187,6 +190,137 @@ def beam_search_advance(logits, width, log_prior=None, y_prev=None, eos=None):
             2, s.unsqueeze(0).expand(tm1, num_batches, width))
         y = torch.cat([y_prev, y], 0)
     return score, y, s
+
+
+def error_rate(
+        ref, hyp, ref_lens=None, hyp_lens=None, eos=None, padding=None,
+        norm=True, batch_first=False, ins_cost=1., del_cost=1., sub_cost=1.,
+        warn=True):
+    '''Calculate error rates over a batch
+
+    An error rate is merely a `Levenshtein (edit) distance
+    <https://en.wikipedia.org/wiki/Levenshtein_distance>`__ normalized over
+    reference sequence lengths.
+
+    Given a reference (gold-standard) transcript tensor `ref` of size
+    ``(max_ref_steps, batch_size)`` if ``batch_first == False`` or
+    ``(batch_size, max_hyp_steps)`` otherwise, and a similarly shaped tensor of
+    hypothesis transcripts `hyp`, this function produces a tensor `er` of shape
+    ``(batch_size,)`` storing the associated error rates. Either `ref_lens` and
+    `hyp_lens` or `eos` can be used to specify elements in the batch whose
+    transcript lengths do not match ``max_steps``.
+
+    `er` will not have a gradient, and is thus not directly suited to being a
+    loss function
+
+    Parameters
+    ----------
+    ref : torch.LongTensor
+    hyp : torch.LongTensor
+    ref_lens : torch.LongTensor, optional
+        A tensor of shape ``(batch_size,)`` indicating the lengths of reference
+        transcriptions within the batch
+    hyp_lens : torch.LongTensor, optional
+        The lengths of hypothesis transcriptions
+    eos : int, optional
+        A special token in `ref` and `hyp` whose first occurrence in each
+        batch indicates the end of a transcript
+    padding : int, optional
+        A special token in `hyp` considered "padding" which will not
+        contribute to the overall edit distance when inserted
+    norm : bool, optional
+        If ``False``, will return edit distances instead of error rates
+    batch_first : bool, optional
+    ins_cost : float, optional
+        The cost of an adding a superfluous token to a transcript in `hyp`
+    del_cost : float, optional
+        The cost of missing a token from `ref`
+    sub_cost : float, optional
+        The cost of swapping a token from `ref` with one from `hyp`
+
+    Returns
+    -------
+    er : torch.FloatTensor
+    '''
+    if ref.dim() != 2 or hyp.dim() != 2:
+        raise ValueError('ref and hyp must be 2 dimensional')
+    if batch_first:
+        ref = ref.t()
+        hyp = hyp.t()
+    ref = ref.detach()
+    hyp = hyp.detach()
+    max_ref_steps, batch_size = ref.shape
+    max_hyp_steps, batch_size_ = hyp.shape
+    device = ref.device
+    if batch_size != batch_size_:
+        raise ValueError(
+            'ref has batch size {}, but hyp has {}'.format(
+                batch_size, batch_size_))
+    if eos is not None:
+        if ref_lens is not None or hyp_lens is not None:
+            raise ValueError(
+                'Either eos or ref_lens and hyp_lens can be specified, not '
+                'both')
+        ref_lens = torch.full_like(ref[0], max_ref_steps)
+        hyp_lens = torch.full_like(hyp[0], max_hyp_steps)
+        for coord in ref.eq(eos).nonzero():
+            ref_lens[..., coord[1]] = torch.min(ref_lens[coord[1]], coord[0])
+        for coord in hyp.eq(eos).nonzero():
+            hyp_lens[..., coord[1]] = torch.min(hyp_lens[coord[1]], coord[0])
+    else:
+        if ref_lens is None:
+            ref_lens = torch.full_like(ref[0], max_ref_steps)
+        if hyp_lens is None:
+            hyp_lens = torch.full_like(hyp[0], max_hyp_steps)
+    ins_cost = torch.tensor(float(ins_cost), device=device)
+    del_cost = torch.tensor(float(del_cost), device=device)
+    sub_cost = torch.tensor(float(sub_cost), device=device)
+    zero = torch.tensor(0., device=device)
+    dist = torch.empty(
+        (max_ref_steps + 1, max_hyp_steps + 1, batch_size),
+        device=device, dtype=torch.float,
+    )
+    dist[:, 0, :] = torch.arange(
+        max_ref_steps + 1, device=device).unsqueeze(1) * del_cost
+    if padding is not None:
+        for hyp_idx in range(1, max_hyp_steps + 1):
+            dist[0, hyp_idx] = dist[0, hyp_idx - 1] + torch.where(
+                hyp[hyp_idx - 1] == padding, zero, ins_cost)
+    else:
+        dist[0, ...] = torch.arange(
+            max_hyp_steps + 1, device=device).unsqueeze(1) * ins_cost
+    for ref_idx in range(1, max_ref_steps + 1):
+        for hyp_idx in range(1, max_hyp_steps + 1):
+            if padding is not None:
+                ins = torch.where(hyp[hyp_idx - 1] == padding, zero, ins_cost)
+            else:
+                ins = ins_cost
+            sub = torch.where(
+                hyp[hyp_idx - 1] == ref[ref_idx - 1], zero, sub_cost)
+            dist[ref_idx, hyp_idx] = torch.min(
+                torch.min(
+                    dist[ref_idx - 1, hyp_idx] + del_cost,
+                    dist[ref_idx, hyp_idx - 1] + ins,
+                ),
+                dist[ref_idx - 1, hyp_idx - 1] + sub
+            )
+    er = dist[ref_lens, hyp_lens, range(batch_size)]
+    if norm:
+        zero_mask = ref_lens.eq(0.)
+        if zero_mask.any():
+            if warn:
+                warnings.warn(
+                    "ref contains empty transcripts. Error rates for entries "
+                    "will be 1 if any insertion and 0 otherwise. To suppress "
+                    "this warning, set warn=False")
+            er = torch.where(
+                zero_mask,
+                hyp_lens.gt(0).float(),
+                er / ref_lens.float(),
+            )
+        else:
+            er /= ref_lens.float()
+    return er
 
 
 def optimizer_to(optimizer, to):
