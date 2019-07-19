@@ -193,7 +193,7 @@ def beam_search_advance(logits, width, log_prior=None, y_prev=None, eos=None):
 
 
 def error_rate(
-        ref, hyp, eos=None, include_eos=False, padding=None, norm=True,
+        ref, hyp, eos=None, include_eos=False, norm=True,
         batch_first=False, ins_cost=1., del_cost=1., sub_cost=1., warn=True):
     '''Calculate error rates over a batch
 
@@ -224,9 +224,6 @@ def error_rate(
         useful when gauging if a model is learning to emit the `eos` properly,
         but is not usually included in an evaluation. Only the first `eos` per
         transcript is included
-    padding : int, optional
-        A special token in `hyp` considered "padding" which will not
-        contribute to the overall edit distance when inserted
     norm : bool, optional
         If ``False``, will return edit distances instead of error rates
     batch_first : bool, optional
@@ -307,8 +304,6 @@ def error_rate(
     del_cost = torch.tensor(float(del_cost), device=device)
     sub_cost = torch.tensor(float(sub_cost), device=device)
     zero = torch.tensor(0., device=device)
-    if padding is not None:
-        padding = torch.tensor(padding, device=device)
     # direct row down corresponds to insertion
     # direct col right corresponds to a deletion
     row = torch.arange(
@@ -321,13 +316,11 @@ def error_rate(
     # with deletions because they rely on what came before in the row
     for hyp_idx in range(1, max_hyp_steps + 1):
         last_row = row
-        row = last_row + ins_cost
-        if padding is not None:
-            row = torch.where(
-                (hyp[hyp_idx - 1] == padding) | (hyp_lens < hyp_idx),
-                last_row,
-                row,
-            )
+        row = torch.where(
+            hyp_lens < hyp_idx,
+            last_row,
+            last_row + ins_cost
+        )
         sub_row = torch.where(
             ref == hyp[hyp_idx - 1],
             last_row[:-1],

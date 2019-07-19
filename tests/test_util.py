@@ -118,7 +118,7 @@ def test_beam_search_advance_steps(device):
 @pytest.mark.parametrize('norm', [True, False])
 @pytest.mark.parametrize('include_eos', [0, 1])
 def test_error_rate(device, norm, include_eos):
-    padding, eos = -1, 0
+    eos = 0
     pairs = (
         (
             (1, 2, 3),
@@ -161,10 +161,6 @@ def test_error_rate(device, norm, include_eos):
             (2,),
             2,
         ), (
-            (    1,     2,         3,     4,   ),
-            (-1, 1, -1, 2, -1, -1, 3, -1, 5, -1),
-            1,
-        ), (
             tuple(),
             (1,),
             1,
@@ -194,6 +190,5 @@ def test_error_rate(device, norm, include_eos):
             exp / ref_lens.float()
         )
     act = util.error_rate(
-        ref, hyp, eos=eos, warn=False, norm=norm, padding=padding,
-        include_eos=include_eos)
+        ref, hyp, eos=eos, warn=False, norm=norm, include_eos=include_eos)
     assert torch.allclose(exp, act)
