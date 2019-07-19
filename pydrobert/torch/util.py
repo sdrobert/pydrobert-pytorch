@@ -193,9 +193,8 @@ def beam_search_advance(logits, width, log_prior=None, y_prev=None, eos=None):
 
 
 def error_rate(
-        ref, hyp, ref_lens=None, hyp_lens=None, eos=None, padding=None,
-        norm=True, batch_first=False, ins_cost=1., del_cost=1., sub_cost=1.,
-        warn=True):
+        ref, hyp, eos=None, padding=None, norm=True, batch_first=False,
+        ins_cost=1., del_cost=1., sub_cost=1., warn=True):
     '''Calculate error rates over a batch
 
     An error rate is merely a `Levenshtein (edit) distance
@@ -206,9 +205,7 @@ def error_rate(
     ``(max_ref_steps, batch_size)`` if ``batch_first == False`` or
     ``(batch_size, max_hyp_steps)`` otherwise, and a similarly shaped tensor of
     hypothesis transcripts `hyp`, this function produces a tensor `er` of shape
-    ``(batch_size,)`` storing the associated error rates. Either `ref_lens` and
-    `hyp_lens` or `eos` can be used to specify elements in the batch whose
-    transcript lengths do not match ``max_steps``.
+    ``(batch_size,)`` storing the associated error rates.
 
     `er` will not have a gradient, and is thus not directly suited to being a
     loss function
@@ -217,14 +214,10 @@ def error_rate(
     ----------
     ref : torch.LongTensor
     hyp : torch.LongTensor
-    ref_lens : torch.LongTensor, optional
-        A tensor of shape ``(batch_size,)`` indicating the lengths of reference
-        transcriptions within the batch
-    hyp_lens : torch.LongTensor, optional
-        The lengths of hypothesis transcriptions
     eos : int, optional
         A special token in `ref` and `hyp` whose first occurrence in each
-        batch indicates the end of a transcript
+        batch indicates the end of a transcript. This allows for
+        variable-length transcripts in the batch
     padding : int, optional
         A special token in `hyp` considered "padding" which will not
         contribute to the overall edit distance when inserted
@@ -237,6 +230,9 @@ def error_rate(
         The cost of missing a token from `ref`
     sub_cost : float, optional
         The cost of swapping a token from `ref` with one from `hyp`
+    warn : bool, optional
+        If ``True`` and `norm` is ``True``, will warn when a reference
+        transcription has zero length
 
     Returns
     -------
@@ -257,10 +253,6 @@ def error_rate(
             'ref has batch size {}, but hyp has {}'.format(
                 batch_size, batch_size_))
     if eos is not None:
-        if ref_lens is not None or hyp_lens is not None:
-            raise ValueError(
-                'Either eos or ref_lens and hyp_lens can be specified, not '
-                'both')
         ref_lens = torch.full_like(ref[0], max_ref_steps)
         hyp_lens = torch.full_like(hyp[0], max_hyp_steps)
         for coord in ref.eq(eos).nonzero():
@@ -268,10 +260,8 @@ def error_rate(
         for coord in hyp.eq(eos).nonzero():
             hyp_lens[..., coord[1]] = torch.min(hyp_lens[coord[1]], coord[0])
     else:
-        if ref_lens is None:
-            ref_lens = torch.full_like(ref[0], max_ref_steps)
-        if hyp_lens is None:
-            hyp_lens = torch.full_like(hyp[0], max_hyp_steps)
+        ref_lens = torch.full_like(ref[0], max_ref_steps)
+        hyp_lens = torch.full_like(hyp[0], max_hyp_steps)
     ins_cost = torch.tensor(float(ins_cost), device=device)
     del_cost = torch.tensor(float(del_cost), device=device)
     sub_cost = torch.tensor(float(sub_cost), device=device)
