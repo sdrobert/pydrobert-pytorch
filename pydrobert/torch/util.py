@@ -193,8 +193,8 @@ def beam_search_advance(logits, width, log_prior=None, y_prev=None, eos=None):
 
 
 def error_rate(
-        ref, hyp, eos=None, padding=None, norm=True, batch_first=False,
-        ins_cost=1., del_cost=1., sub_cost=1., warn=True):
+        ref, hyp, eos=None, include_eos=False, padding=None, norm=True,
+        batch_first=False, ins_cost=1., del_cost=1., sub_cost=1., warn=True):
     '''Calculate error rates over a batch
 
     An error rate is merely a `Levenshtein (edit) distance
@@ -218,6 +218,12 @@ def error_rate(
         A special token in `ref` and `hyp` whose first occurrence in each
         batch indicates the end of a transcript. This allows for
         variable-length transcripts in the batch
+    include_eos : bool, optional
+        Whether to include the first instance of `eos` found in both `ref` and
+        `hyp` as valid tokens to be computed as part of the distance. This is
+        useful when gauging if a model is learning to emit the `eos` properly,
+        but is not usually included in an evaluation. Only the first `eos` per
+        transcript is included
     padding : int, optional
         A special token in `hyp` considered "padding" which will not
         contribute to the overall edit distance when inserted
@@ -231,8 +237,13 @@ def error_rate(
     sub_cost : float, optional
         The cost of swapping a token from `ref` with one from `hyp`
     warn : bool, optional
-        If ``True`` and `norm` is ``True``, will warn when a reference
-        transcription has zero length
+        Whether to display warnings on irregularities. Currently, this can
+        happen in two ways:
+
+        1. If ``True`` and `norm` is ``True``, will warn when a reference
+           transcription has zero length
+        2. If `eos` is set and `include_eos` is ``True``, will warn when a
+           transcript does not include an `eos` symbol
 
     Returns
     -------
@@ -259,6 +270,36 @@ def error_rate(
             ref_lens[..., coord[1]] = torch.min(ref_lens[coord[1]], coord[0])
         for coord in hyp.eq(eos).nonzero():
             hyp_lens[..., coord[1]] = torch.min(hyp_lens[coord[1]], coord[0])
+        if include_eos:
+            ref_eq_mask = ref_lens == max_ref_steps
+            ref_lens = ref_lens + 1
+            if ref_eq_mask.any():
+                if warn:
+                    warnings.warn(
+                        "include_eos=True, but a transcription in ref did not "
+                        "contain the eos symbol ({}). Will not be included in "
+                        "that error rate. To suppress this warning, set "
+                        "warn=False".format(eos))
+                ref_lens = torch.where(
+                    ref_eq_mask,
+                    ref_lens - 1,
+                    ref_lens
+                )
+            hyp_eq_mask = hyp_lens == max_hyp_steps
+            hyp_lens = hyp_lens + 1
+            if hyp_eq_mask.any():
+                if warn:
+                    warnings.warn(
+                        "include_eos=True, but a transcription in hyp did not "
+                        "contain the eos symbol ({}). Will not be included in "
+                        "that error rate. To suppress this warning, set "
+                        "warn=False".format(eos))
+                hyp_lens = torch.where(
+                    hyp_eq_mask,
+                    hyp_lens - 1,
+                    hyp_lens
+                )
+            del ref_eq_mask, hyp_eq_mask
     else:
         ref_lens = torch.full_like(ref[0], max_ref_steps)
         hyp_lens = torch.full_like(hyp[0], max_hyp_steps)

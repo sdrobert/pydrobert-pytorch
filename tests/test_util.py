@@ -116,7 +116,8 @@ def test_beam_search_advance_steps(device):
 
 
 @pytest.mark.parametrize('norm', [True, False])
-def test_error_rate(device, norm):
+@pytest.mark.parametrize('include_eos', [0, 1])
+def test_error_rate(device, norm, include_eos):
     padding, eos = -1, 0
     pairs = (
         (
@@ -173,14 +174,16 @@ def test_error_rate(device, norm):
             0,
         )
     )
-    ref_lens = torch.tensor([len(x[0]) for x in pairs], device=device)
-    hyp_lens = torch.tensor([len(x[1]) for x in pairs], device=device)
+    ref_lens = torch.tensor(
+        [len(x[0]) + include_eos for x in pairs], device=device)
+    hyp_lens = torch.tensor(
+        [len(x[1]) + include_eos for x in pairs], device=device)
     ref = torch.nn.utils.rnn.pad_sequence(
-        [torch.tensor(x[0]) for x in pairs],
+        [torch.tensor(x[0] + (eos,) * include_eos) for x in pairs],
         padding_value=eos,
     ).to(device)
     hyp = torch.nn.utils.rnn.pad_sequence(
-        [torch.tensor(x[1]) for x in pairs],
+        [torch.tensor(x[1] + (eos,) * include_eos) for x in pairs],
         padding_value=eos,
     ).to(device)
     exp = torch.tensor([float(x[2]) for x in pairs], device=device)
@@ -191,5 +194,6 @@ def test_error_rate(device, norm):
             exp / ref_lens.float()
         )
     act = util.error_rate(
-        ref, hyp, eos=eos, warn=False, norm=norm, padding=padding)
+        ref, hyp, eos=eos, warn=False, norm=norm, padding=padding,
+        include_eos=include_eos)
     assert torch.allclose(exp, act)
