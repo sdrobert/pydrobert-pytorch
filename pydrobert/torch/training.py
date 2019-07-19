@@ -12,7 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-'''Functions and classes involved in training'''
+'''Functions and classes involved in training
+
+References
+----------
+
+.. [prabhavalkar2018] R. Prabhavalkar et al., "Minimum Word Error Rate Training
+   for Attention-Based Sequence-to-Sequence Models,” presented at the IEEE
+   International Conference on Acoustics, Speech and Signal Processing
+   (ICASSP), 2018, pp. 4839-4843.
+
+'''
 
 from __future__ import absolute_import
 from __future__ import division
@@ -28,16 +38,28 @@ from string import Formatter
 import torch
 import param
 
-from pydrobert.torch.util import optimizer_to
+from pydrobert.torch.util import optimizer_to, error_rate
 
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
+    'NBestMinimumWordErrorRate',
     'TrainingStateParams',
     'TrainingStateController',
 ]
+
+
+class MinimumErrorRateLoss(param.CrossEntropyLoss):
+    '''Error rate expectation normalized over some number of transcripts
+
+    Proposed in [prabhavalkar2018]_ though similar ideas had been explored
+    previously. Given a subset of all possible token sequences and their
+    associated probability mass over that population, this loss calculates the
+    probability mass normalized over the subset, then calculates the
+    expected error rate
+    '''
 
 
 class TrainingStateParams(param.Parameterized):

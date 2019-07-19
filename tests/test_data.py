@@ -52,8 +52,9 @@ def test_extract_window(left, right, T):
 @pytest.mark.cpu
 @pytest.mark.parametrize('num_utts', [1, 2, 10])
 @pytest.mark.parametrize('file_prefix', ['prefix_', ''])
+@pytest.mark.parametrize('eos', [1000, None])
 def test_valid_spect_data_set(
-        temp_dir, num_utts, file_prefix, populate_torch_dir):
+        temp_dir, num_utts, file_prefix, populate_torch_dir, eos):
     feats, _, _, _, _, utt_ids = populate_torch_dir(
         temp_dir, num_utts, file_prefix=file_prefix,
         include_ali=False, include_ref=False)
@@ -65,7 +66,7 @@ def test_valid_spect_data_set(
         os.makedirs(os.path.join(temp_dir, 'feat', 'fake'))
     torch.save(torch.rand(10, 5), os.path.join(
         temp_dir, 'feat', 'fake', file_prefix + 'fake.pt'))
-    data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix)
+    data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix, eos=eos)
     assert not data_set.has_ali and not data_set.has_ref
     assert len(utt_ids) == len(data_set.utt_ids)
     assert all(
@@ -76,7 +77,12 @@ def test_valid_spect_data_set(
     )
     feats, alis, refs, _, _, utt_ids = populate_torch_dir(
         temp_dir, num_utts, file_prefix=file_prefix)
-    data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix)
+    if eos is not None:
+        eos_sym = torch.full((3,), -1).long()
+        eos_sym[0] = eos
+        eos_sym = eos_sym.unsqueeze(0)
+        refs = [torch.cat([x, eos_sym]) for x in refs]
+    data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix, eos=eos)
     assert data_set.has_ali and data_set.has_ref
     assert len(utt_ids) == len(data_set.utt_ids)
     assert all(
@@ -90,7 +96,8 @@ def test_valid_spect_data_set(
     )
     subset_ids = data_set.utt_ids[:num_utts // 2]
     data_set = data.SpectDataSet(
-        temp_dir, file_prefix=file_prefix, subset_ids=set(subset_ids))
+        temp_dir, file_prefix=file_prefix, subset_ids=set(subset_ids),
+        eos=eos)
     assert all(
         utt_a == utt_b for (utt_a, utt_b) in zip(subset_ids, data_set.utt_ids))
     assert all(
@@ -150,17 +157,22 @@ def test_spect_data_write_pdf(temp_dir, device):
     assert os.path.exists(os.path.join(temp_dir, 'foop', 'c.pt'))
 
 
-def test_spect_data_write_hyp(temp_dir, device):
+@pytest.mark.parametrize('eos', [None, -1])
+def test_spect_data_write_hyp(temp_dir, device, eos):
     torch.manual_seed(1)
     feat_dir = os.path.join(temp_dir, 'feat')
     os.makedirs(feat_dir)
     torch.save(torch.rand(3, 3), os.path.join(feat_dir, 'a.pt'))
-    data_set = data.SpectDataSet(temp_dir)
+    data_set = data.SpectDataSet(temp_dir, eos=eos)
     z = torch.randint(10, (4, 3))
-    if device == 'cuda':
-        data_set.write_hyp('b', z.cuda())
+    if eos:
+        zz = torch.cat([z, torch.full_like(z, eos)])
     else:
-        data_set.write_hyp('b', z)
+        zz = z
+    if device == 'cuda':
+        data_set.write_hyp('b', zz.cuda())
+    else:
+        data_set.write_hyp('b', zz)
     zp = torch.load(os.path.join(temp_dir, 'hyp', 'b.pt'))
     assert isinstance(zp, torch.LongTensor)
     assert torch.all(zp == z.long())
@@ -171,7 +183,8 @@ def test_spect_data_write_hyp(temp_dir, device):
 
 
 @pytest.mark.cpu
-def test_spect_data_set_validity(temp_dir):
+@pytest.mark.parametrize('eos', [None, 10000])
+def test_spect_data_set_validity(temp_dir, eos):
     torch.manual_seed(1)
     feat_dir = os.path.join(temp_dir, 'feat')
     ali_dir = os.path.join(temp_dir, 'ali')
@@ -185,7 +198,7 @@ def test_spect_data_set_validity(temp_dir):
     torch.save(torch.rand(4, 4), feats_b_pt)
     torch.save(torch.randint(10, (10,)).long(), ali_a_pt)
     torch.save(torch.randint(10, (4,)).long(), ali_b_pt)
-    data_set = data.SpectDataSet(temp_dir)
+    data_set = data.SpectDataSet(temp_dir, eos=eos)
     data.validate_spect_data_set(data_set)
     torch.save(torch.rand(4, 4).long(), feats_b_pt)
     with pytest.raises(ValueError, match='is not a FloatTensor'):
@@ -518,13 +531,15 @@ def test_spect_seq_to_batch(include_ali, include_ref):
 
 
 @pytest.mark.cpu
-def test_spect_training_data_loader(temp_dir, populate_torch_dir):
+@pytest.mark.parametrize('eos', [None, -1])
+def test_spect_training_data_loader(temp_dir, populate_torch_dir, eos):
     torch.manual_seed(40)
     num_utts, batch_size, num_filts = 20, 5, 11
     populate_torch_dir(temp_dir, num_utts, num_filts=num_filts)
     p = data.SpectDataSetParams(
         batch_size=batch_size,
         seed=2,
+        eos=eos,
     )
     # check missing either ali or ref gives None in batches
     data_loader = data.SpectTrainingDataLoader(temp_dir, p, ali_subdir=None)
@@ -603,15 +618,22 @@ def test_spect_training_data_loader(temp_dir, populate_torch_dir):
 
 
 @pytest.mark.cpu
-def test_spect_evaluation_data_loader(temp_dir, populate_torch_dir):
+@pytest.mark.parametrize('eos', [None, -1])
+def test_spect_evaluation_data_loader(temp_dir, populate_torch_dir, eos):
     torch.manual_seed(41)
     feat_dir = os.path.join(temp_dir, 'feat')
     ali_dir = os.path.join(temp_dir, 'ali')
     os.makedirs(feat_dir)
     os.makedirs(ali_dir)
-    p = data.SpectDataSetParams(batch_size=5)
+    p = data.SpectDataSetParams(batch_size=5, eos=eos)
     feats, ali, ref, feat_sizes, ref_sizes, utt_ids = populate_torch_dir(
         temp_dir, 20)
+    if eos is not None:
+        eos_sym = torch.full((3,), -1).long()
+        eos_sym[0] = eos
+        eos_sym = eos_sym.unsqueeze(0)
+        ref = [torch.cat([x, eos_sym]) for x in ref]
+        ref_sizes = [x + 1 for x in ref_sizes]
     # check that ali and ref can be missing
     data_loader = data.SpectEvaluationDataLoader(
         temp_dir, p, ali_subdir=None, ref_subdir=None)
