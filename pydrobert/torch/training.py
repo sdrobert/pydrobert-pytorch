@@ -18,7 +18,7 @@ References
 ----------
 
 .. [prabhavalkar2018] R. Prabhavalkar et al., "Minimum Word Error Rate Training
-   for Attention-Based Sequence-to-Sequence Models,” presented at the IEEE
+   for Attention-Based Sequence-to-Sequence Models," presented at the IEEE
    International Conference on Acoustics, Speech and Signal Processing
    (ICASSP), 2018, pp. 4839-4843.
 

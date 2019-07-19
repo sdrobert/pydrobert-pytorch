@@ -136,6 +136,12 @@ class SpectDataSet(torch.utils.data.Dataset):
     subset_ids : set, optional
         If set, only utterances with ids listed in this set will count towards
         the data set. The rest will be ignored
+    eos : int, optional
+        `eos` is a special token used to delimit the end of a reference
+        or hypothesis sequence. If specified, an extra `eos` token without
+        positional information will be appended to the end of each reference
+        tanscript. It will also have ramifications for the method
+        ``write_hyp()``
     feat_subdir, ali_subdir, ref_subdir : str, optional
         Change the names of the subdirectories under which feats, alignments,
         and references are stored. If `ali_subdir` or `ref_subdir` is ``None``,
@@ -158,6 +164,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         ``__getitem__``. If the ``ali/`` or ``ref/`` directories exist,
         `utt_ids` contains only the utterances in the intersection of each
         directory (and `subset_ids`, if it was specified)
+    eos : bool or None
 
     Yields
     ------
@@ -220,7 +227,7 @@ class SpectDataSet(torch.utils.data.Dataset):
 
     def __init__(
             self, data_dir, file_prefix='', file_suffix='.pt',
-            warn_on_missing=True, subset_ids=None,
+            warn_on_missing=True, subset_ids=None, eos=None,
             feat_subdir='feat', ali_subdir='ali', ref_subdir='ref'):
         super(SpectDataSet, self).__init__()
         self.data_dir = data_dir
@@ -229,6 +236,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         self.ref_subdir = ref_subdir
         self.file_prefix = file_prefix
         self.file_suffix = file_suffix
+        self.eos = eos
         if ali_subdir:
             self.has_ali = os.path.isdir(os.path.join(data_dir, ali_subdir))
         else:
@@ -329,6 +337,10 @@ class SpectDataSet(torch.utils.data.Dataset):
                     self.data_dir,
                     self.ref_subdir,
                     self.file_prefix + utt_id + self.file_suffix))
+            if self.eos is not None:
+                eos_sym = torch.full_like(ref[0], -1)
+                eos_sym[0] = self.eos
+                ref = torch.cat([ref, eos_sym.unsqueeze(0)])
         else:
             ref = None
         return feat, ali, ref
@@ -369,6 +381,11 @@ class SpectDataSet(torch.utils.data.Dataset):
         This method writes a sequence of hypothesis tokens to the directory
         `hyp_dir` with the name ``<file_prefix><utt><file_suffix>``
 
+        If the ``eos`` attribute of this instance is not ``None``, any
+        tokens in `hyp` matching it will be considered the end of the sequence,
+        so every symbol including and after the first instance will be removed
+        from the utterance before saving
+
         Parameters
         ----------
         utt : str or int
@@ -388,6 +405,12 @@ class SpectDataSet(torch.utils.data.Dataset):
             hyp_dir = os.path.join(self.data_dir, 'hyp')
         if not os.path.isdir(hyp_dir):
             os.makedirs(hyp_dir)
+        hyp = hyp.cpu().long()
+        if self.eos is not None:
+            eos_idxs = hyp[:, 0].eq(self.eos).nonzero()
+            if eos_idxs.numel():
+                eos_idx = eos_idxs[0].item()
+                hyp = hyp[:eos_idx]
         torch.save(
             hyp.cpu().long(),
             os.path.join(hyp_dir, self.file_prefix + utt + self.file_suffix)
@@ -1087,7 +1110,11 @@ class DataSetParams(param.Parameterized):
 
 class SpectDataParams(param.Parameterized):
     '''Parameters for spectral data'''
-    pass
+    eos = param.Integer(
+        None, doc='A special symbol used to indicate the end of a sequence in '
+        'reference and hypothesis transcriptions. If set, `eos` will be '
+        'appended to every reference transcription on read'
+    )
 
 
 class SpectDataSetParams(SpectDataParams, DataSetParams):
@@ -1267,6 +1294,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
+            eos=params.eos,
             feat_subdir=feat_subdir, ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
         )
@@ -1419,6 +1447,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
+            eos=params.eos,
             feat_subdir=feat_subdir, ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
         )
