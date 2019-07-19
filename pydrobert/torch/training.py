@@ -51,17 +51,6 @@ __all__ = [
 ]
 
 
-class MinimumErrorRateLoss(param.CrossEntropyLoss):
-    '''Error rate expectation normalized over some number of transcripts
-
-    Proposed in [prabhavalkar2018]_ though similar ideas had been explored
-    previously. Given a subset of all possible token sequences and their
-    associated probability mass over that population, this loss calculates the
-    probability mass normalized over the subset, then calculates the
-    expected error rate
-    '''
-
-
 class TrainingStateParams(param.Parameterized):
     '''Parameters controlling a TrainingStateController'''
     num_epochs = param.Integer(
