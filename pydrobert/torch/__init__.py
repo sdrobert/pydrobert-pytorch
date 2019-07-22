@@ -20,6 +20,19 @@ __all__ = [
     'command_line',
     'data',
     'estimators',
+    'INDEX_PAD_VALUE',
     'training',
     'util',
 ]
+
+
+'''The value to pad index-based tensors with
+
+Batched operations often involve variable-width input. This value is used to
+right-pad indexed-based tensors with to indicate that this element should be
+ignored.
+
+The default value (-100) was chosen to coincide with the PyTorch 1.0 default
+for ``ignore_index`` in the likelihood losses
+'''
+INDEX_PAD_VALUE = -100

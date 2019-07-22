@@ -37,7 +37,7 @@ from string import Formatter
 
 import torch
 import param
-import pydrobert.torch.data as data
+import pydrobert.torch
 
 from pydrobert.torch.util import optimizer_to, error_rate
 
@@ -163,7 +163,8 @@ class MinimumErrorRateLoss(torch.nn.Module):
     def __init__(
             self, eos=None, sub_avg=True, batch_first=False, norm=True,
             ins_cost=1., del_cost=1., sub_cost=1., lmb=0.01,
-            ignore_index=data.REF_PAD_VALUE, weight=None, reduction='mean'):
+            ignore_index=pydrobert.torch.INDEX_PAD_VALUE, weight=None,
+            reduction='mean'):
         super(MinimumErrorRateLoss, self).__init__()
         self.eos = eos
         self.sub_avg = sub_avg
