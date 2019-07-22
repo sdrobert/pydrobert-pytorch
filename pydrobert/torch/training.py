@@ -37,6 +37,7 @@ from string import Formatter
 
 import torch
 import param
+import pydrobert.torch.data as data
 
 from pydrobert.torch.util import optimizer_to, error_rate
 
@@ -45,9 +46,227 @@ __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
+    'MinimumErrorRateLoss',
     'TrainingStateParams',
     'TrainingStateController',
+    'TrainingStateParams',
 ]
+
+
+class MinimumErrorRateLoss(torch.nn.Module):
+    r'''Error rate expectation normalized over some number of transcripts
+
+    Proposed in [prabhavalkar2018]_ though similar ideas had been explored
+    previously. Given a subset of all possible token sequences and their
+    associated probability mass over that population, this loss calculates the
+    probability mass normalized over the subset, then calculates the
+    expected error rate over that normalized distribution. That is, given some
+    sequences :math:`s \in S \subseteq P`, the loss for a given reference
+    transcription :math:`s^*` is
+
+    .. math::
+
+        \mathcal{L}(s, s^*) = \frac{Pr(s) ER(s, s^*)}{\sum_{s'} Pr(s')}
+
+    This is an exact expectation over :math:`S` but not over :math:`P`. The
+    larger the mass covered by :math:`S`, the closer the expectation is to the
+    population - especially so for an n-best list (though it would be biased).
+
+    This loss function has one of the following signatures when called::
+
+        loss(log_probs, ref, hyp)
+        loss(logits, ref, hyp[, log_probs])
+
+    `hyp` is a long tensor of shape ``(num_batches, num_paths, max_hyp_steps)``
+    if `batch_first` is ``False`` otherwise ``(max_hyp_steps, num_batches,
+    num_paths)`` that provides the hypothesis transcriptions. Likewise, `ref`
+    of shape ``(num_batches, num_paths, max_ref_steps)`` or ``(max_ref_steps,
+    num_batches, num_paths)`` providing reference transcriptions.
+    ``num_batches`` enumerates the batches whereas ``num_paths`` enumerates
+    the list of paths for a given batch element.
+
+    `log_probs` is a two dimensional tensor of shape ``(num_batches,
+    num_paths)`` providing the log joint probabilities of every path. Without
+    `logits`, the loss is calculated as
+
+    .. math::
+
+        loss_{MER} = SoftMax(log\_probs)[ER(hyp_i, ref) - \mu_i]
+
+    where :math:`\mu_i` is the average error rate along paths in the batch
+    element :math:`i`. :math:`mu_i` can be removed by setting `sub_avg` to
+    ``False``.
+
+    `logits` is a 4-dimensional tensor of shape ``(num_batches, num_paths,
+    max_hyp_steps, num_classes)`` if `batch_first` is ``True``,
+    ``(max_hyp_steps, num_batches, num_paths, num_classes)`` otherwise.
+    A softmax over the step dimension defines the per-step distribution over
+    class labels. If `logits` is provided, an additional cross-entropy loss
+    term comparing `logits` and `ref` will be added to the loss
+
+    .. math::
+
+        loss_{combined} = loss_{MER} + \lambda loss_{CE}
+
+    If `logits` is provided, ``max_hyp_steps >= max_ref_steps``. Logits past
+    reference boundaries will be ignored. Note that :math:`loss_{MER}` is
+    derived from probability space, whereas :math:`loss_{CE}` is derived from
+    log-probabilty space.
+
+    If `log_probs` is provided in addition to `logits`, the former will be
+    used in calculating :math:`loss_{MER}`. Otherwise, `log_prob` will be
+    inferred from `logits` by assuming the Markov property and summing along
+    the paths
+
+    Parameters
+    ----------
+    eos : int, optional
+        A special token in `ref` and `hyp` whose first occurrence in each
+        batch indicates the end of a transcript. The first `eos` symbol will
+        always be included in the error rate. Used in error rate term
+    sub_avg : bool, optional
+        Whether to subtract the average error rate from each pathwise error
+        rate. Used in error rate term
+    batch_first : bool, optional
+        Whether batch/path dimensions come first, or the step dimension
+    norm : bool, optional
+        If ``False``, will use edit distances instead of error rates. Used
+        in error rate term
+    ins_cost : float, optional
+        The cost of an adding a superfluous token to a transcript in `hyp`.
+        Used in error rate term
+    del_cost : float, optional
+        The cost of missing a token from `ref`. Used in error rate term
+    sub_cost : float, optional
+        The cost of swapping a token from `ref` with one from `hyp`. Used in
+        error rate term
+    lmb : float, optional
+        The contribution of the cross entropy term, when `logits` is passed
+    ignore_index : int, optional
+        A reference transcript symbol indicating that this index will be
+        ignored. Used in cross entropy term only
+    weight : torch.tensor, optional
+        A manual rescaling weight given to each class. Used in cross entropy
+        term only
+    reduction : {'mean', 'none', 'sum'}, optional
+        Specifies the reduction to be applied to the output. 'none': no
+        reduction will be applied. 'sum': the output will be summed. 'mean':
+        the output will be averaged.
+
+    Warnings
+    --------
+    `ref` must be  padded after the `eos` with `ignore_index` for correctness
+    of the cross-entropy term. If `logits` is specified, `hyp` should not
+    contain any terms outside the range ``[0, num_classes)``
+    '''
+
+    def __init__(
+            self, eos=None, sub_avg=True, batch_first=False, norm=True,
+            ins_cost=1., del_cost=1., sub_cost=1., lmb=0.01,
+            ignore_index=data.REF_PAD_VALUE, weight=None, reduction='mean'):
+        super(MinimumErrorRateLoss, self).__init__()
+        self.eos = eos
+        self.sub_avg = sub_avg
+        self.batch_first = batch_first
+        self.norm = norm
+        self.ins_cost = ins_cost
+        self.del_cost = del_cost
+        self.sub_cost = sub_cost
+        self.lmb = lmb
+        self.reduction = reduction
+        self._cross_ent = torch.nn.CrossEntropyLoss(
+            ignore_index=ignore_index, weight=weight, reduction='none'
+        )
+        self._foo = None
+
+    @property
+    def ignore_index(self):
+        return self._cross_ent.ignore_index
+
+    @ignore_index.setter
+    def ignore_index(self, value):
+        self._cross_ent.ignore_index = value
+
+    @property
+    def weight(self):
+        return self._cross_ent.weight
+
+    @weight.setter
+    def weight(self, value):
+        self._cross_ent.weight = value
+
+    def forward(self, logits, ref, hyp, log_probs=None, warn=True):
+        if hyp.dim() != 3:
+            raise ValueError('hyp must be 3 dimensional')
+        if ref.dim() != 3:
+            raise ValueError('ref must be 3 dimensional')
+        if log_probs is None:
+            if logits.dim() == 2:
+                log_probs, logits = logits, None
+            elif logits.dim() != 4:
+                raise ValueError(
+                    'Expected first argument to have 2 or 4 dimensions')
+        if logits is not None:
+            if logits.dim() != 4:
+                raise ValueError('Expected logits to have 4 dimensions')
+            num_classes = logits.shape[-1]
+            if logits.shape[:-1] != hyp.shape:
+                raise ValueError(
+                    'logits and hyp must agree on first three dimensions')
+            if log_probs is None:
+                dist = torch.nn.functional.log_softmax(logits, 3)
+                logits_on_paths = dist.gather(3, hyp.unsqueeze(3)).squeeze(3)
+                log_probs = logits_on_paths.sum(2 if self.batch_first else 0)
+        if self.batch_first:
+            num_batches, num_paths, max_ref_steps = ref.shape
+            num_batches_, num_paths_, max_hyp_steps = hyp.shape
+            flat_ref = ref.view(-1, max_ref_steps)
+            flat_hyp = hyp.view(-1, max_hyp_steps)
+            min_steps = min(max_ref_steps, max_hyp_steps)
+            ref = ref[..., :min_steps]
+            if logits is not None:
+                logits = logits[..., :min_steps, :]
+        else:
+            max_ref_steps, num_batches, num_paths = ref.shape
+            max_hyp_steps, num_batches_, num_paths_ = hyp.shape
+            flat_ref = ref.view(max_ref_steps, -1)
+            flat_hyp = hyp.view(max_hyp_steps, -1)
+            min_steps = min(max_ref_steps, max_hyp_steps)
+            ref = ref[:min_steps]
+            if logits is not None:
+                logits = logits[:min_steps]
+        if (num_batches, num_paths) != (num_batches_, num_paths_):
+            raise ValueError('batch and path dims must match btw ref and hyp')
+        if num_paths < 2:
+            raise ValueError('must be more than one path')
+        er = error_rate(
+            flat_ref, flat_hyp, eos=self.eos, include_eos=True, norm=self.norm,
+            batch_first=self.batch_first, ins_cost=self.ins_cost,
+            del_cost=self.del_cost, sub_cost=self.sub_cost, warn=warn,
+        ).view(num_batches, num_paths)
+        if self.sub_avg:
+            er = er - er.mean(1, keepdim=True)
+        loss = er * torch.nn.functional.softmax(log_probs, 1)
+        if self.lmb and logits is not None:
+            # we always sum out the "steps" dim, which is why we don't do any
+            # reduction.
+            ref = ref.flatten()
+            logits = logits.contiguous().view(-1, num_classes)
+            ce_loss = self._cross_ent.forward(logits, ref)
+            ce_loss = ce_loss.masked_fill(ref == self.ignore_index, 0.)
+            if self.batch_first:
+                ce_loss = ce_loss.view(num_batches, num_paths, -1).sum(2)
+            else:
+                ce_loss = ce_loss.view(-1, num_batches, num_paths).sum(0)
+            loss = loss + self.lmb * ce_loss
+        if self.reduction == 'mean':
+            loss = loss.mean()
+        elif self.reduction == 'sum':
+            loss = loss.sum()
+        elif self.reduction != 'none':
+            raise ValueError(
+                '{} is not a valid value for reduction'.format(self.reduction))
+        return loss
 
 
 class TrainingStateParams(param.Parameterized):

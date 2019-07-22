@@ -190,3 +190,77 @@ def test_controller_best(temp_dir):
     for parameter_1, parameter_3 in zip(
             model_1.parameters(), model_3.parameters()):
         assert torch.allclose(parameter_1, parameter_3)
+
+
+@pytest.mark.parametrize('batch_first', [True, False])
+@pytest.mark.parametrize('eos', [None, 0])
+@pytest.mark.parametrize('ref_steps_times', [1, 2])
+@pytest.mark.parametrize('sub_avg', [True, False])
+@pytest.mark.parametrize('reduction', ['mean', 'none'])
+def test_minimum_error_rate_loss(
+        device, batch_first, eos, ref_steps_times, sub_avg, reduction):
+    torch.manual_seed(100)
+    num_batches, num_paths, max_steps, num_classes = 5, 5, 30, 20
+    hyp_lens = torch.randint(1, max_steps + 1, (num_batches, num_paths))
+    ref_lens = torch.randint(
+        1, ref_steps_times * max_steps + 1,
+        hyp_lens.shape
+    )
+    ref = torch.nn.utils.rnn.pad_sequence(
+        [
+            torch.randint(1, num_classes, (x,))
+            for x in ref_lens.flatten()
+        ],
+        padding_value=-1
+    ).view(-1, num_batches, num_paths)
+    hyp = torch.nn.utils.rnn.pad_sequence(
+        [
+            torch.randint(1, num_classes, (x,))
+            for x in hyp_lens.flatten()
+        ],
+        padding_value=num_classes - 1,
+    ).view(-1, num_batches, num_paths)
+    assert hyp_lens.max() == hyp.shape[0]
+    if eos is not None:
+        for i in range(num_batches):
+            for j in range(num_paths):
+                ref[ref_lens[i, j] - 1, i, j] = eos
+                hyp[hyp_lens[i, j] - 1, i, j] = eos
+    if batch_first:
+        ref = ref.view(-1, num_batches * num_paths)
+        ref = ref.t().view(num_batches, num_paths, -1).contiguous()
+        hyp = hyp.view(-1, num_batches * num_paths)
+        hyp = hyp.t().view(num_batches, num_paths, -1).contiguous()
+        logits = torch.rand(
+            num_batches, num_paths, hyp_lens.max(), num_classes)
+    else:
+        logits = torch.rand(
+            hyp_lens.max(), num_batches, num_paths, num_classes)
+    ref, hyp, logits = ref.to(device), hyp.to(device), logits.to(device)
+    dist = torch.nn.functional.log_softmax(logits, 3)
+    logits_on_paths = dist.gather(3, hyp.unsqueeze(3)).squeeze(3)
+    log_probs = logits_on_paths.sum(2 if batch_first else 0)
+    loss = training.MinimumErrorRateLoss(
+        eos=eos, sub_avg=sub_avg, batch_first=batch_first, ignore_index=-1,
+        reduction=reduction, lmb=0.
+    )
+    l1 = loss(logits, ref, hyp)
+    l2 = loss(logits, ref, hyp)
+    assert torch.allclose(l1, l2)
+    loss.lmb = 1.
+    log_probs.requires_grad_(True)
+    logits.requires_grad_(True)
+    l3 = loss(log_probs, ref, hyp)
+    assert torch.allclose(l2, l3)
+    d_log_probs_1, = torch.autograd.grad(
+        [l3], [log_probs], grad_outputs=torch.ones_like(l3))
+    l4 = loss(logits, ref, hyp, log_probs)
+    assert not torch.allclose(l3, l4)
+    d_logits_1, d_log_probs_2 = torch.autograd.grad(
+        [l4], [logits, log_probs], grad_outputs=torch.ones_like(l4))
+    assert torch.allclose(d_log_probs_1, d_log_probs_2)
+    l5 = loss(logits, ref, hyp)
+    assert torch.allclose(l4, l5)
+    d_logits_2, = torch.autograd.grad(
+        [l5], [logits], grad_outputs=torch.ones_like(l5))
+    assert not torch.allclose(d_logits_1, d_logits_2)
