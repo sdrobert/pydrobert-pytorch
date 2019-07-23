@@ -21,6 +21,7 @@ from __future__ import print_function
 import warnings
 
 import torch
+import pydrobert.torch
 
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
@@ -29,6 +30,7 @@ __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
     'beam_search_advance',
     'error_rate',
+    'optimal_completion',
     'optimizer_to',
 ]
 
@@ -246,105 +248,121 @@ def error_rate(
     -------
     er : torch.FloatTensor
     '''
-    if ref.dim() != 2 or hyp.dim() != 2:
-        raise ValueError('ref and hyp must be 2 dimensional')
-    if batch_first:
-        ref = ref.t()
-        hyp = hyp.t()
-    ref = ref.detach()
-    hyp = hyp.detach()
-    max_ref_steps, batch_size = ref.shape
-    max_hyp_steps, batch_size_ = hyp.shape
-    device = ref.device
-    if batch_size != batch_size_:
-        raise ValueError(
-            'ref has batch size {}, but hyp has {}'.format(
-                batch_size, batch_size_))
-    if eos is not None:
-        ref_lens = torch.full_like(ref[0], max_ref_steps)
-        hyp_lens = torch.full_like(hyp[0], max_hyp_steps)
-        for coord in ref.eq(eos).nonzero():
-            ref_lens[..., coord[1]] = torch.min(ref_lens[coord[1]], coord[0])
-        for coord in hyp.eq(eos).nonzero():
-            hyp_lens[..., coord[1]] = torch.min(hyp_lens[coord[1]], coord[0])
-        if include_eos:
-            ref_eq_mask = ref_lens == max_ref_steps
-            ref_lens = ref_lens + 1
-            if ref_eq_mask.any():
-                if warn:
-                    warnings.warn(
-                        "include_eos=True, but a transcription in ref did not "
-                        "contain the eos symbol ({}). Will not be included in "
-                        "that error rate. To suppress this warning, set "
-                        "warn=False".format(eos))
-                ref_lens = torch.where(
-                    ref_eq_mask,
-                    ref_lens - 1,
-                    ref_lens
-                )
-            hyp_eq_mask = hyp_lens == max_hyp_steps
-            hyp_lens = hyp_lens + 1
-            if hyp_eq_mask.any():
-                if warn:
-                    warnings.warn(
-                        "include_eos=True, but a transcription in hyp did not "
-                        "contain the eos symbol ({}). Will not be included in "
-                        "that error rate. To suppress this warning, set "
-                        "warn=False".format(eos))
-                hyp_lens = torch.where(
-                    hyp_eq_mask,
-                    hyp_lens - 1,
-                    hyp_lens
-                )
-            del ref_eq_mask, hyp_eq_mask
-    else:
-        ref_lens = torch.full_like(ref[0], max_ref_steps)
-        hyp_lens = torch.full_like(hyp[0], max_hyp_steps)
-    ins_cost = torch.tensor(float(ins_cost), device=device)
-    del_cost = torch.tensor(float(del_cost), device=device)
-    sub_cost = torch.tensor(float(sub_cost), device=device)
-    zero = torch.tensor(0., device=device)
-    # direct row down corresponds to insertion
-    # direct col right corresponds to a deletion
-    row = torch.arange(
-        max_ref_steps + 1, device=device, dtype=torch.float
-    ).unsqueeze(1).expand(max_ref_steps + 1, batch_size)
-    last_row = torch.empty_like(row)
-    # we vectorize as much as we can. Neither substitutions nor insertions
-    # require values from the current row to be computed, and since the last
-    # row can't be altered, we can easily vectorize there. We can't do the same
-    # with deletions because they rely on what came before in the row
-    for hyp_idx in range(1, max_hyp_steps + 1):
-        last_row = row
-        row = torch.where(
-            hyp_lens < hyp_idx,
-            last_row,
-            last_row + ins_cost
-        )
-        sub_row = torch.where(
-            ref == hyp[hyp_idx - 1],
-            last_row[:-1],
-            last_row[:-1] + sub_cost,
-        )
-        row[1:] = torch.min(row[1:], sub_row)
-        for ref_idx in range(1, max_ref_steps + 1):
-            row[ref_idx] = torch.min(row[ref_idx], row[ref_idx - 1] + del_cost)
-    er = row[ref_lens, range(batch_size)]
-    if norm:
-        er = er / ref_lens.float()
-        zero_mask = ref_lens.eq(0.)
-        if zero_mask.any():
-            if warn:
-                warnings.warn(
-                    "ref contains empty transcripts. Error rates for entries "
-                    "will be 1 if any insertion and 0 otherwise. To suppress "
-                    "this warning, set warn=False")
-            er = torch.where(
-                zero_mask,
-                hyp_lens.gt(0).float(),
-                er,
-            )
+    er = _levenshtein(
+        ref, hyp, eos, include_eos, batch_first, ins_cost,
+        del_cost, sub_cost, warn, norm=norm)
     return er
+
+
+def optimal_completion(
+        ref, hyp, eos=None, include_eos=True, batch_first=False, ins_cost=1.,
+        del_cost=1., sub_cost=1., padding=pydrobert.torch.INDEX_PAD_VALUE,
+        warn=True):
+    r'''Return a mask of next tokens of a minimum edit distance prefix
+
+    Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)``
+    (or ``(batch_size, max_ref_steps)`` if `batch_first` is ``True``) and a
+    hypothesis transcript `hyp` of shape ``(max_hyp_steps, batch_size)``, (or
+    ``(batch_size, max_hyp_steps)``), this function produces a long tensor
+    `optimals` of shape ``(max_hyp_steps + 1, batch_size, max_unique_next)``
+    (or ``(batch_size, max_hyp_steps + 1, max_unique_next)``), where
+    ``max_unique_next <= max_ref_steps``, of the unique tokens that could be
+    added to the hypothesis prefix ``hyp[:prefix_len, batch]`` such that some
+    remaining suffix concatenated to the prefix would result in a minimal edit
+    distance. See below for an example
+
+    Parameters
+    ----------
+    ref : torch.LongTensor
+    hyp : torch.LongTensor
+    eos : int, optional
+        A special token in `ref` and `hyp` whose first occurrence in each
+        batch indicates the end of a transcript. This allows for
+        variable-length transcripts in the batch
+    include_eos : bool, optional
+        Whether to include the first instance of `eos` found in both `ref` and
+        `hyp` as valid tokens to be computed as part of the distance and next
+        tokens for a suffix. Only the first `eos` per transcript is included
+    batch_first : bool, optional
+    ins_cost : float, optional
+        The cost of an adding a superfluous token to a transcript in `hyp`
+    del_cost : float, optional
+        The cost of missing a token from `ref`
+    sub_cost : float, optional
+        The cost of swapping a token from `ref` with one from `hyp`
+    padding : int, optional
+        The value to right-pad unequal-length sequences with
+    warn : bool, optional
+        Whether to display warnings on irregularities. Currently, this only
+        occurs when `eos` is set, `include_eos` is ``True``, and a transcript
+        does not contain the `eos` symbol
+
+    Returns
+    -------
+    optimals : torch.LongTensor
+
+    Examples
+    --------
+
+    Consider the reference text "foot" and the hypothesis text "bot". The below
+    shows the matrix used to calculate edit distances between them::
+
+        \ _ f o o t
+        _ 0 1 2 3 4
+        b 1 1 2 3 4
+        o 2 2 1 2 3
+        t 3 3 2 2 2
+
+    If ``prefix_len == 0``, then the prefix is "", and "f" (from the suffix
+    "foot") is the only subsequent token that would not increase the edit
+    distance from that of the prefix (0). If ``prefix_len == 1``, then the
+    prefix is "b". To arrive at the minimum edit distance for "b", one either
+    treats "b" as an insertion or a substitution for "f", yielding suffixes
+    "foot" and "oot". Thus, the subsequent token could be "f" or "o". For the
+    prefix "bo", the minimum edit distance is achieved by first substituting
+    "f" for "b", then substituting "o" for "o", resulting in the suffix "ot"
+    and the next optimal character "o". Finally, for ``prefix_len == 3`` and
+    prefix "bot", there are many operations that can produce the minimum edit
+    distance of 2, resulting in one of the suffixes "ot", "t", and "". The
+    latter suffix requires no more tokens and so any operation would increase
+    the edit distance. Thus the optimal next tokens could be "o" or "t".
+
+    Plugging "foot" and "bot" into this function, we get the prefixes:
+
+    >>> ref_text, hyp_text = "foot", "bot"
+    >>> ref = torch.tensor([ord(c) for c in ref_text]).unsqueeze(1)
+    >>> hyp = torch.tensor([ord(c) for c in hyp_text]).unsqueeze(1)
+    >>> optimal = optimal_completion(ref, hyp).squeeze(1)
+    >>> for prefix_len, o_for_pr in enumerate(optimal):
+    ...     o_for_pr = o_for_pr.masked_select(o_for_pr.ge(0)).tolist()
+    ...     print('prefix={}: {}'.format(
+    ...         hyp_text[:prefix_len], ','.join([chr(i) for i in o_for_pr])))
+    prefix=: f
+    prefix=b: f,o
+    prefix=bo: o
+    prefix=bot: o,t
+    '''
+    mask = _levenshtein(
+        ref, hyp, eos, include_eos, batch_first, ins_cost, del_cost,
+        sub_cost, warn, return_mask=True,
+    )
+    max_hyp_steps_p1, max_ref_steps, batch_size = mask.shape
+    targets = []
+    if batch_first:
+        for mask_bt, ref_bt in zip(mask.transpose(0, 2), ref):
+            for mask_bt_hyp in mask_bt.t():
+                targets.append(torch.unique(ref_bt.masked_select(mask_bt_hyp)))
+    else:
+        for mask_hyp in mask:
+            for mask_hyp_bt, ref_bt in zip(mask_hyp.t(), ref.t()):
+                targets.append(torch.unique(ref_bt.masked_select(mask_hyp_bt)))
+    targets = torch.nn.utils.rnn.pad_sequence(
+        targets, padding_value=padding, batch_first=True)
+    if batch_first:
+        targets = targets.view(batch_size, max_hyp_steps_p1, -1)
+    else:
+        targets = targets.view(max_hyp_steps_p1, batch_size, -1)
+    return targets
 
 
 def optimizer_to(optimizer, to):
@@ -376,3 +394,131 @@ def optimizer_to(optimizer, to):
             key_stack += [keys + (x,) for x in val.keys()]
     if new_device:
         optimizer.load_state_dict(state_dict)
+
+
+def _levenshtein(
+        ref, hyp, eos, include_eos, batch_first, ins_cost, del_cost,
+        sub_cost, warn, norm=False, return_mask=False):
+    if ref.dim() != 2 or hyp.dim() != 2:
+        raise ValueError('ref and hyp must be 2 dimensional')
+    if batch_first:
+        ref = ref.t()
+        hyp = hyp.t()
+    ref = ref.detach()
+    hyp = hyp.detach()
+    max_ref_steps, batch_size = ref.shape
+    max_hyp_steps, batch_size_ = hyp.shape
+    device = ref.device
+    if batch_size != batch_size_:
+        raise ValueError(
+            'ref has batch size {}, but hyp has {}'.format(
+                batch_size, batch_size_))
+    if eos is not None:
+        ref_lens = torch.full_like(ref[0], max_ref_steps)
+        hyp_lens = torch.full_like(hyp[0], max_hyp_steps)
+        for coord in ref.eq(eos).nonzero():
+            ref_lens[..., coord[1]] = torch.min(ref_lens[coord[1]], coord[0])
+        for coord in hyp.eq(eos).nonzero():
+            hyp_lens[..., coord[1]] = torch.min(hyp_lens[coord[1]], coord[0])
+        if include_eos:
+            ref_eq_mask = ref_lens == max_ref_steps
+            ref_lens = ref_lens + 1
+            if ref_eq_mask.any():
+                if warn:
+                    warnings.warn(
+                        "include_eos=True, but a transcription in ref did not "
+                        "contain the eos symbol ({}). To suppress this "
+                        "warning, set warn=False".format(eos))
+                ref_lens = torch.where(
+                    ref_eq_mask,
+                    ref_lens - 1,
+                    ref_lens
+                )
+            hyp_eq_mask = hyp_lens == max_hyp_steps
+            hyp_lens = hyp_lens + 1
+            if hyp_eq_mask.any():
+                if warn:
+                    warnings.warn(
+                        "include_eos=True, but a transcription in hyp did not "
+                        "contain the eos symbol ({}). To suppress this "
+                        "warning, set warn=False".format(eos))
+                hyp_lens = torch.where(
+                    hyp_eq_mask,
+                    hyp_lens - 1,
+                    hyp_lens
+                )
+            del ref_eq_mask, hyp_eq_mask
+    else:
+        ref_lens = torch.full_like(ref[0], max_ref_steps)
+        hyp_lens = torch.full_like(hyp[0], max_hyp_steps)
+    ins_cost = torch.tensor(float(ins_cost), device=device)
+    del_cost = torch.tensor(float(del_cost), device=device)
+    sub_cost = torch.tensor(float(sub_cost), device=device)
+    zero = torch.tensor(0., device=device)
+    if return_mask:
+        mask = torch.empty(
+            (max_hyp_steps + 1, max_ref_steps, batch_size),
+            device=device, dtype=torch.uint8)
+        mask[0, 0] = 1
+        mask[0, 1:] = 0
+    # direct row down corresponds to insertion
+    # direct col right corresponds to a deletion
+    row = torch.arange(
+        max_ref_steps + 1, device=device, dtype=torch.float
+    ).unsqueeze(1).expand(max_ref_steps + 1, batch_size)
+    last_row = torch.empty_like(row)
+    # we vectorize as much as we can. Neither substitutions nor insertions
+    # require values from the current row to be computed, and since the last
+    # row can't be altered, we can easily vectorize there. We can't do the same
+    # with deletions because they rely on what came before in the row
+    for hyp_idx in range(1, max_hyp_steps + 1):
+        last_row = row
+        row = torch.where(
+            hyp_lens < hyp_idx,
+            last_row,
+            last_row + ins_cost
+        )
+        sub_row = torch.where(
+            ref == hyp[hyp_idx - 1],
+            last_row[:-1],
+            last_row[:-1] + sub_cost,
+        )
+        row[1:] = torch.min(row[1:], sub_row)
+        for ref_idx in range(1, max_ref_steps + 1):
+            row[ref_idx] = torch.min(row[ref_idx], row[ref_idx - 1] + del_cost)
+        if return_mask:
+            # As proven in the OCD paper, the optimal targets are always the
+            # first character of a suffix of the reference transcript that
+            # remains to be aligned. The levenshtein operation
+            # corresponding to what we do with that target would be a matched
+            # substitution (i.e. hyp's next token is the OCD target, resulting
+            # in no change in cost from the prefix). Thus, given a levenshtein
+            # matrix for one of these OCD targets (which is this matrix,
+            # except for the final row), the minimal values on the final row
+            # sit on a diagonal from the minimal values of the current row.
+            mins = row.min(0, keepdim=True)[0]
+            mask[hyp_idx] = (row[:-1] == mins) & (hyp_idx <= hyp_lens)
+    if return_mask:
+        mask = mask & (
+            (torch.arange(max_ref_steps, device=device)
+                .unsqueeze(1)
+                .expand(max_ref_steps, batch_size) < ref_lens)
+            .unsqueeze(0)
+        )
+        return mask
+    er = row[ref_lens, range(batch_size)]
+    if norm:
+        er = er / ref_lens.float()
+        zero_mask = ref_lens.eq(0.)
+        if zero_mask.any():
+            if warn:
+                warnings.warn(
+                    "ref contains empty transcripts. Error rates for entries "
+                    "will be 1 if any insertion and 0 otherwise. To suppress "
+                    "this warning, set warn=False")
+            er = torch.where(
+                zero_mask,
+                hyp_lens.gt(0).float(),
+                er,
+            )
+    return er

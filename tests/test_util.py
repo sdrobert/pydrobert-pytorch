@@ -2,6 +2,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from itertools import chain
+
 import torch
 import pytest
 import pydrobert.torch.util as util
@@ -117,7 +119,8 @@ def test_beam_search_advance_steps(device):
 
 @pytest.mark.parametrize('norm', [True, False])
 @pytest.mark.parametrize('include_eos', [0, 1])
-def test_error_rate(device, norm, include_eos):
+@pytest.mark.parametrize('batch_first', [True, False])
+def test_error_rate(device, norm, include_eos, batch_first):
     eos = 0
     pairs = (
         (
@@ -176,11 +179,11 @@ def test_error_rate(device, norm, include_eos):
         [len(x[1]) + include_eos for x in pairs], device=device)
     ref = torch.nn.utils.rnn.pad_sequence(
         [torch.tensor(x[0] + (eos,) * include_eos) for x in pairs],
-        padding_value=eos,
+        padding_value=eos, batch_first=batch_first,
     ).to(device)
     hyp = torch.nn.utils.rnn.pad_sequence(
         [torch.tensor(x[1] + (eos,) * include_eos) for x in pairs],
-        padding_value=eos,
+        padding_value=eos, batch_first=batch_first,
     ).to(device)
     exp = torch.tensor([float(x[2]) for x in pairs], device=device)
     if norm:
@@ -190,5 +193,46 @@ def test_error_rate(device, norm, include_eos):
             exp / ref_lens.float()
         )
     act = util.error_rate(
-        ref, hyp, eos=eos, warn=False, norm=norm, include_eos=include_eos)
+        ref, hyp, eos=eos, warn=False, norm=norm, include_eos=include_eos,
+        batch_first=batch_first
+    )
     assert torch.allclose(exp, act)
+
+
+@pytest.mark.parametrize('include_eos', [True, False])
+@pytest.mark.parametrize('batch_first', [True, False])
+def test_optimal_completion(device, include_eos, batch_first):
+    eos, padding = ord('#'), -1
+    triplets = (
+        (
+            'sunday#', 'saturday#',
+            ['s', 'u', 'un', 'und', 'n', 'nd', 'a', 'y', '#', ''],
+        ),
+        (
+            'sunday#', 'satrapy#',
+            ['s', 'u', 'un', 'und', 'unda', 'y', 'y#', '#', ''],
+        ),
+        ('abc#', 'abc#', ['a', 'b', 'c', '#', '']),
+        ('foot#', 'bot#', ['f', 'fo', 'o', 'ot#', '']),
+        ('abc#', 'def#', ['a', 'ab', 'abc', 'abc#', '']),
+    )
+    ref = torch.nn.utils.rnn.pad_sequence(
+        [torch.tensor([ord(c) for c in word]) for (word, _, _) in triplets],
+        batch_first=batch_first, padding_value=padding,
+    ).to(device)
+    hyp = torch.nn.utils.rnn.pad_sequence(
+        [torch.tensor([ord(c) for c in word]) for (_, word, _) in triplets],
+        batch_first=batch_first, padding_value=eos,
+    ).to(device)
+    act = util.optimal_completion(
+        ref, hyp, eos=eos, padding=padding, batch_first=batch_first)
+    if not batch_first:
+        act = act.transpose(0, 1)  # (batch, hyp, ref)
+    assert act.shape[0] == len(triplets)
+    for act_bt, (_, _, exp_bt) in zip(act, triplets):
+        assert act_bt.shape[0] >= len(exp_bt)
+        assert torch.all(act_bt[len(exp_bt):].eq(padding))
+        for act_bt_hyp, exp_bt_hyp in zip(act_bt, exp_bt):
+            act_bt_hyp = act_bt_hyp.masked_select(act_bt_hyp.ne(padding))
+            act_bt_hyp = sorted(chr(i) for i in act_bt_hyp.tolist())
+            assert sorted(exp_bt_hyp) == act_bt_hyp
