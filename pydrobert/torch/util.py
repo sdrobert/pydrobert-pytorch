@@ -35,39 +35,41 @@ __all__ = [
 ]
 
 
-def beam_search_advance(logits, width, log_prior=None, y_prev=None, eos=None):
+def beam_search_advance(
+        logits_t, width, log_prior=None, y_prev=None, eos=None, lens=None,
+        warn=True):
     r'''Advance a beam search
 
     Suppose a model outputs a un-normalized log-probability distribution over
-    the next element of a sequence in `logits` s.t.
+    the next element of a sequence in `logits_t` s.t.
 
     .. math::
 
-        Pr(y_t = c) = exp(logits_c) / \sum_k exp(logits_k)
+        Pr(y_t = c; log\_prior) = exp(logits_{t,c}) / \sum_k exp(logits_{t,k})
 
-    `logits` is "auto-regressive" if it is conditioned upon a prefix sequence
-    :math:`y_{<t}`. If `logits` is not auto-regressive, beam search (this
-    function) is not needed, since `logits` will produce the same probability
-    distribution over :math:`y_t` regardless of what it's predicted up to that
-    point. So we assume from now on that :math:`logits = f(y_{<t})`.
-    Critically, we assume that `logits` is conditionally independent of any
-    `logits` from prior timesteps given :math:`y_{<t}`
+    We assume :math:`logits_t` is a function of what comes before
+    :math:`logits_t = f(logits_{<t}, y_{<t})`. Alternatively, letting
+    :math:`s_t = (logits_t, y_t)`, :math:`s` is a Markov Chain. A model is
+    auto-regressive if :math:`f` depends on :math:`y_{<t}`, and is not
+    auto-regressive if :math:`logits_t = f(logits_{<t})`.
 
     Beam search is a heuristic mechanism for determining a best path, i.e.
-    :math:`\argmax_y Pr(y)` that maximizes the probability of the best path
-    by keeping track of `width` high probability paths called "beams"
-    (the aggregate of which for a given time step is named, unfortunately,
-    "the beam").
+    :math:`\argmax_y Pr(y)` that maximizes the probability of the best path by
+    keeping track of `width` high probability paths called "beams" (the
+    aggregate of which for a given time step is named, unfortunately, "the
+    beam"). If the model is auto-regressive, beam search is only approximate.
+    However, if the model is not auto-regressive, beam search gives an exact
+    n-best list.
 
     This function is called at every time step. It updates old beam
-    log-probabilities (`log_prior`) with new ones (`score`), and updates
-    us the class indices emitted between them (`y`). See the examples section
-    for how this might work.
+    log-probabilities (`log_prior`) with new ones (`score`) from the joint
+    distribution with `logits`, and updates us the class indices emitted
+    between them (`y`). See the examples section for how this might work.
 
     Parameters
     ----------
     logits : torch.tensor
-        The conditional probabilities over class labels for the current tim
+        The conditional probabilities over class labels for the current time
         step. Either of shape ``(num_batches, old_width, num_classes)``,
         where ``old_width`` is the number of beams in the previous time step,
         or ``(num_batches, num_classes)``, where it is assumed that
@@ -84,11 +86,19 @@ def beam_search_advance(logits, width, log_prior=None, y_prev=None, eos=None):
         ``(t - 1, num_batches)`` specifying :math:`y_{<t}`. If unspecified,
         it is assumed that ``t == 1``
     eos : int, optional
-        If both `eos` and `y_prev` are specified, whenever
-        ``y_prev[-1, i, j] == eos``, the indexed beam is considered "finished"
-        and will not update its value with `logits`. `y` will copy the `eos`
-        symbol into :math:`y_t`.
-
+        If both `eos` and `y_prev` are specified, whenever ``y_prev[-1, i, j]
+        == eos``, the indexed beam is considered "finished" and will not update
+        its value with `logits_t`. `y` will copy the `eos` symbol into
+        :math:`y_t`.
+    lens : torch.LongTensor, optional
+        An optional tensor of shape ``(num_batches,)`` indicating how many
+        steps in time are considered valid per batch. If `lens` is specified,
+        `eos` must be specified.  The only time this has an effect for a batch
+        sample is when ``t == lens[batch]``. At this point, all beams within
+        the sample's beam are forced to finishing (if they have not already)
+        with an `eos`. `score` will be updated as if the `eos` beams had
+        already been in the beam. This argument is crucial for maintaining the
+        validity of the beam search for variable-length elements within a batch
 
     Returns
     -------
@@ -104,13 +114,14 @@ def beam_search_advance(logits, width, log_prior=None, y_prev=None, eos=None):
     Examples
     --------
 
-    Decoding with beam search, assuming index class 0 is eos and -1 is start
+    Auto-regressive decoding with beam search. We assume that all input have
+    the same number of steps.
 
-    >>> N, I, C, T, W, H = 5, 5, 10, 100, 5, 10
+    >>> N, I, C, T, W, H, eos, start = 5, 5, 10, 100, 5, 10, 0, -1
     >>> cell = torch.nn.RNNCell(I + 1, H)
     >>> ff = torch.nn.Linear(H, C)
     >>> inp = torch.rand(T, N, I)
-    >>> y = torch.full((1, N, 1), -1, dtype=torch.long)
+    >>> y = torch.full((1, N, 1), start, dtype=torch.long)
     >>> h_t = torch.zeros(N, 1, H)
     >>> score = None
     >>> for inp_t in inp:
@@ -123,66 +134,121 @@ def beam_search_advance(logits, width, log_prior=None, y_prev=None, eos=None):
     ...         h_t.view(N * old_width, H)
     ...     ).view(N, old_width, H)
     >>>     logits_t = ff(h_t)
-    >>>     score, y, s_t = beam_search_advance(logits_t, W, score, y, 0)
+    >>>     score, y, s_t = beam_search_advance(logits_t, W, score, y, eos)
     >>>     h_t = h_t.gather(1, s_t.unsqueeze(-1).expand(N, W, H))
     >>> bests = []
     >>> for batch_idx in range(N):
     >>>     best_beam_path = y[1:, batch_idx, 0]
-    >>>     not_special_mask = best_beam_path.ne(0)
+    >>>     not_special_mask = best_beam_path.ne(eos)
     >>>     best_beam_path = best_beam_path.masked_select(not_special_mask)
     >>>     bests.append(best_beam_path)
+
+    ``W``-best list for non-auto-regressive model. Note that the number of
+    valid steps in time varies between batch samples, hence the use of `lens`.
+
+    >>> N, I, C, T, W, H, eos, start = 5, 5, 10, 100, 5, 10, 0, -1
+    >>> rnn = torch.nn.RNN(I, H)
+    >>> ff = torch.nn.Linear(H, C)
+    >>> inp = torch.rand(T, N, I)
+    >>> lens = torch.randint(1, T + 1, (N,)).sort(descending=True)[0]
+    >>> packed_inp = torch.nn.utils.rnn.pack_padded_sequence(inp, lens)
+    >>> packed_h, _ = rnn(packed_inp)
+    >>> packed_logits = ff(packed_h[0])
+    >>> logits = torch.nn.utils.rnn.pad_packed_sequence(
+    ...     torch.nn.utils.rnn.PackedSequence(
+    ...         packed_logits, batch_sizes=packed_h[1]),
+    ...     total_length=T,
+    ... )[0]
+    >>> y = score = None
+    >>> for t, logits_t in enumerate(logits):
+    >>>     if t:
+    >>>         logits_t = logits_t.unsqueeze(1).expand(-1, W, -1)
+    >>>     score, y, _ = beam_search_advance(logits_t, W, score, y, eos, lens)
     '''
-    if logits.dim() == 2:
-        logits = logits.unsqueeze(1)
-    elif logits.dim() != 3:
-        raise ValueError('logits must have dimension of either 2 or 3')
-    num_batches, old_width, num_classes = logits.shape
+    if logits_t.dim() == 2:
+        logits_t = logits_t.unsqueeze(1)
+    elif logits_t.dim() != 3:
+        raise ValueError('logits_t must have dimension of either 2 or 3')
+    num_batches, old_width, num_classes = logits_t.shape
     if log_prior is None:
         log_prior = torch.full(
             (num_batches, old_width),
             -torch.log(torch.tensor(float(num_classes))),
-            dtype=logits.dtype, device=logits.device,
+            dtype=logits_t.dtype, device=logits_t.device,
         )
     elif tuple(log_prior.shape) == (num_batches,) and old_width == 1:
         log_prior = log_prior.unsqueeze(1)
-    elif log_prior.shape != logits.shape[:-1]:
+    elif log_prior.shape != logits_t.shape[:-1]:
         raise ValueError(
-            'If logits of shape {} then log_prior must have shape {}'.format(
+            'If logits_t of shape {} then log_prior must have shape {}'.format(
                 (num_batches, old_width, num_classes),
                 (num_batches, old_width),
             ))
-    if y_prev is not None and y_prev.shape[1:] != log_prior.shape:
-        raise ValueError(
-            'If logits of shape {} then y_prev must have shape (*, {}, {})'
-            ''.format(
-                (num_batches, old_width, num_classes),
-                num_batches, old_width,
+    if y_prev is not None:
+        if y_prev.shape[1:] != log_prior.shape:
+            raise ValueError(
+                'If logits_t of shape {} then y_prev must have shape '
+                '(*, {}, {})'.format(
+                    (num_batches, old_width, num_classes),
+                    num_batches, old_width,
+                )
             )
-        )
-    logits = torch.nn.functional.log_softmax(logits, 2)
+        t = y_prev.shape[0] + 1
+    else:
+        t = 1
+    if lens is not None:
+        if eos is None:
+            raise ValueError('eos must be specified if lens is specified')
+        elif lens.shape != log_prior.shape[:1]:
+            raise ValueError('lens must have shape ({},)'.format(num_batches))
+    logits_t = torch.nn.functional.log_softmax(logits_t, 2)
     if y_prev is not None and eos is not None:
         if eos < 0:
             raise ValueError('eos must be a valid index')
-        done_mask = y_prev[-1].eq(eos)
-        num_done = done_mask.sum().item()
-        if num_done:
-            if num_done == old_width and old_width < width:
-                warnings.warn(
-                    'New beam width ({}) is wider than old beam width ({}), '
-                    'but all paths are already done. Reducing new width.'
-                    ''.format(width, old_width))
+        mask = y_prev[-1].eq(eos)
+        num_done = mask.sum(1)
+        if num_done.sum().item():
+            if old_width < width and torch.any(num_done == old_width):
+                if warn:
+                    warnings.warn(
+                        'New beam width ({}) is wider than old beam width '
+                        '({}), but all paths are already done in one or more. '
+                        'Batch elements. Reducing new width'.format(
+                            width, old_width))
                 width = num_done
             # we want finished beams to only ever be in the top k when the next
             # class in the beam is EOS, so we fill all the class labels of old
             # beams with -inf except EOS, which gets a 0
-            done_classes = torch.full_like(logits[0, 0], -float('inf'))
+            done_classes = torch.full_like(logits_t[0, 0], -float('inf'))
             done_classes[eos] = 0.
-            logits = torch.where(
-                done_mask.unsqueeze(-1),
+            logits_t = torch.where(
+                mask.unsqueeze(-1),
                 done_classes,
-                logits
+                logits_t
             )
-    joint = log_prior.unsqueeze(2) + logits
+            del done_classes
+    if lens is not None and torch.any(lens == t):
+        if old_width < width:
+            if warn:
+                warnings.warn(
+                    't == lens for one or more batch elements but old width '
+                    'lower than new width. Reducing new width so that '
+                    'elements are unique'
+                )
+            width = old_width
+        # again, we want to force the EOS to be in the top k. The difference is
+        # we want to keep the log-probability of the EOS symbol, and we want
+        # gradients to be preserved through it. So we mask the non-eos classes
+        batch_mask = (lens == t).to(logits_t.device)
+        non_eos_mask = (torch.arange(num_classes) != eos).to(logits_t.device)
+        mask = (batch_mask.unsqueeze(1)) & (non_eos_mask.unsqueeze(0))
+        mask = mask.unsqueeze(1).expand(-1, old_width, -1)
+        logits_t = torch.where(
+            mask,
+            torch.tensor(-float('inf'), device=logits_t.device),
+            logits_t,
+        )
+    joint = log_prior.unsqueeze(2) + logits_t
     score, idxs = torch.topk(joint.view(num_batches, -1), width, dim=1)
     s = idxs // num_classes
     y = (idxs % num_classes).unsqueeze(0)
@@ -195,8 +261,8 @@ def beam_search_advance(logits, width, log_prior=None, y_prev=None, eos=None):
 
 
 def error_rate(
-        ref, hyp, eos=None, include_eos=False, norm=True,
-        batch_first=False, ins_cost=1., del_cost=1., sub_cost=1., warn=True):
+        ref, hyp, eos=None, include_eos=False, norm=True, batch_first=False,
+        ins_cost=1., del_cost=1., sub_cost=1., warn=True):
     '''Calculate error rates over a batch
 
     An error rate is merely a `Levenshtein (edit) distance

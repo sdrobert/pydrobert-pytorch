@@ -115,6 +115,26 @@ def test_beam_search_advance_steps(device):
     # non-negligible gradient
     assert abs(g[0, 0, 1].item()) > 1e-4
     assert abs(g[1, 1, 1].item()) > 1e-4
+    # ensure that all paths are always unequal
+    torch.manual_seed(30)
+    y = score = None
+    N, W, C, eos, T = 10, 10, 20, 0, 100
+    logits_t = torch.randn(N, C).to(device)
+    lens = torch.randint(2, T, (N,)).to(device)
+    lens[0] = 2
+    while y is None or not torch.all(y[-1].eq(eos)):
+        score, y, _ = util.beam_search_advance(
+            logits_t, W, score, y, eos, lens)
+        logits_t = torch.randn(N, W, C).to(device)
+        for i in range(W - 1):
+            beam_i = y[..., i]
+            for j in range(i + 1, W - 1):
+                beam_j = y[..., j]
+                for k in range(N):
+                    assert not torch.all(beam_i[:, k] == beam_j[:, k])
+    for i, l in enumerate(lens):
+        assert torch.all(y[l.item():, i] == eos)
+        assert not torch.all(y[:l.item(), i] == eos)
 
 
 @pytest.mark.parametrize('norm', [True, False])
