@@ -258,3 +258,48 @@ def test_optimal_completion(device, include_eos, batch_first):
             act_bt_hyp = act_bt_hyp.masked_select(act_bt_hyp.ne(padding))
             act_bt_hyp = sorted(chr(i) for i in act_bt_hyp.tolist())
             assert sorted(exp_bt_hyp) == act_bt_hyp
+
+
+def test_random_walk_advance(device):
+    torch.manual_seed(3487209)
+    N, T, S, C = 5, 1000, 4, 10
+    logits = torch.randn(C, N, C, device=device)
+    transitions = torch.nn.functional.softmax(logits.transpose(0, 1), -1)
+    last = transitions
+    stationary = torch.bmm(last, transitions)
+    while not torch.allclose(stationary, last):
+        last, stationary = stationary, torch.bmm(stationary, stationary)
+    assert torch.allclose(stationary.sum(2), torch.tensor(1., device=device))
+    exp = (stationary[:, 0] * torch.arange(float(C)).to(device)).sum(1)
+    y = None
+    for _ in range(T):
+        if y is None:
+            logits_t = logits[0]
+        else:
+            logits_t = torch.gather(
+                logits.unsqueeze(2).expand(C, N, S, C),
+                0,
+                y[-1].unsqueeze(0).unsqueeze(-1).expand(1, N, S, C),
+            ).squeeze(0)
+        y = util.random_walk_advance(logits_t, S, y)
+    act = y.float().mean(0).mean(1)
+    assert torch.allclose(exp, act, atol=0.1)
+
+
+@pytest.mark.parametrize('prevent_eos', [True, False])
+@pytest.mark.parametrize('lens', [True, False])
+def test_random_walk_advance_config(device, prevent_eos, lens):
+    torch.manual_seed(332)
+    N, T, S, C = 20, 100, 5, 4
+    eos = 0 if prevent_eos else -1
+    lens = torch.randint(1, T, (N,), device=device) if lens else None
+    y = None
+    for _ in range(T):
+        logits_t = torch.randn(N, S, C, device=device)
+        y = util.random_walk_advance(logits_t, S, y, eos, lens, prevent_eos)
+    if lens is None:
+        lens = torch.tensor(T, device=device).expand(N)
+    for bt, l in enumerate(lens):
+        for smp in range(S):
+            assert torch.all(y[l.item():, bt, smp] == eos)
+            assert not torch.any(y[:l.item(), bt, smp] == eos)

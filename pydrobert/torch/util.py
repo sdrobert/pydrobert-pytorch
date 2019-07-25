@@ -32,6 +32,7 @@ __all__ = [
     'error_rate',
     'optimal_completion',
     'optimizer_to',
+    'random_walk_advance',
 ]
 
 
@@ -192,6 +193,8 @@ def beam_search_advance(
         logits_t[..., eos] = neg_inf
     eos_set = None
     if y_prev is not None:
+        if y_prev.dim() == 2:
+            y_prev = y_prev.unsqueeze(2)
         if y_prev.shape[1:] != log_prior.shape:
             raise ValueError(
                 'If logits_t of shape {} then y_prev must have shape '
@@ -483,6 +486,176 @@ def optimizer_to(optimizer, to):
             key_stack += [keys + (x,) for x in val.keys()]
     if new_device:
         optimizer.load_state_dict(state_dict)
+
+
+def random_walk_advance(
+        logits_t, num_samp, y_prev=None, eos=pydrobert.torch.INDEX_PAD_VALUE,
+        lens=None, prevent_eos=False):
+    r'''Advance a random walk of sequences
+
+    Suppose a model outputs a un-normalized log-probability distribution over
+    the next element of a sequence in `logits_t` s.t.
+
+    .. math::
+
+        Pr(y_t = c) = exp(logits_{t,c}) / \sum_k exp(logits_k)
+
+    We assume :math:`logits_t` is a function of what comes before
+    :math:`logits_t = f(logits_{<t}, y_{<t})`. Alternatively, letting
+    :math:`s_t = (logits_t, y_t)`, :math:`s` is a Markov Chain. A model is
+    auto-regressive if :math:`f` depends on :math:`y_{<t}`, and is not
+    auto-regressive if :math:`logits_t = f(logits_{<t})`.
+
+    A random walk can be performed over a Markov Chain by sampling the elements
+    :math:`y_t` of the greater sequence `y` one at a time, according to
+    :math:`Pr(y_t = c)`. This allows us to sample the distribution
+    :math:`Pr(Y)`.
+
+    This function is called at every time step. It updates the sequences
+    being built (`y_prev`) with one additional token and returns `y`. This
+    function is intended to be coupled with an auto-regressive model, where
+    `logits_t` is not known until :math:`y_t` is known. If the model is
+    not auto-regressive, it is much more efficient to gather all `logits_t`
+    into one :math:`logits` and sample all at once. See the examples section
+    below for both behaviours
+
+    Parameters
+    ----------
+    logits_t : torch.tensor
+        The conditional probabilities over class labels for the current time
+        step. Either of shape ``(num_batches, old_samp, num_classes)``,
+        where ``old_samp`` is the number of samples in the previous time
+        step, or ``(num_batches, num_classes)``, where it is assumed that
+        ``old_samp == 1``
+    num_samp : int
+        The number of samples to be drawn. Either ``old_samp == 1`` and/or
+        ``num_samp <= old_samp`` must be ``True``. That is, either all samples
+        will share the same prefix, or we are building off a subset of the
+        samples from ``y_prev`` (in this case, always the first `num_samp`)
+    y_prev : torch.LongTensor, optional
+        A tensor of shape ``(t - 1, num_batches, old_samp)`` or
+        ``(t - 1, num_batches)`` specifying :math:`y_{<t}`. If unspecified,
+        it is assumed that ``t == 1``
+    eos : int, optional
+        A special end-of-sequence symbol indicating that the beam has ended.
+        Can be a class index. If this value occurs in in
+        ``y_prev[-1, bt, smp]`` for some batch ``bt`` and sample ``smp``,
+        `eos` will be appended to ``y_prev[:, bt, smp]``
+    lens : torch.LongTensor, optional
+        A tensor of shape ``(num_batches,)``. If ``t > lens[bt]`` for some
+        batch ``bt``, all samples for ``bt`` will be considered finished. `eos`
+        will be appended to `y_prev`
+    prevent_eos : bool, optional
+        Setting this flag to ``True`` will keep `eos` targets from being drawn
+        unless a sample has finished (either with a prior `eos` or through
+        `lens`). Note that this will only have an effect when ``0 <= eos <=
+        num_classes``
+
+    Returns
+    -------
+    y : torch.LongTensor
+        A long tensor of shape ``(t, num_batches, num_samp)`` of the sampled
+        sequences so far. Note that, since :math:`y_t` are drawn `i.i.d.`,
+        there is no guarantee of the uniqueness of each `num_samp` samples
+
+    Examples
+    --------
+
+    Here is an example of random path sampling with a non-auto-regressive
+    RNN. It does not need this function, and can take advantage of packed
+    sequences for efficiency and gradient validity.
+
+    >>> N, I, C, T, W, H, eos = 5, 4, 10, 100, 6, 15, 0
+    >>> rnn = torch.nn.RNN(I, H)
+    >>> ff = torch.nn.Linear(H, C)
+    >>> inp = torch.rand(T, N, I)
+    >>> lens = torch.randint(1, T + 1, (N,)).sort(descending=True)[0]
+    >>> packed_inp = torch.nn.utils.rnn.pack_padded_sequence(inp, lens)
+    >>> packed_h, _ = rnn(packed_inp)
+    >>> packed_logits = ff(packed_h[0])
+    >>> packed_logits_dup = packed_logits.detach().unsqueeze(1)
+    >>> packed_logits_dup = packed_logits_dup.expand(-1, W, -1)  # (flat, W, C)
+    >>> packed_y = torch.distributions.Categorical(
+    ...     logits=packed_logits_dup).sample()  # (flat, W)
+    >>> # we pad y with "eos" to ensure each sample is done by its length,
+    >>> # but "eos" may have occurred beforehand
+    >>> y = torch.nn.utils.rnn.pad_packed_sequence(
+    ...     torch.nn.utils.rnn.PackedSequence(
+    ...         packed_y, batch_sizes=packed_h[1]),
+    ...     padding_value=eos, total_length=T,
+    ... )[0]  # (T, N, W) (batch index gets inserted as 2nd dim)
+
+    Here is an auto-regressive RNN that uses this function to build partial
+    samples into `y`
+
+    >>> N, I, C, T, W, H, eos, start = 5, 5, 10, 100, 5, 10, 0, -1
+    >>> cell = torch.nn.RNNCell(I + 1, H)
+    >>> ff = torch.nn.Linear(H, C)
+    >>> inp = torch.rand(T, N, I)
+    >>> y = torch.full((1, N, 1), start, dtype=torch.long)
+    >>> h_t = torch.zeros(N, 1, H)
+    >>> for inp_t in inp:
+    >>>     y_tm1 = y[-1]
+    >>>     old_samp = y_tm1.shape[-1]
+    >>>     inp_t = inp_t.unsqueeze(1).expand(N, old_samp, I)
+    >>>     x_t = torch.cat([inp_t, y_tm1.unsqueeze(2).float()], -1)
+    >>>     h_t = cell(
+    ...         x_t.view(N * old_samp, I + 1),
+    ...         h_t.view(N * old_samp, H),
+    ...     ).view(N, old_samp, H)
+    >>>     logits_t = ff(h_t)
+    >>>     y = random_walk_advance(logits_t, W, y, eos)
+    >>>     if old_samp == 1:
+    >>>         h_t = h_t.expand(-1, W, H).contiguous()
+    '''
+    if logits_t.dim() == 2:
+        logits_t = logits_t.unsqueeze(1)
+    elif logits_t.dim() != 3:
+        raise ValueError('logits_t must have dimension of either 2 or 3')
+    logits_t = logits_t.detach()  # can't keep gradients through samples anyway
+    num_batches, old_samp, num_classes = logits_t.shape
+    if prevent_eos and 0 <= eos < num_classes:
+        logits_t[..., eos] = torch.tensor(
+            -float('inf'), device=logits_t.device)
+    if old_samp != 1 and num_samp > old_samp:
+        raise ValueError(
+            'either old_samp == 1 or num_samp <= old_samp must be true')
+    eos_mask = None
+    if y_prev is not None:
+        if y_prev.dim() == 2:
+            y_prev = y_prev.unsqueeze(2)
+        if y_prev.shape[1:] != logits_t.shape[:-1]:
+            raise ValueError(
+                'If logits_t of shape {} then y_prev must have shape '
+                '(*, {}, {})'.format(
+                    (num_batches, old_samp, num_classes),
+                    num_batches, old_samp,
+                )
+            )
+        y_prev = y_prev.expand(-1, -1, num_samp)
+        eos_mask = y_prev[-1].eq(eos)
+        if eos_mask.any():
+            eos_mask = eos_mask[..., :num_samp]
+        else:
+            eos_mask = None
+        t = y_prev.shape[0] + 1
+    else:
+        t = 1
+    logits_t = logits_t.expand(-1, num_samp, -1)
+    if lens is not None:
+        if lens.shape != logits_t.shape[:1]:
+            raise ValueError('lens must be of shape ({},)'.format(num_batches))
+        len_mask = lens.lt(t)
+        if torch.any(len_mask):
+            len_mask = len_mask.unsqueeze(1).expand(-1, num_samp)
+            eos_mask = len_mask if eos_mask is None else (eos_mask | len_mask)
+    y = torch.distributions.Categorical(logits=logits_t).sample()
+    if eos_mask is not None:
+        y = y.masked_fill(eos_mask, eos)
+    y = y.unsqueeze(0)
+    if y_prev is not None:
+        y = torch.cat([y_prev, y], 0)
+    return y
 
 
 def _levenshtein(
