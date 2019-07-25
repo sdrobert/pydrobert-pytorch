@@ -124,6 +124,9 @@ class MinimumErrorRateLoss(torch.nn.Module):
         A special token in `ref` and `hyp` whose first occurrence in each
         batch indicates the end of a transcript. The first `eos` symbol will
         always be included in the error rate. Used in error rate term
+    include_eos : bool, optional
+        Whether to include the first instance of `eos` found in both `ref` and
+        `hyp` as valid tokens to be computed as part of the distance.
     sub_avg : bool, optional
         Whether to subtract the average error rate from each pathwise error
         rate. Used in error rate term
@@ -161,12 +164,13 @@ class MinimumErrorRateLoss(torch.nn.Module):
     '''
 
     def __init__(
-            self, eos=None, sub_avg=True, batch_first=False, norm=True,
-            ins_cost=1., del_cost=1., sub_cost=1., lmb=0.01,
+            self, eos=None, include_eos=True, sub_avg=True, batch_first=False,
+            norm=True, ins_cost=1., del_cost=1., sub_cost=1., lmb=0.01,
             ignore_index=pydrobert.torch.INDEX_PAD_VALUE, weight=None,
             reduction='mean'):
         super(MinimumErrorRateLoss, self).__init__()
         self.eos = eos
+        self.include_eos = include_eos
         self.sub_avg = sub_avg
         self.batch_first = batch_first
         self.norm = norm
@@ -241,9 +245,10 @@ class MinimumErrorRateLoss(torch.nn.Module):
         if num_paths < 2:
             raise ValueError('must be more than one path')
         er = error_rate(
-            flat_ref, flat_hyp, eos=self.eos, include_eos=True, norm=self.norm,
-            batch_first=self.batch_first, ins_cost=self.ins_cost,
-            del_cost=self.del_cost, sub_cost=self.sub_cost, warn=warn,
+            flat_ref, flat_hyp, eos=self.eos, include_eos=self.include_eos,
+            norm=self.norm, batch_first=self.batch_first,
+            ins_cost=self.ins_cost, del_cost=self.del_cost,
+            sub_cost=self.sub_cost, warn=warn,
         ).view(num_batches, num_paths)
         if self.sub_avg:
             er = er - er.mean(1, keepdim=True)
