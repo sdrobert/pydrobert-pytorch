@@ -31,7 +31,8 @@ def test_beam_search_advance_greedy():
     assert torch.all(y == greedy_paths)
 
 
-def test_beam_search_advance_steps(device):
+@pytest.mark.parametrize('prevent_eos', [True, False])
+def test_beam_search_advance(device, prevent_eos):
     logits_1 = torch.tensor([
         [-10, -2, -4, -10],
         [-2, 0, 1, 1.1],
@@ -118,12 +119,13 @@ def test_beam_search_advance_steps(device):
     # ensure that all paths are always unequal
     torch.manual_seed(30)
     y = score = None
-    N, W, C, T, eos = 5, 10, 20, 100, -1
+    N, W, C, T = 5, 10, 20, 100
+    eos = 0 if prevent_eos else -1
     logits_t = torch.randn(N, C).to(device)
     lens = torch.randint(1, T, (N,)).to(device)
     while y is None or not torch.all(y[-1].eq(eos)):
         score, y, _ = util.beam_search_advance(
-            logits_t, W, score, y, eos=eos, lens=lens)
+            logits_t, W, score, y, eos=eos, lens=lens, prevent_eos=prevent_eos)
         logits_t = torch.randn(N, W, C).to(device)
         for i in range(W - 1):
             beam_i = y[..., i]
@@ -134,7 +136,7 @@ def test_beam_search_advance_steps(device):
     for bt, l in enumerate(lens):
         for bm in range(W):
             assert torch.all(y[l.item():, bt, bm] == eos)
-            assert not torch.all(y[:l.item(), bt, bm] == eos)
+            assert not torch.any(y[:l.item(), bt, bm] == eos)
 
 
 @pytest.mark.parametrize('norm', [True, False])

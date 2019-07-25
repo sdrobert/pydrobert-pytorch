@@ -37,7 +37,7 @@ __all__ = [
 
 def beam_search_advance(
         logits_t, width, log_prior=None, y_prev=None,
-        eos=pydrobert.torch.INDEX_PAD_VALUE, lens=None):
+        eos=pydrobert.torch.INDEX_PAD_VALUE, lens=None, prevent_eos=False):
     r'''Advance a beam search
 
     Suppose a model outputs a un-normalized log-probability distribution over
@@ -94,6 +94,11 @@ def beam_search_advance(
         A tensor of shape ``(num_batches,)``. If ``t > lens[bt]`` for some
         batch ``bt``, all beams for ``bt`` will be considered finished. All
         scores will be fixed and `eos` will be appended to `y_prev`
+    prevent_eos : bool, optional
+        Setting this flag to ``True`` will keep `eos` targets from entering
+        a beam unless it has finished (either with a prior `eos` or through
+        `lens`). Note that this will only have an effect when ``0 <= eos <=
+        num_classes``
 
     Returns
     -------
@@ -164,6 +169,8 @@ def beam_search_advance(
         logits_t = logits_t.unsqueeze(1)
     elif logits_t.dim() != 3:
         raise ValueError('logits_t must have dimension of either 2 or 3')
+    logits_t = torch.nn.functional.log_softmax(logits_t, 2)
+    neg_inf = torch.tensor(-float('inf'), device=logits_t.device)
     num_batches, old_width, num_classes = logits_t.shape
     if log_prior is None:
         log_prior = torch.full(
@@ -179,6 +186,10 @@ def beam_search_advance(
                 (num_batches, old_width, num_classes),
                 (num_batches, old_width),
             ))
+    if prevent_eos and 0 <= eos < num_classes:
+        # we have to put this before the num_done check so that it'll be
+        # overwritten for paths that have finished already
+        logits_t[..., eos] = neg_inf
     eos_set = None
     if y_prev is not None:
         if y_prev.shape[1:] != log_prior.shape:
@@ -199,7 +210,7 @@ def beam_search_advance(
                     'batch elements'.format(width, old_width))
             # we're going to treat class 0 as the sentinel for eos (even if
             # eos is a legit class label)
-            done_classes = torch.full_like(logits_t[0, 0], -float('inf'))
+            done_classes = torch.full_like(logits_t[0, 0], neg_inf)
             done_classes[0] = 0.
             logits_t = torch.where(
                 eos_mask.unsqueeze(2),
@@ -246,7 +257,6 @@ def beam_search_advance(
                     'batch elements'.format(width, old_width))
         else:
             len_mask = None
-    logits_t = torch.nn.functional.log_softmax(logits_t, 2)
     joint = log_prior.unsqueeze(2) + logits_t
     score, idxs = torch.topk(joint.view(num_batches, -1), width, dim=1)
     s = idxs // num_classes
