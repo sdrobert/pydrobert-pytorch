@@ -122,8 +122,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
     ----------
     eos : int, optional
         A special token in `ref` and `hyp` whose first occurrence in each
-        batch indicates the end of a transcript. The first `eos` symbol will
-        always be included in the error rate. Used in error rate term
+        batch indicates the end of a transcript
     include_eos : bool, optional
         Whether to include the first instance of `eos` found in both `ref` and
         `hyp` as valid tokens to be computed as part of the distance.
@@ -158,9 +157,18 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
     Warnings
     --------
-    `ref` must be  padded after the `eos` with `ignore_index` for correctness
-    of the cross-entropy term. If `logits` is specified, `hyp` should not
-    contain any terms outside the range ``[0, num_classes)``
+    The criteria for ignoring parts of `ref` differ between :math:`loss_{MER}`
+    and :math:`loss_{CE}`, the former relying on `eos` and the latter relying
+    on `ignore_index`. The distinction is made because the loss terms are
+    ultimately doing different things. For example, :math:`loss_{MER}` might
+    be calculated using the string that ends at the first occurence of `eos`,
+    but the cross-entropy term might want to use tokens in `hyp` past it to
+    match the underlying reference token length
+
+    See Also
+    --------
+    pydrobert.torch.util.beam_search_advance
+        For getting an n-best list into `hyp`
     '''
 
     def __init__(
