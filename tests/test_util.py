@@ -118,13 +118,12 @@ def test_beam_search_advance_steps(device):
     # ensure that all paths are always unequal
     torch.manual_seed(30)
     y = score = None
-    N, W, C, eos, T = 10, 10, 20, 0, 100
+    N, W, C, T, eos = 5, 10, 20, 100, -1
     logits_t = torch.randn(N, C).to(device)
-    lens = torch.randint(2, T, (N,)).to(device)
-    lens[0] = 2
+    lens = torch.randint(1, T, (N,)).to(device)
     while y is None or not torch.all(y[-1].eq(eos)):
         score, y, _ = util.beam_search_advance(
-            logits_t, W, score, y, eos, lens)
+            logits_t, W, score, y, eos=eos, lens=lens)
         logits_t = torch.randn(N, W, C).to(device)
         for i in range(W - 1):
             beam_i = y[..., i]
@@ -132,9 +131,10 @@ def test_beam_search_advance_steps(device):
                 beam_j = y[..., j]
                 for k in range(N):
                     assert not torch.all(beam_i[:, k] == beam_j[:, k])
-    for i, l in enumerate(lens):
-        assert torch.all(y[l.item():, i] == eos)
-        assert not torch.all(y[:l.item(), i] == eos)
+    for bt, l in enumerate(lens):
+        for bm in range(W):
+            assert torch.all(y[l.item():, bt, bm] == eos)
+            assert not torch.all(y[:l.item(), bt, bm] == eos)
 
 
 @pytest.mark.parametrize('norm', [True, False])

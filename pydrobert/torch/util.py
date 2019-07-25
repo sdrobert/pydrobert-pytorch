@@ -36,8 +36,8 @@ __all__ = [
 
 
 def beam_search_advance(
-        logits_t, width, log_prior=None, y_prev=None, eos=None, lens=None,
-        warn=True):
+        logits_t, width, log_prior=None, y_prev=None,
+        eos=pydrobert.torch.INDEX_PAD_VALUE, lens=None):
     r'''Advance a beam search
 
     Suppose a model outputs a un-normalized log-probability distribution over
@@ -56,7 +56,7 @@ def beam_search_advance(
     Beam search is a heuristic mechanism for determining a best path, i.e.
     :math:`\argmax_y Pr(y)` that maximizes the probability of the best path by
     keeping track of `width` high probability paths called "beams" (the
-    aggregate of which for a given time step is named, unfortunately, "the
+    aggregate of which for a given batch element is named, unfortunately, "the
     beam"). If the model is auto-regressive, beam search is only approximate.
     However, if the model is not auto-regressive, beam search gives an exact
     n-best list.
@@ -86,19 +86,14 @@ def beam_search_advance(
         ``(t - 1, num_batches)`` specifying :math:`y_{<t}`. If unspecified,
         it is assumed that ``t == 1``
     eos : int, optional
-        If both `eos` and `y_prev` are specified, whenever ``y_prev[-1, i, j]
-        == eos``, the indexed beam is considered "finished" and will not update
-        its value with `logits_t`. `y` will copy the `eos` symbol into
-        :math:`y_t`.
+        A special end-of-sequence symbol indicating that the beam has ended.
+        Can be a class index. If this value occurs in in ``y_prev[-1, bt, bm]``
+        for some batch ``bt`` and beam ``bm``, that beam will be padded with
+        an `eos` token and the score for that beam won't change
     lens : torch.LongTensor, optional
-        An optional tensor of shape ``(num_batches,)`` indicating how many
-        steps in time are considered valid per batch. If `lens` is specified,
-        `eos` must be specified.  The only time this has an effect for a batch
-        sample is when ``t == lens[batch]``. At this point, all beams within
-        the sample's beam are forced to finishing (if they have not already)
-        with an `eos`. `score` will be updated as if the `eos` beams had
-        already been in the beam. This argument is crucial for maintaining the
-        validity of the beam search for variable-length elements within a batch
+        A tensor of shape ``(num_batches,)``. If ``t > lens[bt]`` for some
+        batch ``bt``, all beams for ``bt`` will be considered finished. All
+        scores will be fixed and `eos` will be appended to `y_prev`
 
     Returns
     -------
@@ -115,7 +110,7 @@ def beam_search_advance(
     --------
 
     Auto-regressive decoding with beam search. We assume that all input have
-    the same number of steps.
+    the same number of steps
 
     >>> N, I, C, T, W, H, eos, start = 5, 5, 10, 100, 5, 10, 0, -1
     >>> cell = torch.nn.RNNCell(I + 1, H)
@@ -143,10 +138,10 @@ def beam_search_advance(
     >>>     best_beam_path = best_beam_path.masked_select(not_special_mask)
     >>>     bests.append(best_beam_path)
 
-    ``W``-best list for non-auto-regressive model. Note that the number of
-    valid steps in time varies between batch samples, hence the use of `lens`.
+    ``W``-best list for non-auto-regressive model. We don't emit an `eos`,
+    instead completing the sequence when we've hit the target length via `lens`
 
-    >>> N, I, C, T, W, H, eos, start = 5, 5, 10, 100, 5, 10, 0, -1
+    >>> N, I, C, T, W, H = 5, 5, 10, 100, 5, 10
     >>> rnn = torch.nn.RNN(I, H)
     >>> ff = torch.nn.Linear(H, C)
     >>> inp = torch.rand(T, N, I)
@@ -163,7 +158,7 @@ def beam_search_advance(
     >>> for t, logits_t in enumerate(logits):
     >>>     if t:
     >>>         logits_t = logits_t.unsqueeze(1).expand(-1, W, -1)
-    >>>     score, y, _ = beam_search_advance(logits_t, W, score, y, eos, lens)
+    >>>     score, y, _ = beam_search_advance(logits_t, W, score, y, lens=lens)
     '''
     if logits_t.dim() == 2:
         logits_t = logits_t.unsqueeze(1)
@@ -184,6 +179,7 @@ def beam_search_advance(
                 (num_batches, old_width, num_classes),
                 (num_batches, old_width),
             ))
+    eos_set = None
     if y_prev is not None:
         if y_prev.shape[1:] != log_prior.shape:
             raise ValueError(
@@ -193,69 +189,86 @@ def beam_search_advance(
                     num_batches, old_width,
                 )
             )
+        eos_mask = y_prev[-1].eq(eos)
+        num_done = eos_mask.sum(1)
+        if num_done.sum().item():
+            if old_width < width and torch.any(num_done == old_width):
+                raise ValueError(
+                    'New beam width ({}) is wider than old beam width '
+                    '({}), but all paths are already done in one or more '
+                    'batch elements'.format(width, old_width))
+            # we're going to treat class 0 as the sentinel for eos (even if
+            # eos is a legit class label)
+            done_classes = torch.full_like(logits_t[0, 0], -float('inf'))
+            done_classes[0] = 0.
+            logits_t = torch.where(
+                eos_mask.unsqueeze(2),
+                done_classes,
+                logits_t,
+            )
+            # If eos_mask looks like this (vertical batch, horizontal beam):
+            #   1 0 0 1 0
+            #   0 1 0 0 0
+            #   0 0 0 0 0
+            # then eos_set will be
+            #    0 -1 -1  3 -1
+            #   -1  1 -1 -1 -1
+            #   -1 -1 -1 -1 -1
+            # s might look like
+            #    1 2 3 3
+            #    2 2 4 1
+            #    1 2 3 4
+            # we'll compare a single value from a row of s to a matched row
+            # of eos_set. Any match means the beam had finished already. The
+            # mask on y will be
+            #    0 0 1 1
+            #    0 0 0 1
+            #    0 0 0 0
+            # pretty funky
+            eos_set = torch.where(
+                eos_mask,
+                torch.arange(old_width, device=logits_t.device),
+                torch.tensor(-1, device=logits_t.device).expand(old_width),
+            )
         t = y_prev.shape[0] + 1
     else:
         t = 1
+    len_mask = None
     if lens is not None:
-        if eos is None:
-            raise ValueError('eos must be specified if lens is specified')
-        elif lens.shape != log_prior.shape[:1]:
-            raise ValueError('lens must have shape ({},)'.format(num_batches))
+        if lens.shape != logits_t.shape[:1]:
+            raise ValueError('lens must be of shape ({},)'.format(num_batches))
+        len_mask = lens.lt(t)
+        if torch.any(len_mask):
+            if old_width < width:
+                raise ValueError(
+                    'New beam width ({}) is wider than old beam width '
+                    '({}), but all paths are already done in one or more '
+                    'batch elements'.format(width, old_width))
+        else:
+            len_mask = None
     logits_t = torch.nn.functional.log_softmax(logits_t, 2)
-    if y_prev is not None and eos is not None:
-        if eos < 0:
-            raise ValueError('eos must be a valid index')
-        mask = y_prev[-1].eq(eos)
-        num_done = mask.sum(1)
-        if num_done.sum().item():
-            if old_width < width and torch.any(num_done == old_width):
-                if warn:
-                    warnings.warn(
-                        'New beam width ({}) is wider than old beam width '
-                        '({}), but all paths are already done in one or more. '
-                        'Batch elements. Reducing new width'.format(
-                            width, old_width))
-                width = num_done
-            # we want finished beams to only ever be in the top k when the next
-            # class in the beam is EOS, so we fill all the class labels of old
-            # beams with -inf except EOS, which gets a 0
-            done_classes = torch.full_like(logits_t[0, 0], -float('inf'))
-            done_classes[eos] = 0.
-            logits_t = torch.where(
-                mask.unsqueeze(-1),
-                done_classes,
-                logits_t
-            )
-            del done_classes
-    if lens is not None and torch.any(lens == t):
-        if old_width < width:
-            if warn:
-                warnings.warn(
-                    't == lens for one or more batch elements but old width '
-                    'lower than new width. Reducing new width so that '
-                    'elements are unique'
-                )
-            width = old_width
-        # again, we want to force the EOS to be in the top k. The difference is
-        # we want to keep the log-probability of the EOS symbol, and we want
-        # gradients to be preserved through it. So we mask the non-eos classes
-        batch_mask = (lens == t).to(logits_t.device)
-        non_eos_mask = (torch.arange(num_classes) != eos).to(logits_t.device)
-        mask = (batch_mask.unsqueeze(1)) & (non_eos_mask.unsqueeze(0))
-        mask = mask.unsqueeze(1).expand(-1, old_width, -1)
-        logits_t = torch.where(
-            mask,
-            torch.tensor(-float('inf'), device=logits_t.device),
-            logits_t,
-        )
     joint = log_prior.unsqueeze(2) + logits_t
     score, idxs = torch.topk(joint.view(num_batches, -1), width, dim=1)
     s = idxs // num_classes
     y = (idxs % num_classes).unsqueeze(0)
+    if eos_set is not None:
+        y_mask = (s.unsqueeze(2) == eos_set.unsqueeze(1)).any(2)
+        y = y.masked_fill(y_mask, eos)
+    if len_mask is not None:
+        score = torch.where(
+            len_mask.unsqueeze(1),
+            log_prior[..., :width],
+            score,
+        )
+        y = y.masked_fill(len_mask.unsqueeze(1).unsqueeze(0), eos)
+        s = torch.where(
+            len_mask.unsqueeze(1),
+            torch.arange(width, device=logits_t.device),
+            s,
+        )
     if y_prev is not None:
-        tm1 = y_prev.shape[0]
         y_prev = y_prev.gather(
-            2, s.unsqueeze(0).expand(tm1, num_batches, width))
+            2, s.unsqueeze(0).expand(t - 1, num_batches, width))
         y = torch.cat([y_prev, y], 0)
     return score, y, s
 
