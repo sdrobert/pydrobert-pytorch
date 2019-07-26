@@ -310,3 +310,49 @@ def test_random_walk_advance_config(device, prevent_eos, lens):
         for smp in range(S):
             assert torch.all(y[l.item():, bt, smp] == eos)
             assert not torch.any(y[:l.item(), bt, smp] == eos)
+
+
+@pytest.mark.parametrize('exclude_last', [True, False])
+@pytest.mark.parametrize('batch_first', [True, False])
+@pytest.mark.parametrize('norm', [True, False])
+@pytest.mark.parametrize('ins_cost', [1., .5])
+def test_prefix_error_rates(
+        device, exclude_last, batch_first, norm, ins_cost):
+    torch.manual_seed(1937540)
+    N, max_ref_steps, max_hyp_steps, C, eos = 30, 11, 12, 10, -1
+    padding = -2
+    hyp_lens = torch.randint(1, max_hyp_steps + 1, (N,), device=device)
+    ref_lens = torch.randint(1, max_ref_steps + 1, (N,), device=device)
+    hyp = torch.randint(C, (max_hyp_steps, N), device=device)
+    ref = torch.randint(C, (max_ref_steps, N), device=device)
+    hyp[hyp_lens - 1, range(N)] = eos
+    ref[ref_lens - 1, range(N)] = eos
+    ref_lens -= 1  # exclude the eos
+    hyp_lens -= 1
+    act = util.prefix_error_rates(
+        ref.t().contiguous() if batch_first else ref,
+        hyp.t().contiguous() if batch_first else hyp,
+        eos=eos, include_eos=False, norm=norm, ins_cost=ins_cost,
+        exclude_last=exclude_last, padding=padding, batch_first=batch_first,
+        warn=False,
+    )
+    if batch_first:
+        act = act.t().contiguous()
+    exp = torch.empty(
+        max_hyp_steps + (0 if exclude_last else 1), N, device=device)
+    # if include_eos were true, `hyp` would get a bonus for the final `eos`
+    # which isn't in its prefix
+    for pref_len in range(max_hyp_steps - (1 if exclude_last else 0), -1, -1):
+        hyp[pref_len:] = eos
+        exp[pref_len] = util.error_rate(
+            ref, hyp, eos=eos, include_eos=False, norm=norm,
+            ins_cost=ins_cost, warn=False,
+        )
+    exp = exp.masked_fill(
+        (
+            torch.arange(exp.shape[0], device=device).unsqueeze(1) >=
+            hyp_lens + (0 if exclude_last else 1)
+        ),
+        padding
+    )
+    assert torch.allclose(exp, act)

@@ -12,7 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-'''Utility functions'''
+'''Utility functions
+
+References
+----------
+
+.. [tjandra2018] A. Tjandra, S. Sakti, and S. Nakamura, "Sequence-to-Sequence
+   Asr Optimization Via Reinforcement Learning," presented at the 2018 IEEE
+   International Conference on Acoustics, Speech and Signal Processing
+   (ICASSP), 2018, pp. 5829-5833.
+'''
 
 from __future__ import absolute_import
 from __future__ import division
@@ -32,6 +41,7 @@ __all__ = [
     'error_rate',
     'optimal_completion',
     'optimizer_to',
+    'prefix_error_rates',
     'random_walk_advance',
 ]
 
@@ -497,6 +507,85 @@ def optimizer_to(optimizer, to):
         optimizer.load_state_dict(state_dict)
 
 
+def prefix_error_rates(
+        ref, hyp, eos=None, include_eos=True, norm=True, batch_first=False,
+        ins_cost=1., del_cost=1., sub_cost=1.,
+        padding=pydrobert.torch.INDEX_PAD_VALUE, exclude_last=False,
+        warn=True):
+    '''Compute the error rate between ref and each prefix of hyp
+
+    Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)``
+    (or ``(batch_size, max_ref_steps)`` if `batch_first` is ``True``) and a
+    hypothesis transcript `hyp` of shape ``(max_hyp_steps, batch_size)``, (or
+    ``(batch_size, max_hyp_steps)``), this function produces a tensor
+    `prefix_ers` of shape ``(max_hyp_steps + 1, batch_size)`` (or
+    ``(batch_size, max_hyp_steps + 1))`` which contains the error rates for
+    each prefix of each hypothesis, starting from the empty prefix
+
+    Parameters
+    ----------
+    ref : torch.LongTensor
+    hyp : torch.LongTensor
+    eos : int, optional
+        A special token in `ref` and `hyp` whose first occurrence in each
+        batch indicates the end of a transcript. This allows for
+        variable-length transcripts in the batch
+    include_eos : bool, optional
+        Whether to include the first instance of `eos` found in both `ref` and
+        `hyp` as valid tokens to be computed as part of the distance.
+        Only the first `eos` per transcript is included
+    norm : bool, optional
+        If ``False``, will return edit distances instead of error rates
+    batch_first : bool, optional
+    ins_cost : float, optional
+        The cost of an adding a superfluous token to a transcript in `hyp`
+    del_cost : float, optional
+        The cost of missing a token from `ref`
+    sub_cost : float, optional
+        The cost of swapping a token from `ref` with one from `hyp`
+    padding : int, optional
+        The value to right-pad the error rates of unequal-length sequences with
+        in `prefix_ers`
+    exclude_last : bool, optional
+        If true, will exclude the final prefix, consisting of the entire
+        transcript, from the returned `dists`. `dists` will be of shape
+        ``(max_hyp_steps, batch_size, max_unique_next)``
+    warn : bool, optional
+        Whether to display warnings on irregularities. Currently, this only
+        occurs when `eos` is set, `include_eos` is ``True``, and a transcript
+        does not contain the `eos` symbol
+
+    Returns
+    -------
+    prefix_ers : torch.tensor
+
+    Examples
+    --------
+
+    This function, alongside ``pydrobert.torch.estimators.reinforce``, can be
+    used to recreate the reward function from [tjandra2018]_
+
+    >>> num_batches, max_hyp_steps, max_ref_steps, num_classes = 5, 20, 20, 10
+    >>> gamma, eos, padding = .1, 0, -1
+    >>> logits = torch.randn(
+    ...     max_hyp_steps, num_batches, num_classes, requires_grad=True)
+    >>> hyp = to_b(to_z(logits, 'cat'), 'cat')  # (max_hyp_steps, num_batches)
+    >>> ref = torch.randint(num_classes, (max_ref_steps, num_batches))
+    >>> dists = prefix_error_rates(
+    ...     ref, hyp.long(), eos=eos, norm=False, padding=-1)
+    >>> r = dists[1:] - dists[:-1]
+    >>> r = r.masked_fill(dists[1:].eq(padding), 0.)
+
+    TODO
+    '''
+    prefix_ers = _levenshtein(
+        ref, hyp, eos, include_eos, batch_first, ins_cost,
+        del_cost, sub_cost, warn, norm=norm, return_prf_dsts=True,
+        exclude_last=exclude_last, padding=padding,
+    )
+    return prefix_ers
+
+
 def random_walk_advance(
         logits_t, num_samp, y_prev=None, eos=pydrobert.torch.INDEX_PAD_VALUE,
         lens=None, prevent_eos=False):
@@ -669,7 +758,9 @@ def random_walk_advance(
 
 def _levenshtein(
         ref, hyp, eos, include_eos, batch_first, ins_cost, del_cost,
-        sub_cost, warn, norm=False, return_mask=False, exclude_last=False):
+        sub_cost, warn, norm=False, return_mask=False,
+        return_prf_dsts=False, exclude_last=False, padding=None):
+    assert not return_mask or not return_prf_dsts
     if ref.dim() != 2 or hyp.dim() != 2:
         raise ValueError('ref and hyp must be 2 dimensional')
     if batch_first:
@@ -726,6 +817,7 @@ def _levenshtein(
     del_cost = torch.tensor(float(del_cost), device=device)
     sub_cost = torch.tensor(float(sub_cost), device=device)
     zero = torch.tensor(0., device=device)
+    batch_range = torch.arange(batch_size, device=device)
     if return_mask:
         mask = torch.empty(
             (
@@ -734,6 +826,13 @@ def _levenshtein(
             device=device, dtype=torch.uint8)
         mask[0, 0] = 1
         mask[0, 1:] = 0
+    elif return_prf_dsts:
+        assert padding is not None
+        prefix_ers = torch.empty(
+            (max_hyp_steps + (0 if exclude_last else 1), batch_size),
+            device=device, dtype=torch.float,
+        )
+        prefix_ers[0] = ref_lens
     # direct row down corresponds to insertion
     # direct col right corresponds to a deletion
     row = torch.arange(
@@ -776,6 +875,8 @@ def _levenshtein(
             else:
                 row_mask = row_mask & (hyp_idx <= hyp_lens)
             mask[hyp_idx] = row_mask
+        elif return_prf_dsts and (hyp_idx < max_hyp_steps or not exclude_last):
+            prefix_ers[hyp_idx] = row[ref_lens, batch_range]
     if return_mask:
         mask = mask & (
             (torch.arange(max_ref_steps, device=device)
@@ -784,10 +885,39 @@ def _levenshtein(
             .unsqueeze(0)
         )
         return mask
-    er = row[ref_lens, range(batch_size)]
+    elif return_prf_dsts:
+        if norm:
+            prefix_ers = prefix_ers / ref_lens.float()
+            zero_mask = ref_lens.eq(0).unsqueeze(0)
+            if zero_mask.any():
+                if warn:
+                    warnings.warn(
+                        "ref contains empty transcripts. Error rates will be "
+                        "0 for prefixes of length 0, 1 otherwise. To suppress "
+                        "this warning, set warn=False"
+                    )
+                prefix_ers = torch.where(
+                    zero_mask,
+                    (
+                        torch.arange(prefix_ers.shape[0], device=device)
+                        .gt(0).float().unsqueeze(1).expand_as(prefix_ers)
+                    ),
+                    prefix_ers,
+                )
+        prefix_ers = prefix_ers.masked_fill(
+            (
+                torch.arange(prefix_ers.shape[0], device=device).unsqueeze(1)
+                .ge(hyp_lens + (0 if exclude_last else 1))
+            ),
+            padding,
+        )
+        if batch_first:
+            prefix_ers = prefix_ers.t()
+        return prefix_ers
+    er = row[ref_lens, batch_range]
     if norm:
         er = er / ref_lens.float()
-        zero_mask = ref_lens.eq(0.)
+        zero_mask = ref_lens.eq(0)
         if zero_mask.any():
             if warn:
                 warnings.warn(
