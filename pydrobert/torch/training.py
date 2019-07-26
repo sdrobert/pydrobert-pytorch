@@ -21,7 +21,8 @@ References
    for Attention-Based Sequence-to-Sequence Models," presented at the IEEE
    International Conference on Acoustics, Speech and Signal Processing
    (ICASSP), 2018, pp. 4839-4843.
-
+.. [sabour2018] S. Sabour, W. Chan, and M. Norouzi, "Optimal Completion
+   Distillation for Sequence Learning," CoRR, vol. abs/1810.01398, 2018.
 '''
 
 from __future__ import absolute_import
@@ -39,18 +40,157 @@ import torch
 import param
 import pydrobert.torch
 
-from pydrobert.torch.util import optimizer_to, error_rate
+from pydrobert.torch.util import optimizer_to, error_rate, optimal_completion
 
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
+    'HardOptimalCompletionDistillationLoss',
     'MinimumErrorRateLoss',
     'TrainingStateParams',
     'TrainingStateController',
     'TrainingStateParams',
 ]
+
+
+class HardOptimalCompletionDistillationLoss(torch.nn.Module):
+    r'''A categorical loss function over optimal next tokens
+
+    Optimal Completion Distillation (OCD) [sabour2018]_ tries to minimize the
+    train/test discrepancy in transcriptions by allowing seq2seq models to
+    generate whatever sequences they want, then assigns a per-step loss
+    according to whatever next token would set the model on a path that
+    minimizes the edit distance in the future.
+
+    In its "hard" version, the version used in the paper, the OCD loss function
+    is simply a categorical cross-entropy loss of each hypothesis token's
+    distribution versus those optimal next tokens, averaged over the number of
+    optimal next tokens:
+
+    .. math::
+
+        loss(logits_t) = \frac{1}{|S_t|} -log Pr(s_t|logits_t)
+
+    Where :math:`s_t \in S_t` are tokens from the set of optimal next tokens
+    given :math:`hyp_{\leq t}` and `ref`. The loss is decoupled from an exact
+    prefix of `ref`, meaning that `hyp` can be longer or shorter than `ref`.
+
+    When called, this loss function has the signature::
+
+        loss(logits, ref, hyp)
+
+    `hyp` is a long tensor of shape ``(num_batches, max_hyp_steps)`` if
+    `batch_first` is ``False`` otherwise ``(max_hyp_steps, num_batches)`` that
+    provides the hypothesis transcriptions. Likewise, `ref` of shape
+    ``(num_batches, max_ref_steps)`` or ``(max_ref_steps, num_batches)``
+    providing reference transcriptions. `logits` is a 4-dimensional tensor of
+    shape ``(num_batches, max_hyp_steps, num_classes)`` if `batch_first` is
+    ``True``, ``(max_hyp_steps, num_batches, num_classes)`` otherwise. A
+    softmax over the step dimension defines the per-step distribution over
+    class labels.
+
+    Parameters
+    ----------
+    eos : int, optional
+        A special token in `ref` and `hyp` whose first occurrence in each
+        batch indicates the end of a transcript
+    include_eos : bool, optional
+        Whether to include the first instance of `eos` found in both `ref` and
+        `hyp` as valid tokens to be computed as part of the distance. `eos`
+        must be a valid class index if `include_eos` is ``True``
+    batch_first : bool, optional
+        Whether the batch dimension comes first, or the step dimension
+    ins_cost : float, optional
+        The cost of an adding a superfluous token to a transcript in `hyp`
+    del_cost : float, optional
+        The cost of missing a token from `ref`
+    sub_cost : float, optional
+        The cost of swapping a token from `ref` with one from `hyp`
+    weight : torch.tensor, optional
+        A manual rescaling weight given to each class
+    reduction : {'mean', 'none', 'sum'}, optional
+        Specifies the reduction to be applied to the output. 'none': no
+        reduction will be applied. 'sum': the output will be summed. 'mean':
+        the output will be averaged.
+
+    See Also
+    --------
+    pydrobert.torch.util.optimal_completion
+        Used to determine the optimal next token set :math:`S`
+    pydrobert.torch.util.random_walk_advance
+        For producing a random `hyp` based on `logits` if the underlying
+        model producing `logits` is auto-regressive. Also provides an example
+        of sampling non-auto-regressive models
+    '''
+
+    def __init__(
+            self, eos=None, include_eos=True, batch_first=False, ins_cost=1.,
+            del_cost=1., sub_cost=1., weight=None, reduction='mean'):
+        super(HardOptimalCompletionDistillationLoss, self).__init__()
+        self.eos = eos
+        self.include_eos = include_eos
+        self.batch_first = batch_first
+        self.ins_cost = ins_cost
+        self.del_cost = del_cost
+        self.sub_cost = sub_cost
+        self.reduction = reduction
+        self._cross_ent = torch.nn.CrossEntropyLoss(
+            weight=weight, reduction='none'
+        )
+
+    @property
+    def weight(self):
+        return self._cross_ent.weight
+
+    @weight.setter
+    def weight(self, value):
+        self._cross_ent.weight = value
+
+    def forward(self, logits, ref, hyp, warn=True):
+        if logits.dim() != 3:
+            raise ValueError('logits must be 3 dimensional')
+        if logits.shape[:-1] != hyp.shape:
+            raise ValueError('first two dims of logits must match hyp shape')
+        num_classes = logits.shape[-1]
+        if self.include_eos and self.eos is not None and (
+                (self.eos < 0) or (self.eos >= num_classes)):
+            raise ValueError(
+                'if include_eos=True, eos ({}) must be a class idx'.format(
+                    self.eos))
+        # the padding we use will never be exposed to the user, so we merely
+        # ensure we're not trampling the eos
+        padding = -2 if self.eos == -1 else -1
+        self._cross_ent.ignore_index = padding
+        optimals = optimal_completion(
+            ref, hyp, eos=self.eos, include_eos=self.include_eos,
+            batch_first=self.batch_first, ins_cost=self.ins_cost,
+            del_cost=self.del_cost, sub_cost=self.sub_cost,
+            padding=padding, exclude_last=True, warn=warn,
+        )
+        max_unique_next = optimals.shape[-1]
+        logits = logits.unsqueeze(2).expand(-1, -1, max_unique_next, -1)
+        logits = logits.contiguous()
+        loss = self._cross_ent(
+            logits.view(-1, num_classes), optimals.flatten()
+        ).view_as(optimals)
+        padding_mask = optimals.eq(padding)
+        no_padding_mask = padding_mask.eq(0)
+        loss = loss.masked_fill(padding_mask, 0.).sum(2)
+        loss = torch.where(
+            no_padding_mask.any(2),
+            loss / no_padding_mask.float().sum(2),
+            loss,
+        )
+        if self.reduction == 'mean':
+            loss = loss.mean()
+        elif self.reduction == 'sum':
+            loss = loss.sum()
+        elif self.reduction != 'none':
+            raise ValueError(
+                '{} is not a valid value for reduction'.format(self.reduction))
+        return loss
 
 
 class MinimumErrorRateLoss(torch.nn.Module):
@@ -190,7 +330,6 @@ class MinimumErrorRateLoss(torch.nn.Module):
         self._cross_ent = torch.nn.CrossEntropyLoss(
             ignore_index=ignore_index, weight=weight, reduction='none'
         )
-        self._foo = None
 
     @property
     def ignore_index(self):
@@ -266,7 +405,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
             # reduction.
             ref = ref.flatten()
             logits = logits.contiguous().view(-1, num_classes)
-            ce_loss = self._cross_ent.forward(logits, ref)
+            ce_loss = self._cross_ent(logits, ref)
             ce_loss = ce_loss.masked_fill(ref == self.ignore_index, 0.)
             if self.batch_first:
                 ce_loss = ce_loss.view(num_batches, num_paths, -1).sum(2)

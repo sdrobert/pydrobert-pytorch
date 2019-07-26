@@ -264,3 +264,94 @@ def test_minimum_error_rate_loss(
     d_logits_2, = torch.autograd.grad(
         [l5], [logits], grad_outputs=torch.ones_like(l5))
     assert not torch.allclose(d_logits_1, d_logits_2)
+
+
+@pytest.mark.parametrize('batch_first', [True, False])
+@pytest.mark.parametrize('eos', [None, 0])
+@pytest.mark.parametrize('ref_steps_times', [1, 2])
+@pytest.mark.parametrize('reduction', ['mean', 'none'])
+@pytest.mark.parametrize('include_eos', [True, False])
+def test_hard_optimal_completion_distillation_loss(
+        device, batch_first, eos, ref_steps_times, reduction, include_eos):
+    torch.manual_seed(209384)
+    num_batches, max_steps, num_classes = 20, 41, 10
+    if eos is None:
+        hyp_lens = torch.tensor(max_steps).expand(num_batches)
+        ref_lens = torch.tensor(ref_steps_times * max_steps)
+        ref_lens = ref_lens.expand(num_batches)
+    else:
+        hyp_lens = torch.randint(1, max_steps + 1, (num_batches,))
+        ref_lens = torch.randint(
+            2, ref_steps_times * max_steps + 1, (num_batches,))
+    ref = torch.nn.utils.rnn.pad_sequence(
+        [
+            torch.randint(1, num_classes, (x,))
+            for x in ref_lens
+        ],
+        padding_value=num_classes - 1, batch_first=batch_first,
+    )
+    hyp = torch.nn.utils.rnn.pad_sequence(
+        [
+            torch.randint(1, num_classes, (x,))
+            for x in hyp_lens
+        ],
+        padding_value=-1, batch_first=batch_first,
+    )
+    if eos is not None:
+        for bt in range(num_batches):
+            if batch_first:
+                ref[bt, ref_lens[bt] - 1] = eos
+                hyp[bt, hyp_lens[bt] - 1] = eos
+            else:
+                ref[ref_lens[bt] - 1, bt] = eos
+                hyp[hyp_lens[bt] - 1, bt] = eos
+        if not include_eos:
+            ref_lens = ref_lens - 1
+            hyp_lens = hyp_lens - 1
+    logits = torch.rand(tuple(hyp.shape) + (num_classes,))
+    if batch_first:
+        len_mask = (
+            torch.arange(hyp.shape[1]).unsqueeze(0) < hyp_lens.unsqueeze(1)
+        )
+    else:
+        len_mask = torch.arange(hyp.shape[0]).unsqueeze(1) < hyp_lens
+    logits, ref, hyp = logits.to(device), ref.to(device), hyp.to(device)
+    ref_lens, hyp_lens = ref_lens.to(device), hyp_lens.to(device)
+    len_mask = len_mask.to(device)
+    inv_len_mask = len_mask.eq(0)
+    logits.requires_grad_(True)
+    loss = training.HardOptimalCompletionDistillationLoss(
+        eos=eos, include_eos=include_eos, batch_first=batch_first,
+        reduction=reduction,
+    )
+    l1 = loss(logits, ref, hyp)
+    assert torch.all(l1 == l1)  # no nans
+    if reduction == 'none':
+        assert torch.all(l1.masked_select(inv_len_mask).eq(0.))
+        # reference transcriptions are all positive length, so the first
+        # optimal completion (assuming hyp length is nonzero) will always be
+        # the first token in ref (and only the first token), given that there's
+        # no ambiguity in the alignment of the prefix ""
+        log_probs = torch.nn.functional.log_softmax(logits, 2)
+        if batch_first:
+            zero_length_mask = ref_lens.eq(0).unsqueeze(1)
+            first_loss = torch.where(
+                zero_length_mask,
+                torch.zeros_like(log_probs[:, 0, 0]),
+                -log_probs[:, 0].gather(
+                    1, ref[:, 0].unsqueeze(-1)
+                ).squeeze(-1),
+            )
+            assert torch.allclose(l1[:, 0], first_loss)
+        else:
+            zero_length_mask = ref_lens.eq(0).unsqueeze(0)
+            first_loss = torch.where(
+                zero_length_mask,
+                torch.zeros_like(log_probs[0, :, 0]),
+                -log_probs[0].gather(1, ref[0].unsqueeze(-1)).squeeze(-1),
+            )
+            assert torch.allclose(l1[0], first_loss)
+        l1 = l1.mean()
+    g, = torch.autograd.grad([l1], [logits])
+    assert torch.all(g.masked_select(inv_len_mask.unsqueeze(-1)).eq(0.))
+    assert not torch.all(g.eq(0.))
