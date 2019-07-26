@@ -349,7 +349,7 @@ def error_rate(
 def optimal_completion(
         ref, hyp, eos=None, include_eos=True, batch_first=False, ins_cost=1.,
         del_cost=1., sub_cost=1., padding=pydrobert.torch.INDEX_PAD_VALUE,
-        warn=True):
+        exclude_last=False, warn=True):
     r'''Return a mask of next tokens of a minimum edit distance prefix
 
     Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)``
@@ -384,6 +384,10 @@ def optimal_completion(
         The cost of swapping a token from `ref` with one from `hyp`
     padding : int, optional
         The value to right-pad unequal-length sequences with
+    exclude_last : bool, optional
+        If true, will exclude the final prefix, consisting of the entire
+        transcript, from the returned `optimals`. Optimals will be of shape
+        ``(max_hyp_steps, batch_size, max_unique_next)``
     warn : bool, optional
         Whether to display warnings on irregularities. Currently, this only
         occurs when `eos` is set, `include_eos` is ``True``, and a transcript
@@ -433,10 +437,15 @@ def optimal_completion(
     prefix=b: f,o
     prefix=bo: o
     prefix=bot: o,t
+
+    See Also
+    --------
+    pydrobert.torch.training.HardOptimalCompletionDistillationLoss
+        A loss function that uses these optimal completions to train a model
     '''
     mask = _levenshtein(
         ref, hyp, eos, include_eos, batch_first, ins_cost, del_cost,
-        sub_cost, warn, return_mask=True,
+        sub_cost, warn, return_mask=True, exclude_last=exclude_last,
     )
     max_hyp_steps_p1, max_ref_steps, batch_size = mask.shape
     targets = []
@@ -660,7 +669,7 @@ def random_walk_advance(
 
 def _levenshtein(
         ref, hyp, eos, include_eos, batch_first, ins_cost, del_cost,
-        sub_cost, warn, norm=False, return_mask=False):
+        sub_cost, warn, norm=False, return_mask=False, exclude_last=False):
     if ref.dim() != 2 or hyp.dim() != 2:
         raise ValueError('ref and hyp must be 2 dimensional')
     if batch_first:
@@ -719,7 +728,9 @@ def _levenshtein(
     zero = torch.tensor(0., device=device)
     if return_mask:
         mask = torch.empty(
-            (max_hyp_steps + 1, max_ref_steps, batch_size),
+            (
+                max_hyp_steps + (0 if exclude_last else 1),
+                max_ref_steps, batch_size),
             device=device, dtype=torch.uint8)
         mask[0, 0] = 1
         mask[0, 1:] = 0
@@ -748,7 +759,7 @@ def _levenshtein(
         row[1:] = torch.min(row[1:], sub_row)
         for ref_idx in range(1, max_ref_steps + 1):
             row[ref_idx] = torch.min(row[ref_idx], row[ref_idx - 1] + del_cost)
-        if return_mask:
+        if return_mask and (hyp_idx < max_hyp_steps or not exclude_last):
             # As proven in the OCD paper, the optimal targets are always the
             # first character of a suffix of the reference transcript that
             # remains to be aligned. The levenshtein operation
@@ -759,7 +770,12 @@ def _levenshtein(
             # except for the final row), the minimal values on the final row
             # sit on a diagonal from the minimal values of the current row.
             mins = row.min(0, keepdim=True)[0]
-            mask[hyp_idx] = (row[:-1] == mins) & (hyp_idx <= hyp_lens)
+            row_mask = (row[:-1] == mins)
+            if exclude_last:
+                row_mask = row_mask & (hyp_idx < hyp_lens)
+            else:
+                row_mask = row_mask & (hyp_idx <= hyp_lens)
+            mask[hyp_idx] = row_mask
     if return_mask:
         mask = mask & (
             (torch.arange(max_ref_steps, device=device)

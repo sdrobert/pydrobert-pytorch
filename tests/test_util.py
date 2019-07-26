@@ -223,7 +223,8 @@ def test_error_rate(device, norm, include_eos, batch_first):
 
 @pytest.mark.parametrize('include_eos', [True, False])
 @pytest.mark.parametrize('batch_first', [True, False])
-def test_optimal_completion(device, include_eos, batch_first):
+@pytest.mark.parametrize('exclude_last', [True, False])
+def test_optimal_completion(device, include_eos, batch_first, exclude_last):
     eos, padding = ord('#'), -1
     triplets = (
         (
@@ -247,11 +248,17 @@ def test_optimal_completion(device, include_eos, batch_first):
         batch_first=batch_first, padding_value=eos,
     ).to(device)
     act = util.optimal_completion(
-        ref, hyp, eos=eos, padding=padding, batch_first=batch_first)
+        ref, hyp, eos=eos, padding=padding, batch_first=batch_first,
+        exclude_last=exclude_last, include_eos=include_eos,
+    )
     if not batch_first:
         act = act.transpose(0, 1)  # (batch, hyp, ref)
     assert act.shape[0] == len(triplets)
     for act_bt, (_, _, exp_bt) in zip(act, triplets):
+        if not include_eos:
+            exp_bt = [nexts.replace('#', '') for nexts in exp_bt[:-1]]
+        if exclude_last:
+            exp_bt = exp_bt[:-1]
         assert act_bt.shape[0] >= len(exp_bt)
         assert torch.all(act_bt[len(exp_bt):].eq(padding))
         for act_bt_hyp, exp_bt_hyp in zip(act_bt, exp_bt):
