@@ -231,12 +231,9 @@ def _parse_token2id(file, swap, return_swap):
         if not line:
             continue
         ls = line.split()
-        if len(ls) != 2 or not ls[1 - int(swap)].isdigit():
-            print(
-                'Cannot parse line {} of {}'.format(line_no + 1, file.name),
-                file=sys.stderr,
-            )
-            return 1
+        if len(ls) != 2 or not ls[1 - int(swap)].lstrip('-').isdigit():
+            raise ValueError(
+                'Cannot parse line {} of {}'.format(line_no + 1, file.name))
         key, value = ls
         key, value = (int(key), value) if swap else (key, int(value))
         if key in ret:
@@ -344,7 +341,8 @@ def _torch_token_data_dir_to_trn_parse_args(args=None):
 
 
 def _load_transcripts_from_data_dir(
-        dir_, id2token, file_prefix, file_suffix, frame_shift_ms=None):
+        dir_, id2token, file_prefix, file_suffix, frame_shift_ms=None,
+        strip_timing=False):
     fpl = len(file_prefix)
     neg_fsl = -len(file_suffix)
     utt_ids = sorted(
@@ -358,12 +356,15 @@ def _load_transcripts_from_data_dir(
         tok = torch.load(os.path.join(
             dir_, file_prefix + utt_id + file_suffix))
         transcript = data.token_to_transcript(tok, id2token, frame_shift_ms)
-        for token in transcript:
-            if len(token) == 3 and isinstance(token[1], int):
+        for idx in range(len(transcript)):
+            token = transcript[idx]
+            if isinstance(token, tuple):
                 token = token[0]
-            if isinstance(token, int):
+                if strip_timing:
+                    transcript[idx] = token
+            if isinstance(token, int) and id2token is not None:
                 assert token not in id2token
-                print(
+                raise ValueError(
                     'Utterance "{}": ID "{}" could not be found in id2token'
                     ''.format(utt_id, token))
         transcripts.append((utt_id, transcript))
@@ -463,11 +464,9 @@ def _parse_wc2utt(file, swap, return_swap):
             continue
         ls = line.split()
         if len(ls) != 3:
-            print(
+            raise ValueError(
                 'Cannot parse line {} of {}'.format(line_no + 1, file.name),
-                file=sys.stderr,
             )
-            return 1
         first, mid, last = ls
         key, value = ((mid, last), first) if swap else ((first, mid), last)
         if key in ret:
@@ -583,7 +582,7 @@ def torch_token_data_dir_to_ctm(args=None):
 
     A "ctm" file is a transcription file with token alignments (a.k.a. a
     time-marked conversation file) used in the `sclite
-    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_ toolkit.
+    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__ toolkit.
     Here is the format::
 
         utt_1 A 0.2 0.1 hi
