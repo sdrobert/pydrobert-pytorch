@@ -403,9 +403,6 @@ def test_transcript_to_token(transcript, token2id, exp):
 def test_token_to_transcript(tok, id2token, exp):
     act = data.token_to_transcript(tok, id2token)
     assert exp == act
-    tok = torch.cat([torch.full((1, 3), -1, dtype=torch.long), tok], 0)
-    with pytest.raises(Exception):
-        data.token_to_transcript(tok, id2token)
 
 
 @pytest.mark.cpu

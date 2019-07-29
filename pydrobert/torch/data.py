@@ -841,8 +841,6 @@ def transcript_to_token(
         except TypeError:
             pass
         id = token2id.get(token, token) if token2id is not None else token
-        if id < 0:
-            raise ValueError('ID should be non-negative')
         tok[i, 0] = id
         tok[i, 1] = start
         tok[i, 2] = end
@@ -867,8 +865,6 @@ def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
     transcript = []
     for tup in tok:
         id, start, end = tup.tolist()
-        if id < 0:
-            raise ValueError('id must be non-negative')
         token = id2token.get(id, id) if id2token is not None else id
         if start == -1 or end == -1:
             transcript.append(token)
