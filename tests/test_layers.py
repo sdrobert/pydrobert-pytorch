@@ -99,3 +99,30 @@ def test_dot_product_soft_attention(device, batch_first):
     attention = layers.DotProductSoftAttention(size, batch_first)
     act = attention(h_t, x)
     assert torch.allclose(exp, act)
+
+
+@pytest.mark.parametrize('batch_first', [True, False])
+@pytest.mark.parametrize('bias', [True, False])
+def test_generalized_dot_product_soft_attention(device, batch_first, bias):
+    torch.manual_seed(347201)
+    num_batch, T, input_size, hidden_size = 50, 30, 12, 124
+    if batch_first:
+        x = torch.randn(num_batch, T, input_size, device=device)
+    else:
+        x = torch.randn(T, num_batch, input_size, device=device)
+    h_t = torch.randn(num_batch, hidden_size, device=device)
+    torch.manual_seed(30)
+    attention = layers.GeneralizedDotProductSoftAttention(
+        input_size, hidden_size, batch_first, bias)
+    optim = torch.optim.Adam(attention.parameters())
+    optim.zero_grad()
+    c_t1 = attention(h_t, x)
+    c_t1.mean().backward()
+    optim.step()
+    optim.zero_grad()
+    c_t2 = attention(h_t, x)
+    assert not torch.allclose(c_t1, c_t2, atol=1e-5)
+    torch.manual_seed(30)
+    attention.reset_parameters()
+    c_t3 = attention(h_t, x)
+    assert torch.allclose(c_t1, c_t3)

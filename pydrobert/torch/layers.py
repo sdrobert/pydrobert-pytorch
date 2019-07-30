@@ -47,6 +47,7 @@ __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
     'DotProductSoftAttention',
+    'GeneralizedDotProductSoftAttention',
     'GlobalSoftAttention',
 ]
 
@@ -226,3 +227,48 @@ class DotProductSoftAttention(GlobalSoftAttention):
     def score(self, h_t, x):
         h_t = h_t.unsqueeze(1 if self.batch_first else 0)
         return (h_t * x).sum(2)
+
+
+class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
+    r'''Dot product soft attention with a learned matrix in between
+
+    The "general" score function from [luong2015]_, the score function for this
+    attention mechanism is
+
+    .. math::
+
+        e_{t, s} = \langle h_t, W x_s \rangle
+
+    For some learned matrix :math:`W`
+
+    Parameters
+    ----------
+    input_size : int
+    hidden_size : int
+    batch_first : bool, optional
+    bias : bool, optional
+        Whether to add a bias term ``b``: :math:`W x_s + b`
+
+    See Also
+    --------
+    GlobalSoftAttention
+        For a description of how to call this module, how it works, etc.
+    '''
+
+    def __init__(self, input_size, hidden_size, batch_first=False, bias=False):
+        super(GeneralizedDotProductSoftAttention, self).__init__(
+            input_size, hidden_size, batch_first)
+        self._bias = bias
+        self._lin = torch.nn.Linear(input_size, hidden_size, bias=bias)
+
+    @property
+    def bias(self):
+        return self._bias
+
+    def score(self, h_t, x):
+        Wx = self._lin(x)
+        h_t = h_t.unsqueeze(1 if self.batch_first else 0)
+        return (h_t * Wx).sum(2)
+
+    def reset_parameters(self):
+        self._lin.reset_parameters()
