@@ -29,6 +29,10 @@ References
    Attention-based Neural Machine Translation," in Proceedings of the 2015
    Conference on Empirical Methods in Natural Language Processing, Lisbon,
    Portugal, 2015, pp. 1412-1421.
+.. [vaswani2017] A. Vaswani et al., "Attention is All you Need," in Advances in
+   Neural Information Processing Systems 30, I. Guyon, U. V. Luxburg, S.
+   Bengio, H. Wallach, R. Fergus, S. Vishwanathan, and R. Garnett, Eds. Curran
+   Associates, Inc., 2017, pp. 5998-6008.
 '''
 
 from __future__ import absolute_import
@@ -207,13 +211,17 @@ class DotProductSoftAttention(GlobalSoftAttention):
 
     .. math::
 
-        e_{t,s} = \langle h_t, x_s \rangle
+        e_{t,s} = scale\_factor \langle h_t, x_s \rangle
 
     Parameters
     ----------
     size : int
         Both the input size and hidden size
     batch_first : bool, optional
+    scale_factor : float, optional
+        A floating point to multiply the each :math:`e_{t,s}` with. Usually
+        1, but if set to :math:`1 / size`, you'll get the scaled dot-product
+        attention of [vaswani2017]_
 
     See Also
     --------
@@ -221,12 +229,13 @@ class DotProductSoftAttention(GlobalSoftAttention):
         For a description of how to call this module, how it works, etc.
     '''
 
-    def __init__(self, size, batch_first=False):
+    def __init__(self, size, batch_first=False, scale_factor=1.):
         super(DotProductSoftAttention, self).__init__(size, size, batch_first)
+        self.scale_factor = scale_factor
 
     def score(self, h_t, x):
         h_t = h_t.unsqueeze(1 if self.batch_first else 0)
-        return (h_t * x).sum(2)
+        return (h_t * x).sum(2) * self.scale_factor
 
 
 class GeneralizedDotProductSoftAttention(GlobalSoftAttention):

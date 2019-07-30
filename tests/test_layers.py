@@ -92,11 +92,12 @@ def test_dot_product_soft_attention(device, batch_first):
     x = torch.randn(T, num_batch, size, device=device)
     h_t = torch.zeros(num_batch, size, device=device)
     h_t[..., 0] = 2.
-    exp = torch.nn.functional.softmax(x[..., 0] * 2., 0).unsqueeze(-1) * x
+    exp = torch.nn.functional.softmax(x[..., 0], 0).unsqueeze(-1) * x
     exp = exp.sum(0)
     if batch_first:
         x = x.transpose(0, 1).contiguous()
-    attention = layers.DotProductSoftAttention(size, batch_first)
+    attention = layers.DotProductSoftAttention(
+        size, batch_first, scale_factor=.5)
     act = attention(h_t, x)
     assert torch.allclose(exp, act)
 
