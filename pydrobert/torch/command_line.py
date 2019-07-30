@@ -22,15 +22,18 @@ import argparse
 import math
 import warnings
 
+from collections import defaultdict, OrderedDict
+
 import torch
 import pydrobert.torch.data as data
-
+import pydrobert.torch.util as util
 
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
+    'compute_torch_token_data_dir_error_rates',
     'ctm_to_torch_token_data_dir',
     'get_torch_spect_data_dir_info',
     'torch_token_data_dir_to_trn',
@@ -616,4 +619,220 @@ def torch_token_data_dir_to_ctm(args=None):
         options.dir, id2token, options.file_prefix, options.file_suffix,
         options.frame_shift_ms)
     data.write_ctm(transcripts, options.ctm, utt2wc)
+    return 0
+
+
+def _compute_torch_token_data_dir_parse_args(args):
+    parser = argparse.ArgumentParser(
+        description=compute_torch_token_data_dir_error_rates.__doc__)
+    parser.add_argument(
+        'dir', help='If the `hyp` argument is not specified, this is the '
+        'parent directory of two subdirectories, ``ref/`` and ``hyp/``, which '
+        'contain the reference and hypothesis transcripts, respectively. If '
+        'the ``--hyp`` argument is specified, this is the reference '
+        'transcript directory'
+    )
+    parser.add_argument(
+        'hyp', nargs='?', default=None,
+        help='The hypothesis transcript directory',
+    )
+    parser.add_argument(
+        'out', nargs='?', type=argparse.FileType('w'), default=sys.stdout,
+        help='Where to print the error rate to. Defaults to stdout',
+    )
+    parser.add_argument(
+        '--id2token', type=argparse.FileType('r'), default=None,
+        help='A file containing mappings from unique IDs to tokens (e.g. '
+        'words or phones). Each line has the format ``<id> <token>``. The '
+        '``--swap`` flag can be used to swap the expected ordering (i.e. '
+        '``<token> <id>``). ``--id2token`` can be used to collapse unique IDs '
+        'together. Also, ``--ignore`` will contain a list of strings instead '
+        'of IDs'
+    )
+    parser.add_argument(
+        '--ignore', type=argparse.FileType('r'), default=None,
+        help='A file containing a whitespace-delimited list of elements to '
+        'ignore in both the reference and hypothesis transcripts. If '
+        '``--id2token`` is specified, the file should contain words. If '
+        '``--id2token`` is not specified, the file should contain IDs '
+        '(integers)'
+    )
+    parser.add_argument(
+        '--file-prefix', default='',
+        help='The file prefix indicating a torch data file'
+    )
+    parser.add_argument(
+        '--file-suffix', default='.pt',
+        help='The file suffix indicating a torch data file'
+    )
+    parser.add_argument(
+        '--swap', action='store_true', default=False,
+        help='If set, swaps the order of key and value in `id2token`'
+    )
+    parser.add_argument(
+        '--warn-missing', action='store_true', default=False,
+        help='If set, warn and exclude any utterances that are missing either '
+        'a reference or hypothesis transcript. The default is to error'
+    )
+    parser.add_argument(
+        '--distances', action='store_true', default=False,
+        help='If set, do not normalize by reference lengths'
+    )
+    parser.add_argument(
+        '--per-utt', action='store_true', default=False,
+        help='If set, return lines of ``<utt_id> <error_rate>`` denoting the '
+        'per-utterance error rates instead of the average'
+    )
+    parser.add_argument(
+        '--ins-cost', type=float, default=1.,
+        help='The cost of an adding a superfluous token to a hypothesis '
+        'transcript',
+    )
+    parser.add_argument(
+        '--del-cost', type=float, default=1.,
+        help='The cost of missing a token from a reference transcript',
+    )
+    parser.add_argument(
+        '--sub-cost', type=float, default=1.,
+        help='The cost of swapping a reference token with a hypothesis token',
+    )
+    parser.add_argument(
+        '--batch-size', type=int, default=100,
+        help='The number of error rates to compute at once. Reduce if you '
+        'run into memory errors'
+    )
+    return parser.parse_args(args)
+
+
+def compute_torch_token_data_dir_error_rates(args=None):
+    '''Compute error rates between reference and hypothesis token data dirs
+
+    This is a very simple script that computes and prints the error rates
+    between the ``ref/`` (reference/gold standard) token sequences and ``hyp/``
+    (hypothesis/generated) token sequences in a ``SpectDataSet`` directory. An
+    error rate is merely a `Levenshtein Distance
+    <https://en.wikipedia.org/wiki/Levenshtein_distance>`__ normalized to the
+    reference sequence length.
+
+    While convenient and accurate, this script has very few features. Consider
+    pairing the command ``torch-token-data-dir-to-trn`` with `sclite
+    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__ instead.
+
+    Many tasks will ignore some tokens (e.g. silences) or collapse others (e.g.
+    phones). Please consult a standard recipe (such as those in `Kaldi
+    <kaldi-asr.org>`__) before performing these computations
+    '''
+    try:
+        options = _compute_torch_token_data_dir_parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+    if options.hyp:
+        ref_dir, hyp_dir = options.dir, options.hyp
+    else:
+        ref_dir = os.path.join(options.dir, 'ref')
+        hyp_dir = os.path.join(options.dir, 'hyp')
+    if not os.path.isdir(ref_dir):
+        print('"{}" is not a directory'.format(ref_dir), file=sys.stderr)
+        return 1
+    if not os.path.isdir(hyp_dir):
+        print('"{}" is not a directory'.format(hyp_dir), file=sys.stderr)
+        return 1
+    if options.id2token:
+        id2token = _parse_token2id(
+            options.id2token, not options.swap, options.swap)
+    else:
+        id2token = None
+    if options.ignore:
+        ignore = set(options.ignore.read().strip().split())
+        if id2token is None:
+            try:
+                ignore = {int(x) for x in ignore}
+            except ValueError:
+                raise ValueError(
+                    'If --id2token is not set, all elements in "{}" must be '
+                    'integers'.format(options.ignore.name))
+    else:
+        ignore = set()
+    ref_transcripts = _load_transcripts_from_data_dir(
+        ref_dir, id2token, options.file_prefix, options.file_suffix,
+        strip_timing=True)
+    hyp_transcripts = _load_transcripts_from_data_dir(
+        hyp_dir, id2token, options.file_prefix, options.file_suffix,
+        strip_timing=True)
+    idx = 0
+    while idx < max(len(ref_transcripts), len(hyp_transcripts)):
+        missing_ref = missing_hyp = False
+        if idx == len(ref_transcripts):
+            missing_hyp = True
+        elif idx == len(hyp_transcripts):
+            missing_ref = True
+        elif ref_transcripts[idx][0] < hyp_transcripts[idx][0]:
+            missing_ref = True
+        elif hyp_transcripts[idx][0] < ref_transcripts[idx][0]:
+            missing_hyp = True
+        if missing_hyp or missing_ref:
+            if missing_hyp:
+                fmt_tup = hyp_dir, hyp_transcripts[idx][0], ref_dir
+                del hyp_transcripts[idx]
+            else:
+                fmt_tup = ref_dir, ref_transcripts[idx][0], hyp_dir
+                del ref_transcripts[idx]
+            msg = (
+                'Directory "{}" contains utterance "{}" which directory "{}" '
+                'does not contain'
+            ).format(*fmt_tup)
+            if options.warn_missing:
+                warnings.warn(msg + '. Skipping')
+            else:
+                raise ValueError(msg)
+        else:
+            idx += 1
+    assert len(ref_transcripts) == len(hyp_transcripts)
+    idee_, eos, padding = [0], -1, -2
+
+    def get_idee():
+        v = idee_[0]
+        idee_[0] += 1
+        return v
+
+    token2id = defaultdict(get_idee)
+    error_rates = OrderedDict()
+    while len(ref_transcripts):
+        batch_ref_transcripts = ref_transcripts[:options.batch_size]
+        batch_hyp_transcripts = hyp_transcripts[:options.batch_size]
+        ref_transcripts = ref_transcripts[options.batch_size:]
+        hyp_transcripts = hyp_transcripts[options.batch_size:]
+        ref = torch.nn.utils.rnn.pad_sequence(
+            [
+                torch.tensor([
+                    token2id[token] for token in transcript
+                    if token not in ignore
+                ] + [eos])
+                for _, transcript in batch_ref_transcripts
+            ],
+            padding_value=padding,
+        )
+        hyp = torch.nn.utils.rnn.pad_sequence(
+            [
+                torch.tensor([
+                    token2id[token] for token in transcript
+                    if token not in ignore
+                ] + [eos])
+                for _, transcript in batch_hyp_transcripts
+            ],
+            padding_value=padding,
+        )
+        ers = util.error_rate(
+            ref, hyp, eos=eos, include_eos=False, ins_cost=options.ins_cost,
+            del_cost=options.del_cost, sub_cost=options.sub_cost,
+            norm=not options.distances,
+        )
+        for (utt_id, _), er in zip(batch_ref_transcripts, ers):
+            error_rates[utt_id] = er.item()
+    if options.per_utt:
+        for utt_id, er in error_rates.items():
+            options.out.write('{} {}\n'.format(utt_id, er))
+    else:
+        options.out.write('{}\n'.format(
+            sum(error_rates.values()) / len(error_rates)))
     return 0
