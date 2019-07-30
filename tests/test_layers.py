@@ -67,6 +67,16 @@ def test_global_soft_attention(device, batch_first):
     else:
         assert g[0].eq(1).all()
         assert g[1:].eq(0).all()
+    if batch_first:
+        val_shape = (num_batch, T, 5, 3)
+    else:
+        val_shape = (T, num_batch, 5, 3)
+    val = torch.randn(*val_shape).to(device)
+    c_t1 = first_attention(h_t, x, val=val)
+    if batch_first:
+        assert torch.allclose(c_t1, val[:, 0])
+    else:
+        assert torch.allclose(c_t1, val[0])
     c_t1 = equal_attention(h_t, x)
     # the softmax introduces a slight numeric instability
     assert torch.allclose(c_t1, x.mean(1 if batch_first else 0), atol=1e-5)

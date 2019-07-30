@@ -50,6 +50,7 @@ __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
+    'ConcatSoftAttention',
     'DotProductSoftAttention',
     'GeneralizedDotProductSoftAttention',
     'GlobalSoftAttention',
@@ -97,13 +98,20 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
 
     When called, this layer has the signature:
 
-        attention(h_t, x[, mask])
+        attention(h_t, x, mask=None, val=None)
 
     Where `h_t` and `x` are as previously discussed. `mask` is a byte
     mask of shape ``(S, num_batch)`` if `batch_first` is ``False``
     (``(num_batch, S)`` otherwise). `mask` can be used to ensure that
     :math:`a_{t,s} == 0` whenever :math:`mask_{t,s} == 0`. This is useful to
-    ensure correct calculations when `x` consists of variable-length sequences
+    ensure correct calculations when `x` consists of variable-length sequences.
+
+    If `val` is specified, `val` replaces `x` in :math:`\sum_s a_{t,s} x_s`
+    when calculating :math:`c_t`. "val" refers to "value" in the
+    "query-key-value" construction of [vaswani2017]_ (where `h_t` becomes the
+    "query" and `x` becomse the "key"). `val` can have an arbitrary number of
+    dimensions, as long as the first two match `x`. In this case, `c_t` will
+    have shape ``(num_batches,) + tuple(val.shape[2:])``
 
     Parameters
     ----------
@@ -165,7 +173,7 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         '''
         raise NotImplementedError()
 
-    def forward(self, h_t, x, mask=None):
+    def forward(self, h_t, x, mask=None, val=None):
         if h_t.dim() != 2:
             raise ValueError('Expected h_t to have 2 dimensions')
         if h_t.shape[1] != self.hidden_size:
@@ -188,16 +196,24 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         if mask is not None and mask.shape != x.shape[:-1]:
             raise ValueError(
                 'Expected mask to have shape {}'.format(tuple(x.shape[:-1])))
+        if val is None:
+            val = x
+        elif val.shape[:2] != x.shape[:2]:
+            raise ValueError(
+                'Expected val to have shape ({}, {}, ...)'
+                ''.format(*tuple(x.shape[:2])))
         e_t = self.score(h_t, x)
         if mask is not None:
             # we perform on e_t instead of a_t to ensure sum_s a_{t,s} = 1
             e_t = e_t.masked_fill(mask.eq(0), -float('inf'))
         if self.batch_first:
             a_t = torch.nn.functional.softmax(e_t, 1)
-            c_t = (a_t.unsqueeze(2) * x).sum(1)
+            c_t = (a_t.unsqueeze(2) * val.view(num_batches, S, -1)).sum(1)
+            c_t = c_t.view_as(val[:, 0])
         else:
             a_t = torch.nn.functional.softmax(e_t, 0)
-            c_t = (a_t.unsqueeze(2) * x).sum(0)
+            c_t = (a_t.unsqueeze(2) * val.view(S, num_batches, -1)).sum(0)
+            c_t = c_t.view_as(val[0])
         return c_t
 
     def reset_parameters(self):
