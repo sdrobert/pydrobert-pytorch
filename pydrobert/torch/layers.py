@@ -25,7 +25,10 @@ References
    Translation by Jointly Learning to Align and Translate.," in 3rd
    International Conference on Learning Representations, ICLR 2015, San Diego,
    CA, USA, May 7-9, 2015, Conference Track Proceedings, 2015.
-
+.. [luong2015] T. Luong, H. Pham, and C. D. Manning, "Effective Approaches to
+   Attention-based Neural Machine Translation," in Proceedings of the 2015
+   Conference on Empirical Methods in Natural Language Processing, Lisbon,
+   Portugal, 2015, pp. 1412-1421.
 '''
 
 from __future__ import absolute_import
@@ -43,6 +46,7 @@ __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
+    'DotProductSoftAttention',
     'GlobalSoftAttention',
 ]
 
@@ -193,3 +197,32 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
 
     def reset_parameters(self):
         pass
+
+
+class DotProductSoftAttention(GlobalSoftAttention):
+    r'''Global soft attention with dot product score function
+
+    From [luong2015]_, the score function for this attention mechanism is
+
+    .. math::
+
+        e_{t,s} = \langle h_t, x_s \rangle
+
+    Parameters
+    ----------
+    size : int
+        Both the input size and hidden size
+    batch_first : bool, optional
+
+    See Also
+    --------
+    GlobalSoftAttention
+        For a description of how to call this module, how it works, etc.
+    '''
+
+    def __init__(self, size, batch_first=False):
+        super(DotProductSoftAttention, self).__init__(size, size, batch_first)
+
+    def score(self, h_t, x):
+        h_t = h_t.unsqueeze(1 if self.batch_first else 0)
+        return (h_t * x).sum(2)

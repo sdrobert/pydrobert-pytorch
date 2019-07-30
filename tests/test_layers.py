@@ -83,3 +83,19 @@ def test_global_soft_attention(device, batch_first):
         torch.tensor(1., device=device),
         atol=1e-5
     )
+
+
+@pytest.mark.parametrize('batch_first', [True, False])
+def test_dot_product_soft_attention(device, batch_first):
+    torch.manual_seed(387420)
+    num_batch, T, size = 50, 30, 12
+    x = torch.randn(T, num_batch, size, device=device)
+    h_t = torch.zeros(num_batch, size, device=device)
+    h_t[..., 0] = 2.
+    exp = torch.nn.functional.softmax(x[..., 0] * 2., 0).unsqueeze(-1) * x
+    exp = exp.sum(0)
+    if batch_first:
+        x = x.transpose(0, 1).contiguous()
+    attention = layers.DotProductSoftAttention(size, batch_first)
+    act = attention(h_t, x)
+    assert torch.allclose(exp, act)
