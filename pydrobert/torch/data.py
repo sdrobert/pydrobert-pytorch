@@ -27,6 +27,7 @@ import numpy as np
 import torch
 import torch.utils.data
 import param
+import pydrobert.torch
 
 try:
     basestring
@@ -38,7 +39,6 @@ __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
-    'ALI_PAD_VALUE',
     'context_window_seq_to_batch',
     'ContextWindowDataParams',
     'ContextWindowDataSet',
@@ -50,7 +50,6 @@ __all__ = [
     'extract_window',
     'read_ctm',
     'read_trn',
-    'REF_PAD_VALUE',
     'spect_seq_to_batch',
     'SpectDataParams',
     'SpectDataSet',
@@ -63,20 +62,6 @@ __all__ = [
     'write_ctm',
     'write_trn',
 ]
-
-'''The value to right-pad alignments with when batching
-
-The default value (-100) was chosen to coincide with the PyTorch 1.0 default
-for ``ignore_index`` in the likelihood losses
-'''
-ALI_PAD_VALUE = -100
-
-'''The value to right-pad token sequences with when batching
-
-The default value (-100) was chosen to coincide with the PyTorch 1.0 default
-for ``ignore_index`` in the likelihood losses
-'''
-REF_PAD_VALUE = -100
 
 
 class SpectDataSet(torch.utils.data.Dataset):
@@ -136,6 +121,12 @@ class SpectDataSet(torch.utils.data.Dataset):
     subset_ids : set, optional
         If set, only utterances with ids listed in this set will count towards
         the data set. The rest will be ignored
+    eos : int, optional
+        `eos` is a special token used to delimit the end of a reference
+        or hypothesis sequence. If specified, an extra `eos` token without
+        positional information will be appended to the end of each reference
+        tanscript. It will also have ramifications for the method
+        ``write_hyp()``
     feat_subdir, ali_subdir, ref_subdir : str, optional
         Change the names of the subdirectories under which feats, alignments,
         and references are stored. If `ali_subdir` or `ref_subdir` is ``None``,
@@ -158,6 +149,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         ``__getitem__``. If the ``ali/`` or ``ref/`` directories exist,
         `utt_ids` contains only the utterances in the intersection of each
         directory (and `subset_ids`, if it was specified)
+    eos : bool or None
 
     Yields
     ------
@@ -213,14 +205,14 @@ class SpectDataSet(torch.utils.data.Dataset):
     >>> # both refs and hyps are sequences of tokens, such as words or phones,
     >>> # with optional frame alignments
     >>> num_tokens = torch.randint(min_ref, max_ref, (1,)).long().item()
-    >>> hyp = torch.full((num_tokens, 3), REF_PAD_VALUE).long()
+    >>> hyp = torch.full((num_tokens, 3), INDEX_PAD_VALUE).long()
     >>> hyp[..., 0] = torch.randint(num_ref_classes, (num_tokens,))
     >>> data.write_hyp('special', hyp)  # custom name
     '''
 
     def __init__(
             self, data_dir, file_prefix='', file_suffix='.pt',
-            warn_on_missing=True, subset_ids=None,
+            warn_on_missing=True, subset_ids=None, eos=None,
             feat_subdir='feat', ali_subdir='ali', ref_subdir='ref'):
         super(SpectDataSet, self).__init__()
         self.data_dir = data_dir
@@ -229,6 +221,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         self.ref_subdir = ref_subdir
         self.file_prefix = file_prefix
         self.file_suffix = file_suffix
+        self.eos = eos
         if ali_subdir:
             self.has_ali = os.path.isdir(os.path.join(data_dir, ali_subdir))
         else:
@@ -329,6 +322,10 @@ class SpectDataSet(torch.utils.data.Dataset):
                     self.data_dir,
                     self.ref_subdir,
                     self.file_prefix + utt_id + self.file_suffix))
+            if self.eos is not None:
+                eos_sym = torch.full_like(ref[0], -1)
+                eos_sym[0] = self.eos
+                ref = torch.cat([ref, eos_sym.unsqueeze(0)])
         else:
             ref = None
         return feat, ali, ref
@@ -369,6 +366,11 @@ class SpectDataSet(torch.utils.data.Dataset):
         This method writes a sequence of hypothesis tokens to the directory
         `hyp_dir` with the name ``<file_prefix><utt><file_suffix>``
 
+        If the ``eos`` attribute of this instance is not ``None``, any
+        tokens in `hyp` matching it will be considered the end of the sequence,
+        so every symbol including and after the first instance will be removed
+        from the utterance before saving
+
         Parameters
         ----------
         utt : str or int
@@ -388,6 +390,12 @@ class SpectDataSet(torch.utils.data.Dataset):
             hyp_dir = os.path.join(self.data_dir, 'hyp')
         if not os.path.isdir(hyp_dir):
             os.makedirs(hyp_dir)
+        hyp = hyp.cpu().long()
+        if self.eos is not None:
+            eos_idxs = hyp[:, 0].eq(self.eos).nonzero()
+            if eos_idxs.numel():
+                eos_idx = eos_idxs[0].item()
+                hyp = hyp[:eos_idx]
         torch.save(
             hyp.cpu().long(),
             os.path.join(hyp_dir, self.file_prefix + utt + self.file_suffix)
@@ -833,8 +841,6 @@ def transcript_to_token(
         except TypeError:
             pass
         id = token2id.get(token, token) if token2id is not None else token
-        if id < 0:
-            raise ValueError('ID should be non-negative')
         tok[i, 0] = id
         tok[i, 1] = start
         tok[i, 2] = end
@@ -859,8 +865,6 @@ def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
     transcript = []
     for tup in tok:
         id, start, end = tup.tolist()
-        if id < 0:
-            raise ValueError('id must be non-negative')
         token = id2token.get(id, id) if id2token is not None else id
         if start == -1 or end == -1:
             transcript.append(token)
@@ -1087,7 +1091,11 @@ class DataSetParams(param.Parameterized):
 
 class SpectDataParams(param.Parameterized):
     '''Parameters for spectral data'''
-    pass
+    eos = param.Integer(
+        None, doc='A special symbol used to indicate the end of a sequence in '
+        'reference and hypothesis transcriptions. If set, `eos` will be '
+        'appended to every reference transcription on read'
+    )
 
 
 class SpectDataSetParams(SpectDataParams, DataSetParams):
@@ -1111,8 +1119,7 @@ def spect_seq_to_batch(seq):
     `feat_sizes` and `ref_sizes` are ``LongTensor``s of shape ``(N,)``
     containing the original ``T`` and ``R`` values. The batch will be sorted by
     decreasing numbers of frames. `feats` is zero-padded while `alis` and
-    `refs` are padded with module constants ``ALI_PAD_VALUE`` and
-    ``REF_PAD_VALUE``, respectively.
+    `refs` are padded with module constant ``INDEX_PAD_VALUE``
 
     If ``ali`` or ``ref`` is ``None`` in any element, `alis` or `refs` and
     `ref_sizes` will also be ``None``
@@ -1134,12 +1141,14 @@ def spect_seq_to_batch(seq):
     has_ref = R_star < float('inf')
     if has_ali:
         alis = torch.full(
-            (len(seq), T_star), ALI_PAD_VALUE, dtype=torch.long)
+            (len(seq), T_star), pydrobert.torch.INDEX_PAD_VALUE,
+            dtype=torch.long)
     else:
         alis = None
     if has_ref:
         refs = torch.full(
-            (len(seq), R_star, 3), REF_PAD_VALUE, dtype=torch.long)
+            (len(seq), R_star, 3), pydrobert.torch.INDEX_PAD_VALUE,
+            dtype=torch.long)
         ref_sizes = []
     else:
         refs = None
@@ -1201,7 +1210,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         `refs`, `feat_sizes`, and `ref_sizes` is ordered by utterances of
         descending frame lengths. Shorter utterances in `feats` are zero-padded
         to the right, `alis` is padded with the module constant
-        ``ALI_PAD_VALUE``, and `refs` is padded with ``REF_PAD_VALUE``
+        ``INDEX_PAD_VALUE``
 
     Examples
     --------
@@ -1267,6 +1276,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
+            eos=params.eos,
             feat_subdir=feat_subdir, ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
         )
@@ -1330,8 +1340,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         `ref_sizes` are ``None``. The first axis of each of `feats`, `alis`,
         `refs`, `feat_sizes`, and `ref_sizes` is ordered by utterances of
         descending frame lengths. Shorter utterances in `feats` are zero-padded
-        to the right, `alis` is padded with the module constant
-        ``ALI_PAD_VALUE``, and `refs` is padded with ``REF_PAD_VALUE``.
+        to the right, `alis` and `refs` are padded with ``INDEX_PAD_VALUE``
         ``utt_ids`` is an ``N``-tuple specifying the names of utterances in the
         batch.
 
@@ -1375,7 +1384,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     >>>         path = path.masked_select(
     ...             (path != 0) & (path - pathpend[:-1] != 0))
     >>>         hyp = torch.stack(
-    ...             [path] + [torch.full_like(path, REF_PAD_VALUE)] * 2)
+    ...             [path] + [torch.full_like(path, INDEX_PAD_VALUE)] * 2)
     >>>         loader.data_source.write_hyp(utt_id, hyp)
     '''
     class SEvalDataSet(SpectDataSet):
@@ -1419,6 +1428,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
+            eos=params.eos,
             feat_subdir=feat_subdir, ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
         )

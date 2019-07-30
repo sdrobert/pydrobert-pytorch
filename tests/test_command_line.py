@@ -50,12 +50,17 @@ def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
             [temp_dir, table_path, '--strict'])
 
 
-def _write_token2id(path, swap):
+def _write_token2id(path, swap, collapse_vowels=False):
+    vowels = {ord(x) for x in 'aeiou'}
     with open(path, 'w') as f:
         for v in range(ord('a'), ord('z') + 1):
             if swap:
-                f.write('{} {}\n'.format(v - ord('a'), chr(v)))
+                if collapse_vowels and v in vowels:
+                    f.write('{} a\n'.format(v - ord('a')))
+                else:
+                    f.write('{} {}\n'.format(v - ord('a'), chr(v)))
             else:
+                assert not collapse_vowels
                 f.write('{} {}\n'.format(chr(v), v - ord('a')))
 
 
@@ -232,3 +237,115 @@ def test_torch_token_data_dir_to_ctm(temp_dir, tokens, channels):
     assert len(exps) == len(acts)
     for exp, act in zip(exps, acts):
         assert exp.strip() == act.strip()
+
+
+@pytest.mark.cpu
+@pytest.mark.filterwarnings("ignore")
+@pytest.mark.parametrize("per_utt", [True, False])
+@pytest.mark.parametrize('tokens,collapse_vowels', [
+    ('token2id', False),
+    ('id2token', True),
+    ('id2token', False),
+    (None, False),
+])
+@pytest.mark.parametrize('norm', [False])
+def test_compute_torch_token_data_dir_error_rates(
+        temp_dir, per_utt, tokens, collapse_vowels, norm):
+    torch.manual_seed(3820)
+    tokens_path = os.path.join(temp_dir, 'map')
+    ignore_path = os.path.join(temp_dir, 'ignore')
+    out_path = os.path.join(temp_dir, 'out')
+    ref_dir = os.path.join(temp_dir, 'ref')
+    hyp_dir = os.path.join(temp_dir, 'hyp')
+    if not os.path.isdir(ref_dir):
+        os.makedirs(ref_dir)
+    if not os.path.isdir(hyp_dir):
+        os.makedirs(hyp_dir)
+    num_elem = 40
+    missing_prob = .1
+    max_fillers = 5
+    ignore_chars = '_#'
+    with open(ignore_path, 'w') as f:
+        if tokens is None:
+            f.write(' '.join([str(ord(c) - ord('a')) for c in ignore_chars]))
+        else:
+            f.write(' '.join(ignore_chars))
+        f.flush()
+    tuples = (
+        ('cat', 'bat', 1, 1),
+        ('transubstantiation', 'transwhatnow', 10, 10),
+        ('cool', 'coal', 1, 0),
+        ('zap', 'zippy', 3, 2),
+    )
+    if tokens is not None:
+        _write_token2id(
+            tokens_path, tokens == 'id2token', collapse_vowels=collapse_vowels)
+        with open(tokens_path, 'a') as f:
+            for c in ignore_chars:
+                if tokens == 'id2token':
+                    f.write('{} {}\n'.format(ord(c) - ord('a'), c))
+                else:
+                    f.write('{} {}\n'.format(c, ord(c) - ord('a')))
+    exp = dict()
+    num_utt_ids = 0
+    while len(exp) < num_elem:
+        tuple_ = tuples[torch.randint(len(tuples), (1,)).item()]
+        if collapse_vowels:
+            ref, hyp, _, er = tuple_
+        else:
+            ref, hyp, er, _ = tuple_
+        if norm:
+            er = er / len(ref)
+        num_ref_fillers = torch.randint(max_fillers, (1,)).item()
+        num_hyp_fillers = torch.randint(max_fillers, (1,)).item()
+        for _ in range(num_ref_fillers):
+            fill_idx = torch.randint(len(ref) + 1, (1,)).item()
+            filler = ignore_chars[
+                torch.randint(len(ignore_chars), (1,)).item()]
+            ref = ref[:fill_idx] + filler + ref[fill_idx:]
+        for _ in range(num_hyp_fillers):
+            fill_idx = torch.randint(len(hyp) + 1, (1,)).item()
+            filler = ignore_chars[
+                torch.randint(len(ignore_chars), (1,)).item()]
+            hyp = hyp[:fill_idx] + filler + hyp[fill_idx:]
+        ref = torch.tensor([(ord(c) - ord('a'), -1, -1) for c in ref])
+        hyp = torch.tensor([(ord(c) - ord('a'), -1, -1) for c in hyp])
+        utt_id = num_utt_ids
+        num_utt_ids += 1
+        ref_path = os.path.join(ref_dir, '{}.pt'.format(utt_id))
+        hyp_path = os.path.join(hyp_dir, '{}.pt'.format(utt_id))
+        if torch.rand(1).item() < missing_prob:
+            if torch.randint(2, (1,)).item():
+                torch.save(ref, ref_path)
+            else:
+                torch.save(hyp, hyp_path)
+        torch.save(ref, ref_path)
+        torch.save(hyp, hyp_path)
+        exp[str(utt_id)] = er
+    args = [
+        ref_dir, hyp_dir, out_path,
+        '--ignore', ignore_path, '--warn-missing',
+    ]
+    if not norm:
+        args.append('--distances')
+    if per_utt:
+        args.append('--per-utt')
+    if tokens is not None:
+        args += ['--id2token', tokens_path]
+        if tokens == 'token2id':
+            args.append('--swap')
+    assert not command_line.compute_torch_token_data_dir_error_rates(args)
+    if per_utt:
+        with open(out_path) as f:
+            while True:
+                ls = f.readline().strip().split()
+                if len(ls) != 2:
+                    break
+                assert abs(exp[ls[0]] - float(ls[1])) < 1e-4
+                del exp[ls[0]]
+        assert not len(exp)
+    else:
+        exp = sum(exp.values()) / len(exp)
+        with open(out_path) as f:
+            act = float(f.read().strip())
+            assert abs(exp - act) < 1e-4

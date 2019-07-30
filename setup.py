@@ -65,6 +65,8 @@ def main():
                 'torch_token_data_dir_to_ctm',
                 'torch-token-data-dir-to-trn = pydrobert.torch.command_line:'
                 'torch_token_data_dir_to_trn',
+                'compute-torch-token-data-dir-error-rates = pydrobert.torch.'
+                'command_line:compute_torch_token_data_dir_error_rates',
             ]
         },
     )
