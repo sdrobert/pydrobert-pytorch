@@ -259,16 +259,81 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
         super(GeneralizedDotProductSoftAttention, self).__init__(
             input_size, hidden_size, batch_first)
         self._bias = bias
-        self._lin = torch.nn.Linear(input_size, hidden_size, bias=bias)
+        self._W = torch.nn.Linear(input_size, hidden_size, bias=bias)
 
     @property
     def bias(self):
         return self._bias
 
     def score(self, h_t, x):
-        Wx = self._lin(x)
+        Wx = self._W(x)
         h_t = h_t.unsqueeze(1 if self.batch_first else 0)
         return (h_t * Wx).sum(2)
 
     def reset_parameters(self):
-        self._lin.reset_parameters()
+        self._W.reset_parameters()
+
+
+class ConcatSoftAttention(GlobalSoftAttention):
+    r'''Attention where input and hidden are concatenated, then fed into an MLP
+
+    Proposed in [luong2015]_, though quite similar to that proposed in
+    [bahdanau2015]_, the score function for this layer is:
+
+    .. math::
+
+        e_{t, s} = \langle v, tanh(W [x_s, h_t]) \rangle
+
+    For some learned matrix :math:`W`, where :math:`[x_s, h_t]` indicates
+    concatenation. :math:`W` is of shape
+    ``(input_size + hidden_size, intermediate_size)`` and :math:`v` is of
+    shape ``(intermediate_size,)``
+
+    Parameters
+    ----------
+    input_size : int
+    hidden_size : int
+    batch_first : bool, optional
+    bias : bool, optional
+        Whether to add bias term ``b`` :math:`W x_s + b`
+    intermediate_size : int, optional
+
+    See Also
+    --------
+    GlobalSoftAttention
+        For a description of how to call this module, how it works, etc.
+    '''
+
+    def __init__(
+            self, input_size, hidden_size, batch_first=False, bias=False,
+            intermediate_size=1000):
+        super(ConcatSoftAttention, self).__init__(
+            input_size, hidden_size, batch_first)
+        self._bias = bias
+        self._intermediate_size = intermediate_size
+        self._W = torch.nn.Linear(
+            input_size + hidden_size, intermediate_size, bias=bias)
+        # there's no point in a bias for v. It'll just be absorbed by the
+        # softmax later. You could add a bias after the tanh layer, though...
+        self._v = torch.nn.Linear(intermediate_size, 1, bias=False)
+
+    @property
+    def bias(self):
+        return self._bias
+
+    @property
+    def intermediate_size(self):
+        return self._intermediate_size
+
+    def score(self, h_t, x):
+        if self.batch_first:
+            h_t = h_t.unsqueeze(1).expand(-1, x.shape[1], -1)
+        else:
+            h_t = h_t.unsqueeze(0).expand(x.shape[0], -1, -1)
+        xh = torch.cat([x, h_t], 2)
+        Wxh = self._W(xh)
+        return self._v(Wxh).squeeze(2)
+
+    def reset_parameters(self):
+        self._W.reset_parameters()
+        self._v.reset_parameters()

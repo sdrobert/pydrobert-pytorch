@@ -103,7 +103,8 @@ def test_dot_product_soft_attention(device, batch_first):
 
 @pytest.mark.parametrize('batch_first', [True, False])
 @pytest.mark.parametrize('bias', [True, False])
-def test_generalized_dot_product_soft_attention(device, batch_first, bias):
+@pytest.mark.parametrize('layer', ['general', 'concat'])
+def test_learnable_soft_attention(device, batch_first, bias, layer):
     torch.manual_seed(347201)
     num_batch, T, input_size, hidden_size = 50, 30, 12, 124
     if batch_first:
@@ -111,9 +112,13 @@ def test_generalized_dot_product_soft_attention(device, batch_first, bias):
     else:
         x = torch.randn(T, num_batch, input_size, device=device)
     h_t = torch.randn(num_batch, hidden_size, device=device)
+    if layer == 'general':
+        class_ = layers.GeneralizedDotProductSoftAttention
+    elif layer == 'concat':
+        class_ = layers.ConcatSoftAttention
+    attention = class_(input_size, hidden_size, batch_first, bias).to(device)
     torch.manual_seed(30)
-    attention = layers.GeneralizedDotProductSoftAttention(
-        input_size, hidden_size, batch_first, bias)
+    attention.reset_parameters()
     optim = torch.optim.Adam(attention.parameters())
     optim.zero_grad()
     c_t1 = attention(h_t, x)
