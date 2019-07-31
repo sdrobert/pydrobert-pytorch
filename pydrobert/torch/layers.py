@@ -58,163 +58,167 @@ __all__ = [
 
 
 class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
-    r'''Parent class for soft attention mechanisms on an entire sequence
+    r'''Parent class for soft attention mechanisms on an entire input sequence
 
-    Global soft attention mechanisms, introduced in [bahdanau2015]_, provide a
-    way to condition an RNN on an entire (transformed) input sequence at once
-    without the output sequence being of the same length. The RNN is called a
-    decoder, and the decoder's state at a time step `h_t` is going to be passed
-    into this layer along with the entire input to get a context vector `c_t`,
-    i.e. ``c_t = Attention(h_t, x)``. Note the index :math:`t` is used to
-    indicate that `c_t` and `h_t` are tensors sliced from some greater tensors
-    arrayed over the decoder's time steps, e.g. ``h_t = h[t]`` for some ``h``
-    of shape ``(T, num_batch, hidden_size)``.
+    Global soft attention mechansims [bahdanau2015]_ are a way of getting rid
+    of one variable-length sequence dimension ``T`` in an input `key` using a
+    weighted sum of a tensor `value` that is informed by some other tensor,
+    `query`. The weights are dictated by the function ``score(query, key)`.
+    Usually, this is in the context of encoder-decoder architectures, which
+    is explained here.
 
-    Suppose the input sequence is `x` of shape ``(S, num_batch, input_size)``
-    if `batch_first` is ``True`` (``(num_batch, S, input_size)`` otherwise),
-    `h_t` is of shape ``(num_batch, hidden_size)``, and `c_t` is of shape
-    ``(num_batch, input_size)``. Then `c_t` is a weighted sum of `x`
+    For now, assume `query` is a tensor of shape ``(num_batch, query_size)``
+    representing a single hidden state of a decoder RNN. Assume `key` is a
+    tensor of shape ``(T, num_batch, key_size)`` representing the encoder
+    output, ``dim == 0`` to specify that the variable-length dimension of `key`
+    is the zero-th dimension, and ``value == key``. The output `out` will be a
+    tensor of shape ``(num_batch, key_size)``. Letting :math:`t` index the
+    `dim`-th dimension:
 
-    .. math::
+        .. math::
 
-        c_t = \sum_{s=1}^{S} a_{t, s} x_s
+            out = \sum_t a_t value_t
 
-    where ``s`` indexes the ``S`` (step) dimension. :math:`a_t` is a tensor of
-    shape ``(S, num_batch)`` s.t. :math:`\sum_s a_{t, s, bt} = 1` for any
-    batch index :math:`bt`. :math:`a_{t,s}` is the result of a softmax
-    distribution over the :math:`s` dimension:
-
-    .. math::
-
-        a_{t,s} = \frac{\exp(e_{t,s})}{\sum_{s'}^{S}\exp(e_{t,s'})}
-
-    Where :math:`e_{t,s}` is the output of some score function:
+    ``a`` is the attention vector. In our example, ``a`` will be of shape
+    ``(T, num_batch)``. ``a`` is the result of a softmax over the `dim`-th
+    dimension of another tensor ``e`` of shape ``(T, num_batch)`` with an
+    optional `mask`
 
     .. math::
 
-        e_{t,s} = score(h_t, x_s)
+        a = softmax(e * mask - (1 - mask) \inf, dim)
 
-    Subclasses are expected to implement the ``score()`` function.
+    `mask` (if specified) is of shape ``(T, num_batch)`` and will set ``a`` to
+    zero wherever the mask is zero. `mask` can be used to indicate padded
+    values when `key` consists of variable-length sequences.
 
-    When called, this layer has the signature:
+    ``e`` is the result of a score function over `key` and `query`
 
-        attention(h_t, x, mask=None, val=None)
+    .. math::
 
-    Where `h_t` and `x` are as previously discussed. `mask` is a byte
-    mask of shape ``(S, num_batch)`` if `batch_first` is ``False``
-    (``(num_batch, S)`` otherwise). `mask` can be used to ensure that
-    :math:`a_{t,s} == 0` whenever :math:`mask_{t,s} == 0`. This is useful to
-    ensure correct calculations when `x` consists of variable-length sequences.
+        e = score(query, key)
 
-    If `val` is specified, `val` replaces `x` in :math:`\sum_s a_{t,s} x_s`
-    when calculating :math:`c_t`. "val" refers to "value" in the
-    "query-key-value" construction of [vaswani2017]_ (where `h_t` becomes the
-    "query" and `x` becomse the "key"). `val` can have an arbitrary number of
-    dimensions, as long as the first two match `x`. In this case, `c_t` will
-    have shape ``(num_batches,) + tuple(val.shape[2:])``
+    ``score()`` is implemented by subclasses of ``GlobalSoftAttention``
+
+    The signature when calling an instance this module is:
+
+        attention(query, key, value[, mask])
 
     Parameters
     ----------
-    input_size : int
-        The non-time, non-batch dimension of the input, `x`. If the input
-        comes from an encoder, `input_size` is likely the size of the encoder's
-        output per time slice.
-    hidden_size : int
-        The non-time, non-batch dimension of the decoder's hidden state. This
-        should not be confused with the hidden state size of the encoder, if
-        any.
-    batch_first : bool, optional
-        If the first dimension of `x` is the batch dimension. Otherwise, it's
-        the time dimension
+    query_size : int
+        The length of the last dimension of the `query` argument
+    key_size : int
+        The length of the last dimension of the `key` argument
+    dim : int, optional
+        The sequence dimension of the `key` argument
 
     Attributes
     ----------
-    input_size : int
-    hidden_size : int
-    batch_first : bool
+    query_size : int
+    key_size : int
+    dim : int
+
+    Extended Summary
+    ----------------
+
+    For more complicated attention mechanisms, such as Transformer Networks
+    [vaswani2017]_, `query`, `key`, `value`, and `mask` can take on more
+    complicated shapes. For Transformer networks, `query` could be of shape
+    ``(S, num_batch, query_size)``. `key` and `value` are equal, as before, but
+    we've added an extra first dimension to both s.t. their shape is ``(T, 1,
+    num_batch, key_size)``. Finally, `mask` is of shape ``(T, S, num_batch)``.
+    The result `out` is a tensor of shape ``(S, num_batch, key_size)``.
+
+    `query` is an (n - 1)-dimensional tensor for ``n > 1``. `key` is an
+    n-dimensional tensor, and `value` is some n-dimensional tensor. Letting
+    :math:`t` index the `dim`-th dimension of `key`, :math:`q` index the last
+    dimension of `query`, and :math:`k` index the last index of `key`. Let
+    :math:`query_{t=0}` indicate the "unsqueezed" version of `query` where
+    :math:`t` is inserted as the `dim`-th dimension. Then :math:`query_{t=0,q}`
+    must `broadcast
+    <https://pytorch.org/docs/stable/notes/broadcasting.html#broadcasting-semantics>`__
+    with :math:`key_k`. If specified, `mask` should broadcast with :math:`e`,
+    that is, broadcast with a tensor of the same shape as :math:`key_k` after
+    it has been broadcast to :math:`query_{t=0,q}`. Finally, `value` must
+    broadcast with :math:`a_{k=0}`, that is, :math:`a` with an unsqueezed final
+    dimension.
+
+    To make this concrete, consider the shapes of the Transformer arguments.
+    :math:`query_{t=0}` broadcasts with :math:`key_k` as
+
+        query_t=0.shape 1   S   num_batch
+        key_k.shape     T   1   num_batch
+        ---------------------------------
+        e.shape         T   S   num_batch
+
+    `mask` clearly broadcasts with :math:`e` since they are the same size.
+    :math:`e` is the same shape as :math:`a`. Finally, `value` broadcasts with
+    :math:`a_k=0` as
+
+        a_k=0.shape     T   S   num_batch   1
+        value.shape     T   1   num_batch   key_size
+        --------------------------------------------
+        out.shape       T   S   num_batch   key_size
     '''
 
-    def __init__(self, input_size, hidden_size, batch_first=False):
+    def __init__(self, query_size, key_size, dim=0):
         super(GlobalSoftAttention, self).__init__()
-        self._input_size = input_size
-        self._hidden_size = hidden_size
-        self.batch_first = batch_first
+        self._query_size = query_size
+        self._key_size = key_size
+        self.dim = dim
 
     @property
-    def input_size(self):
-        return self._input_size
+    def query_size(self):
+        return self._query_size
 
     @property
-    def hidden_size(self):
-        return self._hidden_size
+    def key_size(self):
+        return self._key_size
 
     @abc.abstractmethod
-    def score(self, h_t, x):
+    def score(self, query, key):
         '''Calculate the score function over the entire input
 
-        This is implemented by subclasses of ``GlobalSoftAttention``. It is
-        usually the case that ``e_t[s]`` only uses ``h_t`` and ``x[s]`` in
-        computations
+        This is implemented by subclasses of ``GlobalSoftAttention``
+
+        ``query.unsqueeze(self.dim)[..., 0]`` broadcasts with ``value[...,
+        0]``. The final dimension of `query` is of length ``self.query_size``
+        and the final dimension of `key` should be of length ``self.key_size``
 
         Parameters
         ----------
-        h_t : torch.tensor
-            Decoder states. Tensor of shape ``(num_batch, self.hidden_size)``
-        x : torch.tensor
-            Input. Tensor of shape ``(S, num_batch, self.input_size)`` if
-            ``self.batch_first`` is ``False``, ``(num_batch, S,
-            self.input_size)`` otherwise
+        query : torch.tensor
+        key : torch.tensor
 
         Returns
         -------
-        e_t : torch.tensor
-            Tensor of shape ``(S, num_batch)`` if ``self.batch_first`` is
-            ``False``, ``(num_batch, S)`` otherwise
+        e : torch.tensor
+            Of the same shape as the above broadcasted tensor
         '''
         raise NotImplementedError()
 
-    def forward(self, h_t, x, mask=None, val=None):
-        if h_t.dim() != 2:
-            raise ValueError('Expected h_t to have 2 dimensions')
-        if h_t.shape[1] != self.hidden_size:
+    def forward(self, query, key, value, mask=None):
+        if query.dim() + 1 != key.dim():
+            raise ValueError('query must have one fewer dimension than key')
+        if key.dim() != value.dim():
             raise ValueError(
-                'Expected h_t to have hidden size of {}'
-                ''.format(self.hidden_size))
-        if x.dim() != 3:
-            raise ValueError('Expected x to have 3 dimensions')
-        if self.batch_first:
-            num_batches, S, input_size = x.shape
-        else:
-            S, num_batches, input_size = x.shape
-        if h_t.shape[0] != num_batches:
-            raise ValueError(
-                'Expected batch dim of h_t ({}) to match batch dim of x ({})'
-                ''.format(h_t.shape[0], num_batches))
-        if input_size != self.input_size:
-            raise ValueError(
-                'Expected x to have input size of {}'.format(self.input_size))
-        if mask is not None and mask.shape != x.shape[:-1]:
-            raise ValueError(
-                'Expected mask to have shape {}'.format(tuple(x.shape[:-1])))
-        if val is None:
-            val = x
-        elif val.shape[:2] != x.shape[:2]:
-            raise ValueError(
-                'Expected val to have shape ({}, {}, ...)'
-                ''.format(*tuple(x.shape[:2])))
-        e_t = self.score(h_t, x)
+                "key must have same number of dimensions as value")
+        if query.shape[-1] != self.query_size:
+            raise ValueError('Last dimension of query must match query_size')
+        if key.shape[-1] != self.key_size:
+            raise ValueError('Last dimension of key must match key_size')
+        if self.dim > key.dim() - 2:
+            raise ValuerError(
+                'dim must refer to a valid dimension of key after its last '
+                'dimension has been removed'
+            )
+        e = self.score(query, key)
         if mask is not None:
-            # we perform on e_t instead of a_t to ensure sum_s a_{t,s} = 1
-            e_t = e_t.masked_fill(mask.eq(0), -float('inf'))
-        if self.batch_first:
-            a_t = torch.nn.functional.softmax(e_t, 1)
-            c_t = (a_t.unsqueeze(2) * val.view(num_batches, S, -1)).sum(1)
-            c_t = c_t.view_as(val[:, 0])
-        else:
-            a_t = torch.nn.functional.softmax(e_t, 0)
-            c_t = (a_t.unsqueeze(2) * val.view(S, num_batches, -1)).sum(0)
-            c_t = c_t.view_as(val[0])
-        return c_t
+            e = e.masked_fill(mask.eq(0), -float('inf'))
+        a = torch.nn.functional.softmax(e, self.dim)
+        c = (a.unsqueeze(-1) * value).sum(self.dim)
+        return c
 
     def reset_parameters(self):
         pass
@@ -227,15 +231,17 @@ class DotProductSoftAttention(GlobalSoftAttention):
 
     .. math::
 
-        e_{t,s} = scale\_factor \langle h_t, x_s \rangle
+        e = scale\_factor \sum_i query_i key_i
+
+    Where :math:`i` indexes the last dimension of both the query and key
 
     Parameters
     ----------
     size : int
-        Both the input size and hidden size
-    batch_first : bool, optional
+        Both the query and key size
+    dim : int, optional
     scale_factor : float, optional
-        A floating point to multiply the each :math:`e_{t,s}` with. Usually
+        A floating point to multiply the each :math:`e` with. Usually
         1, but if set to :math:`1 / size`, you'll get the scaled dot-product
         attention of [vaswani2017]_
 
@@ -245,13 +251,13 @@ class DotProductSoftAttention(GlobalSoftAttention):
         For a description of how to call this module, how it works, etc.
     '''
 
-    def __init__(self, size, batch_first=False, scale_factor=1.):
-        super(DotProductSoftAttention, self).__init__(size, size, batch_first)
+    def __init__(self, size, dim=0, scale_factor=1.):
+        super(DotProductSoftAttention, self).__init__(size, size, dim)
         self.scale_factor = scale_factor
 
-    def score(self, h_t, x):
-        h_t = h_t.unsqueeze(1 if self.batch_first else 0)
-        return (h_t * x).sum(2) * self.scale_factor
+    def score(self, query, key):
+        query = query.unsqueeze(self.dim)
+        return (query * key).sum(-1) * self.scale_factor
 
 
 class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
@@ -262,17 +268,18 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
 
     .. math::
 
-        e_{t, s} = \langle h_t, W x_s \rangle
+        e = \sum_q query_q, \sum_k W_{qk} key_k
 
-    For some learned matrix :math:`W`
+    For some learned matrix :math:`W`. :math:`q` indexes the last dimension
+    of `query` and :math:`k` the last dimension of `key`
 
     Parameters
     ----------
-    input_size : int
-    hidden_size : int
-    batch_first : bool, optional
+    query_size : int
+    key_size : int
+    dim : int, optional
     bias : bool, optional
-        Whether to add a bias term ``b``: :math:`W x_s + b`
+        Whether to add a bias term ``b``: :math:`W key + b`
 
     See Also
     --------
@@ -280,48 +287,48 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
         For a description of how to call this module, how it works, etc.
     '''
 
-    def __init__(self, input_size, hidden_size, batch_first=False, bias=False):
+    def __init__(self, query_size, key_size, dim=0, bias=False):
         super(GeneralizedDotProductSoftAttention, self).__init__(
-            input_size, hidden_size, batch_first)
+            query_size, key_size, dim)
         self._bias = bias
-        self._W = torch.nn.Linear(input_size, hidden_size, bias=bias)
+        self._W = torch.nn.Linear(key_size, query_size, bias=bias)
 
     @property
     def bias(self):
         return self._bias
 
-    def score(self, h_t, x):
-        Wx = self._W(x)
-        h_t = h_t.unsqueeze(1 if self.batch_first else 0)
-        return (h_t * Wx).sum(2)
+    def score(self, query, key):
+        Wkey = self._W(key)
+        query = query.unsqueeze(self.dim)
+        return (query * Wkey).sum(-1)
 
     def reset_parameters(self):
         self._W.reset_parameters()
 
 
 class ConcatSoftAttention(GlobalSoftAttention):
-    r'''Attention where input and hidden are concatenated, then fed into an MLP
+    r'''Attention where query and key are concatenated, then fed into an MLP
 
     Proposed in [luong2015]_, though quite similar to that proposed in
     [bahdanau2015]_, the score function for this layer is:
 
     .. math::
 
-        e_{t, s} = \langle v, tanh(W [x_s, h_t]) \rangle
+        e = \sum_i v_i tanh(\sum_c W_{ic} [query, key]_c)
 
-    For some learned matrix :math:`W`, where :math:`[x_s, h_t]` indicates
-    concatenation. :math:`W` is of shape
-    ``(input_size + hidden_size, intermediate_size)`` and :math:`v` is of
-    shape ``(intermediate_size,)``
+    For some learned matrix :math:`W` and vector :math:`v`, where
+    :math:`[query, key]` indicates concatenation along the last axis. `query`
+    and `key` will be expanded to fit their broadcast dimensions. :math:`W`
+    has shape ``(inter_size, key_size)`` and :math:`v` has shape
+    ``(hidden_size,)``
 
     Parameters
     ----------
-    input_size : int
-    hidden_size : int
-    batch_first : bool, optional
+    query_size : int
+    key_size : int
     bias : bool, optional
-        Whether to add bias term ``b`` :math:`W x_s + b`
-    intermediate_size : int, optional
+        Whether to add bias term ``b`` :math:`W [query, key] + b`
+    hidden_size : int, optional
 
     See Also
     --------
@@ -330,34 +337,33 @@ class ConcatSoftAttention(GlobalSoftAttention):
     '''
 
     def __init__(
-            self, input_size, hidden_size, batch_first=False, bias=False,
-            intermediate_size=1000):
-        super(ConcatSoftAttention, self).__init__(
-            input_size, hidden_size, batch_first)
+            self, query_size, key_size, dim=0, bias=False, hidden_size=1000):
+        super(ConcatSoftAttention, self).__init__(query_size, key_size, dim)
         self._bias = bias
-        self._intermediate_size = intermediate_size
+        self._hidden_size = hidden_size
         self._W = torch.nn.Linear(
-            input_size + hidden_size, intermediate_size, bias=bias)
+            query_size + key_size, hidden_size, bias=bias)
         # there's no point in a bias for v. It'll just be absorbed by the
         # softmax later. You could add a bias after the tanh layer, though...
-        self._v = torch.nn.Linear(intermediate_size, 1, bias=False)
+        self._v = torch.nn.Linear(hidden_size, 1, bias=False)
 
     @property
     def bias(self):
         return self._bias
 
     @property
-    def intermediate_size(self):
-        return self._intermediate_size
+    def hidden_size(self):
+        return self._hidden_size
 
-    def score(self, h_t, x):
-        if self.batch_first:
-            h_t = h_t.unsqueeze(1).expand(-1, x.shape[1], -1)
-        else:
-            h_t = h_t.unsqueeze(0).expand(x.shape[0], -1, -1)
-        xh = torch.cat([x, h_t], 2)
-        Wxh = self._W(xh)
-        return self._v(Wxh).squeeze(2)
+    def score(self, query, key):
+        query = query.unsqueeze(self.dim)
+        query_wo_last, key_wo_last = torch.broadcast_tensors(
+            query[..., 0], key[..., 0])
+        query, _ = torch.broadcast_tensors(query, query_wo_last.unsqueeze(-1))
+        key, _ = torch.broadcast_tensors(key, key_wo_last.unsqueeze(-1))
+        cat = torch.cat([query, key], -1)
+        Wcat = self._W(cat)
+        return self._v(Wcat).squeeze(-1)
 
     def reset_parameters(self):
         self._W.reset_parameters()
