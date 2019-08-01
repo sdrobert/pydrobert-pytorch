@@ -57,6 +57,9 @@ __all__ = [
     'MultiHeadedAttention',
 ]
 
+# XXX(sdrobert): a quick note on style. pytorch doesn't tend to protect its
+# read-only attributes using private members, so we do the same
+
 
 class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
     r'''Parent class for soft attention mechanisms on an entire input sequence
@@ -314,17 +317,9 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
 
     def __init__(self, query_size, key_size, dim=0):
         super(GlobalSoftAttention, self).__init__()
-        self._query_size = query_size
-        self._key_size = key_size
+        self.query_size = query_size
+        self.key_size = key_size
         self.dim = dim
-
-    @property
-    def query_size(self):
-        return self._query_size
-
-    @property
-    def key_size(self):
-        return self._key_size
 
     @abc.abstractmethod
     def score(self, query, key):
@@ -371,6 +366,10 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         c = (a.unsqueeze(-1) * value).sum(self.dim)
         return c
 
+    def extra_repr(self):
+        return 'query_size={}, key_size={}, dim={}'.format(
+            self.query_size, self.key_size, self.dim)
+
     def reset_parameters(self):
         pass
 
@@ -396,6 +395,13 @@ class DotProductSoftAttention(GlobalSoftAttention):
         1, but if set to :math:`1 / size`, you'll get the scaled dot-product
         attention of [vaswani2017]_
 
+    Attributes
+    ----------
+    query_size : int
+    key_size : int
+    dim : int
+    scale_factor : float
+
     See Also
     --------
     GlobalSoftAttention
@@ -409,6 +415,9 @@ class DotProductSoftAttention(GlobalSoftAttention):
     def score(self, query, key):
         query = query.unsqueeze(self.dim)
         return (query * key).sum(-1) * self.scale_factor
+
+    def extra_repr(self):
+        return 'size={}, dim={}'.format(self.query_size, self.dim)
 
 
 class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
@@ -432,6 +441,14 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
     bias : bool, optional
         Whether to add a bias term ``b``: :math:`W key + b`
 
+    Attributes
+    ----------
+    query_size : int
+    key_size : int
+    dim : int
+    W : torch.nn.Linear
+        The matrix :math:`W`
+
     See Also
     --------
     GlobalSoftAttention
@@ -441,20 +458,15 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
     def __init__(self, query_size, key_size, dim=0, bias=False):
         super(GeneralizedDotProductSoftAttention, self).__init__(
             query_size, key_size, dim)
-        self._bias = bias
-        self._W = torch.nn.Linear(key_size, query_size, bias=bias)
-
-    @property
-    def bias(self):
-        return self._bias
+        self.W = torch.nn.Linear(key_size, query_size, bias=bias)
 
     def score(self, query, key):
-        Wkey = self._W(key)
+        Wkey = self.W(key)
         query = query.unsqueeze(self.dim)
         return (query * Wkey).sum(-1)
 
     def reset_parameters(self):
-        self._W.reset_parameters()
+        self.W.reset_parameters()
 
 
 class ConcatSoftAttention(GlobalSoftAttention):
@@ -481,6 +493,17 @@ class ConcatSoftAttention(GlobalSoftAttention):
         Whether to add bias term ``b`` :math:`W [query, key] + b`
     hidden_size : int, optional
 
+    Attributes
+    ----------
+    query_size : int
+    key_size : int
+    dim : int
+    hidden_size : int
+    W : torch.nn.Linear
+        The matrix :math:`W`
+    v : torch.nn.Linear
+        The vector :math:`v` as a single-row matrix
+
     See Also
     --------
     GlobalSoftAttention
@@ -490,21 +513,12 @@ class ConcatSoftAttention(GlobalSoftAttention):
     def __init__(
             self, query_size, key_size, dim=0, bias=False, hidden_size=1000):
         super(ConcatSoftAttention, self).__init__(query_size, key_size, dim)
-        self._bias = bias
-        self._hidden_size = hidden_size
-        self._W = torch.nn.Linear(
+        self.hidden_size = hidden_size
+        self.W = torch.nn.Linear(
             query_size + key_size, hidden_size, bias=bias)
         # there's no point in a bias for v. It'll just be absorbed by the
         # softmax later. You could add a bias after the tanh layer, though...
-        self._v = torch.nn.Linear(hidden_size, 1, bias=False)
-
-    @property
-    def bias(self):
-        return self._bias
-
-    @property
-    def hidden_size(self):
-        return self._hidden_size
+        self.v = torch.nn.Linear(hidden_size, 1, bias=False)
 
     def score(self, query, key):
         query = query.unsqueeze(self.dim)
@@ -513,12 +527,17 @@ class ConcatSoftAttention(GlobalSoftAttention):
         query, _ = torch.broadcast_tensors(query, query_wo_last.unsqueeze(-1))
         key, _ = torch.broadcast_tensors(key, key_wo_last.unsqueeze(-1))
         cat = torch.cat([query, key], -1)
-        Wcat = self._W(cat)
-        return self._v(Wcat).squeeze(-1)
+        Wcat = self.W(cat)
+        return self.v(Wcat).squeeze(-1)
 
     def reset_parameters(self):
-        self._W.reset_parameters()
-        self._v.reset_parameters()
+        self.W.reset_parameters()
+        self.v.reset_parameters()
+
+    def extra_repr(self):
+        s = super(ConcatSoftAttention, self).extra_repr()
+        s += ', hidden_size={}'.format(self.hidden_size)
+        return s
 
 
 class MultiHeadedAttention(torch.nn.Module):
@@ -605,7 +624,8 @@ class MultiHeadedAttention(torch.nn.Module):
     single_head_attention : GlobalSoftAttention
     dim : int
     d_q, d_k, d_v : int
-    bias_WQ, bias_WK, bias_WV, bias_WC : bool
+    WQ, WK, WV, WC : torch.nn.Linear
+        Matrices :math:`W^Q`, :math:`W^K`, :math:`W^V`, and :math:`W^C`
 
     See Also
     --------
@@ -619,83 +639,27 @@ class MultiHeadedAttention(torch.nn.Module):
             single_head_attention, out_size=None, d_v=None,
             bias_WQ=False, bias_WK=False, bias_WV=False, bias_WC=False):
         super(MultiHeadedAttention, self).__init__()
-        self._query_size = query_size
-        self._key_size = key_size
-        self._value_size = value_size
-        self._out_size = value_size if out_size is None else out_size
-        self._num_heads = num_heads
-        self._single_head_attention = single_head_attention
+        self.query_size = query_size
+        self.key_size = key_size
+        self.value_size = value_size
+        self.out_size = value_size if out_size is None else out_size
+        self.num_heads = num_heads
+        self.single_head_attention = single_head_attention
         # we don't keep these in sync in case someone's using
         # single_head_attention
         self.dim = single_head_attention.dim
-        self._d_q = single_head_attention.query_size
-        self._d_k = single_head_attention.key_size
-        self._d_v = max(1, value_size // num_heads) if d_v is None else d_v
-        self._bias_WQ = bias_WQ
-        self._bias_WK = bias_WK
-        self._bias_WV = bias_WV
-        self._bias_WC = bias_WC
-        self._WQ = torch.nn.Linear(
-            query_size, num_heads * self._d_q, bias=bias_WQ)
-        self._WK = torch.nn.Linear(
-            key_size, num_heads * self._d_k, bias=bias_WK)
-        self._WV = torch.nn.Linear(
-            value_size, num_heads * self._d_v, bias=bias_WV)
-        self._WC = torch.nn.Linear(
-            self._d_v * num_heads, self._out_size, bias=bias_WC)
+        self.d_q = single_head_attention.query_size
+        self.d_k = single_head_attention.key_size
+        self.d_v = max(1, value_size // num_heads) if d_v is None else d_v
+        self.WQ = torch.nn.Linear(
+            query_size, num_heads * self.d_q, bias=bias_WQ)
+        self.WK = torch.nn.Linear(
+            key_size, num_heads * self.d_k, bias=bias_WK)
+        self.WV = torch.nn.Linear(
+            value_size, num_heads * self.d_v, bias=bias_WV)
+        self.WC = torch.nn.Linear(
+            self.d_v * num_heads, self.out_size, bias=bias_WC)
         single_head_attention.reset_parameters()
-
-    @property
-    def query_size(self):
-        return self._query_size
-
-    @property
-    def key_size(self):
-        return self._key_size
-
-    @property
-    def value_size(self):
-        return self._value_size
-
-    @property
-    def out_size(self):
-        return self._out_size
-
-    @property
-    def num_heads(self):
-        return self._num_heads
-
-    @property
-    def single_head_attention(self):
-        return self._single_head_attention
-
-    @property
-    def d_q(self):
-        return self._d_q
-
-    @property
-    def d_k(self):
-        return self._d_k
-
-    @property
-    def d_v(self):
-        return self._d_v
-
-    @property
-    def bias_WQ(self):
-        return self._bias_WQ
-
-    @property
-    def bias_WK(self):
-        return self._bias_WK
-
-    @property
-    def bias_WV(self):
-        return self._bias_WV
-
-    @property
-    def bias_WC(self):
-        return self._bias_WC
 
     def forward(self, query, key, value, mask=None):
         query_shape = tuple(query.shape)
@@ -714,15 +678,15 @@ class MultiHeadedAttention(torch.nn.Module):
             )
         dim = (self.dim + key_dim) % key_dim
         query_heads = (
-            self._WQ(query)
+            self.WQ(query)
                 .view(*(query_shape[:-1] + (self.num_heads, self.d_q)))
         )
         key_heads = (
-            self._WK(key)
+            self.WK(key)
                 .view(*(key_shape[:-1] + (self.num_heads, self.d_k)))
         )
         value_heads = (
-            self._WV(value)
+            self.WV(value)
                 .view(*(value_shape[:-1] + (self.num_heads, self.d_v)))
         )
         if mask is not None:
@@ -735,11 +699,19 @@ class MultiHeadedAttention(torch.nn.Module):
         finally:
             self.single_head_attention.dim = old_dim
         cat = cat.view(*(tuple(cat.shape[:-2]) + (self.num_heads * self.d_v,)))
-        return self._WC(cat)
+        return self.WC(cat)
 
     def reset_parameters(self):
-        self._WQ.reset_parameters()
-        self._WK.reset_parameters()
-        self._WV.reset_parameters()
-        self._WC.reset_parameters()
-        self._single_head_attention.reset_parameters()
+        self.WQ.reset_parameters()
+        self.WK.reset_parameters()
+        self.WV.reset_parameters()
+        self.WC.reset_parameters()
+        self.single_head_attention.reset_parameters()
+
+    def extra_repr(self):
+        return (
+            'query_size={}, key_size={}, value_size={}, out_size={}, dim={}, '
+            'num_heads={}, d_q={}, d_k={}, d_v={}'.format(
+                self.query_size, self.key_size, self.value_size, self.out_size,
+                self.dim, self.num_heads, self.d_q, self.d_k, self.d_v)
+        )
