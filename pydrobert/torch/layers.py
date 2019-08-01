@@ -161,6 +161,155 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         value.shape     T   1   num_batch   key_size
         --------------------------------------------
         out.shape       T   S   num_batch   key_size
+
+    Examples
+    --------
+
+    A simple auto-regressive decoder using soft attention on encoder outputs
+    with "concat"-style attention
+
+    >>> T, num_batch, encoded_size, hidden_size = 100, 5, 30, 124
+    >>> num_classes, start, eos, max_decoder_steps = 20, -1, 0, 100
+    >>> encoded_lens = torch.randint(1, T + 1, (num_batch,))
+    >>> len_mask = torch.where(
+    ...     torch.arange(T).unsqueeze(-1) < encoded_lens,
+    ...     torch.tensor(1),
+    ...     torch.tensor(0),
+    ... )
+    >>> encoded = torch.randn(T, num_batch, encoded_size)
+    >>> rnn = torch.nn.RNNCell(encoded_size + 1, hidden_size)
+    >>> ff = torch.nn.Linear(hidden_size, num_classes)
+    >>> attention = ConcatSoftAttention(hidden_size, encoded_size)
+    >>> h = torch.zeros((num_batch, hidden_size))
+    >>> y = torch.full((1, num_batch), -1, dtype=torch.long)
+    >>> for _ in range(max_decoder_steps):
+    >>>     if y[-1].eq(eos).all():
+    >>>         break
+    >>>     context = attention(h, encoded, encoded, len_mask)
+    >>>     cat = torch.cat([context, y[-1].unsqueeze(-1).float()], 1)
+    >>>     h = rnn(cat)
+    >>>     logit = ff(h)
+    >>>     y_next = logit.argmax(-1).masked_fill(y[-1].eq(eos), eos)
+    >>>     y = torch.cat([y, y_next.unsqueeze(0)], 0)
+
+    A single-headed transformer network with one layer each in the encoder and
+    decoder. We forego much of the complexity of the original model, showcasing
+    the "attention is all you need" bit
+
+    >>> class Encoder(torch.nn.Module):
+    >>>     def __init__(self, model_size, num_classes, padding_idx=-1):
+    >>>         super(Encoder, self).__init__()
+    >>>         self.model_size = model_size
+    >>>         self.num_classes = num_classes
+    >>>         self.embedder = torch.nn.Embedding(
+    ...             num_classes, model_size, padding_idx=padding_idx)
+    >>>         self.attention = DotProductSoftAttention(
+    ...             model_size, scale_factor=model_size ** -.5)
+    >>>         self.norm = torch.nn.LayerNorm(model_size)
+    >>>
+    >>>     def forward(self, inp):
+    >>>         embedding = self.embedder(inp)
+    >>>         query = embedding  # (T, num_batch, model_size)
+    >>>         kv = embedding.unsqueeze(1)  # (T, 1, num_batch, model_size)
+    >>>         mask = inp.ne(self.embedder.padding_idx)
+    >>>         mask = mask.unsqueeze(1)  # (T, 1, num_batch)
+    >>>         out = self.attention(query, kv, kv, mask)
+    >>>         out = self.norm(out + embedding) # (T, num_batch, model_s)
+    >>>         return out, mask
+
+    >>> class Decoder(torch.nn.Module):
+    >>>     def __init__(self, model_size, num_classes, padding_idx=-2):
+    >>>         super(Decoder, self).__init__()
+    >>>         self.model_size = model_size
+    >>>         self.num_classes = num_classes
+    >>>         self.embedder = torch.nn.Embedding(
+    ...             num_classes, model_size, padding_idx=padding_idx)
+    >>>         self.attention = DotProductSoftAttention(
+    ...             model_size, scale_factor=model_size ** -.5)
+    >>>         self.norm1 = torch.nn.LayerNorm(model_size)
+    >>>         self.norm2 = torch.nn.LayerNorm(model_size)
+    >>>         self.ff = torch.nn.Linear(model_size, num_classes)
+    >>>
+    >>>     def forward(self, enc_out, dec_in, enc_mask=None):
+    >>>         embedding = self.embedder(dec_in)
+    >>>         query = embedding  # (S, num_batch, model_size)
+    >>>         kv = embedding.unsqueeze(1)  # (S, 1, num_batch, model_size)
+    >>>         pad_mask = dec_in.ne(self.embedder.padding_idx)
+    >>>         pad_mask = pad_mask.unsqueeze(1)  # (S, 1, num_batch)
+    >>>         auto_mask = torch.ones(
+    ...             query.shape[0], query.shape[0], dtype=torch.uint8)
+    >>>         # why upper and not lower? The mask is an inclusion mask.
+    >>>         # The dimension we're summing out is dim=0, so the dim 1
+    >>>         # will remain. So
+    >>>         # auto_mask[:, 0] = [1, 0, 0, ...]  (at t=0)
+    >>>         # auto_mask[:, 1] = [1, 1, 0, ...]  (at t=1)
+    >>>         auto_mask = torch.triu(auto_mask)
+    >>>         auto_mask = auto_mask.unsqueeze(-1)  # (S, S, 1)
+    >>>         dec_mask = pad_mask & auto_mask  # (S, S, num_batch)
+    >>>         dec_out = self.attention(query, kv, kv, dec_mask)
+    >>>         dec_out = self.norm1(dec_out + embedding)
+    >>>         query = dec_out  # (S, num_batch, model_size)
+    >>>         kv = enc_out.unsqueeze(1)  # (T, 1, num_batch, model_size)
+    >>>         out = self.attention(query, kv, kv, enc_mask)
+    >>>         out = self.ff(self.norm2(out + query))
+    >>>         return out, pad_mask
+
+    Prep
+
+    >>> T, num_batch, model_size = 100, 5, 1000
+    >>> num_classes, start, eos = 20, 0, 1
+    >>> padding = num_classes - 1
+    >>> inp_lens = torch.randint(1, T + 1, (num_batch,))
+    >>> inp = torch.nn.utils.rnn.pad_sequence(
+    ...     [
+    ...         torch.randint(2, num_classes - 1, (x + 1,))
+    ...         for x in inp_lens
+    ...     ],
+    ...     padding_value=padding,
+    ... )
+    >>> inp[inp_lens, range(num_batch)] = eos
+    >>> target_lens = torch.randint(1, T + 1, (num_batch,))
+    >>> y = torch.nn.utils.rnn.pad_sequence(
+    ...     [
+    ...         torch.randint(2, num_classes - 1, (x + 2,))
+    ...         for x in target_lens
+    ...     ],
+    ...     padding_value=padding,
+    ... )
+    >>> y[0] = start
+    >>> y[target_lens + 1, range(num_batch)] = eos
+    >>> dec_inp, targets = y[:-1], y[1:]
+    >>> encoder = Encoder(model_size, num_classes, padding_idx=padding)
+    >>> decoder = Decoder(model_size, num_classes, padding_idx=padding)
+    >>> loss = torch.nn.CrossEntropyLoss(ignore_index=padding)
+    >>> optim = torch.optim.Adam(
+    ...     list(encoder.parameters()) + list(decoder.parameters()))
+
+    Training a batch (you'lll have to do this a whole lot of times to get
+    it to converge)
+
+    >>> optim.zero_grad()
+    >>> enc_out, enc_mask = encoder(inp)
+    >>> logits, _ = decoder(enc_out, dec_inp, enc_mask)
+    >>> logits = logits[..., :-1]  # get rid of padding logit
+    >>> l = loss(logits.view(-1, num_classes - 1), targets.flatten())
+    >>> l.backward()
+    >>> optim.step()
+
+    Decoding a batch (test time) using greedy search
+
+    >>> enc_out, enc_mask = encoder(inp)
+    >>> dec_hyp = torch.full((1, num_batch), start, dtype=torch.long)
+    >>> enc_out, enc_mask = encoder(inp)
+    >>> done_mask = torch.zeros(num_batch, dtype=torch.uint8)
+    >>> while not done_mask.all():
+    >>>     logits, _ = decoder(enc_out, dec_hyp, enc_mask)
+    >>>     logits = logits[..., :-1]  # get rid of padding logit
+    >>>     pred = logits[-1].argmax(1)
+    >>>     pred.masked_fill_(done_mask, eos)
+    >>>     done_mask = pred.eq(eos)
+    >>>     dec_hyp = torch.cat([dec_hyp, pred.unsqueeze(0)], 0)
+    >>> dec_hyp = dec_hyp[1:]
     '''
 
     def __init__(self, query_size, key_size, dim=0):
@@ -211,7 +360,7 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
             raise ValueError('Last dimension of key must match key_size')
         key_dim = key.dim()
         if self.dim > key_dim - 2 or self.dim < -key_dim + 1:
-            raise ValuerError(
+            raise ValueError(
                 'dim must be in the range [{}, {}]'
                 ''.format(-key_dim + 1, key_dim - 2)
             )
