@@ -54,6 +54,7 @@ __all__ = [
     'DotProductSoftAttention',
     'GeneralizedDotProductSoftAttention',
     'GlobalSoftAttention',
+    'MultiHeadedAttention',
 ]
 
 
@@ -208,10 +209,11 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
             raise ValueError('Last dimension of query must match query_size')
         if key.shape[-1] != self.key_size:
             raise ValueError('Last dimension of key must match key_size')
-        if self.dim > key.dim() - 2:
+        key_dim = key.dim()
+        if self.dim > key_dim - 2 or self.dim < -key_dim + 1:
             raise ValuerError(
-                'dim must refer to a valid dimension of key after its last '
-                'dimension has been removed'
+                'dim must be in the range [{}, {}]'
+                ''.format(-key_dim + 1, key_dim - 2)
             )
         e = self.score(query, key)
         if mask is not None:
@@ -368,3 +370,227 @@ class ConcatSoftAttention(GlobalSoftAttention):
     def reset_parameters(self):
         self._W.reset_parameters()
         self._v.reset_parameters()
+
+
+class MultiHeadedAttention(torch.nn.Module):
+    r'''Perform attention over a number of heads, concatenate, and project
+
+    Multi-headed attention was proposed in [vaswani2017]_. It can be considered
+    a wrapper around standard ``GlobalSoftAttention`` that results in a similar
+    output as a regular attention layer. The idea is to replicate transformed
+    versions of the `query`, `key`, and `value` `num_heads` times. Letting
+    :math:`h` index the head:
+
+    .. math::
+
+        query_h = W^Q_h query \\
+        key_h = W^K_h key \\
+        value_h = W^V_h value
+
+    If `query` is of shape ``(..., query_size)``, :math:`W^Q_h` is a learned
+    matrix of shape ``(query_size, d_q)`` that acts on the final dimension of
+    `query`. Likewise, :math:`W^K_h` is of shape ``(key_size, d_k)`` and
+    :math:`W^V_h` is of shape ``(value_size, d_v)``.
+
+    Each head is then determined via a wrapped ``GlobalSoftAttention``
+    instance, `single_head_attention`:
+
+    .. math::
+
+        head_h = single\_head\_attention(query_h, key_h, value_h, mask)
+
+    Where `mask` is repeated over all :math:`h`.
+
+    Since each :math:`head_h` has the same shape, they can be concatenated
+    along the last dimension to get the tensor :math:`cat` of shape
+    ``(..., d_v * num_heads)``, which is linearly transformed into the output
+
+    .. math::
+
+        out = W^C cat
+
+    With a learnable matrix :math:`W^C` of shape ``(d_v * num_heads,
+    out_size)``. `out` has a shape ``(..., out_size)``
+
+    This module has the following signature when called
+
+        attention(query, key, value[, mask])
+
+    Parameters
+    ----------
+    query_size : int
+        The size of the last dimension of the `query` being passed to this
+        module (not the size of a head's query)
+    key_size : int
+        The size of the last dimension of the `key` being passed to this
+        module (not the size of a head's key)
+    value_size : int
+        The size of the last dimension of the `value` being passed to this
+        module (not the size of a head's value)
+    num_heads : int
+        The number of heads to spawn
+    single_head_attention : GlobalSoftAttention
+        An instance of a subclass of ``GlobalSoftAttention`` responsible for
+        processing a head. `single_head_attention` attention will be used to
+        derive the sequence dimension (``dim``) of `key` via
+        ``single_head_attention.dim``, the size of a head's query ``d_k``
+        via ``single_head_attention.query_size``, and the size of a head's key
+        via ``single_head_attention.key_size``
+    out_size : int, optional
+        The size of the last dimension of `out`. If unset, the default is to
+        match `value_size`
+    d_v : int, optional
+        The size of the last dimension of a head's value. If unset, will
+        default to ``max(1, value_size // num_heads)``
+    bias_WQ, bias_WK, bias_WV, bias_WC : bool, optional
+        Whether to add a bias term in each of the linear transformations
+        :math:`W^Q`, :math:`W^K`, :math:`W^V`, :math:`W^C`
+
+    Attributes
+    ----------
+    query_size : int
+    key_size : int
+    value_size : int
+    out_size : int
+    num_heads : int
+    single_head_attention : GlobalSoftAttention
+    dim : int
+    d_q, d_k, d_v : int
+    bias_WQ, bias_WK, bias_WV, bias_WC : bool
+
+    See Also
+    --------
+    GlobalSoftAttention
+        For more information on the shape restrictions of query, key, and
+        value
+    '''
+
+    def __init__(
+            self, query_size, key_size, value_size, num_heads,
+            single_head_attention, out_size=None, d_v=None,
+            bias_WQ=False, bias_WK=False, bias_WV=False, bias_WC=False):
+        super(MultiHeadedAttention, self).__init__()
+        self._query_size = query_size
+        self._key_size = key_size
+        self._value_size = value_size
+        self._out_size = value_size if out_size is None else out_size
+        self._num_heads = num_heads
+        self._single_head_attention = single_head_attention
+        # we don't keep these in sync in case someone's using
+        # single_head_attention
+        self.dim = single_head_attention.dim
+        self._d_q = single_head_attention.query_size
+        self._d_k = single_head_attention.key_size
+        self._d_v = max(1, value_size // num_heads) if d_v is None else d_v
+        self._bias_WQ = bias_WQ
+        self._bias_WK = bias_WK
+        self._bias_WV = bias_WV
+        self._bias_WC = bias_WC
+        self._WQ = torch.nn.Linear(
+            query_size, num_heads * self._d_q, bias=bias_WQ)
+        self._WK = torch.nn.Linear(
+            key_size, num_heads * self._d_k, bias=bias_WK)
+        self._WV = torch.nn.Linear(
+            value_size, num_heads * self._d_v, bias=bias_WV)
+        self._WC = torch.nn.Linear(
+            self._d_v * num_heads, self._out_size, bias=bias_WC)
+        single_head_attention.reset_parameters()
+
+    @property
+    def query_size(self):
+        return self._query_size
+
+    @property
+    def key_size(self):
+        return self._key_size
+
+    @property
+    def value_size(self):
+        return self._value_size
+
+    @property
+    def out_size(self):
+        return self._out_size
+
+    @property
+    def num_heads(self):
+        return self._num_heads
+
+    @property
+    def single_head_attention(self):
+        return self._single_head_attention
+
+    @property
+    def d_q(self):
+        return self._d_q
+
+    @property
+    def d_k(self):
+        return self._d_k
+
+    @property
+    def d_v(self):
+        return self._d_v
+
+    @property
+    def bias_WQ(self):
+        return self._bias_WQ
+
+    @property
+    def bias_WK(self):
+        return self._bias_WK
+
+    @property
+    def bias_WV(self):
+        return self._bias_WV
+
+    @property
+    def bias_WC(self):
+        return self._bias_WC
+
+    def forward(self, query, key, value, mask=None):
+        query_shape = tuple(query.shape)
+        key_shape = tuple(key.shape)
+        value_shape = tuple(value.shape)
+        # we check dim here because we want to turn it into a positive
+        # index before passing it to the head. This is because there's going
+        # to be one more dimension to query, key, and value at the end that
+        # represents the `num_heads` dimension, and we don't want negative
+        # indices being wrongly offset because of it
+        key_dim = len(key_shape)
+        if self.dim > key_dim - 2 or self.dim < -key_dim + 1:
+            raise ValuerError(
+                'dim must be in the range [{}, {}]'
+                ''.format(-key_dim + 1, key_dim - 2)
+            )
+        dim = (self.dim + key_dim) % key_dim
+        query_heads = (
+            self._WQ(query)
+                .view(*(query_shape[:-1] + (self.num_heads, self.d_q)))
+        )
+        key_heads = (
+            self._WK(key)
+                .view(*(key_shape[:-1] + (self.num_heads, self.d_k)))
+        )
+        value_heads = (
+            self._WV(value)
+                .view(*(value_shape[:-1] + (self.num_heads, self.d_v)))
+        )
+        if mask is not None:
+            mask = mask.unsqueeze(-2)
+        old_dim = self.single_head_attention.dim
+        try:
+            self.single_head_attention.dim = dim
+            cat = self.single_head_attention(
+                query_heads, key_heads, value_heads, mask)
+        finally:
+            self.single_head_attention.dim = old_dim
+        cat = cat.view(*(tuple(cat.shape[:-2]) + (self.num_heads * self.d_v,)))
+        return self._WC(cat)
+
+    def reset_parameters(self):
+        self._WQ.reset_parameters()
+        self._WK.reset_parameters()
+        self._WV.reset_parameters()
+        self._WC.reset_parameters()
+        self._single_head_attention.reset_parameters()

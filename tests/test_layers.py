@@ -152,10 +152,11 @@ def test_dot_product_soft_attention_on_transformer_input():
 
 @pytest.mark.parametrize('dim', [0, 1, 2])
 @pytest.mark.parametrize('bias', [True, False])
-@pytest.mark.parametrize('layer', ['general', 'concat'])
+@pytest.mark.parametrize(
+    'layer', ['general', 'concat', 'multihead_general', 'multihead_concat'])
 def test_learnable_soft_attention(device, dim, bias, layer):
     torch.manual_seed(347201)
-    max_dim, max_dim_size = 5, 30
+    max_dim, max_dim_size, max_num_heads = 5, 30, 10
     num_dim = torch.randint(dim + 2, max_dim + 1, (1,), device=device).item()
     # dim size must be at least 2. Otherwise, softmax will have only one
     # element and gradient will be zero through it
@@ -168,10 +169,27 @@ def test_learnable_soft_attention(device, dim, bias, layer):
     key_size = key_shape[-1]
     query_size = query_shape[-1]
     if layer == 'general':
-        class_ = layers.GeneralizedDotProductSoftAttention
+        attention = layers.GeneralizedDotProductSoftAttention(
+            query_size, key_size, dim, bias)
     elif layer == 'concat':
-        class_ = layers.ConcatSoftAttention
-    attention = class_(query_size, key_size, dim, bias).to(device)
+        attention = layers.ConcatSoftAttention(
+            query_size, key_size, dim, bias)
+    elif layer.startswith('multihead_'):
+        num_heads = torch.randint(
+            1, max_num_heads + 1, (1,), device=device).item()
+        d_q = max(1, query_size // num_heads)
+        d_k = max(1, key_size // num_heads)
+        if layer.endswith('general'):
+            single_head_attention = layers.GeneralizedDotProductSoftAttention(
+                d_q, d_k, dim, bias)
+        elif layer.endswith('concat'):
+            single_head_attention = layers.ConcatSoftAttention(
+                query_size, key_size, dim, bias)
+        attention = layers.MultiHeadedAttention(
+            query_size, key_size, key_size, num_heads, single_head_attention,
+            bias_WQ=bias, bias_WK=bias, bias_WV=bias, bias_WC=bias,
+        )
+    attention = attention.to(device)
     torch.manual_seed(30)
     attention.reset_parameters()
     optim = torch.optim.Adam(attention.parameters(), lr=1.)
