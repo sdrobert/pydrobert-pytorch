@@ -56,8 +56,8 @@ def beam_search_advance(
     auto-regressive if :math:`logits_t = f(logits_{<t})`.
 
     Beam search is a heuristic mechanism for determining a best path, i.e.
-    :math:`\argmax_y Pr(y)` that maximizes the probability of the best path by
-    keeping track of `width` high probability paths called "beams" (the
+    :math:`\arg \max_y Pr(y)` that maximizes the probability of the best path
+    by keeping track of `width` high probability paths called "beams" (the
     aggregate of which for a given batch element is named, unfortunately, "the
     beam"). If the model is auto-regressive, beam search is only approximate.
     However, if the model is not auto-regressive, beam search gives an exact
@@ -70,7 +70,7 @@ def beam_search_advance(
 
     Parameters
     ----------
-    logits : torch.tensor
+    logits : torch.FloatTensor
         The conditional probabilities over class labels for the current time
         step. Either of shape ``(num_batches, old_width, num_classes)``,
         where ``old_width`` is the number of beams in the previous time step,
@@ -79,7 +79,7 @@ def beam_search_advance(
     width : int
         The number of beams in the beam to produce for the current time step.
         ``width <= num_classes``
-    log_prior : torch.tensor, optional
+    log_prior : torch.FloatTensor, optional
         A tensor of (or proportional to) log prior probabilities of beams up
         to the previous time step. Either of shape ``(num_batches, old_width)``
         or ``(num_batches,)``. If unspecified, a uniform log prior will be used
@@ -97,21 +97,23 @@ def beam_search_advance(
         batch ``bt``, all beams for ``bt`` will be considered finished. All
         scores will be fixed and `eos` will be appended to `y_prev`
     prevent_eos : bool, optional
-        Setting this flag to ``True`` will keep `eos` targets from entering
+        Setting this flag to :obj:`True` will keep `eos` targets from entering
         a beam unless it has finished (either with a prior `eos` or through
         `lens`). Note that this will only have an effect when ``0 <= eos <=
         num_classes``
 
     Returns
     -------
-    score, y, s : torch.tensor, torch.LongTensor, torch.LongTensor
-        `score` is a tensor of shape ``(num_batches, width)`` of the
-        log-joint probabilities of the new beams in the beam. `y` is a
-        tensor of shape ``(t, num_batches, width)`` of indices of the class
-        labels generated up to this point. `s` is a tensor of shape
-        ``(num_batches, width)`` of indices of beams in the old beam which
-        prefix the new beam. Note that beams in the new beam are sorted by
-        descending probability
+    score : torch.FloatTensor
+        Of shape ``(num_batches, width)`` of the log-joint probabilities of the
+        new beams in the beam
+    y : torch.LongTensor
+        Of shape ``(t, num_batches, width)`` of indices of the class labels
+        generated up to this point
+    s : torch.LongTensor
+        Of shape ``(num_batches, width)`` of indices of beams in the old beam
+        which prefix the new beam. Note that beams in the new beam are sorted
+        by descending probability
 
     Examples
     --------
@@ -320,7 +322,7 @@ def error_rate(
         but is not usually included in an evaluation. Only the first `eos` per
         transcript is included
     norm : bool, optional
-        If ``False``, will return edit distances instead of error rates
+        If :obj:`False`, will return edit distances instead of error rates
     batch_first : bool, optional
     ins_cost : float, optional
         The cost of an adding a superfluous token to a transcript in `hyp`
@@ -332,9 +334,9 @@ def error_rate(
         Whether to display warnings on irregularities. Currently, this can
         happen in two ways:
 
-        1. If ``True`` and `norm` is ``True``, will warn when a reference
+        1. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
            transcription has zero length
-        2. If `eos` is set and `include_eos` is ``True``, will warn when a
+        2. If `eos` is set and `include_eos` is :obj:`True`, will warn when a
            transcript does not include an `eos` symbol
 
     Returns
@@ -354,7 +356,7 @@ def optimal_completion(
     r'''Return a mask of next tokens of a minimum edit distance prefix
 
     Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)``
-    (or ``(batch_size, max_ref_steps)`` if `batch_first` is ``True``) and a
+    (or ``(batch_size, max_ref_steps)`` if `batch_first` is :obj:`True`) and a
     hypothesis transcript `hyp` of shape ``(max_hyp_steps, batch_size)``, (or
     ``(batch_size, max_hyp_steps)``), this function produces a long tensor
     `optimals` of shape ``(max_hyp_steps + 1, batch_size, max_unique_next)``
@@ -391,8 +393,8 @@ def optimal_completion(
         ``(max_hyp_steps, batch_size, max_unique_next)``
     warn : bool, optional
         Whether to display warnings on irregularities. Currently, this only
-        occurs when `eos` is set, `include_eos` is ``True``, and a transcript
-        does not contain the `eos` symbol
+        occurs when `eos` is set, `include_eos` is :obj:`True`, and a
+        transcript does not contain the `eos` symbol
 
     Returns
     -------
@@ -472,7 +474,7 @@ def optimizer_to(optimizer, to):
 
     This function traverses the state dictionary of an `optimizer` and pushes
     any tensors it finds to the device implied by `to` (as per the semantics
-    of ``torch.tensor.to``)
+    of :func:`torch.Tensor.to`)
     '''
     state_dict = optimizer.state_dict()
     key_stack = [(x,) for x in state_dict.keys()]
@@ -506,7 +508,7 @@ def prefix_error_rates(
     '''Compute the error rate between ref and each prefix of hyp
 
     Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)``
-    (or ``(batch_size, max_ref_steps)`` if `batch_first` is ``True``) and a
+    (or ``(batch_size, max_ref_steps)`` if `batch_first` is :obj:`True`) and a
     hypothesis transcript `hyp` of shape ``(max_hyp_steps, batch_size)``, (or
     ``(batch_size, max_hyp_steps)``), this function produces a tensor
     `prefix_ers` of shape ``(max_hyp_steps + 1, batch_size)`` (or
@@ -526,7 +528,7 @@ def prefix_error_rates(
         `hyp` as valid tokens to be computed as part of the distance.
         Only the first `eos` per transcript is included
     norm : bool, optional
-        If ``False``, will return edit distances instead of error rates
+        If :obj:`False`, will return edit distances instead of error rates
     batch_first : bool, optional
     ins_cost : float, optional
         The cost of an adding a superfluous token to a transcript in `hyp`
@@ -543,8 +545,8 @@ def prefix_error_rates(
         ``(max_hyp_steps, batch_size, max_unique_next)``
     warn : bool, optional
         Whether to display warnings on irregularities. Currently, this only
-        occurs when `eos` is set, `include_eos` is ``True``, and a transcript
-        does not contain the `eos` symbol
+        occurs when `eos` is set, `include_eos` is :obj:`True`, and a
+        transcript does not contain the `eos` symbol
 
     Returns
     -------
@@ -553,8 +555,8 @@ def prefix_error_rates(
     Examples
     --------
 
-    This function, alongside ``pydrobert.torch.estimators.reinforce``, can be
-    used to recreate the reward function from [tjandra2018]_
+    This function, alongside :func:`pydrobert.torch.estimators.reinforce`, can
+    be used to recreate the reward function from [tjandra2018]_
 
     >>> num_batches, max_hyp_steps, max_ref_steps, num_classes = 5, 20, 20, 10
     >>> gamma, eos, padding = .1, 0, -1
@@ -617,7 +619,7 @@ def random_walk_advance(
 
     Parameters
     ----------
-    logits_t : torch.tensor
+    logits_t : torch.FloatTensor
         The conditional probabilities over class labels for the current time
         step. Either of shape ``(num_batches, old_samp, num_classes)``,
         where ``old_samp`` is the number of samples in the previous time
@@ -625,9 +627,9 @@ def random_walk_advance(
         ``old_samp == 1``
     num_samp : int
         The number of samples to be drawn. Either ``old_samp == 1`` and/or
-        ``num_samp <= old_samp`` must be ``True``. That is, either all samples
-        will share the same prefix, or we are building off a subset of the
-        samples from ``y_prev`` (in this case, always the first `num_samp`)
+        ``num_samp <= old_samp`` must be :obj:`True`. That is, either all
+        samples will share the same prefix, or we are building off a subset of
+        the samples from ``y_prev`` (in this case, always the first `num_samp`)
     y_prev : torch.LongTensor, optional
         A tensor of shape ``(t - 1, num_batches, old_samp)`` or
         ``(t - 1, num_batches)`` specifying :math:`y_{<t}`. If unspecified,
@@ -642,10 +644,10 @@ def random_walk_advance(
         batch ``bt``, all samples for ``bt`` will be considered finished. `eos`
         will be appended to `y_prev`
     prevent_eos : bool, optional
-        Setting this flag to ``True`` will keep `eos` targets from being drawn
-        unless a sample has finished (either with a prior `eos` or through
-        `lens`). Note that this will only have an effect when ``0 <= eos <=
-        num_classes``
+        Setting this flag to :obj:`True` will keep `eos` targets from being
+        drawn unless a sample has finished (either with a prior `eos` or
+        through `lens`). Note that this will only have an effect when ``0 <=
+        eos <= num_classes``
 
     Returns
     -------

@@ -21,6 +21,7 @@ __all__ = [
     'data',
     'estimators',
     'INDEX_PAD_VALUE',
+    'layers',
     'training',
     'util',
 ]

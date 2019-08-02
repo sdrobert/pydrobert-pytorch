@@ -102,17 +102,17 @@ def to_z(logits, dist, warn=True):
 
     Parameters
     ----------
-    logits : torch.Tensor
+    logits : torch.FloatTensor
     dist : {"bern", "cat", "onehot"}
     warn : bool, optional
         Estimators that require `z` as an argument will likely need to
         propagate through `z` to get a derivative w.r.t. `logits`. If `warn` is
         true and ``not logits.requires_grad``, a warning will be issued through
-        the ``warnings`` module.
+        the :mod:`warnings` module.
 
     Returns
     -------
-    z : torch.Tensor
+    z : torch.FloatTensor
     '''
     if warn and not logits.requires_grad:
         warnings.warn(
@@ -137,7 +137,7 @@ def to_b(z, dist):
 
     Parameters
     ----------
-    z : torch.Tensor
+    z : torch.FloatTensor
     dist : {"bern", "cat", "onehot"}
 
     Returns
@@ -167,12 +167,12 @@ def reinforce(fb, b, logits, dist):
     REINFORCE [williams1992]_, or the score function, has a single-sample
     implementation as
 
-    .. math:: g = f(b) \partial \log Pr(b; logits) / \partial logits
+    .. math:: g = f(b) \frac{\partial \log Pr(b; logits)}{\partial logits}
 
     It is an unbiased estimate of the derivative of the expectation w.r.t
     `logits`.
 
-    Though simple, it is often cited as high variance.
+    Though simple, it is often cited as high variance
 
     Parameters
     ----------
@@ -192,15 +192,16 @@ def reinforce(fb, b, logits, dist):
     It is common (such as in A2C) to include a baseline to minimize the
     variance of the estimate. It's incorporated as `c` in
 
-    .. math:: g = (f(b) - c) \partial \log Pr(b; logits) / \partial logits
+    .. math:: g = (f(b) - c)\frac{\partial \log Pr(b; logits)}{\partial logits}
 
     Note that :math:`c_i` should be conditionally independent of :math:`b_i`
     for `g` to be unbiased. You can, however, condition on any preceding
     outputs :math:`b_{i - j}, j > 0` and all of `logits`.
 
-    To get this functionality, simply subtract `c` from `fb` before passing it
-    to this method. If `c` is the output of a neural network, a common (but
-    sub-optimal) loss function is the mean-squared error between `fb` and `c`.
+    To get this functionality, simply subtract :math:`c` from `fb` before
+    passing it to this method. If :math:`c` is the output of a neural network,
+    a common (but sub-optimal) loss function is the mean-squared error between
+    `fb` and :math:`c`
     '''
     fb = fb.detach()
     b = b.detach()
@@ -228,9 +229,9 @@ def relax(fb, b, logits, z, c, dist, components=False):
     .. math::
 
         g = (f(b) - c(\widetilde{z}))
-                \partial \log Pr(b; logits) / \partial logits
-            + \partial c(z) / \partial logits
-            - \partial c(\widetilde{z}) / \partial logits
+                \frac{\partial \log Pr(b; logits)}{\partial logits}
+            + \frac{\partial c(z)}{\partial logits}
+            - \frac{\partial c(\widetilde{z})}{\partial logits}
 
     where :math:`b = H(z)`, :math:`\widetilde{z} \sim Pr(z|b, logits)`, and `c`
     can be any differentiable function. It is an unbiased estimate of the
@@ -246,10 +247,10 @@ def relax(fb, b, logits, z, c, dist, components=False):
 
     Parameters
     ----------
-    fb : torch.Tensor
+    fb : torch.FloatTensor
     b : torch.Tensor
-    logits : torch.Tensor
-    z : torch.Tensor
+    logits : torch.FloatTensor
+    z : torch.FloatTensor
     c : callable
         A module or function that accepts input of the shape of `z` and outputs
         a tensor of the same shape if modelling a Bernoulli, or of shape
@@ -259,17 +260,17 @@ def relax(fb, b, logits, z, c, dist, components=False):
 
     Returns
     -------
-    g : torch.Tensor or tuple
-        If `components` is ``False``, `g` will be the gradient estimate with
-        respect to `logits`. Otherwise, a tuple will be returned of
-        ``(diff, dlog_pb, dc_z, dc_z_tilde)`` which correspond to the terms
-        in the above equation and can reconstruct `g` as
-        ``g = diff * dlog_pb + dc_z - dc_z_tilde``.
+    g : torch.FloatTensor or tuple
+        If `components` is :obj:`False`, `g` will be the gradient estimate with
+        respect to `logits`. Otherwise, a tuple will be returned of ``(diff,
+        dlog_pb, dc_z, dc_z_tilde)`` which correspond to the terms in the above
+        equation and can reconstruct `g` as ``g = diff * dlog_pb + dc_z -
+        dc_z_tilde``.
 
     Notes
     -----
     RELAX is a generalized version of REBAR [tucker2017]_. For the REBAR
-    estimator, use an instance of ``REBARControlVariate`` for `c`. See the
+    estimator, use an instance of :class:`REBARControlVariate` for `c`. See the
     class for more details.
     '''
     fb = fb.detach()
@@ -315,9 +316,10 @@ class REBARControlVariate(torch.nn.Module):
     .. math::
 
         g = (f(b) - \eta f(\sigma_\lambda(\widetilde{z})))
-                \partial \log Pr(b; logits) / \partial logits
-            + \eta \partial f(\sigma_\lambda(z)) / \partial logits
-            - \eta \partial f(\sigma_\lambda(\widetilde{z})) / \partial logits
+                \frac{\partial \log Pr(b; logits)}{\partial logits}
+            + \eta \frac{\partial f(\sigma_\lambda(z))}{\partial logits}
+            - \eta \frac{\partial f(\sigma_\lambda(\widetilde{z}))}
+                        {\partial logits}
 
     where :math:`b = H(z)`, :math:`\widetilde{z} \sim Pr(z|b, logits)`, and
     :math:`\sigma` is the Concrete relaxation [maddison2016]_ of the discrete

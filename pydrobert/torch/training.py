@@ -71,12 +71,12 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         loss(logits, ref, hyp)
 
     `hyp` is a long tensor of shape ``(num_batches, max_hyp_steps)`` if
-    `batch_first` is ``False`` otherwise ``(max_hyp_steps, num_batches)`` that
-    provides the hypothesis transcriptions. Likewise, `ref` of shape
+    `batch_first` is :obj:`False` otherwise ``(max_hyp_steps, num_batches)``
+    that provides the hypothesis transcriptions. Likewise, `ref` of shape
     ``(num_batches, max_ref_steps)`` or ``(max_ref_steps, num_batches)``
     providing reference transcriptions. `logits` is a 4-dimensional tensor of
     shape ``(num_batches, max_hyp_steps, num_classes)`` if `batch_first` is
-    ``True``, ``(max_hyp_steps, num_batches, num_classes)`` otherwise. A
+    :obj:`True`, ``(max_hyp_steps, num_batches, num_classes)`` otherwise. A
     softmax over the step dimension defines the per-step distribution over
     class labels.
 
@@ -88,7 +88,7 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
     include_eos : bool, optional
         Whether to include the first instance of `eos` found in both `ref` and
         `hyp` as valid tokens to be computed as part of the distance. `eos`
-        must be a valid class index if `include_eos` is ``True``
+        must be a valid class index if `include_eos` is :obj:`True`
     batch_first : bool, optional
         Whether the batch dimension comes first, or the step dimension
     ins_cost : float, optional
@@ -207,7 +207,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
         loss(logits, ref, hyp[, log_probs])
 
     `hyp` is a long tensor of shape ``(num_batches, num_paths, max_hyp_steps)``
-    if `batch_first` is ``False`` otherwise ``(max_hyp_steps, num_batches,
+    if `batch_first` is :obj:`False` otherwise ``(max_hyp_steps, num_batches,
     num_paths)`` that provides the hypothesis transcriptions. Likewise, `ref`
     of shape ``(num_batches, num_paths, max_ref_steps)`` or ``(max_ref_steps,
     num_batches, num_paths)`` providing reference transcriptions.
@@ -224,10 +224,10 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
     where :math:`\mu_i` is the average error rate along paths in the batch
     element :math:`i`. :math:`mu_i` can be removed by setting `sub_avg` to
-    ``False``.
+    :obj:`False`.
 
     `logits` is a 4-dimensional tensor of shape ``(num_batches, num_paths,
-    max_hyp_steps, num_classes)`` if `batch_first` is ``True``,
+    max_hyp_steps, num_classes)`` if `batch_first` is :obj:`True`,
     ``(max_hyp_steps, num_batches, num_paths, num_classes)`` otherwise.
     A softmax over the step dimension defines the per-step distribution over
     class labels. If `logits` is provided, an additional cross-entropy loss
@@ -261,7 +261,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
     batch_first : bool, optional
         Whether batch/path dimensions come first, or the step dimension
     norm : bool, optional
-        If ``False``, will use edit distances instead of error rates. Used
+        If :obj:`False`, will use edit distances instead of error rates. Used
         in error rate term
     ins_cost : float, optional
         The cost of an adding a superfluous token to a transcript in `hyp`.
@@ -564,7 +564,7 @@ class TrainingStateController(object):
     state_dir : str or None
     cache_hist : dict
         A dictionary of cached results per epoch. Is not guaranteed to be
-        up-to-date with `state_csv_path` unless ``update_cache()`` is called
+        up-to-date with `state_csv_path` unless :func:`update_cache` is called
     '''
 
     def __init__(self, params, state_csv_path=None, state_dir=None):
@@ -629,12 +629,12 @@ class TrainingStateController(object):
         Parameters
         ----------
         train_met : bool, optional
-            If ``True`` look for the best training metric value instead
+            If :obj:`True` look for the best training metric value instead
 
         Returns
         -------
         epoch : int
-            The corresponding 'best' epoch, or 0 if no epochs have run
+            The corresponding 'best' epoch, or :obj:`0` if no epochs have run
         '''
         ent = 'train_met' if train_met else 'val_met'
         self.update_cache()
@@ -695,8 +695,8 @@ class TrainingStateController(object):
         '''Delete state dicts for model and epoch off of disk, if they exist
 
         This method does nothing if the epoch records or the files do not
-        exist. It is called during ``update_for_epoch`` if the parameter
-        ``keep_last_and_best_only`` is ``True``
+        exist. It is called during :func:`update_for_epoch` if the parameter
+        ``keep_last_and_best_only`` is :obj:`True`
 
         Parameters
         ----------
@@ -728,7 +728,7 @@ class TrainingStateController(object):
         "rlr_resume_cd", "rlr_patience_cd", "lr", "train_met", and "val_met".
 
         If there's no entry for `epoch`, and no additional arguments were
-        passed to this method, it raises a ``KeyError``. If an additional
+        passed to this method, it raises a :class:`KeyError`. If an additional
         argument was passed to this method, return it.
         '''
         if len(default) > 1:
@@ -744,10 +744,10 @@ class TrainingStateController(object):
     def save_model_and_optimizer_with_info(self, model, optimizer, info):
         '''Save model and optimizer state dictionaries to file given epoch info
 
-        This is called automatically during ``update_for_epoch``. Does not save
-        if there is no directory to save to (i.e. ``self.state_dir is None``).
-        Format strings from ``self.params`` are formatted with the values from
-        `info` to construct the base names of each file
+        This is called automatically during :func:`update_for_epoch`. Does not
+        save if there is no directory to save to (i.e. ``self.state_dir is
+        None``). Format strings from ``self.params`` are formatted with the
+        values from `info` to construct the base names of each file
 
         Parameters
         ----------
@@ -782,10 +782,10 @@ class TrainingStateController(object):
     def save_info_to_hist(self, info):
         '''Append history entries to the history csv
 
-        This is called automatically during ``update_for_epoch``. Does not save
-        if there is no file to save to (i.e. ``self.state_csv_path is None``).
-        Values are appended to the end of the csv file - no checking is
-        performed for mantaining a valid history.
+        This is called automatically during :func:`update_for_epoch`. Does not
+        save if there is no file to save to (i.e. ``self.state_csv_path is
+        None``). Values are appended to the end of the csv file - no checking
+        is performed for mantaining a valid history.
 
         Parameters
         ----------
@@ -872,8 +872,8 @@ class TrainingStateController(object):
         Returns
         -------
         continue_training : bool
-            Whether to continue training. This can be set to ``False`` either
-            by hitting the max number of epochs or by early stopping
+            Whether to continue training. This can be set to :obj:`False`
+            either by hitting the max number of epochs or by early stopping
         '''
         if epoch is None:
             epoch = self.get_last_epoch() + 1

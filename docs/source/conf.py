@@ -65,6 +65,7 @@ extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.napoleon',
     'sphinx.ext.autosectionlabel',
+    'sphinx.ext.intersphinx',
 ]
 
 naploeon_numpy_docstring = True
@@ -76,6 +77,12 @@ templates_path = ['_templates']
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
 exclude_patterns = []
+
+intersphinx_mapping = {
+    'torch': ('https://pytorch.org/docs/stable/', None),
+    'python': ('https://docs.python.org/', None),
+    'numpy': ('https://docs.scipy.org/doc/numpy/', None),
+}
 
 
 # -- Options for HTML output -------------------------------------------------
@@ -94,8 +101,6 @@ html_static_path = ['_static']
 highlight_language = 'none'
 
 master_doc = 'index'
-
-default_role = 'py:obj'
 
 # this is a hack until param issue #197 is resolved
 # param.parameterized.docstring_signature = False
