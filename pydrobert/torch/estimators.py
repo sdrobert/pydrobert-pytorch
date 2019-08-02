@@ -68,25 +68,6 @@ most.
 `b` can be sampled by first calling ``z = to_z(logits, dist)``, then
 ``b = to_b(z, dist)``. Other arguments can be acquired using functions with
 similar patterns.
-
-References
-----------
-
-.. [williams1992] R. J. Williams, "Simple statistical gradient-following
-   algorithms for connectionist reinforcement learning," Machine Learning,
-   vol. 8, no. 3, pp. 229-256, May 1992.
-.. [maddison2016] C. J. Maddison, A. Mnih, and Y. W. Teh, "The Concrete
-   Distribution: A Continuous Relaxation of Discrete Random Variables," CoRR,
-   vol. abs/1611.00712, 2016.
-.. [grathwohl2017] W. Grathwohl, D. Choi, Y. Wu, G. Roeder, and D. K. Duvenaud,
-   "Backpropagation through the Void: Optimizing control variates for
-   black-box gradient estimation," CoRR, vol. abs/1711.00123, 2017.
-.. [tucker2017] G. Tucker, A. Mnih, C. J. Maddison, J. Lawson, and J.
-   Sohl-Dickstein, "REBAR: Low-variance, unbiased gradient estimates for
-   discrete latent variable models," in Advances in Neural Information
-   Processing Systems 30, I. Guyon, U. V. Luxburg, S. Bengio, H. Wallach,
-   R. Fergus, S. Vishwanathan, and R. Garnett, Eds. Curran Associates,
-   Inc., 2017, pp. 2627-2636.
 '''
 
 from __future__ import absolute_import

@@ -12,18 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-'''Functions and classes involved in training
-
-References
-----------
-
-.. [prabhavalkar2018] R. Prabhavalkar et al., "Minimum Word Error Rate Training
-   for Attention-Based Sequence-to-Sequence Models," presented at the IEEE
-   International Conference on Acoustics, Speech and Signal Processing
-   (ICASSP), 2018, pp. 4839-4843.
-.. [sabour2018] S. Sabour, W. Chan, and M. Norouzi, "Optimal Completion
-   Distillation for Sequence Learning," CoRR, vol. abs/1810.01398, 2018.
-'''
+'''Functions and classes involved in training'''
 
 from __future__ import absolute_import
 from __future__ import division

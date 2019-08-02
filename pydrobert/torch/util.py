@@ -12,16 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-'''Utility functions
-
-References
-----------
-
-.. [tjandra2018] A. Tjandra, S. Sakti, and S. Nakamura, "Sequence-to-Sequence
-   Asr Optimization Via Reinforcement Learning," presented at the 2018 IEEE
-   International Conference on Acoustics, Speech and Signal Processing
-   (ICASSP), 2018, pp. 5829-5833.
-'''
+'''Utility functions'''
 
 from __future__ import absolute_import
 from __future__ import division

@@ -18,21 +18,6 @@ Notes
 -----
 Though loss functions could be considered neural layers, because they are
 specific to training, they are included in ``pydrobert.torch.training`` instead
-
-References
-----------
-.. [bahdanau2015] D. Bahdanau, K. Cho, and Y. Bengio, "Neural Machine
-   Translation by Jointly Learning to Align and Translate.," in 3rd
-   International Conference on Learning Representations, ICLR 2015, San Diego,
-   CA, USA, May 7-9, 2015, Conference Track Proceedings, 2015.
-.. [luong2015] T. Luong, H. Pham, and C. D. Manning, "Effective Approaches to
-   Attention-based Neural Machine Translation," in Proceedings of the 2015
-   Conference on Empirical Methods in Natural Language Processing, Lisbon,
-   Portugal, 2015, pp. 1412-1421.
-.. [vaswani2017] A. Vaswani et al., "Attention is All you Need," in Advances in
-   Neural Information Processing Systems 30, I. Guyon, U. V. Luxburg, S.
-   Bengio, H. Wallach, R. Fergus, S. Vishwanathan, and R. Garnett, Eds. Curran
-   Associates, Inc., 2017, pp. 5998-6008.
 '''
 
 from __future__ import absolute_import
@@ -67,9 +52,9 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
     Global soft attention mechansims [bahdanau2015]_ are a way of getting rid
     of one variable-length sequence dimension ``T`` in an input `key` using a
     weighted sum of a tensor `value` that is informed by some other tensor,
-    `query`. The weights are dictated by the function ``score(query, key)`.
-    Usually, this is in the context of encoder-decoder architectures, which
-    is explained here.
+    `query`. The weights are dictated by the function ``score(query, key)``.
+    Usually, this is in the context of encoder-decoder architectures, which is
+    explained here.
 
     For now, assume `query` is a tensor of shape ``(num_batch, query_size)``
     representing a single hidden state of a decoder RNN. Assume `key` is a
@@ -90,7 +75,7 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
 
     .. math::
 
-        a = softmax(e * mask - (1 - mask) \inf, dim)
+        a = softmax(e * mask - (1 - mask) \infty, dim)
 
     `mask` (if specified) is of shape ``(T, num_batch)`` and will set ``a`` to
     zero wherever the mask is zero. `mask` can be used to indicate padded
@@ -123,48 +108,6 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
     key_size : int
     dim : int
 
-    Extended Summary
-    ----------------
-
-    For more complicated attention mechanisms, such as Transformer Networks
-    [vaswani2017]_, `query`, `key`, `value`, and `mask` can take on more
-    complicated shapes. For Transformer networks, `query` could be of shape
-    ``(S, num_batch, query_size)``. `key` and `value` are equal, as before, but
-    we've added an extra first dimension to both s.t. their shape is ``(T, 1,
-    num_batch, key_size)``. Finally, `mask` is of shape ``(T, S, num_batch)``.
-    The result `out` is a tensor of shape ``(S, num_batch, key_size)``.
-
-    `query` is an (n - 1)-dimensional tensor for ``n > 1``. `key` is an
-    n-dimensional tensor, and `value` is some n-dimensional tensor. Letting
-    :math:`t` index the `dim`-th dimension of `key`, :math:`q` index the last
-    dimension of `query`, and :math:`k` index the last index of `key`. Let
-    :math:`query_{t=0}` indicate the "unsqueezed" version of `query` where
-    :math:`t` is inserted as the `dim`-th dimension. Then :math:`query_{t=0,q}`
-    must `broadcast
-    <https://pytorch.org/docs/stable/notes/broadcasting.html#broadcasting-semantics>`__
-    with :math:`key_k`. If specified, `mask` should broadcast with :math:`e`,
-    that is, broadcast with a tensor of the same shape as :math:`key_k` after
-    it has been broadcast to :math:`query_{t=0,q}`. Finally, `value` must
-    broadcast with :math:`a_{k=0}`, that is, :math:`a` with an unsqueezed final
-    dimension.
-
-    To make this concrete, consider the shapes of the Transformer arguments.
-    :math:`query_{t=0}` broadcasts with :math:`key_k` as
-
-        query_t=0.shape 1   S   num_batch
-        key_k.shape     T   1   num_batch
-        ---------------------------------
-        e.shape         T   S   num_batch
-
-    `mask` clearly broadcasts with :math:`e` since they are the same size.
-    :math:`e` is the same shape as :math:`a`. Finally, `value` broadcasts with
-    :math:`a_k=0` as
-
-        a_k=0.shape     T   S   num_batch   1
-        value.shape     T   1   num_batch   key_size
-        --------------------------------------------
-        out.shape       T   S   num_batch   key_size
-
     Examples
     --------
 
@@ -195,124 +138,12 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
     >>>     y_next = logit.argmax(-1).masked_fill(y[-1].eq(eos), eos)
     >>>     y = torch.cat([y, y_next.unsqueeze(0)], 0)
 
-    A single-headed transformer network with one layer each in the encoder and
-    decoder. We forego much of the complexity of the original model, showcasing
-    the "attention is all you need" bit
-
-    >>> class Encoder(torch.nn.Module):
-    >>>     def __init__(self, model_size, num_classes, padding_idx=-1):
-    >>>         super(Encoder, self).__init__()
-    >>>         self.model_size = model_size
-    >>>         self.num_classes = num_classes
-    >>>         self.embedder = torch.nn.Embedding(
-    ...             num_classes, model_size, padding_idx=padding_idx)
-    >>>         self.attention = DotProductSoftAttention(
-    ...             model_size, scale_factor=model_size ** -.5)
-    >>>         self.norm = torch.nn.LayerNorm(model_size)
-    >>>
-    >>>     def forward(self, inp):
-    >>>         embedding = self.embedder(inp)
-    >>>         query = embedding  # (T, num_batch, model_size)
-    >>>         kv = embedding.unsqueeze(1)  # (T, 1, num_batch, model_size)
-    >>>         mask = inp.ne(self.embedder.padding_idx)
-    >>>         mask = mask.unsqueeze(1)  # (T, 1, num_batch)
-    >>>         out = self.attention(query, kv, kv, mask)
-    >>>         out = self.norm(out + embedding) # (T, num_batch, model_s)
-    >>>         return out, mask
-
-    >>> class Decoder(torch.nn.Module):
-    >>>     def __init__(self, model_size, num_classes, padding_idx=-2):
-    >>>         super(Decoder, self).__init__()
-    >>>         self.model_size = model_size
-    >>>         self.num_classes = num_classes
-    >>>         self.embedder = torch.nn.Embedding(
-    ...             num_classes, model_size, padding_idx=padding_idx)
-    >>>         self.attention = DotProductSoftAttention(
-    ...             model_size, scale_factor=model_size ** -.5)
-    >>>         self.norm1 = torch.nn.LayerNorm(model_size)
-    >>>         self.norm2 = torch.nn.LayerNorm(model_size)
-    >>>         self.ff = torch.nn.Linear(model_size, num_classes)
-    >>>
-    >>>     def forward(self, enc_out, dec_in, enc_mask=None):
-    >>>         embedding = self.embedder(dec_in)
-    >>>         query = embedding  # (S, num_batch, model_size)
-    >>>         kv = embedding.unsqueeze(1)  # (S, 1, num_batch, model_size)
-    >>>         pad_mask = dec_in.ne(self.embedder.padding_idx)
-    >>>         pad_mask = pad_mask.unsqueeze(1)  # (S, 1, num_batch)
-    >>>         auto_mask = torch.ones(
-    ...             query.shape[0], query.shape[0], dtype=torch.uint8)
-    >>>         # why upper and not lower? The mask is an inclusion mask.
-    >>>         # The dimension we're summing out is dim=0, so the dim 1
-    >>>         # will remain. So
-    >>>         # auto_mask[:, 0] = [1, 0, 0, ...]  (at t=0)
-    >>>         # auto_mask[:, 1] = [1, 1, 0, ...]  (at t=1)
-    >>>         auto_mask = torch.triu(auto_mask)
-    >>>         auto_mask = auto_mask.unsqueeze(-1)  # (S, S, 1)
-    >>>         dec_mask = pad_mask & auto_mask  # (S, S, num_batch)
-    >>>         dec_out = self.attention(query, kv, kv, dec_mask)
-    >>>         dec_out = self.norm1(dec_out + embedding)
-    >>>         query = dec_out  # (S, num_batch, model_size)
-    >>>         kv = enc_out.unsqueeze(1)  # (T, 1, num_batch, model_size)
-    >>>         out = self.attention(query, kv, kv, enc_mask)
-    >>>         out = self.ff(self.norm2(out + query))
-    >>>         return out, pad_mask
-
-    Prep
-
-    >>> T, num_batch, model_size = 100, 5, 1000
-    >>> num_classes, start, eos = 20, 0, 1
-    >>> padding = num_classes - 1
-    >>> inp_lens = torch.randint(1, T + 1, (num_batch,))
-    >>> inp = torch.nn.utils.rnn.pad_sequence(
-    ...     [
-    ...         torch.randint(2, num_classes - 1, (x + 1,))
-    ...         for x in inp_lens
-    ...     ],
-    ...     padding_value=padding,
-    ... )
-    >>> inp[inp_lens, range(num_batch)] = eos
-    >>> target_lens = torch.randint(1, T + 1, (num_batch,))
-    >>> y = torch.nn.utils.rnn.pad_sequence(
-    ...     [
-    ...         torch.randint(2, num_classes - 1, (x + 2,))
-    ...         for x in target_lens
-    ...     ],
-    ...     padding_value=padding,
-    ... )
-    >>> y[0] = start
-    >>> y[target_lens + 1, range(num_batch)] = eos
-    >>> dec_inp, targets = y[:-1], y[1:]
-    >>> encoder = Encoder(model_size, num_classes, padding_idx=padding)
-    >>> decoder = Decoder(model_size, num_classes, padding_idx=padding)
-    >>> loss = torch.nn.CrossEntropyLoss(ignore_index=padding)
-    >>> optim = torch.optim.Adam(
-    ...     list(encoder.parameters()) + list(decoder.parameters()))
-
-    Training a batch (you'lll have to do this a whole lot of times to get
-    it to converge)
-
-    >>> optim.zero_grad()
-    >>> enc_out, enc_mask = encoder(inp)
-    >>> logits, _ = decoder(enc_out, dec_inp, enc_mask)
-    >>> logits = logits[..., :-1]  # get rid of padding logit
-    >>> l = loss(logits.view(-1, num_classes - 1), targets.flatten())
-    >>> l.backward()
-    >>> optim.step()
-
-    Decoding a batch (test time) using greedy search
-
-    >>> enc_out, enc_mask = encoder(inp)
-    >>> dec_hyp = torch.full((1, num_batch), start, dtype=torch.long)
-    >>> enc_out, enc_mask = encoder(inp)
-    >>> done_mask = torch.zeros(num_batch, dtype=torch.uint8)
-    >>> while not done_mask.all():
-    >>>     logits, _ = decoder(enc_out, dec_hyp, enc_mask)
-    >>>     logits = logits[..., :-1]  # get rid of padding logit
-    >>>     pred = logits[-1].argmax(1)
-    >>>     pred.masked_fill_(done_mask, eos)
-    >>>     done_mask = pred.eq(eos)
-    >>>     dec_hyp = torch.cat([dec_hyp, pred.unsqueeze(0)], 0)
-    >>> dec_hyp = dec_hyp[1:]
+    See Also
+    --------
+    :ref:`Advanced Attention and Transformer Networks`
+        ``GlobalSoftAttention`` is compatible with a variety of inputs. This
+        tutorial gives a toy transformer network to illustrate broadcasting
+        semantics
     '''
 
     def __init__(self, query_size, key_size, dim=0):

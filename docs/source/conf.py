@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.abspath('../..'))
 
 autodoc_mock_imports = [
     'numpy',
-    'torch',
 ]
 
 
@@ -42,6 +41,7 @@ language = 'en'
 extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.napoleon',
+    'sphinx.ext.autosectionlabel',
 ]
 
 naploeon_numpy_docstring = True
