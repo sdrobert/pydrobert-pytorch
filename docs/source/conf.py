@@ -13,14 +13,37 @@
 import os
 import sys
 import param
+import future.utils
+
+
+# this saves us when dealing with with_metaclass on mocked objects
+
+def with_metaclass(meta, *bases):
+    class metaclass(meta):
+        __call__ = type.__call__
+        __init__ = type.__init__
+        def __new__(cls, name, this_bases, d):
+            if this_bases is None:
+                return type.__new__(cls, name, (), d)
+            return meta(name, bases, d)
+    try:
+        v = metaclass('temporary_class', None, {})
+        class Dummy(v):
+            pass
+    except TypeError:
+        # probably a mock object. In this case, return the first base
+        v = bases[0] if len(bases) else object
+    return v
+
+future.utils.with_metaclass = with_metaclass
 
 sys.path.insert(0, os.path.abspath('../..'))
 
 
 autodoc_mock_imports = [
     'numpy',
+    'torch',
 ]
-
 
 # -- Project information -----------------------------------------------------
 
@@ -71,6 +94,8 @@ html_static_path = ['_static']
 highlight_language = 'none'
 
 master_doc = 'index'
+
+default_role = 'py:obj'
 
 # this is a hack until param issue #197 is resolved
 # param.parameterized.docstring_signature = False
