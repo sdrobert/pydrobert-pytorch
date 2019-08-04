@@ -321,7 +321,6 @@ def test_random_walk_advance_relaxation(device):
     assert g.eq(0.).all()
 
 
-
 @pytest.mark.parametrize('prevent_eos', [True, False])
 @pytest.mark.parametrize('lens', [True, False])
 def test_random_walk_advance_config(device, prevent_eos, lens):
