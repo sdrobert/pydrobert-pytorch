@@ -293,6 +293,34 @@ def test_random_walk_advance(device):
     assert torch.allclose(exp, act, atol=0.1)
 
 
+def test_random_walk_advance_relaxation(device):
+    torch.manual_seed(652916)
+    N, S, C = 23, 32, 12
+    logits_t = torch.randn(N, C, device=device, requires_grad=True)
+    y = util.random_walk_advance(logits_t, S)
+    y, z = util.random_walk_advance(logits_t, S, include_relaxation=True)
+    assert torch.all(y[-1] == z.argmax(dim=-1))
+    g, = torch.autograd.grad([z], [logits_t], grad_outputs=torch.ones_like(z))
+    assert g.ne(0.).any()
+    y[..., :S // 2] = -1
+    logits_t = logits_t.unsqueeze(1).expand_as(z)
+    y, z = util.random_walk_advance(
+        logits_t, S, y, eos=-1, include_relaxation=True)
+    assert y[..., :S // 2].eq(-1).all()
+    assert y[..., S // 2:].ne(-1).all()
+    assert torch.isinf(-z[:, :S // 2]).all()
+    assert not torch.isinf(-z[:, S // 2:]).any()
+    g, = torch.autograd.grad([z], [logits_t], grad_outputs=torch.ones_like(z))
+    assert g.ne(0.).any()
+    assert g[:, :S // 2].eq(0.).all()
+    y[-1] = -1
+    y, z = util.random_walk_advance(
+        logits_t, S, y, eos=-1, include_relaxation=True)
+    # it should be defined, but zero
+    g, = torch.autograd.grad([z], [logits_t], grad_outputs=torch.ones_like(z))
+    assert g.eq(0.).all()
+
+
 @pytest.mark.parametrize('prevent_eos', [True, False])
 @pytest.mark.parametrize('lens', [True, False])
 def test_random_walk_advance_config(device, prevent_eos, lens):

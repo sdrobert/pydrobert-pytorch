@@ -588,7 +588,7 @@ def prefix_error_rates(
 
 def random_walk_advance(
         logits_t, num_samp, y_prev=None, eos=pydrobert.torch.INDEX_PAD_VALUE,
-        lens=None, prevent_eos=False):
+        lens=None, prevent_eos=False, include_relaxation=False):
     r'''Advance a random walk of sequences
 
     Suppose a model outputs a un-normalized log-probability distribution over
@@ -648,6 +648,10 @@ def random_walk_advance(
         drawn unless a sample has finished (either with a prior `eos` or
         through `lens`). Note that this will only have an effect when ``0 <=
         eos <= num_classes``
+    include_relaxation : bool, optional
+        If :obj:`True`, a tuple will be returned whose second element is `z`,
+        see below
+
 
     Returns
     -------
@@ -655,6 +659,16 @@ def random_walk_advance(
         A long tensor of shape ``(t, num_batches, num_samp)`` of the sampled
         sequences so far. Note that, since :math:`y_t` are drawn `i.i.d.`,
         there is no guarantee of the uniqueness of each `num_samp` samples
+    z : torch.FloatTensor
+
+        Only included if `include_relaxation` is :obj:`True`. `z` is a sample
+        of a continuous relaxation of the categorical distribution of `logits`
+        of shape ``(num_batches, num_samp, num_classes). Assuming ``y_prev[-1,
+        bt, smp] != eos``, ``y[-1, bt, smp] == z[bt, smp].argmax(dim-1)``. If
+        ``y_prev[-1, bt, smp] == eos``, ``z[bt, smp, :] = -infinity``. The
+        primary purpose of `z` is to be used as an argument (alongside `y`) in
+        more complicated gradient estimators from
+        :mod:`pydrobert.torch.estimators`
 
     Examples
     --------
@@ -705,12 +719,16 @@ def random_walk_advance(
     >>>     y = random_walk_advance(logits_t, W, y, eos)
     >>>     if old_samp == 1:
     >>>         h_t = h_t.expand(-1, W, H).contiguous()
+
+    See Also
+    --------
+    :ref:`Gradient Estimators`
+        Includes a use case for `include_relaxation`
     '''
     if logits_t.dim() == 2:
         logits_t = logits_t.unsqueeze(1)
     elif logits_t.dim() != 3:
         raise ValueError('logits_t must have dimension of either 2 or 3')
-    logits_t = logits_t.detach()  # can't keep gradients through samples anyway
     num_batches, old_samp, num_classes = logits_t.shape
     if prevent_eos and 0 <= eos < num_classes:
         logits_t[..., eos] = torch.tensor(
@@ -747,13 +765,20 @@ def random_walk_advance(
         if torch.any(len_mask):
             len_mask = len_mask.unsqueeze(1).expand(-1, num_samp)
             eos_mask = len_mask if eos_mask is None else (eos_mask | len_mask)
-    y = torch.distributions.Categorical(logits=logits_t).sample()
+    u = torch.distributions.utils.clamp_probs(torch.rand_like(logits_t))
+    log_theta = torch.nn.functional.log_softmax(logits_t, dim=-1)
+    z = log_theta - torch.log(-torch.log(u))
+    y = z.argmax(dim=-1)
     if eos_mask is not None:
         y = y.masked_fill(eos_mask, eos)
+        z = z.masked_fill(eos_mask.unsqueeze(-1), -float('inf'))
     y = y.unsqueeze(0)
     if y_prev is not None:
         y = torch.cat([y_prev, y], 0)
-    return y
+    if include_relaxation:
+        return y, z
+    else:
+        return y
 
 
 def _levenshtein(
