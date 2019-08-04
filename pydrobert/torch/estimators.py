@@ -51,7 +51,7 @@ ONEHOT_SYNONYMS = {"onehot", "OneHotCategorical"}
 
 
 def to_z(logits, dist, warn=True):
-    '''Samples random noise, then injects it into logits to produce z
+    '''Samples a continuous relaxation of `dist` parameterized by `logits`
 
     Parameters
     ----------
@@ -86,7 +86,7 @@ def to_z(logits, dist, warn=True):
 
 
 def to_b(z, dist):
-    '''Converts z to sample using a deterministic mapping
+    '''Converts z to a discrete sample using a deterministic mapping
 
     Parameters
     ----------
