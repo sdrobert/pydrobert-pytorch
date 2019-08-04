@@ -67,7 +67,7 @@ __all__ = [
 class SpectDataSet(torch.utils.data.Dataset):
     '''Accesses spectrographic filter data stored in a data directory
 
-    ``SpectDataSet`` assumes that `data_dir` is structured as
+    :class:`SpectDataSet` assumes that `data_dir` is structured as
 
     ::
 
@@ -90,16 +90,16 @@ class SpectDataSet(torch.utils.data.Dataset):
             ]
 
     The ``feat`` dir stores filter bank data in the form of
-    ``torch.FloatTensor``s of size ``(T, F)``, where ``T`` is the time
+    :class:`torch.FloatTensor` of size ``(T, F)``, where ``T`` is the time
     dimension and ``F`` is the filter/log-frequency dimension. ``feat`` is
     the only required directory.
 
-    ``ali`` stores ``torch.LongTensor``s of size ``(T,)``, indicating the
+    ``ali`` stores :class:`torch.LongTensor` of size ``(T,)``, indicating the
     pdf-id of the most likely target. ``ali`` is suitable for discriminative
     training of DNNs in hybrid DNN-HMM recognition, or any frame-wise loss.
     ``ali/`` is optional.
 
-    ``ref`` stores ``torch.LongTensor``s of size ``(R,3)``, indicating
+    ``ref`` stores :class:`torch.LongTensor` of size ``(R,3)``, indicating
     reference transcriptions. Letting ``r`` be such a tensor, ``r[..., 0]``
     is the sequence of token ids for the utterance and ``r[..., 1:]`` are
     the 0-indexed frames they start (inclusive) and end (exclusive) at,
@@ -116,7 +116,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         The suffix that indicates that the file counts toward the data set
     warn_on_missing : bool, optional
         If ``ali/`` or ``ref/`` exist, there's a mismatch between the
-        utterances in the directories, and `warn_on_missing` is ``True``, a
+        utterances in the directories, and `warn_on_missing` is :obj:`True`, a
         warning will be issued (via ``warnings``) regarding each such mismatch
     subset_ids : set, optional
         If set, only utterances with ids listed in this set will count towards
@@ -127,18 +127,16 @@ class SpectDataSet(torch.utils.data.Dataset):
         positional information will be appended to the end of each reference
         tanscript. It will also have ramifications for the method
         ``write_hyp()``
-    feat_subdir, ali_subdir, ref_subdir : str, optional
+    feat_subdir : str, optional
+    ali_subdir : str, optional
+    ref_subdir : str, optional
         Change the names of the subdirectories under which feats, alignments,
-        and references are stored. If `ali_subdir` or `ref_subdir` is ``None``,
-        they will not be searched for
+        and references are stored. If `ali_subdir` or `ref_subdir` is
+        :obj:`None`, they will not be searched for
 
     Attributes
     ----------
-    data_dir : str
-    feat_subdir : str
-    ali_subdir : str
-    ref_subdir : str
-    file_suffix : str
+    data_dir, feat_subdir, ali_subdir, ref_subdir, file_suffix : str
     has_ali : bool
         Whether alignment data exist
     has_ref : bool
@@ -146,18 +144,16 @@ class SpectDataSet(torch.utils.data.Dataset):
     utt_ids : tuple
         A tuple of all utterance ids extracted from the data directory. They
         are stored in the same order as features and alignments via
-        ``__getitem__``. If the ``ali/`` or ``ref/`` directories exist,
+        :func:`__getitem__`. If the ``ali/`` or ``ref/`` directories exist,
         `utt_ids` contains only the utterances in the intersection of each
         directory (and `subset_ids`, if it was specified)
     eos : bool or None
 
     Yields
     ------
-    feat, ali, ref
-    For the i-th yielded item, `feat` corresponds to the features at
-    ``utt_ids[i]``, `ali` the alignments, and `ref` the reference sequence.
-    If ``ali/`` or ``ref/`` did not exist on initialization, `ali` or `ref`
-    will be ``None``
+    feat : torch.FloatTensor
+    ali : torch.LongTensor or None
+    ref : torch.LongTensor or None
 
     Examples
     --------
@@ -343,11 +339,11 @@ class SpectDataSet(torch.utils.data.Dataset):
             `utt` is assumed to index an utterance id specified in
             ``self.utt_ids``
         pdf : torch.Tensor
-            The tensor to write. It will be converted to a ``FloatTensor``
-            using the command ``pdf.cpu().float()``
+            The tensor to write. It will be converted to a CPU
+            :class:`torch.FloatTensor` using the command ``pdf.cpu().float()``
         pdfs_dir : str or None, optional
-            The directory pdfs are written to. If ``None``, it will be set to
-            ``self.data_dir + '/pdfs'``
+            The directory pdfs are written to. If :obj:`None`, it will be set
+            to ``self.data_dir + '/pdfs'``
         '''
         if isinstance(utt, int):
             utt = self.utt_ids[utt]
@@ -366,7 +362,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         This method writes a sequence of hypothesis tokens to the directory
         `hyp_dir` with the name ``<file_prefix><utt><file_suffix>``
 
-        If the ``eos`` attribute of this instance is not ``None``, any
+        If the ``eos`` attribute of this instance is not :obj:`None`, any
         tokens in `hyp` matching it will be considered the end of the sequence,
         so every symbol including and after the first instance will be removed
         from the utterance before saving
@@ -378,11 +374,11 @@ class SpectDataSet(torch.utils.data.Dataset):
             `utt` is assumed to index an utterance id specified in
             ``self.utt_ids``
         hyp : torch.Tensor
-            The tensor to write. It will be converted to a ``LongTensor``
-            using the command ``pdf.cpu().long()``
+            The tensor to write. It will be converted to a
+            :class:`torch.LongTensor` using the command ``pdf.cpu().long()``
         hyp_dir : str or None, optional
-            The directory pdfs are written to. If ``None``, it will be set to
-            ``self.data_dir + '/hyp'``
+            The directory pdfs are written to. If :obj:`None`, it will be set
+            to ``self.data_dir + '/hyp'``
         '''
         if isinstance(utt, int):
             utt = self.utt_ids[utt]
@@ -407,19 +403,19 @@ def validate_spect_data_set(data_set):
 
     The data directory is valid if the following conditions are observed
 
-    1. All features are ``FloatTensor`` instances
+    1. All features are :class:`torch.FloatTensor` instances
     2. All features have two axes
     3. All features have the same size second axis
     4. If alignments are present
 
-       1. All alignments are ``LongTensor`` instances
+       1. All alignments are :class:`torch.LongTensor` instances
        2. All alignments have one axis
        3. Features and alignments have the same size first axes for a given
           utterance id
 
     5. If reference sequences are present
 
-       1. All references are ``LongTensor`` instances
+       1. All references are :class:`torch.LongTensor` instances
        2. All alignments have two axes, the second of size 3
        3. For the start and end points of a reference token, ``r[i, 1:]``,
           either both of them are negative (indicating no alignment), or
@@ -427,7 +423,7 @@ def validate_spect_data_set(data_set):
           frames in the utterance. We do not enforce tokens be
           non-overlapping
 
-    Raises a ``ValueError`` if a condition is violated
+    Raises a :class:`ValueError` if a condition is violated
     '''
     num_filts = None
     for idx in range(len(data_set.utt_ids)):
@@ -502,7 +498,7 @@ def validate_spect_data_set(data_set):
 def read_trn(trn, warn=True):
     '''Read a NIST sclite transcript file into a list of transcripts
 
-    `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_
+    `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__
     is a commonly used scoring tool for ASR.
 
     This function converts a transcript input file ("trn" format) into a
@@ -511,13 +507,13 @@ def read_trn(trn, warn=True):
 
     Parameters
     ----------
-    trn : file_ptr or str
+    trn : file or str
         The transcript input file. Will open if `trn` is a path
     warn : bool, optional
         The "trn" format uses curly braces and forward slashes to indicate
         transcript alterations. This is largely for scoring purposes, such as
         swapping between filled pauses, not for training. If `warn` is
-        ``True``, a warning will be issued via the ``warnings`` module every
+        :obj:`True`, a warning will be issued via the ``warnings`` module every
         time an alteration appears in the "trn" file. Alterations appear in
         `transcripts` as elements of ``([[alt_1_word_1, alt_1_word_2, ...],
         [alt_2_word_1, alt_2_word_2, ...], ...], -1, -1)`` so that
@@ -630,17 +626,17 @@ def read_trn(trn, warn=True):
 def write_trn(transcripts, trn):
     '''From a list of transcripts, write to a NIST "trn" file
 
-    This is largely the inverse operation of ``read_trn``. In general, elements
-    of a transcript (`transcripts` contains pairs of ``utt_id, transcript``)
-    could be tokens or tuples of ``x, start, end`` (providing the start
-    and end times of tokens, respectively). However, ``start`` and ``end`` are
-    ignored when writing "trn" files. ``x`` could be the token or a list of
-    alternates, as described in ``read_trn``
+    This is largely the inverse operation of :func:`read_trn`. In general,
+    elements of a transcript (`transcripts` contains pairs of ``utt_id,
+    transcript``) could be tokens or tuples of ``x, start, end`` (providing the
+    start and end times of tokens, respectively). However, ``start`` and
+    ``end`` are ignored when writing "trn" files. ``x`` could be the token or a
+    list of alternates, as described in :func:`read_trn`
 
     Parameters
     ----------
     transcripts : sequence
-    trn : file_ptr or str
+    trn : file or str
     '''
     if isinstance(trn, basestring):
         with open(trn, 'w') as trn:
@@ -682,7 +678,7 @@ def write_trn(transcripts, trn):
 def read_ctm(ctm, wc2utt=None):
     '''Read a NIST sclite "ctm" file into a list of transcriptions
 
-    `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_
+    `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__
     is a commonly used scoring tool for ASR.
 
     This function converts a time-marked conversation file ("ctm" format) into
@@ -693,7 +689,7 @@ def read_ctm(ctm, wc2utt=None):
 
     Parameters
     ----------
-    ctm : file_ptr or str
+    ctm : file or str
         The time-marked conversation file pointer. Will open if `ctm` is a
         path
     wc2utt : dict, optional
@@ -712,10 +708,10 @@ def read_ctm(ctm, wc2utt=None):
     "ctm", like "trn", has "support" for alternate transcriptions. It is, as of
     sclite version 2.10, very buggy. For example, it cannot handle multiple
     alternates in the same utterance. Plus, tools like `Kaldi
-    <http://kaldi-asr.org/>`_ use the Unix command that the sclite
+    <http://kaldi-asr.org/>`__ use the Unix command that the sclite
     documentation recommends to sort a ctm, ``sort +0 -1 +1 -2 +2nb -3``, which
     does not maintain proper ordering for alternate delimiters. Thus,
-    ``read_ctm`` will error if it comes across those delimiters
+    :func:`read_ctm` will error if it comes across those delimiters
     '''
     if isinstance(ctm, str):
         with open(ctm, 'r') as ctm:
@@ -755,7 +751,7 @@ def read_ctm(ctm, wc2utt=None):
 def write_ctm(transcripts, ctm, utt2wc='A'):
     '''From a list of transcripts, write to a NIST "ctm" file
 
-    This is the inverse operation of ``read_ctm``. For each element of
+    This is the inverse operation of :func:`read_ctm`. For each element of
     ``transcript`` within the ``utt_id, transcript`` pairs of elements in
     `transcripts`, ``token, start, end``, ``start`` and ``end`` must be
     non-negative
@@ -763,7 +759,7 @@ def write_ctm(transcripts, ctm, utt2wc='A'):
     Parameters
     ----------
     transcripts : sequence
-    ctm : file_ptr or str
+    ctm : file or str
     utt2wc : dict or str, optional
         "ctm" files identify utterances by waveform file name and channel. If
         specified as a dict, `utt2wc` consists of utterance IDs as keys, and
@@ -802,21 +798,21 @@ def write_ctm(transcripts, ctm, utt2wc='A'):
         ctm.write('{} {} {} {} {}\n'.format(*segment))
 
 
-def transcript_to_token(
-        transcript, token2id=None, frame_shift_ms=None):
-    '''Convert a transcript to a ``SpectDataSet`` token sequence
+def transcript_to_token(transcript, token2id=None, frame_shift_ms=None):
+    '''Convert a transcript to a SpectDataSet token sequence
 
-    This method converts `transcript` of length ``R`` to a ``LongTensor`` `tok`
-    of shape ``(R, 3)``, the latter suitable as a reference or hypothesis token
-    sequence for an utterance of ``SpectDataSet``. An element of `transcript`
-    can either be a ``token`` or a 3-tuple of ``(token, start, end)``. ``id =
-    token2id.get(token, token) if token2id is not None else token`` dictates
-    the conversion from ``token`` to identifier. If `frame_shift_ms` is
-    specified, ``start`` and ``end`` are taken as the start and end times, in
-    seconds, of the token, and will be converted to frames for `tok`. If
-    `frame_shift_ms` is unspecified, ``start`` and ``end`` are assumed to
-    already be frame times. If ``start`` and ``end`` were unspecified, values
-    of ``-1``, representing unknown, will be inserted into ``r[i, 1:]``
+    This method converts `transcript` of length ``R`` to a
+    :class:`torch.LongTensor` `tok` of shape ``(R, 3)``, the latter suitable as
+    a reference or hypothesis token sequence for an utterance of
+    :class:`SpectDataSet`. An element of `transcript` can either be a ``token``
+    or a 3-tuple of ``(token, start, end)``. ``id = token2id.get(token, token)
+    if token2id is not None else token`` dictates the conversion from ``token``
+    to identifier. If `frame_shift_ms` is specified, ``start`` and ``end`` are
+    taken as the start and end times, in seconds, of the token, and will be
+    converted to frames for `tok`. If `frame_shift_ms` is unspecified,
+    ``start`` and ``end`` are assumed to already be frame times. If ``start``
+    and ``end`` were unspecified, values of ``-1``, representing unknown, will
+    be inserted into ``r[i, 1:]``
 
     Parameters
     ----------
@@ -826,7 +822,7 @@ def transcript_to_token(
 
     Returns
     -------
-    tok : LongTensor
+    tok : torch.LongTensor
     '''
     tok = torch.empty((len(transcript), 3), dtype=torch.long)
     for i, token in enumerate(transcript):
@@ -848,9 +844,9 @@ def transcript_to_token(
 
 
 def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
-    '''Convert a ``SpectDataSet`` token sequence to a transcript
+    '''Convert a SpectDataSet token sequence to a transcript
 
-    The inverse operation of ``transcript_to_token``
+    The inverse operation of :func:`transcript_to_token`
 
     Parameters
     ----------
@@ -893,7 +889,7 @@ def extract_window(feat, frame_idx, left, right, reverse=False):
         The number of frames in the window to the right (after) the center
         frame. Any frames above ``T`` are edge-padded
     reverse : bool, optional
-        If ``True``, flip the window along the time/frame axis
+        If :obj:`True`, flip the window along the time/frame axis
 
     Returns
     -------
@@ -922,15 +918,15 @@ def extract_window(feat, frame_idx, left, right, reverse=False):
 class ContextWindowDataSet(SpectDataSet):
     '''SpectDataSet, extracting fixed-width windows over the utterance
 
-    Like a ``SpectDataSet``, ``ContextWindowDataSet`` indexes tuples of
-    features and alignments. Instead of returning features of shape ``(T, F)``,
-    instances return features of shape ``(T, 1 + left + right, F)``, where the
-    ``T`` axis indexes the so-called center frame and the ``1 + left + right``
-    axis contains frame vectors (size ``F``) including the center frame,
-    ``left`` frames in time before the center frame, and ``right`` frames
-    after.
+    Like a :class:`SpectDataSet`, :class:`ContextWindowDataSet` indexes tuples
+    of features and alignments. Instead of returning features of shape ``(T,
+    F)``, instances return features of shape ``(T, 1 + left + right, F)``,
+    where the ``T`` axis indexes the so-called center frame and the ``1 + left
+    + right`` axis contains frame vectors (size ``F``) including the center
+    frame, ``left`` frames in time before the center frame, and ``right``
+    frames after.
 
-    ``ContextWindowDataSet`` does not have support for reference token
+    :class:`ContextWindowDataSet` does not have support for reference token
     subdirectories as it is unclear how to always pair tokens with context
     windows. If tokens are one-to-one with frames, it is suggested that
     ``ali/`` be re-used for this purpose.
@@ -945,23 +941,20 @@ class ContextWindowDataSet(SpectDataSet):
     warn_on_missing : bool, optional
     feat_subdir, ali_subdir : str, optional
     reverse : bool, optional
-        If ``True``, context windows will be reversed along the time
+        If :obj:`True`, context windows will be reversed along the time
         dimension
 
     Attributes
     ----------
     data_dir : str
-    left : int
-    right : int
-    has_ali : bool
-    has_ref : bool
-        Always ``False``
+    left, right : int
+    has_ali, has_ref, reverse : bool
     utt_ids : tuple
-    reverse : bool
 
     Yields
     ------
-    window, ali
+    window : torch.FloatTensor
+    ali : torch.LongTensor
 
     Examples
     --------
@@ -1023,10 +1016,10 @@ class EpochRandomSampler(torch.utils.data.Sampler):
 
     Attributes
     ----------
+    base_seed : int
     epoch : int
         The current epoch. Responsible for seeding the upcoming samples
     data_source : torch.data.utils.Dataset
-    base_seed : int
 
     Examples
     --------
@@ -1116,13 +1109,14 @@ def spect_seq_to_batch(seq):
     `feats` and `alis` will have dimensions ``(N, T*, F)``, and ``(N, T*)``,
     resp., where ``N`` is the batch size, and ``T*`` is the maximum number of
     frames in `seq`. Similarly, `refs` will have dimensions ``(N, R*, 3)``.
-    `feat_sizes` and `ref_sizes` are ``LongTensor``s of shape ``(N,)``
-    containing the original ``T`` and ``R`` values. The batch will be sorted by
-    decreasing numbers of frames. `feats` is zero-padded while `alis` and
-    `refs` are padded with module constant ``INDEX_PAD_VALUE``
+    `feat_sizes` and `ref_sizes` are :class:`torch.LongTensor`s of shape
+    ``(N,)`` containing the original ``T`` and ``R`` values. The batch will be
+    sorted by decreasing numbers of frames. `feats` is zero-padded while `alis`
+    and `refs` are padded with module constant
+    :const:`pydrobert.torch.INDEX_PAD_VALUE`
 
-    If ``ali`` or ``ref`` is ``None`` in any element, `alis` or `refs` and
-    `ref_sizes` will also be ``None``
+    If ``ali`` or ``ref`` is :obj:`None` in any element, `alis` or `refs` and
+    `ref_sizes` will also be :obj:`None`
 
     Parameters
     ----------
@@ -1130,7 +1124,11 @@ def spect_seq_to_batch(seq):
 
     Returns
     -------
-    feats, alis, refs, feat_sizes, ref_sizes
+    feats : torch.FloatTensor
+    alis : torch.LongTensor or None
+    refs : torch.LongTensor or None
+    feat_sizes : torch.LongTensor
+    ref_sizes : torch.LongTensor or None
     '''
     seq = sorted(seq, key=lambda x: -x[0].shape[0])
     T_star, F = seq[0][0].shape
@@ -1181,36 +1179,46 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     file_prefix : str, optional
     file_suffix : str, optional
     warn_on_missing : bool, optional
-    feat_subdir, ali_subdir, ref_subdir : str, optional
+    feat_subdir : str, optional
+    ali_subdir : str, optional
+    ref_subdir : str, optional
     init_epoch : int, optional
         Where training should resume from
     kwargs : keyword arguments, optional
-        Additional ``DataLoader`` arguments
+        Additional :class:`torch.utils.data.DataLoader` arguments
 
     Attributes
     ----------
-    epoch
+    epoch : int
     data_dir : str
     params : SpectDataSetParams
 
     Yields
     ------
-    feats, alis, refs, feat_sizes, ref_sizes
-        `feats` is a ``FloatTensor`` of size ``(N, T*, F)``, where ``N`` is
-        ``params.batch_size``, ``T*`` is the maximum number of frames in an
-        utterance in the batch, and ``F`` is the number of filters per frame.
-        `ali` is a ``LongTensor`` of size ``(N, T*)`` if an ``ali/`` dir
-        exists, otherwise ``None``. ``feat_sizes`` is a ``LongTensor`` of shape
-        ``(N,)`` specifying the lengths of utterances in the batch. `refs` is a
-        ``LongTensor`` of size ``(N, R*, 3)``, where ``R*`` is the maximum
-        number of reference tokens in the batch. `ref_sizes is a ``LongTensor``
-        of shape ``(N,)`` specifying the number reference tokens per utterance
-        in the batch. If the ``refs/`` directory does not exist, `refs` and
-        `ref_sizes` are ``None``. The first axis of each of `feats`, `alis`,
-        `refs`, `feat_sizes`, and `ref_sizes` is ordered by utterances of
-        descending frame lengths. Shorter utterances in `feats` are zero-padded
-        to the right, `alis` is padded with the module constant
-        ``INDEX_PAD_VALUE``
+    feats : torch.FloatTensor
+        Of shape ``(N, T*, F)``, where ``N`` is ``params.batch_size``, ``T*``
+        is the maximum number of frames in an utterance in the batch, and ``F``
+        is the number of filters per frame
+    alis : torch.LongTensor or None
+        Of size ``(N, T*)`` if an ``ali/`` dir exists, otherwise :obj:`None`
+    refs : torch.LongTensor or None
+        Of size ``(N, R*, 3)``, where ``R*`` is the maximum number of reference
+        tokens in the batch. If the ``refs/`` directory does not exist, `refs`
+        and `ref_sizes` are :obj:`None`.
+    feat_sizes : torch.LongTensor
+        `feat_sizes` is a :class:`torch.LongTensor` of shape ``(N,)``
+        specifying the lengths of utterances in the batch
+    ref_sizes : torch.LongTensor or None
+        `ref_sizes` is of shape ``(N,)`` specifying the number reference tokens
+        per utterance in the batch. If the ``refs/`` directory does not exist,
+        `refs` and `ref_sizes` are :obj:`None`.
+
+    Notes
+    -----
+    The first axis of each of `feats`, `alis`, `refs`, `feat_sizes`, and
+    `ref_sizes` is ordered by utterances of descending frame lengths. Shorter
+    utterances in `feats` are zero-padded to the right, `alis` is padded with
+    the module constant :const:`pydrobert.torch.INDEX_PAD_VALUE`
 
     Examples
     --------
@@ -1297,7 +1305,6 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
 
     @property
     def epoch(self):
-        '''the current epoch'''
         return self.batch_sampler.sampler.epoch
 
     @epoch.setter
@@ -1317,7 +1324,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     warn_on_missing : bool, optional
     feat_subdir, ali_subdir, ref_subdir : str, optional
     kwargs : keyword arguments, optional
-        Additional ``DataLoader`` arguments
+        Additional :class:`torch.utils.data.DataLoader` arguments
 
     Attributes
     ----------
@@ -1326,23 +1333,31 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    feats, alis, refs, feat_sizes, ref_sizes, utt_ids
-        `feats` is a ``FloatTensor`` of size ``(N, T*, F)``, where ``N`` is
-        ``params.batch_size``, ``T*`` is the maximum number of frames in an
-        utterance in the batch, and ``F`` is the number of filters per frame.
-        `ali` is a ``LongTensor`` of size ``(N, T*)`` if an ``ali/`` dir
-        exists, otherwise ``None``. ``feat_sizes`` is a ``LongTensor`` of shape
-        ``(N,)`` specifying the lengths of utterances in the batch. `refs` is a
-        ``LongTensor`` of size ``(N, R*, 3)``, where ``R*`` is the maximum
-        number of reference tokens in the batch. `ref_sizes is a ``LongTensor``
-        of shape ``(N,)`` specifying the number reference tokens per utterance
-        in the batch. If the ``refs/`` directory does not exist, `refs` and
-        `ref_sizes` are ``None``. The first axis of each of `feats`, `alis`,
-        `refs`, `feat_sizes`, and `ref_sizes` is ordered by utterances of
-        descending frame lengths. Shorter utterances in `feats` are zero-padded
-        to the right, `alis` and `refs` are padded with ``INDEX_PAD_VALUE``
-        ``utt_ids`` is an ``N``-tuple specifying the names of utterances in the
-        batch.
+    feats : torch.FloatTensor
+        Of shape ``(N, T*, F)``, where ``N`` is ``params.batch_size``, ``T*``
+        is the maximum number of frames in an utterance in the batch, and ``F``
+        is the number of filters per frame
+    alis : torch.LongTensor or None
+        Of size ``(N, T*)`` if an ``ali/`` dir exists, otherwise :obj:`None`
+    refs : torch.LongTensor or None
+        Of size ``(N, R*, 3)``, where ``R*`` is the maximum number of reference
+        tokens in the batch. If the ``refs/`` directory does not exist, `refs`
+        and `ref_sizes` are :obj:`None`.
+    feat_sizes : torch.LongTensor
+        `feat_sizes` is a :class:`torch.LongTensor` of shape ``(N,)``
+        specifying the lengths of utterances in the batch
+    ref_sizes : torch.LongTensor or None
+        `ref_sizes` is of shape ``(N,)`` specifying the number reference tokens
+        per utterance in the batch. If the ``refs/`` directory does not exist,
+        `refs` and `ref_sizes` are :obj:`None`.
+    utt_ids : tuple
+        An ``N``-tuple specifying the names of utterances in the batch
+
+    Notes
+    -----
+
+    Shorter utterances in `feats` are zero-padded to the right, `alis` and
+    `refs` are padded with :const:`pydrobert.torch.INDEX_PAD_VALUE`
 
     Examples
     --------
@@ -1453,7 +1468,7 @@ def context_window_seq_to_batch(seq):
     ``(N,)`` resp., where :math:`N = \sum T` is the total number of context
     windows over the utterances.
 
-    If ``ali`` is ``None`` in any element, `alis` will also be ``None``
+    If ``ali`` is :obj:`None` in any element, `alis` will also be :obj:`None`
 
     Parameters
     ----------
@@ -1461,7 +1476,8 @@ def context_window_seq_to_batch(seq):
 
     Returns
     -------
-    windows, alis : tuple
+    windows : list
+    alis : list
     '''
     windows = []
     batch_ali = []
@@ -1518,24 +1534,23 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     init_epoch : int, optional
         Where training should resume from
     kwargs : keyword arguments, optional
-        Additional ``DataLoader`` arguments
+        Additional :class:`torch.utils.data.DataLoader` arguments
 
     Attributes
     ----------
-    epoch
+    epoch : int
     data_dir : str
     params : ContextWindowDataSetParams
     data_source : ContextWindowDataSet
 
     Yields
     ------
-    windows, alis
-        `windows` is a ``FloatTensor`` of size ``(N, C, F)``, where ``N`` is
-        the total number of context windows over all utterances in the batch,
-        ``C`` is the context window size, and ``F`` is the number of filters
-        per frame. `alis` is a ``LongTensor`` of size ``(N,)`` (or ``None``
-        if the ``ali`` dir was not specified).
-
+    windows : torch.FloatTensor
+        Of size ``(N, C, F)``, where ``N`` is the total number of context
+        windows over all utterances in the batch, ``C`` is the context window
+        size, and ``F`` is the number of filters per frame
+    alis : torch.LongTensor or None
+        Of size ``(N,)`` (or :obj:`None` if the ``ali`` dir was not specified)
 
     Examples
     --------
@@ -1597,7 +1612,6 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
 
     @property
     def epoch(self):
-        '''the current epoch'''
         return self.batch_sampler.sampler.epoch
 
     @epoch.setter
@@ -1617,7 +1631,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     warn_on_missing : bool, optional
     feat_subdir, ali_subdir : str, optional
     kwargs : keyword arguments, optional
-        Additional ``DataLoader`` arguments
+        Additional :class:`torch.utils.data.DataLoader` arguments
 
     Attributes
     ----------
@@ -1626,16 +1640,20 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    windows, alis, win_sizes, utt_ids
-        `windows` is a ``FloatTensor`` of size ``(N, C, F)``, where ``N`` is
-        the number of context windows, ``C`` is the context window size, and
-        ``F`` is the number of filters per frame. `alis` is a ``LongTensor`` of
-        size ``(N,)`` (or ``None`` if the ``ali`` dir was not specified).
-        `win_sizes` is a ``LongTensor`` of shape ``(params.batch_size,)``
-        specifying the number of context windows per utterance in the batch.
+    windows : torch.FloatTensor
+        Of size ``(N, C, F)``, where ``N`` is the number of context windows,
+        ``C`` is the context window size, and ``F`` is the number of filters
+        per frame
+    alis : torch.LongTensor or None
+        Of size ``(N,)`` (or :obj:`None` if the ``ali`` dir was not specified)
+    win_sizes : torch.LongTensor
+        Of shape ``(params.batch_size,)`` specifying the number of context
+        windows per utterance in the batch.
         ``windows[sum(win_sizes[:i]):sum(win_sizes[:i+1])]`` are the context
         windows for the ``i``-th utterance in the batch (``sum(win_sizes) ==
-        N``). utt_ids` is a tuple of size ``params.batch_size`` naming the
+        N``)
+    utt_ids : tuple
+        `utt_ids` is a tuple of size ``params.batch_size`` naming the
         utterances in the batch
 
     Examples

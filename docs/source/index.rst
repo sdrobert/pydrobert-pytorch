@@ -2,8 +2,10 @@
    :maxdepth: 2
    :caption: Contents:
 
-
-.. include:: modules.rst
+   advanced_attention
+   estimators
+   references
+   modules
 
 Indices and tables
 ==================

@@ -1,2 +1,3 @@
 future
 param
+Sphinx>=2.1.0

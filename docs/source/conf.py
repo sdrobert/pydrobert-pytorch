@@ -13,6 +13,29 @@
 import os
 import sys
 import param
+import future.utils
+
+
+# this saves us when dealing with with_metaclass on mocked objects
+
+def with_metaclass(meta, *bases):
+    class metaclass(meta):
+        __call__ = type.__call__
+        __init__ = type.__init__
+        def __new__(cls, name, this_bases, d):
+            if this_bases is None:
+                return type.__new__(cls, name, (), d)
+            return meta(name, bases, d)
+    try:
+        v = metaclass('temporary_class', None, {})
+        class Dummy(v):
+            pass
+    except TypeError:
+        # probably a mock object. In this case, return the first base
+        v = bases[0] if len(bases) else object
+    return v
+
+future.utils.with_metaclass = with_metaclass
 
 sys.path.insert(0, os.path.abspath('../..'))
 
@@ -21,7 +44,6 @@ autodoc_mock_imports = [
     'numpy',
     'torch',
 ]
-
 
 # -- Project information -----------------------------------------------------
 
@@ -42,6 +64,8 @@ language = 'en'
 extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.napoleon',
+    'sphinx.ext.autosectionlabel',
+    'sphinx.ext.intersphinx',
 ]
 
 naploeon_numpy_docstring = True
@@ -53,6 +77,12 @@ templates_path = ['_templates']
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
 exclude_patterns = []
+
+intersphinx_mapping = {
+    'torch': ('https://pytorch.org/docs/stable/', None),
+    'python': ('https://docs.python.org/', None),
+    'numpy': ('https://docs.scipy.org/doc/numpy/', None),
+}
 
 
 # -- Options for HTML output -------------------------------------------------

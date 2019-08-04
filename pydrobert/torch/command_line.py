@@ -82,7 +82,8 @@ def _get_torch_spect_data_dir_info_parse_args(args):
 def get_torch_spect_data_dir_info(args=None):
     '''Write info about the specified SpectDataSet data dir
 
-    A torch ``SpectDataSet`` data dir is of the form::
+    A torch :class:`pydrobert.torch.data.SpectDataSet` data dir is of the
+    form::
 
         dir/
             feat/
@@ -100,15 +101,15 @@ def get_torch_spect_data_dir_info(args=None):
                 ...
             ]
 
-    Where ``feat`` contains ``FloatTensor`` of shape ``(N, F)``, where ``N``
-    is the number of frames (variable) and ``F`` is the number of filters
-    (fixed), ``ali``, if there, contains ``LongTensor`` of shape ``(N,)``
-    indicating the appropriate class labels (likely pdf-ids for discriminative
-    training in an DNN-HMM), and ``ref``, if there, contains ``LongTensor`` of
-    shape ``(R, 3)`` indicating a sequence of reference tokens where element
-    indexed by ``[i, 0]`` is a token id, ``[i, 1]`` is the inclusive start
-    frame of the token (or a negative value if unknown), and ``[i, 2]`` is the
-    exclusive end frame of the token.
+    Where ``feat`` contains :class:`torch.FloatTensor` of shape ``(N, F)``,
+    where ``N`` is the number of frames (variable) and ``F`` is the number of
+    filters (fixed), ``ali``, if there, contains :class:`torch.LongTensor` of
+    shape ``(N,)`` indicating the appropriate class labels (likely pdf-ids for
+    discriminative training in an DNN-HMM), and ``ref``, if there, contains
+    :class:`torch.LongTensor` of shape ``(R, 3)`` indicating a sequence of
+    reference tokens where element indexed by ``[i, 0]`` is a token id, ``[i,
+    1]`` is the inclusive start frame of the token (or a negative value if
+    unknown), and ``[i, 2]`` is the exclusive end frame of the token.
 
     This command writes the following space-delimited key-value pairs to an
     output file in sorted order:
@@ -126,7 +127,7 @@ def get_torch_spect_data_dir_info(args=None):
        that the keys remain in the same order in the table as the class
        indices.  The maximum ``i`` will be equal to ``maximum_ali_class``
 
-    Note that the output can be parsed as a `Kaldi <http://kaldi-asr.org/>`_
+    Note that the output can be parsed as a `Kaldi <http://kaldi-asr.org/>`__
     text table of integers.
     '''
     try:
@@ -268,17 +269,18 @@ def trn_to_torch_token_data_dir(args=None):
 
     A "trn" file is the standard transcription file without alignment
     information used in the `sclite
-    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_
-    toolkit. It has the format::
+    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__ toolkit.
+    It has the format::
 
         here is a transcription (utterance_a)
         here is another (utterance_b)
 
     This command reads in a "trn" file and writes its contents as token
-    sequences compatible with the ``ref/`` directory of a ``SpectDataSet``.
-    See the command ``get_torch_spect_data_dir_info`` (command line
+    sequences compatible with the ``ref/`` directory of a
+    :class:`pydrobert.torch.data.SpectDataSet`. See the command
+    :func:`get_torch_spect_data_dir_info` (command line
     "get-torch-spect-data-dir-info") for more information on a
-    ``SpectDataSet``
+    :class:`pydrobert.torch.data.SpectDataSet`
     '''
     try:
         options = _trn_to_torch_token_data_dir_parse_args(args)
@@ -386,10 +388,11 @@ def torch_token_data_dir_to_trn(args=None):
         here is another (utterance_b)
 
     This command scans the contents of a directory like ``ref/`` in a
-    ``SpectDataSet`` and converts each such file into a transcription. Each
-    such transcription is then written to a "trn" file. See the command
-    ``get_torch_spect_data_dir_info`` (command line
-    "get-torch-spect-data-dir-info") for more information on a ``SpectDataSet``
+    :class:`pydrobert.torch.data.SpectDataSet` and converts each such file into
+    a transcription. Each such transcription is then written to a "trn" file.
+    See the command :func:`get_torch_spect_data_dir_info` (command line
+    "get-torch-spect-data-dir-info") for more information on a
+    :class:`pydrobert.torch.data.SpectDataSet`
     '''
     try:
         options = _torch_token_data_dir_to_trn_parse_args(args)
@@ -504,10 +507,11 @@ def ctm_to_torch_token_data_dir(args=None):
     second the duration.
 
     This command reads in a "ctm" file and writes its contents as token
-    sequences compatible with the ``ref/`` directory of a ``SpectDataSet``.
-    See the command ``get_torch_spect_data_dir_info`` (command line
+    sequences compatible with the ``ref/`` directory of a
+    :class:`pydrobert.torch.data.SpectDataSet`. See the command
+    :func:`get_torch_spect_data_dir_info` (command line
     "get-torch-spect-data-dir-info") for more information on a
-    ``SpectDataSet``
+    :class:`pydrobert.torch.data.SpectDataSet`
     '''
     try:
         options = _ctm_to_torch_token_data_dir_parse_args(args)
@@ -581,7 +585,7 @@ def _torch_token_data_dir_to_ctm_parse_args(args):
 
 
 def torch_token_data_dir_to_ctm(args=None):
-    '''Convert a ``SpectDataSet`` token data directory to a NIST "ctm" file
+    '''Convert a SpectDataSet token data directory to a NIST "ctm" file
 
     A "ctm" file is a transcription file with token alignments (a.k.a. a
     time-marked conversation file) used in the `sclite
@@ -597,11 +601,12 @@ def torch_token_data_dir_to_ctm(args=None):
     second the duration.
 
     This command scans the contents of a directory like ``ref/`` in a
-    ``SpectDataSet`` and converts each such file into a transcription. Every
-    token in a given transcription must have information about its duration.
-    Each such transcription is then written to the "ctm" file. See the command
-    ``get_torch_spect_data_dir_info`` (command line
-    "get-torch-spect-data-dir-info") for more information on a ``SpectDataSet``
+    :class:`pydrobert.torch.data.SpectDataSet` and converts each such file into
+    a transcription. Every token in a given transcription must have information
+    about its duration. Each such transcription is then written to the "ctm"
+    file. See the command :func:`get_torch_spect_data_dir_info` (command line
+    "get-torch-spect-data-dir-info") for more information on a
+    :class:`pydrobert.torch.data.SpectDataSet`
     '''
     try:
         options = _torch_token_data_dir_to_ctm_parse_args(args)
@@ -709,8 +714,9 @@ def compute_torch_token_data_dir_error_rates(args=None):
 
     This is a very simple script that computes and prints the error rates
     between the ``ref/`` (reference/gold standard) token sequences and ``hyp/``
-    (hypothesis/generated) token sequences in a ``SpectDataSet`` directory. An
-    error rate is merely a `Levenshtein Distance
+    (hypothesis/generated) token sequences in a
+    :class:`pydrobert.torch.data.SpectDataSet` directory. An error rate is
+    merely a `Levenshtein Distance
     <https://en.wikipedia.org/wiki/Levenshtein_distance>`__ normalized to the
     reference sequence length.
 
@@ -720,7 +726,7 @@ def compute_torch_token_data_dir_error_rates(args=None):
 
     Many tasks will ignore some tokens (e.g. silences) or collapse others (e.g.
     phones). Please consult a standard recipe (such as those in `Kaldi
-    <kaldi-asr.org>`__) before performing these computations
+    <http://kaldi-asr.org/>`__) before performing these computations
     '''
     try:
         options = _compute_torch_token_data_dir_parse_args(args)

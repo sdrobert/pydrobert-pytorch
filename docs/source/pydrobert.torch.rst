@@ -28,6 +28,14 @@ pydrobert.torch.estimators module
    :undoc-members:
    :show-inheritance:
 
+pydrobert.torch.layers module
+-----------------------------
+
+.. automodule:: pydrobert.torch.layers
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 pydrobert.torch.training module
 -------------------------------
 
@@ -36,11 +44,19 @@ pydrobert.torch.training module
    :undoc-members:
    :show-inheritance:
 
-
 pydrobert.torch.util module
 ---------------------------
 
 .. automodule:: pydrobert.torch.util
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+
+Module contents
+---------------
+
+.. automodule:: pydrobert.torch
    :members:
    :undoc-members:
    :show-inheritance:
