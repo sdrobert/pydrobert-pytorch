@@ -117,35 +117,39 @@ def test_bias(seed, dist, est, objective, device):
 
 
 @pytest.mark.parametrize("dist", ["bern", "onehot"])
-def test_rebar_backprop(dist, device):
+@pytest.mark.parametrize("est", ["rebar", "relax"])
+def test_model_backprop(dist, device, est):
     torch.manual_seed(1)
-    logits = torch.randn(10, 5, 4, requires_grad=True).to(device)
-    z = estimators.to_z(logits, dist)
-    b = estimators.to_b(z, dist)
+    dim1, dim2, dim3 = 10, 5, 4
+    model = torch.nn.Linear(dim3, dim3).to(device)
+    inp = torch.randn(dim1, dim2, dim3, device=device)
 
     def f(x):
         if dist == "onehot":
             return x[..., -1]
         else:
             return x
+    if est == "rebar":
+        c = estimators.REBARControlVariate(f, dist).to(device)
+    else:
+        c = ControlVariate(dist).to(device)
+    optim = torch.optim.Adam(list(model.parameters()) + list(c.parameters()))
+    optim.zero_grad()
+    logits = model(inp)
+    z = estimators.to_z(logits, dist)
+    b = estimators.to_b(z, dist)
     fb = f(b)
-    c = estimators.REBARControlVariate(f, dist).to(device)
     diff, dlog_pb, dc_z, dc_z_tilde = estimators.relax(
         fb, b, logits, z, c, dist, components=True)
-    torch.autograd.grad(
-        [diff], [logits], retain_graph=True,
-        grad_outputs=torch.ones_like(diff))
-    torch.autograd.grad(
-        [dc_z], [logits], retain_graph=True,
-        grad_outputs=torch.ones_like(dc_z),
-        allow_unused=True,
-    )
-    torch.autograd.grad(
-        [dc_z_tilde], [logits], retain_graph=True,
-        grad_outputs=torch.ones_like(dc_z_tilde))
     g = diff * dlog_pb + dc_z - dc_z_tilde
     (g ** 2).sum().backward()
-    assert c.log_temp.grad
+    if est == "rebar":
+        assert c.log_temp.grad
+    else:
+        assert c.weight.grad
+    assert model.weight.grad is None
+    logits.backward(g)
+    assert model.weight.grad.ne(0.).any()
 
 
 @pytest.mark.parametrize("markov", [10, 1000])
