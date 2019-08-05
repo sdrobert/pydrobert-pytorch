@@ -228,7 +228,11 @@ def relax(fb, b, logits, z, c, dist, components=False):
     '''
     fb = fb.detach()
     b = b.detach()
-    # warning! d z_tilde / d logits is non-trivial. Needs graph from logits
+    # in all computations (including those made by the user later), we don't
+    # want to backpropagate past "logits" into the model. We make a detached
+    # copy of logits and rebuild the graph from the detached copy to z
+    logits = logits.detach().requires_grad_(True)
+    z = _reattach_z_to_new_logits(logits, z, dist)
     z_tilde = _to_z_tilde(logits, b, dist)
     c_z = c(z)
     c_z_tilde = c(z_tilde)
@@ -339,6 +343,19 @@ class REBARControlVariate(torch.nn.Module):
             return self.eta * self.f(torch.sigmoid(z_temp))
         else:
             return self.eta * self.f(torch.softmax(z_temp, -1))
+
+
+def _reattach_z_to_new_logits(logits, z, dist):
+    if dist in BERNOULLI_SYNONYMS:
+        # z = logits + torch.log(u) - torch.log1p(-u)
+        z = z.detach() + logits - logits.detach()
+    elif dist in CATEGORICAL_SYNONYMS | ONEHOT_SYNONYMS:
+        log_theta = torch.nn.functional.log_softmax(logits, dim=-1)
+        # z = log_theta - torch.log(-torch.log(u))
+        z = z.detach() + log_theta - log_theta.detach()
+    else:
+        raise ValueError("Unknown distribution {}".format(dist))
+    return z
 
 
 def _to_z_tilde(logits, b, dist):
