@@ -40,7 +40,6 @@ __all__ = [
     'MinimumErrorRateLoss',
     'TrainingStateParams',
     'TrainingStateController',
-    'TrainingStateParams',
 ]
 
 
@@ -60,7 +59,7 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
 
     .. math::
 
-        loss(logits_t) = \frac{1}{|S_t|} -log Pr(s_t|logits_t)
+        loss(logits_t) = \frac{-\log Pr(s_t|logits_t)}{|S_t|}
 
     Where :math:`s_t \in S_t` are tokens from the set of optimal next tokens
     given :math:`hyp_{\leq t}` and `ref`. The loss is decoupled from an exact
@@ -97,12 +96,20 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         The cost of missing a token from `ref`
     sub_cost : float, optional
         The cost of swapping a token from `ref` with one from `hyp`
-    weight : torch.tensor, optional
+    weight : torch.FloatTensor, optional
         A manual rescaling weight given to each class
     reduction : {'mean', 'none', 'sum'}, optional
         Specifies the reduction to be applied to the output. 'none': no
         reduction will be applied. 'sum': the output will be summed. 'mean':
         the output will be averaged.
+
+    Attributes
+    ----------
+    eos : int
+    include_eos, batch_first : bool
+    ins_cost, del_cost, sub_cost : float
+    reduction : {'mean', 'none', 'sum'}
+    weight : torch.FloatTensor or None
 
     See Also
     --------
@@ -283,6 +290,13 @@ class MinimumErrorRateLoss(torch.nn.Module):
         Specifies the reduction to be applied to the output. 'none': no
         reduction will be applied. 'sum': the output will be summed. 'mean':
         the output will be averaged.
+
+    Attributes
+    ----------
+    eos, ignore_index : int
+    include_eos, sub_avg, batch_first, norm : bool
+    ins_cost, del_cost, sub_cost, lmb : float
+    reduction : {'mean', 'none', 'sum'}
 
     Warnings
     --------
@@ -559,7 +573,7 @@ class TrainingStateController(object):
 
     Attributes
     ----------
-    params : TrainingParams
+    params : TrainingStateParams
     state_csv_path : str or None
     state_dir : str or None
     cache_hist : dict

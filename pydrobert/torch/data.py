@@ -147,7 +147,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         :func:`__getitem__`. If the ``ali/`` or ``ref/`` directories exist,
         `utt_ids` contains only the utterances in the intersection of each
         directory (and `subset_ids`, if it was specified)
-    eos : bool or None
+    eos : int or None
 
     Yields
     ------
@@ -946,10 +946,12 @@ class ContextWindowDataSet(SpectDataSet):
 
     Attributes
     ----------
-    data_dir : str
+    data_dir, feat_subdir, ali_subdir, file_suffix : str
     left, right : int
-    has_ali, has_ref, reverse : bool
+    has_ali, reverse : bool
     utt_ids : tuple
+    ref_subdir, eos : :obj:`None`
+    has_ref : :obj:`False`
 
     Yields
     ------
@@ -1187,12 +1189,6 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     kwargs : keyword arguments, optional
         Additional :class:`torch.utils.data.DataLoader` arguments
 
-    Attributes
-    ----------
-    epoch : int
-    data_dir : str
-    params : SpectDataSetParams
-
     Yields
     ------
     feats : torch.FloatTensor
@@ -1212,6 +1208,14 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         `ref_sizes` is of shape ``(N,)`` specifying the number reference tokens
         per utterance in the batch. If the ``refs/`` directory does not exist,
         `refs` and `ref_sizes` are :obj:`None`.
+
+    Attributes
+    ----------
+    params : SpectDataSetParams
+    data_dir : str
+    data_source : SpectDataSet
+        The instance that will serve unbatched utterances
+    epoch : int
 
     Notes
     -----
@@ -1330,6 +1334,8 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     ----------
     data_dir : str
     params : SpectDataSetParams
+    data_source : SpectEvaluationDataLoader.SEvalDataSet
+        Serves the utterances. A :class:`SpectDataSet`, but adds utterance IDs
 
     Yields
     ------
@@ -1542,6 +1548,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     data_dir : str
     params : ContextWindowDataSetParams
     data_source : ContextWindowDataSet
+        The instance that serves an utterance-worth of context windows
 
     Yields
     ------
@@ -1637,6 +1644,9 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     ----------
     data_dir : str
     params : SpectDataParams
+    data_source : ContextWindowEvaluationDataLoader.CWEvalDataSet
+        Serves utterances. A :class:`ContextWindowDataSet`, but adds feature
+        sizes and utterance ids to each yielded tuple
 
     Yields
     ------

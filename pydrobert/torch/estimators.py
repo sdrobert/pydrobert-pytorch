@@ -287,12 +287,12 @@ class REBARControlVariate(torch.nn.Module):
     RELAX with :math:`c(x) = \eta f(\sigma_\lambda(x))`. An instance of this
     class can be fed to the ``relax`` function as the argument ``c``. To
     optimize the temperature :math:`\lambda` and importance :math:`\eta`
-    simultaneously with :math:``logits``, one can take the output of ``g =
+    simultaneously with :math:`logits`, one can take the output of ``g =
     relax(...)`` and call ``(g ** 2).sum().backward()``.
 
     Parameters
     ----------
-    f : function or torch.nn.Module
+    f : callable
         The objective whose expectation we seek to minimize
     dist: {"bern", "cat", "onehot"}
     start_temp : float, optional

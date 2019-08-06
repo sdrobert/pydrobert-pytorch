@@ -302,7 +302,7 @@ class ConcatSoftAttention(GlobalSoftAttention):
 
     .. math::
 
-        e = \sum_i v_i tanh(\sum_c W_{ic} [query, key]_c)
+        e = \sum_i v_i \tanh(\sum_c W_{ic} [query, key]_c)
 
     For some learned matrix :math:`W` and vector :math:`v`, where
     :math:`[query, key]` indicates concatenation along the last axis. `query`
@@ -449,12 +449,6 @@ class MultiHeadedAttention(torch.nn.Module):
     single_head_attention : GlobalSoftAttention
     WQ, WK, WV, WC : torch.nn.Linear
         Matrices :math:`W^Q`, :math:`W^K`, :math:`W^V`, and :math:`W^C`
-
-    See Also
-    --------
-    GlobalSoftAttention
-        For more information on the shape restrictions of query, key, and
-        value
     '''
 
     def __init__(
