@@ -33,6 +33,7 @@ build:
   noarch: python
   number: {{ build_num }}
   entry_points:
+    - compute-torch-token-data-dir-error-rates = pydrobert.torch.command_line:compute_torch_token_data_dir_error_rates
     - ctm-to-torch-token-data-dir = pydrobert.torch.command_line:ctm_to_torch_token_data_dir
     - get-torch-spect-data-dir-info = pydrobert.torch.command_line:get_torch_spect_data_dir_info
     - torch-token-data-dir-to-ctm = pydrobert.torch.command_line:torch_token_data_dir_to_ctm
@@ -46,6 +47,7 @@ build:
 test:
   source_files:
     - tests
+    - pytest.ini
   requires:
     - pytest
   imports:
@@ -54,9 +56,16 @@ test:
     - pydrobert.torch.command_line
     - pydrobert.torch.data
     - pydrobert.torch.estimators
+    - pydrobert.torch.layers
     - pydrobert.torch.training
     - pydrobert.torch.util
   commands:
+    - compute-torch-token-data-dir-error-rates --help
+    - ctm-to-torch-token-data-dir --help
+    - get-torch-spect-data-dir-info --help
+    - torch-token-data-dir-to-ctm --help
+    - torch-token-data-dir-to-trn --help
+    - trn-to-torch-token-data-dir --help
     - pytest
 
 about:
