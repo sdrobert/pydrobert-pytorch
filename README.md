@@ -33,4 +33,4 @@ pip install pydrobert-pytorch
 
 Please see the [pydrobert
 page](https://github.com/sdrobert/pydrobert/blob/master/README.md) for more
-detail.
+details.
