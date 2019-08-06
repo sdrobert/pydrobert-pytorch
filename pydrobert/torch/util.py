@@ -552,31 +552,11 @@ def prefix_error_rates(
     -------
     prefix_ers : torch.tensor
 
-    Examples
+    See Also
     --------
-
-    This function, alongside :func:`pydrobert.torch.estimators.reinforce`, can
-    be used to recreate the reward function from [tjandra2018]_
-
-    >>> num_batches, max_hyp_steps, max_ref_steps, num_classes = 5, 20, 20, 10
-    >>> gamma, eos, padding = .1, 0, -1
-    >>> logits = torch.randn(
-    ...     max_hyp_steps, num_batches, num_classes, requires_grad=True)
-    >>> hyp = to_b(to_z(logits, 'cat'), 'cat')  # (max_hyp_steps, num_batches)
-    >>> hyp[-1] = eos
-    >>> ref = torch.randint(num_classes, (max_ref_steps, num_batches))
-    >>> ref[-1] = eos
-    >>> dists = prefix_error_rates(
-    ...     ref, hyp.long(), eos=eos, norm=False, padding=-1)
-    >>> r = -(dists[1:] - dists[:-1])
-    >>> r = r.masked_fill(dists[1:].eq(padding), 0.)
-    >>> R = torch.empty_like(r)
-    >>> R[-1] = r[-1]
-    >>> for step_idx in range(r.shape[0] - 2, -1, -1):
-    >>>     R[step_idx] = r[step_idx] + gamma * R[step_idx + 1]
-    >>> g = reinforce(R, hyp, logits, 'cat')
-    >>> assert g.masked_select(dists[1:].eq(padding).unsqueeze(-1)).eq(0).all()
-    >>> logits.backward(-g)  # descent
+    :ref:`Gradient Estimators`
+        Provides an example where this function is used to determine a reward
+        function for reinforcement learning
     '''
     prefix_ers = _levenshtein(
         ref, hyp, eos, include_eos, batch_first, ins_cost,
@@ -660,7 +640,6 @@ def random_walk_advance(
         sequences so far. Note that, since :math:`y_t` are drawn `i.i.d.`,
         there is no guarantee of the uniqueness of each `num_samp` samples
     z : torch.FloatTensor
-
         Only included if `include_relaxation` is :obj:`True`. `z` is a sample
         of a continuous relaxation of the categorical distribution of `logits`
         of shape ``(num_batches, num_samp, num_classes). Assuming ``y_prev[-1,
