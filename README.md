@@ -28,3 +28,9 @@ pinning the version in the requirements or by forking.**
 conda install -c sdrobert pydrobert-pytorch
 pip install pydrobert-pytorch
 ```
+
+## Licensing and How to Cite
+
+Please see the [pydrobert
+page](https://github.com/sdrobert/pydrobert/blob/master/README.md) for more
+detail.
