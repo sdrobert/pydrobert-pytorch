@@ -660,7 +660,6 @@ def random_walk_advance(
         sequences so far. Note that, since :math:`y_t` are drawn `i.i.d.`,
         there is no guarantee of the uniqueness of each `num_samp` samples
     z : torch.FloatTensor
-
         Only included if `include_relaxation` is :obj:`True`. `z` is a sample
         of a continuous relaxation of the categorical distribution of `logits`
         of shape ``(num_batches, num_samp, num_classes). Assuming ``y_prev[-1,
