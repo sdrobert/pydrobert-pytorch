@@ -208,22 +208,21 @@ class MinimumErrorRateLoss(torch.nn.Module):
     larger the mass covered by :math:`S`, the closer the expectation is to the
     population - especially so for an n-best list (though it would be biased).
 
-    This loss function has one of the following signatures when called::
+    This loss function has the following signature::
 
         loss(log_probs, ref, hyp)
-        loss(logits, ref, hyp[, log_probs])
 
-    `hyp` is a long tensor of shape ``(num_batches, num_paths, max_hyp_steps)``
-    if `batch_first` is :obj:`False` otherwise ``(max_hyp_steps, num_batches,
-    num_paths)`` that provides the hypothesis transcriptions. Likewise, `ref`
-    of shape ``(num_batches, num_paths, max_ref_steps)`` or ``(max_ref_steps,
-    num_batches, num_paths)`` providing reference transcriptions.
-    ``num_batches`` enumerates the batches whereas ``num_paths`` enumerates
-    the list of paths for a given batch element.
+    `log_probs` is a tensor of shape ``(num_batches, samples)`` providing the
+    log joint probabilities of every path. `hyp` is a long tensor of shape
+    ``(max_hyp_steps, num_batches, samples)`` if `batch_first` is :obj:`False`
+    otherwise ``(num_batches, samples, max_hyp_steps)`` that provides the
+    hypothesis transcriptions. Likewise, `ref` of shape ``(num_batches,
+    samples, max_ref_steps)`` or ``(max_ref_steps, num_batches, samples)``
+    providing reference transcriptions. ``num_batches`` enumerates the batches
+    whereas ``samples`` enumerates the list of samples for a given batch
+    element.
 
-    `log_probs` is a two dimensional tensor of shape ``(num_batches,
-    num_paths)`` providing the log joint probabilities of every path. Without
-    `logits`, the loss is calculated as
+    Using `log_probs`, the loss is calculated as
 
     .. math::
 
@@ -232,27 +231,6 @@ class MinimumErrorRateLoss(torch.nn.Module):
     where :math:`\mu_i` is the average error rate along paths in the batch
     element :math:`i`. :math:`mu_i` can be removed by setting `sub_avg` to
     :obj:`False`.
-
-    `logits` is a 4-dimensional tensor of shape ``(num_batches, num_paths,
-    max_hyp_steps, num_classes)`` if `batch_first` is :obj:`True`,
-    ``(max_hyp_steps, num_batches, num_paths, num_classes)`` otherwise.
-    A softmax over the step dimension defines the per-step distribution over
-    class labels. If `logits` is provided, an additional cross-entropy loss
-    term comparing `logits` and `ref` will be added to the loss
-
-    .. math::
-
-        loss_{combined} = loss_{MER} + \lambda loss_{CE}
-
-    If `logits` is provided, ``max_hyp_steps >= max_ref_steps``. Logits past
-    reference boundaries will be ignored. Note that :math:`loss_{MER}` is
-    derived from probability space, whereas :math:`loss_{CE}` is derived from
-    log-probabilty space.
-
-    If `log_probs` is provided in addition to `logits`, the former will be
-    used in calculating :math:`loss_{MER}`. Otherwise, `log_prob` will be
-    inferred from `logits` by assuming the Markov property and summing along
-    the paths
 
     Parameters
     ----------
@@ -264,28 +242,17 @@ class MinimumErrorRateLoss(torch.nn.Module):
         `hyp` as valid tokens to be computed as part of the distance.
     sub_avg : bool, optional
         Whether to subtract the average error rate from each pathwise error
-        rate. Used in error rate term
+        rate
     batch_first : bool, optional
         Whether batch/path dimensions come first, or the step dimension
     norm : bool, optional
-        If :obj:`False`, will use edit distances instead of error rates. Used
-        in error rate term
+        If :obj:`False`, will use edit distances instead of error rates
     ins_cost : float, optional
-        The cost of an adding a superfluous token to a transcript in `hyp`.
-        Used in error rate term
+        The cost of an adding a superfluous token to a transcript in `hyp`
     del_cost : float, optional
-        The cost of missing a token from `ref`. Used in error rate term
+        The cost of missing a token from `ref`
     sub_cost : float, optional
-        The cost of swapping a token from `ref` with one from `hyp`. Used in
-        error rate term
-    lmb : float, optional
-        The contribution of the cross entropy term, when `logits` is passed
-    ignore_index : int, optional
-        A reference transcript symbol indicating that this index will be
-        ignored. Used in cross entropy term only
-    weight : torch.tensor, optional
-        A manual rescaling weight given to each class. Used in cross entropy
-        term only
+        The cost of swapping a token from `ref` with one from `hyp`
     reduction : {'mean', 'none', 'sum'}, optional
         Specifies the reduction to be applied to the output. 'none': no
         reduction will be applied. 'sum': the output will be summed. 'mean':
@@ -295,29 +262,29 @@ class MinimumErrorRateLoss(torch.nn.Module):
     ----------
     eos, ignore_index : int
     include_eos, sub_avg, batch_first, norm : bool
-    ins_cost, del_cost, sub_cost, lmb : float
+    ins_cost, del_cost, sub_cost : float
     reduction : {'mean', 'none', 'sum'}
 
-    Warnings
-    --------
-    The criteria for ignoring parts of `ref` differ between :math:`loss_{MER}`
-    and :math:`loss_{CE}`, the former relying on `eos` and the latter relying
-    on `ignore_index`. The distinction is made because the loss terms are
-    ultimately doing different things. For example, :math:`loss_{MER}` might
-    be calculated using the string that ends at the first occurence of `eos`,
-    but the cross-entropy term might want to use tokens in `hyp` past it to
-    match the underlying reference token length
+    Notes
+    -----
+
+    A previous version of this module incorporated a Maximum Likelihood
+    Estimate (MLE) into the loss as in [prabhavalkar2018], which required
+    `logits` instead of `log_probs`. This was overly complicated, given the
+    user can easily incorporate the additional loss term herself by using
+    :class:`torch.nn.CrossEntropyLoss`.
 
     See Also
     --------
     pydrobert.torch.util.beam_search_advance
-        For getting an n-best list into `hyp`
+        For getting an n-best list into `hyp` and some `log_probs`.
+    pydrobert.torch.util.random_walk_advance
+        For getting a random sample into `hyp`
     '''
 
     def __init__(
             self, eos=None, include_eos=True, sub_avg=True, batch_first=False,
-            norm=True, ins_cost=1., del_cost=1., sub_cost=1., lmb=0.01,
-            ignore_index=pydrobert.torch.INDEX_PAD_VALUE, weight=None,
+            norm=True, ins_cost=1., del_cost=1., sub_cost=1.,
             reduction='mean'):
         super(MinimumErrorRateLoss, self).__init__()
         self.eos = eos
@@ -328,93 +295,54 @@ class MinimumErrorRateLoss(torch.nn.Module):
         self.ins_cost = ins_cost
         self.del_cost = del_cost
         self.sub_cost = sub_cost
-        self.lmb = lmb
         self.reduction = reduction
-        self._cross_ent = torch.nn.CrossEntropyLoss(
-            ignore_index=ignore_index, weight=weight, reduction='none'
-        )
 
-    @property
-    def ignore_index(self):
-        return self._cross_ent.ignore_index
-
-    @ignore_index.setter
-    def ignore_index(self, value):
-        self._cross_ent.ignore_index = value
-
-    @property
-    def weight(self):
-        return self._cross_ent.weight
-
-    @weight.setter
-    def weight(self, value):
-        self._cross_ent.weight = value
-
-    def forward(self, logits, ref, hyp, log_probs=None, warn=True):
-        if hyp.dim() != 3:
-            raise ValueError('hyp must be 3 dimensional')
-        if ref.dim() != 3:
-            raise ValueError('ref must be 3 dimensional')
-        if log_probs is None:
-            if logits.dim() == 2:
-                log_probs, logits = logits, None
-            elif logits.dim() != 4:
-                raise ValueError(
-                    'Expected first argument to have 2 or 4 dimensions')
-        if logits is not None:
-            if logits.dim() != 4:
-                raise ValueError('Expected logits to have 4 dimensions')
-            num_classes = logits.shape[-1]
-            if logits.shape[:-1] != hyp.shape:
-                raise ValueError(
-                    'logits and hyp must agree on first three dimensions')
-            if log_probs is None:
-                dist = torch.nn.functional.log_softmax(logits, 3)
-                logits_on_paths = dist.gather(3, hyp.unsqueeze(3)).squeeze(3)
-                log_probs = logits_on_paths.sum(2 if self.batch_first else 0)
+    def check_input(self, log_probs, ref, hyp):
+        '''Check if the input is formatted correctly, otherwise ValueError'''
+        if log_probs.dim() != 2:
+            raise ValueError('log_probs must be 2 dimensional')
+        if ref.dim() != 3 or hyp.dim() != 3:
+            raise ValueError('ref and hyp must be 3 dimensional')
         if self.batch_first:
-            num_batches, num_paths, max_ref_steps = ref.shape
-            num_batches_, num_paths_, max_hyp_steps = hyp.shape
-            flat_ref = ref.view(-1, max_ref_steps)
-            flat_hyp = hyp.view(-1, max_hyp_steps)
-            min_steps = min(max_ref_steps, max_hyp_steps)
-            ref = ref[..., :min_steps]
-            if logits is not None:
-                logits = logits[..., :min_steps, :]
+            if (
+                    (ref.shape[:2] != hyp.shape[:2]) or
+                    (ref.shape[:2] != log_probs.shape)):
+                raise ValueError(
+                    'with batch_first=True, first two dimensions of ref, '
+                    'hyp, and log_probs must match in size')
         else:
-            max_ref_steps, num_batches, num_paths = ref.shape
-            max_hyp_steps, num_batches_, num_paths_ = hyp.shape
-            flat_ref = ref.view(max_ref_steps, -1)
-            flat_hyp = hyp.view(max_hyp_steps, -1)
-            min_steps = min(max_ref_steps, max_hyp_steps)
-            ref = ref[:min_steps]
-            if logits is not None:
-                logits = logits[:min_steps]
-        if (num_batches, num_paths) != (num_batches_, num_paths_):
+            if (
+                    (ref.shape[1:] != hyp.shape[1:]) or
+                    (ref.shape[1:] != log_probs.shape)):
+                raise ValueError(
+                    'with batch_first=False, last two dimensions of ref, '
+                    'hyp, and log_probs must match in size')
+
+    def forward(self, log_probs, ref, hyp, warn=True):
+        self.check_input(log_probs, ref, hyp)
+        if self.batch_first:
+            num_batches, samples, max_ref_steps = ref.shape
+            num_batches_, samples_, max_hyp_steps = hyp.shape
+            ref = ref.view(-1, max_ref_steps)
+            hyp = hyp.view(-1, max_hyp_steps)
+        else:
+            max_ref_steps, num_batches, samples = ref.shape
+            max_hyp_steps, num_batches_, samples_ = hyp.shape
+            ref = ref.view(max_ref_steps, -1)
+            hyp = hyp.view(max_hyp_steps, -1)
+        if (num_batches, samples) != (num_batches_, samples_):
             raise ValueError('batch and path dims must match btw ref and hyp')
-        if num_paths < 2:
-            raise ValueError('must be more than one path')
+        if samples < 2:
+            raise ValueError('must be more than one sample')
         er = error_rate(
-            flat_ref, flat_hyp, eos=self.eos, include_eos=self.include_eos,
+            ref, hyp, eos=self.eos, include_eos=self.include_eos,
             norm=self.norm, batch_first=self.batch_first,
             ins_cost=self.ins_cost, del_cost=self.del_cost,
             sub_cost=self.sub_cost, warn=warn,
-        ).view(num_batches, num_paths)
+        ).view(num_batches, samples)
         if self.sub_avg:
             er = er - er.mean(1, keepdim=True)
         loss = er * torch.nn.functional.softmax(log_probs, 1)
-        if self.lmb and logits is not None:
-            # we always sum out the "steps" dim, which is why we don't do any
-            # reduction.
-            ref = ref.flatten()
-            logits = logits.contiguous().view(-1, num_classes)
-            ce_loss = self._cross_ent(logits, ref)
-            ce_loss = ce_loss.masked_fill(ref == self.ignore_index, 0.)
-            if self.batch_first:
-                ce_loss = ce_loss.view(num_batches, num_paths, -1).sum(2)
-            else:
-                ce_loss = ce_loss.view(-1, num_batches, num_paths).sum(0)
-            loss = loss + self.lmb * ce_loss
         if self.reduction == 'mean':
             loss = loss.mean()
         elif self.reduction == 'sum':
