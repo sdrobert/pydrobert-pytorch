@@ -489,10 +489,6 @@ class TrainingStateParams(param.Parameterized):
         doc='Seed used for training procedures (e.g. dropout). If '
         'unset, will not touch torch\'s seeding'
     )
-    dropout_prob = param.Magnitude(
-        0.,
-        doc='The probability of dropping a hidden unit during training'
-    )
     keep_last_and_best_only = param.Boolean(
         True,
         doc='If the model is being saved, keep only the model and optimizer '
