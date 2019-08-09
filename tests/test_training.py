@@ -175,7 +175,8 @@ def test_controller_best(temp_dir):
         training.TrainingStateParams(
             saved_model_fmt='model.pt',
         ),
-        state_dir=temp_dir
+        state_dir=temp_dir,
+        warn=False
     )
     model_1.reset_parameters()
     model_2.reset_parameters()
