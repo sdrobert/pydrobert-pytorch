@@ -66,7 +66,7 @@ test:
     - torch-token-data-dir-to-ctm --help
     - torch-token-data-dir-to-trn --help
     - trn-to-torch-token-data-dir --help
-    - pytest
+    - pytest -x
 
 about:
   home: https://github.com/sdrobert/pydrobert-pytorch

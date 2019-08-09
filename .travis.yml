@@ -14,7 +14,7 @@ install:
   - pip install scipy pytest
 
 script:
-  - python setup.py test --addopts="-m cpu"
+  - python setup.py test --addopts="-m cpu -x"
 
 branches:
   except:

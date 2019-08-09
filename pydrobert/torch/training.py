@@ -566,6 +566,9 @@ class TrainingStateController(object):
     state_dir : str, optional
         A path to a directory to store/load model and optimizer states. If
         unset, the information will not be stored/loaded
+    warn : bool, optional
+        Whether to warn using :mod:`warnings` module when a format string does
+        not contain the "epoch" field
 
     Attributes
     ----------
@@ -577,16 +580,19 @@ class TrainingStateController(object):
         up-to-date with `state_csv_path` unless :func:`update_cache` is called
     '''
 
-    def __init__(self, params, state_csv_path=None, state_dir=None):
+    def __init__(self, params, state_csv_path=None, state_dir=None, warn=True):
         super(TrainingStateController, self).__init__()
         self.params = params
-        for s in (
-                self.params.saved_model_fmt, self.params.saved_optimizer_fmt):
-            if not any(x[1] == 'epoch' for x in Formatter().parse(s)):
-                warnings.warn(
-                    'State format string "{}" does not contain "epoch" field, '
-                    'so is possibly not unique. In this case, only the state '
-                    'of the last epoch will persist'.format(s))
+        if warn:
+            for s in (
+                    self.params.saved_model_fmt,
+                    self.params.saved_optimizer_fmt):
+                if not any(x[1] == 'epoch' for x in Formatter().parse(s)):
+                    warnings.warn(
+                        'State format string "{}" does not contain "epoch" '
+                        'field, so is possibly not unique. In this case, only '
+                        'the state of the last epoch will persist. To '
+                        'suppress this warning, set warn=False'.format(s))
         self.state_csv_path = state_csv_path
         self.state_dir = state_dir
         self.cache_hist = dict()

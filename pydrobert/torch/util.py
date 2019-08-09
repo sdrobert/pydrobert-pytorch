@@ -207,7 +207,7 @@ def beam_search_advance(
                 )
             )
         eos_mask = y_prev[-1].eq(eos)
-        num_done = eos_mask.sum(1)
+        num_done = eos_mask.long().sum(1)
         if num_done.sum().item():
             if old_width < width and torch.any(num_done == old_width):
                 raise ValueError(
@@ -823,11 +823,13 @@ def _levenshtein(
     zero = torch.tensor(0., device=device)
     batch_range = torch.arange(batch_size, device=device)
     if return_mask:
+        # this dtype business is a workaround for different default mask
+        # types < 1.2.0 and > 1.2.0
         mask = torch.empty(
             (
                 max_hyp_steps + (0 if exclude_last else 1),
                 max_ref_steps, batch_size),
-            device=device, dtype=torch.uint8)
+            device=device, dtype=ins_cost.eq(ins_cost).dtype)
         mask[0, 0] = 1
         mask[0, 1:] = 0
     elif return_prf_dsts:

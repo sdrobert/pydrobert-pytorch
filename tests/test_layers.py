@@ -42,14 +42,8 @@ def test_global_soft_attention(device, dim):
     key_size = key_shape[-1]
     arange_shape = [1] * (num_dim - 1)
     arange_shape[dim] = T
-    mask = torch.where(
-        (
-            torch.arange(T, device=device).view(*arange_shape) <
-            key_lens.unsqueeze(dim)
-        ),
-        torch.tensor(1, device=device, dtype=torch.uint8),
-        torch.tensor(0, device=device, dtype=torch.uint8),
-    )
+    mask = torch.arange(T, device=device).view(*arange_shape)
+    mask = mask < key_lens.unsqueeze(dim)
     key.requires_grad_(True)
     first_attention = FirstIsBest(query_size, key_size, dim).to(device)
     equal_attention = ILoveEveryoneEqually(
@@ -141,7 +135,7 @@ def test_dot_product_soft_attention_on_transformer_input():
     assert torch.allclose(g_q1, g_q2, atol=1e-5)
     assert torch.allclose(g_k1, g_k2, atol=1e-5)
     assert torch.allclose(g_v1, g_v2, atol=1e-5)
-    mask = torch.randint(2, (num_batch, len_q, len_k), dtype=torch.uint8)
+    mask = torch.randint(2, (num_batch, len_q, len_k)).eq(1)
     out1 = matrix_attention(query, key, value, mask)
     out2 = our_attention(
         query, key.unsqueeze(2), value.unsqueeze(2),

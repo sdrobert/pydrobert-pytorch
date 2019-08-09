@@ -31,6 +31,11 @@ import warnings
 
 import torch
 
+try:
+    torch_bool = torch.bool
+except AttributeError:
+    torch_bool = torch.uint8
+
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
@@ -369,8 +374,8 @@ def _to_z_tilde(logits, b, dist):
     elif dist in CATEGORICAL_SYNONYMS:
         b = b.long()
         theta = torch.softmax(logits, dim=-1)
-        mask = torch.zeros_like(logits, dtype=torch.uint8).scatter_(
-            -1, b[..., None], 1)
+        mask = torch.arange(logits.shape[-1], device=b.device)
+        mask = (b.unsqueeze(-1) == mask)
         log_v = v.log()
         z_tilde = torch.where(
             mask,
