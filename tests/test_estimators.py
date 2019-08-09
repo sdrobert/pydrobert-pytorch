@@ -184,7 +184,7 @@ def test_convergence(markov, num_latents, device, dist, num_cat, est):
         latents = torch.rand(num_latents, num_cat).to(device)
         latents /= latents.sum(-1, keepdim=True)
         mask = torch.zeros_like(latents).scatter_(
-            -1, latents.argmax(-1, keepdim=True), 1.).byte()
+            -1, latents.argmax(-1, keepdim=True), 1.).eq(1)
         logits = torch.randn(
             num_latents, num_cat, requires_grad=True, device=device)
 
