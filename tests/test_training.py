@@ -43,8 +43,7 @@ class DummyModel(torch.nn.Module):
 
 def test_controller_stores_and_retrieves(temp_dir, device):
     torch.manual_seed(3)
-    model = DummyModel(2, 2, seed=1)
-    model.to(device)
+    model = DummyModel(2, 2, seed=1).to(device)
     optimizer = torch.optim.Adam(model.parameters())
     p = training.TrainingStateParams()
     state_csv_path = os.path.join(temp_dir, 'a.csv')
@@ -54,6 +53,7 @@ def test_controller_stores_and_retrieves(temp_dir, device):
         state_csv_path=state_csv_path,
         state_dir=state_dir,
     )
+    controller.add_entry('cool_guy_entry', int)
     epoch_info = {
         'epoch': 10,
         'es_resume_cd': 3,
@@ -63,6 +63,7 @@ def test_controller_stores_and_retrieves(temp_dir, device):
         'lr': 1e-7,
         'train_met': 10,
         'val_met': 4,
+        'cool_guy_entry': 30,
     }
     controller.save_model_and_optimizer_with_info(
         model, optimizer, epoch_info)
@@ -82,6 +83,9 @@ def test_controller_stores_and_retrieves(temp_dir, device):
         state_csv_path=state_csv_path,
         state_dir=state_dir,
     )
+    assert 'cool_guy_entry' not in controller[10]
+    assert controller[10]['es_resume_cd'] == epoch_info['es_resume_cd']
+    controller.add_entry('cool_guy_entry', int)
     assert controller[10] == epoch_info
     torch.manual_seed(4)
     model_2 = DummyModel(2, 2, seed=2)
