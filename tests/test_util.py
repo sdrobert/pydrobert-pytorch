@@ -384,3 +384,50 @@ def test_prefix_error_rates(
         padding
     )
     assert torch.allclose(exp, act)
+
+
+@pytest.mark.parametrize('dim', [0, 2, -1, None])
+def test_sequence_log_probs(device, dim):
+    torch.manual_seed(24519)
+    max_steps, num_classes, eos = 30, 10, 0
+    dim1, dim2, dim3, dim4 = 5, 2, 1, 3
+    logits = torch.full(
+        (max_steps, dim1, dim2, dim3, dim4, num_classes),
+        -float('inf'), device=device)
+    hyp = torch.randint(
+        1, num_classes, (max_steps, dim1, dim2, dim3, dim4), device=device)
+    hyp_lens = torch.randint(
+        2, max_steps, (dim1, dim2, dim3, dim4), device=device)
+    len_mask = torch.arange(max_steps, device=device).unsqueeze(-1)
+    if dim is None:
+        # hyp_lens must be 1d for packed sequences, so we get rid of dim1..dim4
+        hyp_lens = hyp_lens.view(-1)
+        hyp = hyp.view(max_steps, -1)
+        logits = logits.view(max_steps, -1, num_classes)
+        hyp_lens, _ = hyp_lens.sort(descending=True)
+    else:
+        len_mask = len_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+    hyp = hyp.masked_fill(len_mask == hyp_lens, eos)
+    logits = logits.scatter(-1, hyp.unsqueeze(-1), 0.)
+    rand_mask = torch.randint_like(hyp, 2).eq(1)
+    # > 0 to ensure that at least one valid value exists in the path
+    rand_mask = rand_mask & (len_mask < hyp_lens) & (len_mask > 0)
+    hyp = hyp.masked_fill(rand_mask, -1)
+    padding_mask = (len_mask > hyp_lens) | rand_mask
+    logits = logits.masked_fill(padding_mask.unsqueeze(-1), -float('inf'))
+    if dim is None:
+        hyp = torch.nn.utils.rnn.pack_padded_sequence(hyp, hyp_lens)
+        logits = torch.nn.utils.rnn.pack_padded_sequence(logits, hyp_lens)
+    elif dim:
+        hyp_dim = (dim + 5) % 5
+        hyp = hyp.transpose(0, hyp_dim).contiguous()
+        logits = logits.transpose(0, hyp_dim).contiguous()
+    log_probs = util.sequence_log_probs(logits, hyp, dim=dim, eos=eos)
+    assert log_probs.eq(0.).all()
+    if dim is None:
+        logits = torch.nn.utils.rnn.PackedSequence(
+            torch.randn_like(logits[0]), logits[1])
+    else:
+        logits = torch.randn_like(logits)
+    log_probs = util.sequence_log_probs(logits, hyp, dim=dim, eos=eos)
+    assert log_probs.ne(0.).any()
