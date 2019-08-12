@@ -43,8 +43,7 @@ class DummyModel(torch.nn.Module):
 
 def test_controller_stores_and_retrieves(temp_dir, device):
     torch.manual_seed(3)
-    model = DummyModel(2, 2, seed=1)
-    model.to(device)
+    model = DummyModel(2, 2, seed=1).to(device)
     optimizer = torch.optim.Adam(model.parameters())
     p = training.TrainingStateParams()
     state_csv_path = os.path.join(temp_dir, 'a.csv')
@@ -54,6 +53,7 @@ def test_controller_stores_and_retrieves(temp_dir, device):
         state_csv_path=state_csv_path,
         state_dir=state_dir,
     )
+    controller.add_entry('cool_guy_entry', int)
     epoch_info = {
         'epoch': 10,
         'es_resume_cd': 3,
@@ -63,6 +63,7 @@ def test_controller_stores_and_retrieves(temp_dir, device):
         'lr': 1e-7,
         'train_met': 10,
         'val_met': 4,
+        'cool_guy_entry': 30,
     }
     controller.save_model_and_optimizer_with_info(
         model, optimizer, epoch_info)
@@ -82,6 +83,9 @@ def test_controller_stores_and_retrieves(temp_dir, device):
         state_csv_path=state_csv_path,
         state_dir=state_dir,
     )
+    assert 'cool_guy_entry' not in controller[10]
+    assert controller[10]['es_resume_cd'] == epoch_info['es_resume_cd']
+    controller.add_entry('cool_guy_entry', int)
     assert controller[10] == epoch_info
     torch.manual_seed(4)
     model_2 = DummyModel(2, 2, seed=2)
@@ -127,6 +131,14 @@ def test_controller_scheduling():
     for _ in range(9):
         assert controller.update_for_epoch(model, optimizer, .68, .68)
     assert not controller.update_for_epoch(model, optimizer, .68, .68)
+    p.early_stopping_threshold = 0.0
+    p.reduce_lr_threshold = 0.0
+    controller = training.TrainingStateController(p)
+    controller.load_model_and_optimizer_for_epoch(model, optimizer)
+    init_lr = optimizer.param_groups[0]['lr']
+    for _ in range(20):
+        assert controller.update_for_epoch(model, optimizer, 0., 0.)
+    assert is_close(optimizer.param_groups[0]['lr'], init_lr)
 
 
 @pytest.mark.cpu
@@ -318,3 +330,19 @@ def test_hard_optimal_completion_distillation_loss(
     g, = torch.autograd.grad([l1], [logits])
     assert torch.all(g.masked_select(inv_len_mask.unsqueeze(-1)).eq(0.))
     assert not torch.all(g.eq(0.))
+
+
+@pytest.mark.cpu
+def test_training_state_params_build_from_optuna_trial():
+    optuna = pytest.importorskip('optuna')  # conda doesn't have it
+    low = training.TrainingStateParams.params()['num_epochs'].softbounds[0]
+
+    def objective(trial):
+        params = training.TrainingStateParams.build_from_optuna_trial(
+            trial, only={'num_epochs', 'log10_learning_rate', 'ignore_me'})
+        return params.num_epochs ** 2
+
+    sampler = optuna.samplers.TPESampler(seed=10)
+    study = optuna.create_study(sampler=sampler)
+    study.optimize(objective, n_trials=30)
+    assert study.best_params['num_epochs'] == low

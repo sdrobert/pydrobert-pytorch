@@ -24,6 +24,7 @@ import warnings
 
 from csv import DictReader, writer
 from string import Formatter
+from collections import OrderedDict
 
 import torch
 import param
@@ -388,7 +389,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
 class TrainingStateParams(param.Parameterized):
     '''Parameters controlling a TrainingStateController'''
     num_epochs = param.Integer(
-        None, bounds=(1, None),
+        None, bounds=(1, None), softbounds=(10, 100),
         doc='Total number of epochs to run for. If unspecified, runs '
         'until the early stopping criterion (or infinitely if disabled) '
     )
@@ -398,36 +399,39 @@ class TrainingStateParams(param.Parameterized):
         'built-in rate'
     )
     early_stopping_threshold = param.Number(
-        0., bounds=(0, None), softbounds=(0, 1.),
-        doc='Minimum improvement in xent from the last best that resets the '
-        'early stopping clock. If zero, early stopping will not be performed'
+        0.0, bounds=(0, None), softbounds=(0, 1.),
+        doc='Minimum magnitude decrease in validation metric from the last '
+        'best that resets the early stopping clock. If zero, the learning '
+        'rate will never be reduced'
     )
     early_stopping_patience = param.Integer(
         1, bounds=(1, None), softbounds=(1, 30),
-        doc='Number of epochs where, if the classifier has failed to '
-        'improve it\'s error, training is halted'
+        doc='Number of epochs after which, if the classifier has failed to '
+        'decrease its validation metric by a threshold, training is '
+        'halted'
     )
     early_stopping_burnin = param.Integer(
         0, bounds=(0, None), softbounds=(0, 10),
         doc='Number of epochs before the early stopping criterion kicks in'
     )
     reduce_lr_threshold = param.Number(
-        0., bounds=(0, None), softbounds=(0, 1.),
-        doc='Minimum improvement in xent from the last best that resets the '
-        'clock for reducing the learning rate. If zero, the learning rate '
-        'will not be reduced during training. Se'
+        0.0, bounds=(0, None), softbounds=(0, 1.),
+        doc='Minimum magnitude decrease in validation metric from the last '
+        'best that resets the clock for reducing the learning rate. If zero, '
+        'the learning rate will never be reduced'
     )
     reduce_lr_factor = param.Number(
         None, bounds=(0, 1), softbounds=(0, .5),
         inclusive_bounds=(False, False),
         doc='Factor by which to multiply the learning rate if there has '
-        'been no improvement in the error after "reduce_lr_patience" '
+        'been no improvement in the  after "reduce_lr_patience" '
         'epochs. If unset, uses the pytorch defaults'
     )
     reduce_lr_patience = param.Integer(
         1, bounds=(1, None), softbounds=(1, 30),
-        doc='Number of epochs where, if the classifier has failed to '
-        'improve it\'s error, the learning rate is reduced'
+        doc='Number of epochs after which, if the classifier has failed to '
+        'decrease its validation metric by a threshold, the learning rate is '
+        'reduced'
     )
     reduce_lr_cooldown = param.Integer(
         0, bounds=(0, None), softbounds=(0, 10),
@@ -436,8 +440,8 @@ class TrainingStateParams(param.Parameterized):
     )
     reduce_lr_log10_epsilon = param.Number(
         -8, bounds=(None, 0),
-        doc='The log10 absolute difference between error rates that, below '
-        'which, reducing the error rate is considered meaningless'
+        doc='The log10 absolute difference between learning rates that, '
+        'below which, reducing the learning rate is considered meaningless'
     )
     reduce_lr_burnin = param.Integer(
         0, bounds=(0, None), softbounds=(0, 10),
@@ -447,7 +451,7 @@ class TrainingStateParams(param.Parameterized):
     seed = param.Integer(
         None,
         doc='Seed used for training procedures (e.g. dropout). If '
-        'unset, will not touch torch\'s seeding'
+        "unset, will not touch torch's seeding"
     )
     keep_last_and_best_only = param.Boolean(
         True,
@@ -468,6 +472,62 @@ class TrainingStateParams(param.Parameterized):
         'information. Entries from the state csv are used to format this '
         'string (see TrainingStateController)'
     )
+
+    @classmethod
+    def build_from_optuna_trial(cls, trial, base=None, only=None):
+        '''Build a TrainingStateParams by sampling from an Optuna trial
+
+        `Optuna <https://optuna.org/>`__ is a define-by-run hyperparameter
+        optimization framework. This class method constructs a
+        :class:`TrainingStateParams` instance with parameter values sampled
+        using `trial`. The folling parameter values can be sampled
+
+        - num_epochs
+        - log10_learning_rate
+        - early_stopping_threshold
+        - early_stopping_patience
+        - early_stopping_burnin
+        - reduce_lr_threshold
+        - reduce_lr_patience
+        - reduce_lr_cooldown
+
+        Parameters
+        ----------
+        trial : optuna.trial.Trial
+        base : TrainingStateParams or None, optional
+            If set, parameter values will be loaded into this instance. If
+            unset, a new instance will be created
+        only : collection or None, optional
+            Only sample parameters with names in this set. If :obj:`None`,
+            all the above will be sampled
+
+        Returns
+        -------
+        params : TrainingStateController
+            Sampled parameter values are populated in `params`
+        '''
+        if only is None:
+            only = {
+                'num_epochs', 'log10_learning_rate',
+                'early_stopping_threshold', 'early_stopping_patience',
+                'early_stopping_burnin', 'reduce_lr_threshold',
+                'reduce_lr_patience', 'reduce_lr_cooldown',
+            }
+        params = cls() if base is None else base
+        pdict = params.params()
+        eps = torch.finfo(torch.float).eps
+        for name in only:
+            pp = pdict.get(name, None)
+            if pp is None:
+                continue
+            softbounds = pp.get_soft_bounds()
+            if isinstance(pp, param.Integer):
+                val = trial.suggest_int(name, *softbounds)
+            else:
+                softbounds = softbounds[0] + eps, softbounds[1]
+                val = trial.suggest_uniform(name, *softbounds)
+            setattr(params, name, val)
+        return params
 
 
 class TrainingStateController(object):
@@ -521,6 +581,7 @@ class TrainingStateController(object):
            is assumed to be lower is better
         8. "val_met": mean validation metric in exponent format. The metric
            is assumed to be lower is better
+        9. Any additional entries added through :func:`add_entry`
 
         If unset, the history will not be stored/loaded
     state_dir : str, optional
@@ -535,6 +596,8 @@ class TrainingStateController(object):
     params : TrainingStateParams
     state_csv_path : str or None
     state_dir : str or None
+    user_entry_types : OrderedDict
+        A collection of user entries specified by :func:`add_entry`
     cache_hist : dict
         A dictionary of cached results per epoch. Is not guaranteed to be
         up-to-date with `state_csv_path` unless :func:`update_cache` is called
@@ -556,33 +619,86 @@ class TrainingStateController(object):
         self.state_csv_path = state_csv_path
         self.state_dir = state_dir
         self.cache_hist = dict()
+        self.user_entry_types = OrderedDict()
+
+    def add_entry(self, name, type_=str):
+        '''Add an entry to to be stored and retrieved at every epoch
+
+        This method is useful when training loops need specialized, persistent
+        information on every epoch. Prior to the first time any information is
+        saved via :func:`update_for_epoch`, this method can be called with an
+        entry `name` and optional `type_`. The user is then expected to provide
+        a keyword argument with that `name` every time :func:`update_for_epoch`
+        is called. The values of those entries can be retrieved via
+        :func:`get_info`, cast to `type_`, for any saved epoch
+
+        Parameters
+        ----------
+        name : str
+        type_ : type, optional
+            `type_` should be a type that is serialized from a string via
+            `type_(str_obj)` and serialized to a string via `str(type_obj)`
+
+        Examples
+        --------
+        >>> params = TrainingStateParams()
+        >>> controller = TrainingStateController(params)
+        >>> model = torch.nn.Linear(10, 1)
+        >>> optimizer = torch.optim.Adam(model.parameters())
+        >>> controller.add_entry('important_value', int)
+        >>> controller.update_for_epoch(
+        ...     model, optimizer, 0.1, 0.1, important_value=3)
+        >>> controller.update_for_epoch(
+        ...     model, optimizer, 0.2, 0.01, important_value=4)
+        >>> assert controller[1]['important_value'] == 3
+        >>> assert controller[2]['important_value'] == 4
+
+        Notes
+        -----
+        :func:`add_entry` must be called prior to :func:`update_for_epoch`
+        or :func:`save_info_to_hist`, or it may corrupt the experiment history.
+        However, the controller can safely ignore additional entries when
+        loading history from a CSV. Thus, there is no need to call
+        :func:`add_entry` if no new training is to be done (unless those
+        entries are needed outside of training)
+        '''
+        if name in {
+                "epoch", "es_resume_cd", "es_patience_cd", "rlr_resume_cd",
+                "rlr_patience_cd", "lr", "train_met", "val_met"}:
+            raise ValueError('"{}" is a reserved entry name'.format(name))
+        if not isinstance(type_, type):
+            raise ValueError('type_ ({}) must be a type'.format(type_))
+        self.user_entry_types[name] = type_
+        self.update_cache()
 
     def update_cache(self):
         '''Update the cache with history stored in state_csv_path'''
-        if 0 not in self.cache_hist:
-            # add a dummy entry for epoch "0" just to make logic easier. We
-            # won't save it
-            self.cache_hist[0] = {
-                'epoch': 0,
-                'es_resume_cd': self.params.early_stopping_burnin,
-                'es_patience_cd': self.params.early_stopping_patience,
-                'rlr_resume_cd': self.params.reduce_lr_burnin,
-                'rlr_patience_cd': self.params.reduce_lr_patience,
-                'train_met': float('inf'),
-                'val_met': float('inf'),
-                'lr': None,
-            }
-            if self.params.log10_learning_rate is not None:
-                self.cache_hist[0]['lr'] = (
-                    10 ** self.params.log10_learning_rate)
+        # add a dummy entry for epoch "0" just to make logic easier. We
+        # won't save it
+        self.cache_hist[0] = {
+            'epoch': 0,
+            'es_resume_cd': self.params.early_stopping_burnin,
+            'es_patience_cd': self.params.early_stopping_patience,
+            'rlr_resume_cd': self.params.reduce_lr_burnin,
+            'rlr_patience_cd': self.params.reduce_lr_patience,
+            'train_met': float('inf'),
+            'val_met': float('inf'),
+            'lr': None,
+        }
+        self.cache_hist[0].update(
+            dict((key, None) for key in self.user_entry_types))
+        if self.params.log10_learning_rate is not None:
+            self.cache_hist[0]['lr'] = (
+                10 ** self.params.log10_learning_rate)
         if (self.state_csv_path is None or
                 not os.path.exists(self.state_csv_path)):
             return
         with open(self.state_csv_path) as f:
             reader = DictReader(f)
             for row in reader:
-                self.cache_hist[int(row['epoch'])] = {
-                    'epoch': int(row['epoch']),
+                epoch = int(row['epoch'])
+                self.cache_hist[epoch] = {
+                    'epoch': epoch,
                     'es_resume_cd': int(row['es_resume_cd']),
                     'es_patience_cd': int(row['es_patience_cd']),
                     'rlr_resume_cd': int(row['rlr_resume_cd']),
@@ -591,6 +707,8 @@ class TrainingStateController(object):
                     'train_met': float(row['train_met']),
                     'val_met': float(row['val_met']),
                 }
+                for name, type_ in self.user_entry_types.items():
+                    self.cache_hist[epoch][name] = type_(row[name])
 
     def get_last_epoch(self):
         '''int : last finished epoch from training, or 0 if no history'''
@@ -701,7 +819,8 @@ class TrainingStateController(object):
 
         If there's an entry present for `epoch`, return it. The value is a
         dictionary with the keys "epoch", "es_resume_cd", "es_patience_cd",
-        "rlr_resume_cd", "rlr_patience_cd", "lr", "train_met", and "val_met".
+        "rlr_resume_cd", "rlr_patience_cd", "lr", "train_met", and "val_met",
+        as well as any additional entries specified through :func:`add_entry`.
 
         If there's no entry for `epoch`, and no additional arguments were
         passed to this method, it raises a :class:`KeyError`. If an additional
@@ -732,7 +851,8 @@ class TrainingStateController(object):
         info : dict
             A dictionary with the entries "epoch", "es_resume_cd",
             "es_patience_cd", "rlr_resume_cd", "rlr_patience_cd", "lr",
-            "train_met", and "val_met"
+            "train_met", "val_met", and any entries specified through
+            :func:`add_entry`
         '''
         if self.state_dir is None:
             return
@@ -768,7 +888,8 @@ class TrainingStateController(object):
         info : dict
             A dictionary with the entries "epoch", "es_resume_cd",
             "es_patience_cd", "rlr_resume_cd", "rlr_patience_cd", "lr",
-            "train_met", and "val_met"
+            "train_met", "val_met", and any other entries specified via
+            :func:`add_entry`
         '''
         self.cache_hist[info['epoch']] = info
         if self.state_csv_path is None:
@@ -817,7 +938,7 @@ class TrainingStateController(object):
                     'lr',
                     'train_met',
                     'val_met',
-                ])
+                ] + list(self.user_entry_types))
             wr.writerow([
                 epoch_fmt_str.format(info['epoch']),
                 es_resume_cd_fmt_str.format(info['es_resume_cd']),
@@ -827,10 +948,11 @@ class TrainingStateController(object):
                 lr_fmt_str.format(info['lr']),
                 train_met_fmt_str.format(info['train_met']),
                 val_met_fmt_str.format(info['val_met']),
-            ])
+            ] + [str(info[x]) for x in self.user_entry_types])
 
     def update_for_epoch(
-            self, model, optimizer, train_met, val_met, epoch=None):
+            self, model, optimizer, train_met, val_met, epoch=None,
+            **kwargs):
         '''Update history and optimizer after latest epoch results
 
         Parameters
@@ -844,6 +966,9 @@ class TrainingStateController(object):
         epoch : int, optional
             The epoch that just finished. If unset, it is inferred to be one
             after the last epoch in the history
+        kwargs : Keyword arguments, optional
+            Additional keyword arguments can be used to specify the values
+            of entries specified via :func:`add_entry`
 
         Returns
         -------
@@ -862,6 +987,22 @@ class TrainingStateController(object):
             raise ValueError(
                 'no entry for the previous epoch {}, so unable to update'
                 ''.format(epoch))
+        for key, value in kwargs.items():
+            if key not in self.user_entry_types:
+                raise TypeError(
+                    'update_for_epoch() got an unexpected keyword argument '
+                    '"{}" (did you forget to add_entry()?)'.format(key))
+            elif not isinstance(value, self.user_entry_types[key]):
+                raise ValueError(
+                    'keyword argument "{}" value is not of type {}'
+                    ''.format(key, self.user_entry_types[key]))
+            info[key] = value
+        remaining_user_entries = set(self.user_entry_types) - set(kwargs)
+        if remaining_user_entries:
+            raise TypeError(
+                'The following keyword arguments were not provided as keyword '
+                'arguments but were specified via add_entry(): {}'
+                ''.format(sorted(remaining_user_entries)))
         last_best = self.get_best_epoch()
         best_info = self[last_best]
         if info['lr'] is None:
