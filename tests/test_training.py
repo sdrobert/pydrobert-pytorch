@@ -338,7 +338,8 @@ def test_training_state_params_build_from_optuna_trial():
     low = training.TrainingStateParams.params()['num_epochs'].softbounds[0]
 
     def objective(trial):
-        params = training.TrainingStateParams.build_from_optuna_trial(trial)
+        params = training.TrainingStateParams.build_from_optuna_trial(
+            trial, only={'num_epochs', 'log10_learning_rate', 'ignore_me'})
         return params.num_epochs ** 2
 
     sampler = optuna.samplers.TPESampler(seed=10)

@@ -517,7 +517,9 @@ class TrainingStateParams(param.Parameterized):
         pdict = params.params()
         eps = torch.finfo(torch.float).eps
         for name in only:
-            pp = pdict[name]
+            pp = pdict.get(name, None)
+            if pp is None:
+                continue
             softbounds = pp.get_soft_bounds()
             if isinstance(pp, param.Integer):
                 val = trial.suggest_int(name, *softbounds)
