@@ -473,6 +473,60 @@ class TrainingStateParams(param.Parameterized):
         'string (see TrainingStateController)'
     )
 
+    @classmethod
+    def build_from_optuna_trial(cls, trial, base=None, only=None):
+        '''Build a TrainingStateController by sampling from an Optuna trial
+
+        `Optuna <https://optuna.org/>`__ is a define-by-run hyperparameter
+        optimization framework. This class method constructs a
+        :class:`TrainingStateController` instance with parameter values sampled
+        using `trial`. The folling parameter values can be sampled
+
+        - num_epochs
+        - log10_learning_rate
+        - early_stopping_threshold
+        - early_stopping_patience
+        - early_stopping_burnin
+        - reduce_lr_threshold
+        - reduce_lr_patience
+        - reduce_lr_cooldown
+
+        Parameters
+        ----------
+        trial : optuna.trial.Trial
+        base : TrainingStateController or None, optional
+            If set, parameter values will be loaded into this instance. If
+            unset, a new instance will be created
+        only : collection or None, optional
+            Only sample parameters with names in this set. If :obj:`None`,
+            all the above will be sampled
+
+        Returns
+        -------
+        params : TrainingStateController
+            Sampled parameter values are populated in `params`
+        '''
+        if only is None:
+            only = {
+                'num_epochs', 'log10_learning_rate',
+                'early_stopping_threshold', 'early_stopping_patience',
+                'early_stopping_burnin', 'reduce_lr_threshold',
+                'reduce_lr_patience', 'reduce_lr_cooldown',
+            }
+        params = cls() if base is None else base
+        pdict = params.params()
+        eps = torch.finfo(torch.float).eps
+        for name in only:
+            pp = pdict[name]
+            softbounds = pp.get_soft_bounds()
+            if isinstance(pp, param.Integer):
+                val = trial.suggest_int(name, *softbounds)
+            else:
+                softbounds = softbounds[0] + eps, softbounds[1]
+                val = trial.suggest_uniform(name, *softbounds)
+            setattr(params, name, val)
+        return params
+
 
 class TrainingStateController(object):
     '''Controls the state of training a model

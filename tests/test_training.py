@@ -330,3 +330,18 @@ def test_hard_optimal_completion_distillation_loss(
     g, = torch.autograd.grad([l1], [logits])
     assert torch.all(g.masked_select(inv_len_mask.unsqueeze(-1)).eq(0.))
     assert not torch.all(g.eq(0.))
+
+
+@pytest.mark.cpu
+def test_training_state_params_build_from_optuna_trial():
+    optuna = pytest.importorskip('optuna')  # conda doesn't have it
+    low = training.TrainingStateParams.params()['num_epochs'].softbounds[0]
+
+    def objective(trial):
+        params = training.TrainingStateParams.build_from_optuna_trial(trial)
+        return params.num_epochs ** 2
+
+    sampler = optuna.samplers.TPESampler(seed=10)
+    study = optuna.create_study(sampler=sampler)
+    study.optimize(objective, n_trials=30)
+    assert study.best_params['num_epochs'] == low
