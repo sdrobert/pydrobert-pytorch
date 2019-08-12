@@ -389,7 +389,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
 class TrainingStateParams(param.Parameterized):
     '''Parameters controlling a TrainingStateController'''
     num_epochs = param.Integer(
-        None, bounds=(1, None),
+        None, bounds=(1, None), softbounds=(10, 100),
         doc='Total number of epochs to run for. If unspecified, runs '
         'until the early stopping criterion (or infinitely if disabled) '
     )
@@ -399,36 +399,39 @@ class TrainingStateParams(param.Parameterized):
         'built-in rate'
     )
     early_stopping_threshold = param.Number(
-        0., bounds=(0, None), softbounds=(0, 1.),
-        doc='Minimum improvement in xent from the last best that resets the '
-        'early stopping clock. If zero, early stopping will not be performed'
+        0.0, bounds=(0, None), softbounds=(0, 1.),
+        doc='Minimum magnitude decrease in validation metric from the last '
+        'best that resets the early stopping clock. If zero, the learning '
+        'rate will never be reduced'
     )
     early_stopping_patience = param.Integer(
         1, bounds=(1, None), softbounds=(1, 30),
-        doc='Number of epochs where, if the classifier has failed to '
-        'improve it\'s error, training is halted'
+        doc='Number of epochs after which, if the classifier has failed to '
+        'decrease its validation metric by a threshold, training is '
+        'halted'
     )
     early_stopping_burnin = param.Integer(
         0, bounds=(0, None), softbounds=(0, 10),
         doc='Number of epochs before the early stopping criterion kicks in'
     )
     reduce_lr_threshold = param.Number(
-        0., bounds=(0, None), softbounds=(0, 1.),
-        doc='Minimum improvement in xent from the last best that resets the '
-        'clock for reducing the learning rate. If zero, the learning rate '
-        'will not be reduced during training. Se'
+        0.0, bounds=(0, None), softbounds=(0, 1.),
+        doc='Minimum magnitude decrease in validation metric from the last '
+        'best that resets the clock for reducing the learning rate. If zero, '
+        'the learning rate will never be reduced'
     )
     reduce_lr_factor = param.Number(
         None, bounds=(0, 1), softbounds=(0, .5),
         inclusive_bounds=(False, False),
         doc='Factor by which to multiply the learning rate if there has '
-        'been no improvement in the error after "reduce_lr_patience" '
+        'been no improvement in the  after "reduce_lr_patience" '
         'epochs. If unset, uses the pytorch defaults'
     )
     reduce_lr_patience = param.Integer(
         1, bounds=(1, None), softbounds=(1, 30),
-        doc='Number of epochs where, if the classifier has failed to '
-        'improve it\'s error, the learning rate is reduced'
+        doc='Number of epochs after which, if the classifier has failed to '
+        'decrease its validation metric by a threshold, the learning rate is '
+        'reduced'
     )
     reduce_lr_cooldown = param.Integer(
         0, bounds=(0, None), softbounds=(0, 10),
@@ -437,8 +440,8 @@ class TrainingStateParams(param.Parameterized):
     )
     reduce_lr_log10_epsilon = param.Number(
         -8, bounds=(None, 0),
-        doc='The log10 absolute difference between error rates that, below '
-        'which, reducing the error rate is considered meaningless'
+        doc='The log10 absolute difference between learning rates that, '
+        'below which, reducing the learning rate is considered meaningless'
     )
     reduce_lr_burnin = param.Integer(
         0, bounds=(0, None), softbounds=(0, 10),
@@ -448,7 +451,7 @@ class TrainingStateParams(param.Parameterized):
     seed = param.Integer(
         None,
         doc='Seed used for training procedures (e.g. dropout). If '
-        'unset, will not touch torch\'s seeding'
+        "unset, will not touch torch's seeding"
     )
     keep_last_and_best_only = param.Boolean(
         True,

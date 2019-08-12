@@ -131,6 +131,14 @@ def test_controller_scheduling():
     for _ in range(9):
         assert controller.update_for_epoch(model, optimizer, .68, .68)
     assert not controller.update_for_epoch(model, optimizer, .68, .68)
+    p.early_stopping_threshold = 0.0
+    p.reduce_lr_threshold = 0.0
+    controller = training.TrainingStateController(p)
+    controller.load_model_and_optimizer_for_epoch(model, optimizer)
+    init_lr = optimizer.param_groups[0]['lr']
+    for _ in range(20):
+        assert controller.update_for_epoch(model, optimizer, 0., 0.)
+    assert is_close(optimizer.param_groups[0]['lr'], init_lr)
 
 
 @pytest.mark.cpu
