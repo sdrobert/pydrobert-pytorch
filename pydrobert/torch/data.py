@@ -1098,7 +1098,7 @@ class SpectDataSetParams(SpectDataParams, DataSetParams):
     pass
 
 
-def spect_seq_to_batch(seq):
+def spect_seq_to_batch(seq, batch_first=True):
     r'''Convert a sequence of spectral data to a batch
 
     Assume `seq` is a finite length sequence of tuples ``feat, ali, ref``,
@@ -1110,12 +1110,13 @@ def spect_seq_to_batch(seq):
     sequence into a tuple of ``feats, alis, refs, feat_sizes, ref_sizes``.
     `feats` and `alis` will have dimensions ``(N, T*, F)``, and ``(N, T*)``,
     resp., where ``N`` is the batch size, and ``T*`` is the maximum number of
-    frames in `seq`. Similarly, `refs` will have dimensions ``(N, R*, 3)``.
-    `feat_sizes` and `ref_sizes` are :class:`torch.LongTensor`s of shape
-    ``(N,)`` containing the original ``T`` and ``R`` values. The batch will be
-    sorted by decreasing numbers of frames. `feats` is zero-padded while `alis`
-    and `refs` are padded with module constant
-    :const:`pydrobert.torch.INDEX_PAD_VALUE`
+    frames in `seq` (or ``(T*, N, F)``, ``(T*, N)`` if `batch_first` is
+    :obj:`False`). Similarly, `refs` will have dimensions ``(N, R*, 3)`` (or
+    ``(R*, N, 3)``). `feat_sizes` and `ref_sizes` are
+    :class:`torch.LongTensor`s of shape ``(N,)`` containing the original ``T``
+    and ``R`` values. The batch will be sorted by decreasing numbers of frames.
+    `feats` is zero-padded while `alis` and `refs` are padded with module
+    constant :const:`pydrobert.torch.INDEX_PAD_VALUE`
 
     If ``ali`` or ``ref`` is :obj:`None` in any element, `alis` or `refs` and
     `ref_sizes` will also be :obj:`None`
@@ -1133,41 +1134,27 @@ def spect_seq_to_batch(seq):
     ref_sizes : torch.LongTensor or None
     '''
     seq = sorted(seq, key=lambda x: -x[0].shape[0])
-    T_star, F = seq[0][0].shape
-    feats = torch.zeros(len(seq), T_star, F)
-    feat_sizes = []
-    has_ali = all(x[1] is not None for x in seq)
-    R_star = max(float('inf') if x[2] is None else x[2].shape[0] for x in seq)
-    has_ref = R_star < float('inf')
+    feats, alis, refs = zip(*seq)
+    has_ali = all(x is not None for x in alis)
+    has_ref = all(x is not None for x in refs)
+    feat_sizes = torch.tensor([len(x) for x in feats])
+    feats = torch.nn.utils.rnn.pad_sequence(
+        feats, padding_value=0., batch_first=batch_first)
     if has_ali:
-        alis = torch.full(
-            (len(seq), T_star), pydrobert.torch.INDEX_PAD_VALUE,
-            dtype=torch.long)
-    else:
-        alis = None
+        alis = torch.nn.utils.rnn.pad_sequence(
+            alis, padding_value=pydrobert.torch.INDEX_PAD_VALUE,
+            batch_first=batch_first)
     if has_ref:
-        refs = torch.full(
-            (len(seq), R_star, 3), pydrobert.torch.INDEX_PAD_VALUE,
-            dtype=torch.long)
-        ref_sizes = []
-    else:
-        refs = None
-        ref_sizes = None
-    for n, (feat, ali, ref) in enumerate(seq):
-        feat_size = feat.shape[0]
-        feats[n, :feat_size] = feat
-        feat_sizes.append(feat_size)
-        if has_ali:
-            alis[n, :feat_size] = ali
-        if has_ref:
-            ref_size = ref.shape[0]
-            ref_sizes.append(ref_size)
-            refs[n, :ref_size] = ref
-
+        ref_sizes = torch.tensor([len(x) for x in refs])
+        refs = torch.nn.utils.rnn.pad_sequence(
+            refs, padding_value=pydrobert.torch.INDEX_PAD_VALUE,
+            batch_first=batch_first)
     return (
-        feats, alis, refs,
-        feat_sizes if feat_sizes is None else torch.tensor(feat_sizes),
-        ref_sizes if ref_sizes is None else torch.tensor(ref_sizes),
+        feats,
+        alis if has_ali else None,
+        refs if has_ref else None,
+        feat_sizes,
+        ref_sizes if has_ref else None,
     )
 
 

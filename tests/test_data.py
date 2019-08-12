@@ -479,7 +479,8 @@ def test_context_window_seq_to_batch(feat_sizes, include_ali):
 @pytest.mark.cpu
 @pytest.mark.parametrize('include_ali', [True, False])
 @pytest.mark.parametrize('include_ref', [True, False])
-def test_spect_seq_to_batch(include_ali, include_ref):
+@pytest.mark.parametrize('batch_first', [True, False])
+def test_spect_seq_to_batch(include_ali, include_ref, batch_first):
     torch.manual_seed(1)
     feat_sizes = tuple(
         torch.randint(1, 30, (1,)).long().item()
@@ -500,10 +501,17 @@ def test_spect_seq_to_batch(include_ali, include_ref):
         ref_sizes = repeat(None)
         refs = repeat(None)
     batch_feats, batch_ali, batch_ref, batch_feat_sizes, batch_ref_sizes = (
-        data.spect_seq_to_batch(zip(feats, alis, refs)))
+        data.spect_seq_to_batch(
+            zip(feats, alis, refs), batch_first=batch_first))
     feat_sizes, feats, alis, refs, ref_sizes = zip(*sorted(
         zip(feat_sizes, feats, alis, refs, ref_sizes), key=lambda x: -x[0]))
     assert torch.all(torch.tensor(feat_sizes) == batch_feat_sizes)
+    if not batch_first:
+        batch_feats = batch_feats.transpose(0, 1)
+        if include_ali:
+            batch_ali = batch_ali.transpose(0, 1)
+        if include_ref:
+            batch_ref = batch_ref.transpose(0, 1)
     assert all(
         torch.allclose(a[:b.shape[0]], b) and
         torch.allclose(a[b.shape[0]:], torch.tensor([0.]))
