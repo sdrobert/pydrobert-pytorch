@@ -479,7 +479,8 @@ def test_context_window_seq_to_batch(feat_sizes, include_ali):
 @pytest.mark.cpu
 @pytest.mark.parametrize('include_ali', [True, False])
 @pytest.mark.parametrize('include_ref', [True, False])
-def test_spect_seq_to_batch(include_ali, include_ref):
+@pytest.mark.parametrize('batch_first', [True, False])
+def test_spect_seq_to_batch(include_ali, include_ref, batch_first):
     torch.manual_seed(1)
     feat_sizes = tuple(
         torch.randint(1, 30, (1,)).long().item()
@@ -500,10 +501,17 @@ def test_spect_seq_to_batch(include_ali, include_ref):
         ref_sizes = repeat(None)
         refs = repeat(None)
     batch_feats, batch_ali, batch_ref, batch_feat_sizes, batch_ref_sizes = (
-        data.spect_seq_to_batch(zip(feats, alis, refs)))
+        data.spect_seq_to_batch(
+            zip(feats, alis, refs), batch_first=batch_first))
     feat_sizes, feats, alis, refs, ref_sizes = zip(*sorted(
         zip(feat_sizes, feats, alis, refs, ref_sizes), key=lambda x: -x[0]))
     assert torch.all(torch.tensor(feat_sizes) == batch_feat_sizes)
+    if not batch_first:
+        batch_feats = batch_feats.transpose(0, 1)
+        if include_ali:
+            batch_ali = batch_ali.transpose(0, 1)
+        if include_ref:
+            batch_ref = batch_ref.transpose(0, 1)
     assert all(
         torch.allclose(a[:b.shape[0]], b) and
         torch.allclose(a[b.shape[0]:], torch.tensor([0.]))
@@ -553,7 +561,12 @@ def test_spect_training_data_loader(temp_dir, populate_torch_dir, eos):
         ep_feat_sizes, ep_ref_sizes = [], []
         max_T = 0
         max_R = 0
+        batch_first = data_loader.batch_first
         for b_feats, b_ali, b_ref, b_feat_sizes, b_ref_sizes in data_loader:
+            if not batch_first:
+                b_feats = b_feats.transpose(0, 1)
+                b_ali = b_ali.transpose(0, 1)
+                b_ref = b_ref.transpose(0, 1)
             max_T = max(max_T, b_feat_sizes[0])
             R_star = max(b_ref_sizes)
             max_R = max(max_R, R_star)
@@ -614,6 +627,10 @@ def test_spect_training_data_loader(temp_dir, populate_torch_dir, eos):
     data_loader = data.SpectTrainingDataLoader(temp_dir, p, num_workers=4)
     _compare_epochs(ep0, _get_epoch(False), True)
     _compare_epochs(ep1, _get_epoch(False), True)
+    data_loader.batch_first = False
+    data_loader.epoch = 0
+    _compare_epochs(ep0, _get_epoch(False), True)
+    _compare_epochs(ep1, _get_epoch(False), True)
 
 
 @pytest.mark.cpu
@@ -641,11 +658,16 @@ def test_spect_evaluation_data_loader(temp_dir, populate_torch_dir, eos):
     data_loader = data.SpectEvaluationDataLoader(temp_dir, p)
 
     def _compare_data_loader():
+        batch_first = data_loader.batch_first
         assert len(data_loader) == 4
         cur_idx = 0
         for (
                 b_feats, b_ali, b_ref, b_feat_sizes, b_ref_sizes, b_utt_ids
                 ) in data_loader:
+            if not batch_first:
+                b_feats = b_feats.transpose(0, 1)
+                b_ali = b_ali.transpose(0, 1)
+                b_ref = b_ref.transpose(0, 1)
             R_star = max(b_ref_sizes)
             assert tuple(b_feats.shape) == (5, b_feat_sizes[0], 5)
             assert tuple(b_ali.shape) == (5, b_feat_sizes[0])
@@ -681,6 +703,8 @@ def test_spect_evaluation_data_loader(temp_dir, populate_torch_dir, eos):
     _compare_data_loader()  # order should not change
     data_loader = data.SpectEvaluationDataLoader(temp_dir, p, num_workers=4)
     _compare_data_loader()  # order should still not change
+    data_loader.batch_first = False
+    _compare_data_loader()
 
 
 @pytest.mark.cpu

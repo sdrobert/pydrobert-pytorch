@@ -159,6 +159,7 @@ class SpectDataSet(torch.utils.data.Dataset):
     --------
     Creating a spectral data directory with random data
 
+    >>> import os
     >>> data_dir = 'data'
     >>> os.makedirs(data_dir + '/feat', exist_ok=True)
     >>> os.makedirs(data_dir + '/ali', exist_ok=True)
@@ -171,7 +172,7 @@ class SpectDataSet(torch.utils.data.Dataset):
     >>>     num_tokens = torch.randint(
     ...         min_ref, max_ref + 1, (1,)).long().item()
     >>>     feats = torch.randn(num_frames, num_filts)
-    >>>     torch.save(feats, data_dir + '/feats/{:02d}.pt'.format(utt_idx))
+    >>>     torch.save(feats, data_dir + '/feat/{:02d}.pt'.format(utt_idx))
     >>>     ali = torch.randint(num_ali_classes, (num_frames,)).long()
     >>>     torch.save(ali, data_dir + '/ali/{:02d}.pt'.format(utt_idx))
     >>>     # usually these would be sorted by order in utterance. Negative
@@ -1098,7 +1099,7 @@ class SpectDataSetParams(SpectDataParams, DataSetParams):
     pass
 
 
-def spect_seq_to_batch(seq):
+def spect_seq_to_batch(seq, batch_first=True):
     r'''Convert a sequence of spectral data to a batch
 
     Assume `seq` is a finite length sequence of tuples ``feat, ali, ref``,
@@ -1110,12 +1111,13 @@ def spect_seq_to_batch(seq):
     sequence into a tuple of ``feats, alis, refs, feat_sizes, ref_sizes``.
     `feats` and `alis` will have dimensions ``(N, T*, F)``, and ``(N, T*)``,
     resp., where ``N`` is the batch size, and ``T*`` is the maximum number of
-    frames in `seq`. Similarly, `refs` will have dimensions ``(N, R*, 3)``.
-    `feat_sizes` and `ref_sizes` are :class:`torch.LongTensor`s of shape
-    ``(N,)`` containing the original ``T`` and ``R`` values. The batch will be
-    sorted by decreasing numbers of frames. `feats` is zero-padded while `alis`
-    and `refs` are padded with module constant
-    :const:`pydrobert.torch.INDEX_PAD_VALUE`
+    frames in `seq` (or ``(T*, N, F)``, ``(T*, N)`` if `batch_first` is
+    :obj:`False`). Similarly, `refs` will have dimensions ``(N, R*, 3)`` (or
+    ``(R*, N, 3)``). `feat_sizes` and `ref_sizes` are
+    :class:`torch.LongTensor`s of shape ``(N,)`` containing the original ``T``
+    and ``R`` values. The batch will be sorted by decreasing numbers of frames.
+    `feats` is zero-padded while `alis` and `refs` are padded with module
+    constant :const:`pydrobert.torch.INDEX_PAD_VALUE`
 
     If ``ali`` or ``ref`` is :obj:`None` in any element, `alis` or `refs` and
     `ref_sizes` will also be :obj:`None`
@@ -1133,41 +1135,27 @@ def spect_seq_to_batch(seq):
     ref_sizes : torch.LongTensor or None
     '''
     seq = sorted(seq, key=lambda x: -x[0].shape[0])
-    T_star, F = seq[0][0].shape
-    feats = torch.zeros(len(seq), T_star, F)
-    feat_sizes = []
-    has_ali = all(x[1] is not None for x in seq)
-    R_star = max(float('inf') if x[2] is None else x[2].shape[0] for x in seq)
-    has_ref = R_star < float('inf')
+    feats, alis, refs = zip(*seq)
+    has_ali = all(x is not None for x in alis)
+    has_ref = all(x is not None for x in refs)
+    feat_sizes = torch.tensor([len(x) for x in feats])
+    feats = torch.nn.utils.rnn.pad_sequence(
+        feats, padding_value=0., batch_first=batch_first)
     if has_ali:
-        alis = torch.full(
-            (len(seq), T_star), pydrobert.torch.INDEX_PAD_VALUE,
-            dtype=torch.long)
-    else:
-        alis = None
+        alis = torch.nn.utils.rnn.pad_sequence(
+            alis, padding_value=pydrobert.torch.INDEX_PAD_VALUE,
+            batch_first=batch_first)
     if has_ref:
-        refs = torch.full(
-            (len(seq), R_star, 3), pydrobert.torch.INDEX_PAD_VALUE,
-            dtype=torch.long)
-        ref_sizes = []
-    else:
-        refs = None
-        ref_sizes = None
-    for n, (feat, ali, ref) in enumerate(seq):
-        feat_size = feat.shape[0]
-        feats[n, :feat_size] = feat
-        feat_sizes.append(feat_size)
-        if has_ali:
-            alis[n, :feat_size] = ali
-        if has_ref:
-            ref_size = ref.shape[0]
-            ref_sizes.append(ref_size)
-            refs[n, :ref_size] = ref
-
+        ref_sizes = torch.tensor([len(x) for x in refs])
+        refs = torch.nn.utils.rnn.pad_sequence(
+            refs, padding_value=pydrobert.torch.INDEX_PAD_VALUE,
+            batch_first=batch_first)
     return (
-        feats, alis, refs,
-        feat_sizes if feat_sizes is None else torch.tensor(feat_sizes),
-        ref_sizes if ref_sizes is None else torch.tensor(ref_sizes),
+        feats,
+        alis if has_ali else None,
+        refs if has_ref else None,
+        feat_sizes,
+        ref_sizes if has_ref else None,
     )
 
 
@@ -1186,21 +1174,25 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     ref_subdir : str, optional
     init_epoch : int, optional
         Where training should resume from
+    batch_first : bool, optional
     kwargs : keyword arguments, optional
         Additional :class:`torch.utils.data.DataLoader` arguments
 
     Yields
     ------
     feats : torch.FloatTensor
-        Of shape ``(N, T*, F)``, where ``N`` is ``params.batch_size``, ``T*``
-        is the maximum number of frames in an utterance in the batch, and ``F``
-        is the number of filters per frame
+        Of shape ``(N, T*, F)`` (or ``(T*, N, F)`` if `batch_first` is
+        :obj:`False`), where ``N`` is ``params.batch_size``, ``T*`` is the
+        maximum number of frames in an utterance in the batch, and ``F`` is the
+        number of filters per frame
     alis : torch.LongTensor or None
-        Of size ``(N, T*)`` if an ``ali/`` dir exists, otherwise :obj:`None`
+        Of size ``(N, T*)`` (or ``(T*, N)`` if `batch_first` is :obj:`False`)
+        if an ``ali/`` dir exists, otherwise :obj:`None`
     refs : torch.LongTensor or None
-        Of size ``(N, R*, 3)``, where ``R*`` is the maximum number of reference
-        tokens in the batch. If the ``refs/`` directory does not exist, `refs`
-        and `ref_sizes` are :obj:`None`.
+        Of size ``(N, R*, 3)`` (or ``(R*, N, 3)`` if `batch_first` is
+        :obj:`False`), where ``R*`` is the maximum number of reference tokens
+        in the batch. If the ``refs/`` directory does not exist, `refs` and
+        `ref_sizes` are :obj:`None`.
     feat_sizes : torch.LongTensor
         `feat_sizes` is a :class:`torch.LongTensor` of shape ``(N,)``
         specifying the lengths of utterances in the batch
@@ -1216,13 +1208,21 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     data_source : SpectDataSet
         The instance that will serve unbatched utterances
     epoch : int
+    batch_first : bool
 
     Notes
     -----
+
     The first axis of each of `feats`, `alis`, `refs`, `feat_sizes`, and
     `ref_sizes` is ordered by utterances of descending frame lengths. Shorter
     utterances in `feats` are zero-padded to the right, `alis` is padded with
     the module constant :const:`pydrobert.torch.INDEX_PAD_VALUE`
+
+    `batch_first` is separated from `params` because it is usually a matter of
+    model architecture whether it is :obj:`True` - something the user doesn't
+    configure. Further, the attribute `batch_first` can be modified after
+    initialization of this loader (outside of the for loop) to suit a model's
+    needs.
 
     Examples
     --------
@@ -1234,16 +1234,16 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     >>> optim = torch.optim.Adam(model.parameters())
     >>> loss = torch.nn.CrossEntropyLoss()
     >>> params = SpectDataSetParams()
-    >>> loader = SpectTrainingDataLoader('data', params)
+    >>> loader = SpectTrainingDataLoader('data', params, batch_first=False)
     >>> for feats, alis, _, feat_sizes, _ in loader:
     >>>     optim.zero_grad()
     >>>     packed_feats = torch.nn.utils.rnn.pack_padded_sequence(
-    ...         feats, feat_sizes, batch_first=True)
+    ...         feats, feat_sizes)
     >>>     packed_alis = torch.nn.utils.rnn.pack_padded_sequence(
-    ...         ali, feat_sizes, batch_first=True)
+    ...         alis, feat_sizes)
     >>>     packed_logits, _ = model(packed_feats)
     >>>     # no need to unpack: loss is the same as if we ignored padded vals
-    >>>     loss(packed_logits.data, packed_ali.data).backward()
+    >>>     loss(packed_logits.data, packed_alis.data).backward()
     >>>     optim.step()
 
     Training on reference tokens with CTC for one epoch
@@ -1273,7 +1273,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             self, data_dir, params, init_epoch=0, file_prefix='',
             file_suffix='.pt', warn_on_missing=True,
             feat_subdir='feat', ali_subdir='ali',
-            ref_subdir='ref', **kwargs):
+            ref_subdir='ref', batch_first=True, **kwargs):
         for bad_kwarg in (
                 'batch_size', 'sampler', 'batch_sampler', 'shuffle',
                 'collate_fn'):
@@ -1283,6 +1283,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)))
         self.data_dir = data_dir
         self.params = params
+        self.batch_first = batch_first
         self.data_source = SpectDataSet(
             data_dir,
             file_prefix=file_prefix, file_suffix=file_suffix,
@@ -1303,9 +1304,12 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         super(SpectTrainingDataLoader, self).__init__(
             self.data_source,
             batch_sampler=batch_sampler,
-            collate_fn=spect_seq_to_batch,
+            collate_fn=self.collate_fn,
             **kwargs
         )
+
+    def collate_fn(self, seq):
+        return spect_seq_to_batch(seq, batch_first=self.batch_first)
 
     @property
     def epoch(self):
@@ -1327,6 +1331,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     file_suffix : str, optional
     warn_on_missing : bool, optional
     feat_subdir, ali_subdir, ref_subdir : str, optional
+    batch_first : bool, optional
     kwargs : keyword arguments, optional
         Additional :class:`torch.utils.data.DataLoader` arguments
 
@@ -1334,21 +1339,25 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     ----------
     data_dir : str
     params : SpectDataSetParams
+    batch_first : bool
     data_source : SpectEvaluationDataLoader.SEvalDataSet
         Serves the utterances. A :class:`SpectDataSet`, but adds utterance IDs
 
     Yields
     ------
     feats : torch.FloatTensor
-        Of shape ``(N, T*, F)``, where ``N`` is ``params.batch_size``, ``T*``
-        is the maximum number of frames in an utterance in the batch, and ``F``
-        is the number of filters per frame
+        Of shape ``(N, T*, F)`` (or ``(T*, N, F)`` if `batch_first` is
+        :obj:`False`), where ``N`` is ``params.batch_size``, ``T*`` is the
+        maximum number of frames in an utterance in the batch, and ``F`` is the
+        number of filters per frame
     alis : torch.LongTensor or None
-        Of size ``(N, T*)`` if an ``ali/`` dir exists, otherwise :obj:`None`
+        Of size ``(N, T*)`` (or ``(T*, N)`` if `batch_first` is :obj:`False`)
+        if an ``ali/`` dir exists, otherwise :obj:`None`
     refs : torch.LongTensor or None
-        Of size ``(N, R*, 3)``, where ``R*`` is the maximum number of reference
-        tokens in the batch. If the ``refs/`` directory does not exist, `refs`
-        and `ref_sizes` are :obj:`None`.
+        Of size ``(N, R*, 3)`` (or ``(R*, N, 3)`` if `batch_first` is
+        :obj:`False`), where ``R*`` is the maximum number of reference tokens
+        in the batch. If the ``refs/`` directory does not exist, `refs` and
+        `ref_sizes` are :obj:`None`.
     feat_sizes : torch.LongTensor
         `feat_sizes` is a :class:`torch.LongTensor` of shape ``(N,)``
         specifying the lengths of utterances in the batch
@@ -1373,16 +1382,16 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     >>> num_filts, num_ali_classes = 40, 100
     >>> model = torch.nn.LSTM(num_filts, num_ali_classes)
     >>> params = SpectDataSetParams()
-    >>> loader = SpectEvaluationDataLoader('data', params)
+    >>> loader = SpectEvaluationDataLoader('data', params, batch_first=False)
     >>> for feats, _, _, feat_sizes, _, utt_ids in loader:
     >>>     packed_feats = torch.nn.utils.rnn.pack_padded_sequence(
-    ...         feats, feat_sizes, batch_first=True)
+    ...         feats, feat_sizes)
     >>>     packed_logits, _ = model(packed_feats)
     >>>     logits, _ = torch.nn.utils.rnn.pad_packed_sequence(
     >>>         packed_logits, batch_first=True)
     >>>     log_probs = torch.nn.functional.log_softmax(logits, -1)
     >>>     for pdf, feat_size, utt_id in zip(log_probs, feat_sizes, utt_ids):
-    >>>         loader.data_source.write_pdf(utt_id, pdf)
+    >>>         loader.data_source.write_pdf(utt_id, pdf[:feat_size])
 
     Transcribing utterances with CTC
 
@@ -1417,8 +1426,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
             utt_id = self.utt_ids[idx]
             return feat, ali, ref, utt_id
 
-    @staticmethod
-    def eval_collate_fn(seq):
+    def eval_collate_fn(self, seq):
         '''Update context_window_seq_to_batch to handle feat_sizes, utt_ids'''
         feats, alis, refs, utt_ids = zip(*seq)
         # spect_seq_to_batch sorts by descending number of frames, so we
@@ -1428,13 +1436,13 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
             for x in sorted(zip(feats, utt_ids), key=lambda x: -x[0].shape[0])
         )
         feats, alis, refs, feat_sizes, ref_sizes = spect_seq_to_batch(
-            zip(feats, alis, refs))
+            zip(feats, alis, refs), batch_first=self.batch_first)
         return feats, alis, refs, feat_sizes, ref_sizes, utt_ids
 
     def __init__(
             self, data_dir, params, file_prefix='', file_suffix='.pt',
             warn_on_missing=True, feat_subdir='feat', ali_subdir='ali',
-            ref_subdir='ref', **kwargs):
+            ref_subdir='ref', batch_first=True, **kwargs):
         for bad_kwarg in (
                 'batch_size', 'sampler', 'batch_sampler', 'shuffle',
                 'collate_fn'):
@@ -1444,6 +1452,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)))
         self.data_dir = data_dir
         self.params = params
+        self.batch_first = batch_first
         self.data_source = self.SEvalDataSet(
             data_dir,
             file_prefix=file_prefix, file_suffix=file_suffix,
