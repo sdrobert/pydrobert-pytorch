@@ -625,8 +625,9 @@ class TrainingStateController(object):
             'train_met': float('inf'),
             'val_met': float('inf'),
             'lr': None,
-            **dict((key, None) for key in self.user_entry_types)
         }
+        self.cache_hist[0].update(
+            dict((key, None) for key in self.user_entry_types))
         if self.params.log10_learning_rate is not None:
             self.cache_hist[0]['lr'] = (
                 10 ** self.params.log10_learning_rate)
