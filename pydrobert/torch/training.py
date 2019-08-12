@@ -475,11 +475,11 @@ class TrainingStateParams(param.Parameterized):
 
     @classmethod
     def build_from_optuna_trial(cls, trial, base=None, only=None):
-        '''Build a TrainingStateController by sampling from an Optuna trial
+        '''Build a TrainingStateParams by sampling from an Optuna trial
 
         `Optuna <https://optuna.org/>`__ is a define-by-run hyperparameter
         optimization framework. This class method constructs a
-        :class:`TrainingStateController` instance with parameter values sampled
+        :class:`TrainingStateParams` instance with parameter values sampled
         using `trial`. The folling parameter values can be sampled
 
         - num_epochs
@@ -494,7 +494,7 @@ class TrainingStateParams(param.Parameterized):
         Parameters
         ----------
         trial : optuna.trial.Trial
-        base : TrainingStateController or None, optional
+        base : TrainingStateParams or None, optional
             If set, parameter values will be loaded into this instance. If
             unset, a new instance will be created
         only : collection or None, optional
