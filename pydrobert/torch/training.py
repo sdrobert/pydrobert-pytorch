@@ -269,10 +269,40 @@ class MinimumErrorRateLoss(torch.nn.Module):
     -----
 
     A previous version of this module incorporated a Maximum Likelihood
-    Estimate (MLE) into the loss as in [prabhavalkar2018], which required
+    Estimate (MLE) into the loss as in [prabhavalkar2018]_, which required
     `logits` instead of `log_probs`. This was overly complicated, given the
     user can easily incorporate the additional loss term herself by using
-    :class:`torch.nn.CrossEntropyLoss`.
+    :class:`torch.nn.CrossEntropyLoss`. Take a look at the example below for
+    how to recreate this
+
+    Examples
+    --------
+
+    Assume here that `logits` is the output of some neural network, and that
+    `hyp` has somehow been produced from that (e.g. a beam search or random
+    walk). We combine this loss function with a cross-entropy/MLE term to
+    sort-of recreate [prabhavalkar2018]_.
+
+    >>> from pydrobert.torch.util import sequence_log_probs
+    >>> steps, batch_size, num_classes, eos, padding = 30, 20, 10, 0, -1
+    >>> samples, lmb = 10, .01
+    >>> logits = torch.randn(
+    ...     steps, samples, batch_size, num_classes, requires_grad=True)
+    >>> hyp = torch.randint(num_classes, (steps, samples, batch_size))
+    >>> ref_lens = torch.randint(1, steps + 1, (batch_size,))
+    >>> ref_lens[0] = steps
+    >>> ref = torch.nn.utils.rnn.pad_sequence(
+    ...     [torch.randint(1, num_classes, (x,)) for x in ref_lens],
+    ...     padding_value=padding,
+    ... )
+    >>> ref[ref_lens - 1, range(batch_size)] = eos
+    >>> ref = ref.unsqueeze(1).repeat(1, samples, 1)
+    >>> mer = MinimumErrorRateLoss(eos=eos)
+    >>> mle = torch.nn.CrossEntropyLoss(ignore_index=padding)
+    >>> log_probs = sequence_log_probs(logits, hyp, eos=eos)
+    >>> l = mer(log_probs, ref, hyp)
+    >>> l = l + lmb * mle(logits.view(-1, num_classes), ref.flatten())
+    >>> l.backward()
 
     See Also
     --------
@@ -280,6 +310,8 @@ class MinimumErrorRateLoss(torch.nn.Module):
         For getting an n-best list into `hyp` and some `log_probs`.
     pydrobert.torch.util.random_walk_advance
         For getting a random sample into `hyp`
+    pydrobert.torch.util.sequence_log_probs
+        For converting token log probs (or logits) to sequence log probs
     '''
 
     def __init__(

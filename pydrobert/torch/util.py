@@ -34,6 +34,7 @@ __all__ = [
     'optimizer_to',
     'prefix_error_rates',
     'random_walk_advance',
+    'sequence_log_probs',
 ]
 
 
@@ -760,6 +761,132 @@ def random_walk_advance(
         return y
 
 
+def sequence_log_probs(logits, hyp, dim=0, eos=None):
+    r'''Calculate joint log probability of sequences
+
+    `logits` is a tensor of shape ``(..., steps, ..., num_classes)`` where
+    ``steps`` enumerates the time/step `dim` -th dimension. `hyp` is a long
+    tensor of shape ``(..., steps, ...)`` matching the shape of `logits` minus
+    the last dimension. Letting :math:`t` index the step dimension and
+    :math:`b` index all other shared dimensions of `logits` and `hyp`, this
+    function outputs a tensor `log_probs` of the log-joint probability of
+    sequences in the batch:
+
+    .. math::
+
+        \log Pr(samp_b = hyp_b) = \log \left(
+            \prod_t Pr(samp_{b,t} == hyp_{b,t}; logits_{b,t})\right)
+
+    :math:`logits_{b,t}` (with the last dimension free) characterizes a
+    categorical distribution over ``num_classes`` tokens via a softmax
+    function. We assume :math:`samp_{b,t}` is independent of
+    :math:`samp_{b',t'}` given :math:`logits_t`.
+
+    The resulting tensor `log_probs` is matches the shape of `logits` or
+    `hyp` without the ``step`` and ``num_classes`` dimensions.
+
+    This function can handle variable-length sequences in three ways:
+
+    1. Any values of `hyp` not in ``[0, num_classes)`` will be considered
+       padding and ignored.
+    2. If `eos` (end-of-sentence) is set, the first occurrence at :math:`b,t`
+       is included in the sequence, but all :math:`b,>t` are ignored. This is
+       in addition to 1.
+    3. `logits` and `hyp` may be :class:`torch.nn.utils.rnn.PackedSequence`
+       objects. In this case, the packed sequence dimension is assumed to
+       index ``steps`` (`dim` is ignored). The remaining batch dimension will
+       always be stacked into dimension 0. This is also in addition to 1.
+
+    Parameters
+    ----------
+    logits : torch.FloatTensor or torch.nn.utils.rnn.PackedSequence
+    hyp : torch.LongTensor or torch.nn.utils.rnn.PackedSequence
+    dim : int, optional
+    eos : int or :obj:`None`, optional
+
+    Returns
+    -------
+    log_prob : torch.FloatTensor
+
+    Notes
+    -----
+    `dim` is relative to ``hyp.shape``, not ``logits.shape``
+
+    See Also
+    --------
+    pydrobert.torch.training.MinimumErrorRateLoss
+        An example training regime that uses this function
+    '''
+    if isinstance(logits, torch.nn.utils.rnn.PackedSequence):
+        return _sequence_log_probs_packed(logits, hyp)
+    if isinstance(hyp, torch.nn.utils.rnn.PackedSequence):
+        raise ValueError(
+            'both hyp and logits must be packed sequences, or neither')
+    if logits.shape[:-1] != hyp.shape:
+        raise ValueError(
+            'logits and hyp must have same shape (minus last dimension of '
+            'logits)')
+    hyp_dim = hyp.dim()
+    if dim < -hyp_dim or dim > hyp_dim - 1:
+        raise ValueError(
+            'Dimension out of range (expected to be in range of [{}, {}], but '
+            'got {})'.format(-hyp_dim, hyp_dim - 1, dim))
+    dim = (hyp_dim + dim) % hyp_dim
+    steps = hyp.shape[dim]
+    num_classes = logits.shape[-1]
+    logits = torch.nn.functional.log_softmax(logits, -1)
+    mask = hyp.lt(0) | hyp.ge(num_classes)
+    if eos is not None:
+        hyp_lens = _lens_from_eos(hyp, eos, dim) + 1
+        if dim:
+            hyp_lens = hyp_lens.unsqueeze(dim)
+            if dim == hyp_dim - 1:
+                hyp_lens = hyp_lens.unsqueeze(-1)
+            else:
+                hyp_lens = hyp_lens.flatten(dim + 1)
+        else:
+            hyp_lens = hyp_lens.view(1, -1)
+        len_mask = torch.arange(steps, device=logits.device).unsqueeze(-1)
+        len_mask = len_mask >= hyp_lens
+        len_mask = len_mask.view_as(mask)
+        mask = mask | len_mask
+    hyp = hyp.masked_fill(mask, 0)
+    logits = logits.gather(-1, hyp.unsqueeze(-1)).squeeze(-1)
+    logits = logits.masked_fill(mask, 0.)
+    return logits.sum(dim)
+
+
+def _lens_from_eos(tok, eos, dim):
+    # length to first eos (exclusive)
+    mask = tok.eq(eos)
+    x = torch.cumsum(mask, dim, dtype=torch.long)
+    max_, argmax = (x.eq(1) & mask).max(dim)
+    return argmax.masked_fill(max_.eq(0), tok.shape[dim])
+
+
+def _sequence_log_probs_packed(logits, hyp):
+    if not isinstance(hyp, torch.nn.utils.rnn.PackedSequence):
+        raise ValueError(
+            'both hyp and logits must be packed sequences, or neither')
+    logits, logits_lens = logits.data, logits.batch_sizes
+    hyp, hyp_lens = hyp.data, hyp.batch_sizes
+    if (hyp_lens != logits_lens).any():
+        raise ValueError(
+            'hyp and logits must have the same sequence lengths')
+    if logits.shape[:-1] != hyp.shape:
+        raise ValueError(
+            'logits and hyp must have same shape (minus last dimension of '
+            'logits)')
+    num_classes = logits.shape[-1]
+    logits = torch.nn.functional.log_softmax(logits, -1)
+    not_class_mask = hyp.lt(0) | hyp.ge(num_classes)
+    hyp = hyp.masked_fill(not_class_mask, 0)
+    logits = logits.gather(-1, hyp.unsqueeze(-1)).squeeze(-1)
+    logits = logits.masked_fill(not_class_mask, 0.)
+    logits_split = logits.split(logits_lens.tolist(), 0)
+    return torch.stack(tuple(x.sum(0) for x in logits_split), 0)
+
+
 def _levenshtein(
         ref, hyp, eos, include_eos, batch_first, ins_cost, del_cost,
         sub_cost, warn, norm=False, return_mask=False,
@@ -780,12 +907,8 @@ def _levenshtein(
             'ref has batch size {}, but hyp has {}'.format(
                 batch_size, batch_size_))
     if eos is not None:
-        ref_lens = torch.full_like(ref[0], max_ref_steps)
-        hyp_lens = torch.full_like(hyp[0], max_hyp_steps)
-        for coord in ref.eq(eos).nonzero():
-            ref_lens[..., coord[1]] = torch.min(ref_lens[coord[1]], coord[0])
-        for coord in hyp.eq(eos).nonzero():
-            hyp_lens[..., coord[1]] = torch.min(hyp_lens[coord[1]], coord[0])
+        ref_lens = _lens_from_eos(ref, eos, 0)
+        hyp_lens = _lens_from_eos(hyp, eos, 0)
         if include_eos:
             ref_eq_mask = ref_lens == max_ref_steps
             ref_lens = ref_lens + 1
