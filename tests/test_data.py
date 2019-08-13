@@ -804,3 +804,20 @@ def test_window_evaluation_data_loader(temp_dir, populate_torch_dir):
     data_loader = data.ContextWindowEvaluationDataLoader(
         temp_dir, p, num_workers=4)
     _compare_data_loader(data_loader)  # order should still not change
+
+
+@pytest.mark.cpu
+def test_context_window_data_set_params_build_from_optuna_trial():
+    optuna = pytest.importorskip('optuna')  # conda doesn't have it
+    low = data.SpectDataSetParams.params()['batch_size'].softbounds[0]
+
+    def objective(trial):
+        params = data.ContextWindowDataSetParams.build_from_optuna_trial(
+            trial, only={'batch_size', 'context_left'})
+        assert isinstance(params, data.ContextWindowDataParams)
+        return params.batch_size ** 2
+
+    sampler = optuna.samplers.TPESampler(seed=30)
+    study = optuna.create_study(sampler=sampler)
+    study.optimize(objective, n_trials=30)
+    assert study.best_params['batch_size'] == low

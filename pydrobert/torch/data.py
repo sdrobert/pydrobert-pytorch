@@ -1065,7 +1065,7 @@ class EpochRandomSampler(torch.utils.data.Sampler):
 class DataSetParams(param.Parameterized):
     '''General parameters for a single partition of data'''
     batch_size = param.Integer(
-        10, bounds=(1, None),
+        10, bounds=(1, None), softbounds=(5, 10),
         doc='Number of elements in a batch, which equals the number of '
         'utterances in the batch'
     )
@@ -1083,6 +1083,39 @@ class DataSetParams(param.Parameterized):
         doc='A list of utterance ids. If non-empty, the data set will be '
         'restricted to these utterances'
     )
+
+    @classmethod
+    def build_from_optuna_trial(cls, trial, base=None, only=None):
+        '''Build a DataSetParams by sampling from an Optuna trial
+
+        `Optuna <https://optuna.org/>`__ is a define-by-run hyperparameter
+        optimization framework. This class method constructs a
+        :class:`DataSetParams` instance with parameter values sampled using
+        `trial`. The folling parameter values can be sampled
+
+        - batch_size
+
+        Parameters
+        ----------
+        trial : optuna.trial.Trial
+        base : DataSetParams or None, optional
+            If set, parameter values will be loaded into this instance. If
+            unset, a new instance will be created
+        only : collection or None, optional
+            Only sample parameters with names in this set. If :obj:`None`,
+            all the above will be sampled
+
+        Returns
+        -------
+        params : DataSetParams
+            Sampled parameter values are populated in `params`
+        '''
+        params = cls() if base is None else base
+        if only is None or 'batch_size' in only:
+            bounds = params.params()['batch_size'].get_soft_bounds()
+            val = trial.suggest_int('batch_size', *bounds)
+            params.batch_size = val
+        return params
 
 
 class SpectDataParams(param.Parameterized):
@@ -1529,10 +1562,85 @@ class ContextWindowDataParams(SpectDataParams):
         'dimension'
     )
 
+    @classmethod
+    def build_from_optuna_trial(cls, trial, base=None, only=None):
+        '''Build a ContextWindowDataParams by sampling from an Optuna trial
+
+        `Optuna <https://optuna.org/>`__ is a define-by-run hyperparameter
+        optimization framework. This class method constructs a
+        :class:`ContextWindowDataParams` instance with parameter values sampled
+        using `trial`.
+
+        - context_left
+        - context_right
+        - reverse
+
+        Parameters
+        ----------
+        trial : optuna.trial.Trial
+        base : ContextWindowDataParams or None, optional
+            If set, parameter values will be loaded into this instance. If
+            unset, a new instance will be created
+        only : collection or None, optional
+            Only sample parameters with names in this set. If :obj:`None`,
+            all the above will be sampled
+
+        Returns
+        -------
+        params : ContextWindowDataParams
+            Sampled parameter values are populated in `params`
+        '''
+        params = cls() if base is None else base
+        if only is None:
+            only = {'context_left', 'context_right', 'reverse'}
+        pdict = params.params()
+        for name in only:
+            pp = pdict.get(name, None)
+            if pp is None:
+                continue
+            softbounds = pp.get_soft_bounds()
+            if isinstance(pp, param.Integer):
+                val = trial.suggest_int(name, *softbounds)
+            else:  # boolean
+                val = trial.suggest_categorical(name, [True, False])
+            setattr(params, name, val)
+        return params
+
 
 class ContextWindowDataSetParams(ContextWindowDataParams, SpectDataSetParams):
     '''Data set parameters for specific partition of windowed spectral data'''
-    pass
+
+    @classmethod
+    def build_from_optuna_trial(cls, trial, base=None, only=None):
+        '''Build a ContextWindowDataSetParams by sampling from an Optuna trial
+
+        `Optuna <https://optuna.org/>`__ is a define-by-run hyperparameter
+        optimization framework. This class method constructs a
+        :class:`ContextWindowDataParams` instance with parameter values sampled
+        using `trial`. Sampled parameters are inherited entirely from
+        :class:`ContextWindowDataParams` and :class:`SpectDataSetParams`
+
+        Parameters
+        ----------
+        trial : optuna.trial.Trial
+        base : ContextWindowDataSetParams or None, optional
+            If set, parameter values will be loaded into this instance. If
+            unset, a new instance will be created
+        only : collection or None, optional
+            Only sample parameters with names in this set. If :obj:`None`,
+            all the above will be sampled
+
+        Returns
+        -------
+        params : ContextWindowDataSetParams
+            Sampled parameter values are populated in `params`
+        '''
+        params = cls() if base is None else base
+        params = SpectDataSetParams.build_from_optuna_trial(
+            trial, base=params, only=only)
+        params = ContextWindowDataParams.build_from_optuna_trial(
+            trial, base=params, only=only)
+        return params
 
 
 class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
