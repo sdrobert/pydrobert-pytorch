@@ -56,12 +56,12 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
     Usually, this is in the context of encoder-decoder architectures, which is
     explained here.
 
-    Assume `query` is a tensor of shape ``(num_batch, query_size)``
+    Assume `query` is a tensor of shape ``(batch_size, query_size)``
     representing a single hidden state of a decoder RNN. Assume `key` is a
-    tensor of shape ``(T, num_batch, key_size)`` representing the encoder
+    tensor of shape ``(T, batch_size, key_size)`` representing the encoder
     output, ``dim == 0`` to specify that the variable-length dimension of `key`
     is the zero-th dimension, and ``value == key``. The output `out` will be a
-    tensor of shape ``(num_batch, key_size)``. Letting :math:`t` index the
+    tensor of shape ``(batch_size, key_size)``. Letting :math:`t` index the
     `dim`-th dimension:
 
         .. math::
@@ -69,15 +69,15 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
             out = \sum_t a_t value_t
 
     ``a`` is the attention vector. In our example, ``a`` will be of shape
-    ``(T, num_batch)``. ``a`` is the result of a softmax over the `dim`-th
-    dimension of another tensor ``e`` of shape ``(T, num_batch)`` with an
+    ``(T, batch_size)``. ``a`` is the result of a softmax over the `dim`-th
+    dimension of another tensor ``e`` of shape ``(T, batch_size)`` with an
     optional `mask`
 
     .. math::
 
         a = softmax(e * mask - (1 - mask) \infty, dim)
 
-    `mask` (if specified) is of shape ``(T, num_batch)`` and will set ``a`` to
+    `mask` (if specified) is of shape ``(T, batch_size)`` and will set ``a`` to
     zero wherever the mask is zero. `mask` can be used to indicate padded
     values when `key` consists of variable-length sequences.
 
@@ -112,20 +112,20 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
     A simple auto-regressive decoder using soft attention on encoder outputs
     with "concat"-style attention
 
-    >>> T, num_batch, encoded_size, hidden_size = 100, 5, 30, 124
+    >>> T, batch_size, encoded_size, hidden_size = 100, 5, 30, 124
     >>> num_classes, start, eos, max_decoder_steps = 20, -1, 0, 100
-    >>> encoded_lens = torch.randint(1, T + 1, (num_batch,))
+    >>> encoded_lens = torch.randint(1, T + 1, (batch_size,))
     >>> len_mask = torch.where(
     ...     torch.arange(T).unsqueeze(-1) < encoded_lens,
     ...     torch.tensor(1),
     ...     torch.tensor(0),
     ... )
-    >>> encoded = torch.randn(T, num_batch, encoded_size)
+    >>> encoded = torch.randn(T, batch_size, encoded_size)
     >>> rnn = torch.nn.RNNCell(encoded_size + 1, hidden_size)
     >>> ff = torch.nn.Linear(hidden_size, num_classes)
     >>> attention = ConcatSoftAttention(hidden_size, encoded_size)
-    >>> h = torch.zeros((num_batch, hidden_size))
-    >>> y = torch.full((1, num_batch), -1, dtype=torch.long)
+    >>> h = torch.zeros((batch_size, hidden_size))
+    >>> y = torch.full((1, batch_size), -1, dtype=torch.long)
     >>> for _ in range(max_decoder_steps):
     >>>     if y[-1].eq(eos).all():
     >>>         break
@@ -172,22 +172,40 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         '''
         raise NotImplementedError()
 
-    def forward(self, query, key, value, mask=None):
-        if query.dim() + 1 != key.dim():
-            raise ValueError('query must have one fewer dimension than key')
-        if key.dim() != value.dim():
-            raise ValueError(
+    def check_input(self, query, key, value, mask=None):
+        '''Check if input is properly formatted, RuntimeError otherwise
+
+        Warnings
+        --------
+        This method doesn't check that the tensors properly broadcast. If they
+        don't, they will fail later on. It only ensures the proper sizes and
+        that the final dimensions are appropriately sized where applicable
+
+        See Also
+        --------
+        :ref:`Advanced Attention and Transformer Networks`
+            For full broadcasting rules
+        '''
+        key_dim = key.dim()
+        if query.dim() != key_dim - 1:
+            raise RuntimeError('query must have one fewer dimension than key')
+        if key_dim != value.dim():
+            raise RuntimeError(
                 "key must have same number of dimensions as value")
         if query.shape[-1] != self.query_size:
-            raise ValueError('Last dimension of query must match query_size')
+            raise RuntimeError('Last dimension of query must match query_size')
         if key.shape[-1] != self.key_size:
-            raise ValueError('Last dimension of key must match key_size')
-        key_dim = key.dim()
+            raise RuntimeError('Last dimension of key must match key_size')
         if self.dim > key_dim - 2 or self.dim < -key_dim + 1:
-            raise ValueError(
+            raise RuntimeError(
                 'dim must be in the range [{}, {}]'
                 ''.format(-key_dim + 1, key_dim - 2)
             )
+        if mask is not None and mask.dim() != key_dim - 1:
+            raise RuntimeError('mask must have one fewer dimension than key')
+
+    def forward(self, query, key, value, mask=None):
+        self.check_input(query, key, value, mask)
         e = self.score(query, key)
         if mask is not None:
             e = e.masked_fill(mask.eq(0), -float('inf'))
@@ -363,14 +381,14 @@ class ConcatSoftAttention(GlobalSoftAttention):
         return s
 
 
-class MultiHeadedAttention(torch.nn.Module):
+class MultiHeadedAttention(GlobalSoftAttention):
     r'''Perform attention over a number of heads, concatenate, and project
 
     Multi-headed attention was proposed in [vaswani2017]_. It can be considered
-    a wrapper around standard :class:`GlobalSoftAttention` that results in a
-    similar output as a regular attention layer. The idea is to replicate
-    transformed versions of the `query`, `key`, and `value` `num_heads` times.
-    Letting :math:`h` index the head:
+    a wrapper around standard :class:`GlobalSoftAttention` that also performs
+    :class:`GlobalSoftAttention`, but with more parameters. The idea is to
+    replicate transformed versions of the `query`, `key`, and `value`
+    `num_heads` times. Letting :math:`h` index the head:
 
     .. math::
 
@@ -381,7 +399,9 @@ class MultiHeadedAttention(torch.nn.Module):
     If `query` is of shape ``(..., query_size)``, :math:`W^Q_h` is a learned
     matrix of shape ``(query_size, d_q)`` that acts on the final dimension of
     `query`. Likewise, :math:`W^K_h` is of shape ``(key_size, d_k)`` and
-    :math:`W^V_h` is of shape ``(value_size, d_v)``.
+    :math:`W^V_h` is of shape ``(value_size, d_v)``. Note here that the last
+    dimension of `value` must also be provided in `value_size`, unlike in
+    other attention layers.
 
     Each head is then determined via a wrapped :class:`GlobalSoftAttention`
     instance, `single_head_attention`:
@@ -455,16 +475,14 @@ class MultiHeadedAttention(torch.nn.Module):
             self, query_size, key_size, value_size, num_heads,
             single_head_attention, out_size=None, d_v=None,
             bias_WQ=False, bias_WK=False, bias_WV=False, bias_WC=False):
-        super(MultiHeadedAttention, self).__init__()
-        self.query_size = query_size
-        self.key_size = key_size
+        super(MultiHeadedAttention, self).__init__(
+            query_size, key_size, dim=single_head_attention.dim)
         self.value_size = value_size
         self.out_size = value_size if out_size is None else out_size
         self.num_heads = num_heads
         self.single_head_attention = single_head_attention
         # we don't keep these in sync in case someone's using
         # single_head_attention
-        self.dim = single_head_attention.dim
         self.d_q = single_head_attention.query_size
         self.d_k = single_head_attention.key_size
         self.d_v = max(1, value_size // num_heads) if d_v is None else d_v
@@ -478,21 +496,23 @@ class MultiHeadedAttention(torch.nn.Module):
             self.d_v * num_heads, self.out_size, bias=bias_WC)
         single_head_attention.reset_parameters()
 
+    def check_input(self, query, key, value, mask=None):
+        '''Check that input is formatted correctly, RuntimeError otherwise'''
+        super(MultiHeadedAttention, self).check_input(query, key, value, mask)
+        if value.shape[-1] != self.value_size:
+            raise RuntimeError('Last dimension of value must match value_size')
+
+    def score(self, query, key):
+        raise NotImplementedError(
+            'In MultiHeadedAttention, score() is handled by '
+            'single_head_attention')
+
     def forward(self, query, key, value, mask=None):
+        self.check_input(query, key, value, mask)
         query_shape = tuple(query.shape)
         key_shape = tuple(key.shape)
         value_shape = tuple(value.shape)
-        # we check dim here because we want to turn it into a positive
-        # index before passing it to the head. This is because there's going
-        # to be one more dimension to query, key, and value at the end that
-        # represents the `num_heads` dimension, and we don't want negative
-        # indices being wrongly offset because of it
-        key_dim = len(key_shape)
-        if self.dim > key_dim - 2 or self.dim < -key_dim + 1:
-            raise ValuerError(
-                'dim must be in the range [{}, {}]'
-                ''.format(-key_dim + 1, key_dim - 2)
-            )
+        key_dim = key.dim()
         dim = (self.dim + key_dim) % key_dim
         query_heads = (
             self.WQ(query)
@@ -526,9 +546,8 @@ class MultiHeadedAttention(torch.nn.Module):
         self.single_head_attention.reset_parameters()
 
     def extra_repr(self):
-        return (
-            'query_size={}, key_size={}, value_size={}, out_size={}, dim={}, '
-            'num_heads={}, d_q={}, d_k={}, d_v={}'.format(
-                self.query_size, self.key_size, self.value_size, self.out_size,
-                self.dim, self.num_heads, self.d_q, self.d_k, self.d_v)
-        )
+        s = super(MultiHeadedAttention, self).extra_repr()
+        # rest of info in single_head_attention submodule
+        s += ', value_size={}, out_size={}, num_heads={}'.format(
+            self.value_size, self.out_size, self.num_heads)
+        return s

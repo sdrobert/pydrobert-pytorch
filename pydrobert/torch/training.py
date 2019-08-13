@@ -70,13 +70,13 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
 
         loss(logits, ref, hyp)
 
-    `hyp` is a long tensor of shape ``(num_batches, max_hyp_steps)`` if
-    `batch_first` is :obj:`False` otherwise ``(max_hyp_steps, num_batches)``
+    `hyp` is a long tensor of shape ``(max_hyp_steps, batch_size)`` if
+    `batch_first` is :obj:`False`, otherwise ``(batch_size, max_hyp_steps)``
     that provides the hypothesis transcriptions. Likewise, `ref` of shape
-    ``(num_batches, max_ref_steps)`` or ``(max_ref_steps, num_batches)``
+    ``(max_ref_steps, batch_size)`` or ``(batch_size, max_ref_steps)``
     providing reference transcriptions. `logits` is a 4-dimensional tensor of
-    shape ``(num_batches, max_hyp_steps, num_classes)`` if `batch_first` is
-    :obj:`True`, ``(max_hyp_steps, num_batches, num_classes)`` otherwise. A
+    shape ``(max_hyp_steps, batch_size, num_classes)`` if `batch_first` is
+    :obj:`False`, ``(batch_size, max_hyp_steps, num_classes)`` otherwise. A
     softmax over the step dimension defines the per-step distribution over
     class labels.
 
@@ -145,17 +145,25 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
     def weight(self, value):
         self._cross_ent.weight = value
 
-    def forward(self, logits, ref, hyp, warn=True):
+    def check_input(self, logits, ref, hyp):
+        '''Check if input formatted correctly, otherwise RuntimeError'''
         if logits.dim() != 3:
-            raise ValueError('logits must be 3 dimensional')
+            raise RuntimeError('logits must be 3 dimensional')
         if logits.shape[:-1] != hyp.shape:
-            raise ValueError('first two dims of logits must match hyp shape')
-        num_classes = logits.shape[-1]
+            raise RuntimeError('first two dims of logits must match hyp shape')
         if self.include_eos and self.eos is not None and (
-                (self.eos < 0) or (self.eos >= num_classes)):
-            raise ValueError(
+                (self.eos < 0) or (self.eos >= logits.shape[-1])):
+            raise RuntimeError(
                 'if include_eos=True, eos ({}) must be a class idx'.format(
                     self.eos))
+        if self.reduction not in {'mean', 'sum', 'none'}:
+            raise RuntimeError(
+                '"{}" is not a valid value for reduction'
+                ''.format(self.reduction))
+
+    def forward(self, logits, ref, hyp, warn=True):
+        self.check_input(logits, ref, hyp)
+        num_classes = logits.shape[-1]
         # the padding we use will never be exposed to the user, so we merely
         # ensure we're not trampling the eos
         padding = -2 if self.eos == -1 else -1
@@ -170,7 +178,7 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         logits = logits.unsqueeze(2).expand(-1, -1, max_unique_next, -1)
         logits = logits.contiguous()
         loss = self._cross_ent(
-            logits.view(-1, num_classes), optimals.flatten()
+            logits.view(-1, logits.shape[-1]), optimals.flatten()
         ).view_as(optimals)
         padding_mask = optimals.eq(padding)
         no_padding_mask = padding_mask.eq(0)
@@ -184,9 +192,6 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
             loss = loss.mean()
         elif self.reduction == 'sum':
             loss = loss.sum()
-        elif self.reduction != 'none':
-            raise ValueError(
-                '{} is not a valid value for reduction'.format(self.reduction))
         return loss
 
 
@@ -213,15 +218,15 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
         loss(log_probs, ref, hyp)
 
-    `log_probs` is a tensor of shape ``(num_batches, samples)`` providing the
+    `log_probs` is a tensor of shape ``(batch_size, samples)`` providing the
     log joint probabilities of every path. `hyp` is a long tensor of shape
-    ``(max_hyp_steps, num_batches, samples)`` if `batch_first` is :obj:`False`
-    otherwise ``(num_batches, samples, max_hyp_steps)`` that provides the
-    hypothesis transcriptions. Likewise, `ref` of shape ``(num_batches,
-    samples, max_ref_steps)`` or ``(max_ref_steps, num_batches, samples)``
-    providing reference transcriptions. ``num_batches`` enumerates the batches
-    whereas ``samples`` enumerates the list of samples for a given batch
-    element.
+    ``(max_hyp_steps, batch_size, samples)`` if `batch_first` is :obj:`False`
+    otherwise ``(batch_size, samples, max_hyp_steps)`` that provides the
+    hypothesis transcriptions. Likewise, `ref` of shape ``(max_ref_steps,
+    batch_size, samples)`` or ``(batch_size, samples, max_ref_steps)``
+    providing reference transcriptions. ``batch_size`` enumerates the batch
+    elements whereas ``samples`` enumerates the list of samples for a given
+    batch element.
 
     Using `log_probs`, the loss is calculated as
 
@@ -331,48 +336,56 @@ class MinimumErrorRateLoss(torch.nn.Module):
         self.reduction = reduction
 
     def check_input(self, log_probs, ref, hyp):
-        '''Check if the input is formatted correctly, otherwise ValueError'''
+        '''Check if the input is formatted correctly, otherwise RuntimeError'''
         if log_probs.dim() != 2:
-            raise ValueError('log_probs must be 2 dimensional')
+            raise RuntimeError('log_probs must be 2 dimensional')
         if ref.dim() != 3 or hyp.dim() != 3:
-            raise ValueError('ref and hyp must be 3 dimensional')
+            raise RuntimeError('ref and hyp must be 3 dimensional')
         if self.batch_first:
             if (
                     (ref.shape[:2] != hyp.shape[:2]) or
                     (ref.shape[:2] != log_probs.shape)):
-                raise ValueError(
+                raise RuntimeError(
                     'with batch_first=True, first two dimensions of ref, '
                     'hyp, and log_probs must match in size')
+            if ref.shape[1] < 2:
+                raise RuntimeError(
+                    'Batch must have at least two samples, got {}'
+                    ''.format(ref.shape[1]))
         else:
             if (
                     (ref.shape[1:] != hyp.shape[1:]) or
                     (ref.shape[1:] != log_probs.shape)):
-                raise ValueError(
+                raise RuntimeError(
                     'with batch_first=False, last two dimensions of ref, '
                     'hyp, and log_probs must match in size')
+            if ref.shape[2] < 2:
+                raise RuntimeError(
+                    'Batch must have at least two samples, got {}'
+                    ''.format(ref.shape[2]))
+        if self.reduction not in {'mean', 'sum', 'none'}:
+            raise RuntimeError(
+                '"{}" is not a valid value for reduction'
+                ''.format(self.reduction))
 
     def forward(self, log_probs, ref, hyp, warn=True):
         self.check_input(log_probs, ref, hyp)
         if self.batch_first:
-            num_batches, samples, max_ref_steps = ref.shape
-            num_batches_, samples_, max_hyp_steps = hyp.shape
+            batch_size, samples, max_ref_steps = ref.shape
+            batch_size_, samples_, max_hyp_steps = hyp.shape
             ref = ref.view(-1, max_ref_steps)
             hyp = hyp.view(-1, max_hyp_steps)
         else:
-            max_ref_steps, num_batches, samples = ref.shape
-            max_hyp_steps, num_batches_, samples_ = hyp.shape
+            max_ref_steps, batch_size, samples = ref.shape
+            max_hyp_steps, batch_size_, samples_ = hyp.shape
             ref = ref.view(max_ref_steps, -1)
             hyp = hyp.view(max_hyp_steps, -1)
-        if (num_batches, samples) != (num_batches_, samples_):
-            raise ValueError('batch and path dims must match btw ref and hyp')
-        if samples < 2:
-            raise ValueError('must be more than one sample')
         er = error_rate(
             ref, hyp, eos=self.eos, include_eos=self.include_eos,
             norm=self.norm, batch_first=self.batch_first,
             ins_cost=self.ins_cost, del_cost=self.del_cost,
             sub_cost=self.sub_cost, warn=warn,
-        ).view(num_batches, samples)
+        ).view(batch_size, samples)
         if self.sub_avg:
             er = er - er.mean(1, keepdim=True)
         loss = er * torch.nn.functional.softmax(log_probs, 1)
@@ -380,9 +393,6 @@ class MinimumErrorRateLoss(torch.nn.Module):
             loss = loss.mean()
         elif self.reduction == 'sum':
             loss = loss.sum()
-        elif self.reduction != 'none':
-            raise ValueError(
-                '{} is not a valid value for reduction'.format(self.reduction))
         return loss
 
 

@@ -1147,7 +1147,7 @@ def spect_seq_to_batch(seq, batch_first=True):
     frames in `seq` (or ``(T*, N, F)``, ``(T*, N)`` if `batch_first` is
     :obj:`False`). Similarly, `refs` will have dimensions ``(N, R*, 3)`` (or
     ``(R*, N, 3)``). `feat_sizes` and `ref_sizes` are
-    :class:`torch.LongTensor`s of shape ``(N,)`` containing the original ``T``
+    :class:`torch.LongTensor`  of shape ``(N,)`` containing the original ``T``
     and ``R`` values. The batch will be sorted by decreasing numbers of frames.
     `feats` is zero-padded while `alis` and `refs` are padded with module
     constant :const:`pydrobert.torch.INDEX_PAD_VALUE`
