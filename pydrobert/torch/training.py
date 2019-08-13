@@ -222,13 +222,12 @@ class MinimumErrorRateLoss(torch.nn.Module):
     log joint probabilities of every path. `hyp` is a long tensor of shape
     ``(max_hyp_steps, batch_size, samples)`` if `batch_first` is :obj:`False`
     otherwise ``(batch_size, samples, max_hyp_steps)`` that provides the
-    hypothesis transcriptions. Likewise, `ref` of shape ``(max_ref_steps,
-    batch_size, samples)`` or ``(batch_size, samples, max_ref_steps)``
-    providing reference transcriptions. ``batch_size`` enumerates the batch
-    elements whereas ``samples`` enumerates the list of samples for a given
-    batch element.
+    hypothesis transcriptions. `ref` is a 2- or 3-dimensional tensor. If 2D, it
+    is of shape ``(max_ref_steps, batch_size)`` (or ``(batch_size,
+    max_ref_steps)``). Alternatively, `ref` can be of shape ``(max_ref_steps,
+    batch_size, samples)`` or ``(batch_size, samples, max_ref_steps)``.
 
-    Using `log_probs`, the loss is calculated as
+    If `ref` is 2D, the loss is calculated as
 
     .. math::
 
@@ -236,7 +235,16 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
     where :math:`\mu_i` is the average error rate along paths in the batch
     element :math:`i`. :math:`mu_i` can be removed by setting `sub_avg` to
-    :obj:`False`.
+    :obj:`False`. Note that each hypothesis is compared against the same
+    reference as long as the batch element remains the same
+
+    If `ref` is 3D, the loss is calculated as
+
+    .. math::
+
+        loss_{MER} = SoftMax(log\_probs)[ER(hyp_i, ref_i) - \mu_i]
+
+    In this version, each hypothesis is compared against a unique reference
 
     Parameters
     ----------
@@ -339,26 +347,30 @@ class MinimumErrorRateLoss(torch.nn.Module):
         '''Check if the input is formatted correctly, otherwise RuntimeError'''
         if log_probs.dim() != 2:
             raise RuntimeError('log_probs must be 2 dimensional')
-        if ref.dim() != 3 or hyp.dim() != 3:
-            raise RuntimeError('ref and hyp must be 3 dimensional')
+        if hyp.dim() != 3:
+            raise RuntimeError('hyp must be 3 dimensional')
+        if ref.dim() not in {2, 3}:
+            raise RuntimeError('ref must be 2 or 3 dimensional')
         if self.batch_first:
+            if ref.dim() == 2:
+                ref = ref.unsqueeze(1).expand(-1, hyp.shape[1], -1)
             if (
                     (ref.shape[:2] != hyp.shape[:2]) or
                     (ref.shape[:2] != log_probs.shape)):
                 raise RuntimeError(
-                    'with batch_first=True, first two dimensions of ref, '
-                    'hyp, and log_probs must match in size')
+                    'ref and hyp batch_size and sample dimensions must match')
             if ref.shape[1] < 2:
                 raise RuntimeError(
                     'Batch must have at least two samples, got {}'
                     ''.format(ref.shape[1]))
         else:
+            if ref.dim() == 2:
+                ref = ref.unsqueeze(-1).expand(-1, -1, hyp.shape[-1])
             if (
                     (ref.shape[1:] != hyp.shape[1:]) or
                     (ref.shape[1:] != log_probs.shape)):
                 raise RuntimeError(
-                    'with batch_first=False, last two dimensions of ref, '
-                    'hyp, and log_probs must match in size')
+                    'ref and hyp batch_size and sample dimensions must match')
             if ref.shape[2] < 2:
                 raise RuntimeError(
                     'Batch must have at least two samples, got {}'
@@ -371,13 +383,17 @@ class MinimumErrorRateLoss(torch.nn.Module):
     def forward(self, log_probs, ref, hyp, warn=True):
         self.check_input(log_probs, ref, hyp)
         if self.batch_first:
-            batch_size, samples, max_ref_steps = ref.shape
-            batch_size_, samples_, max_hyp_steps = hyp.shape
+            batch_size, samples, max_hyp_steps = hyp.shape
+            max_ref_steps = ref.shape[-1]
+            if ref.dim() == 2:
+                ref = ref.unsqueeze(1).repeat(1, samples, 1)
             ref = ref.view(-1, max_ref_steps)
             hyp = hyp.view(-1, max_hyp_steps)
         else:
-            max_ref_steps, batch_size, samples = ref.shape
-            max_hyp_steps, batch_size_, samples_ = hyp.shape
+            max_hyp_steps, batch_size, samples = hyp.shape
+            max_ref_steps = ref.shape[0]
+            if ref.dim() == 2:
+                ref = ref.unsqueeze(-1).repeat(1, 1, samples)
             ref = ref.view(max_ref_steps, -1)
             hyp = hyp.view(max_hyp_steps, -1)
         er = error_rate(
