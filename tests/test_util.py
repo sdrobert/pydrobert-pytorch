@@ -431,3 +431,19 @@ def test_sequence_log_probs(device, dim):
         logits = torch.randn_like(logits)
     log_probs = util.sequence_log_probs(logits, hyp, dim=dim, eos=eos)
     assert log_probs.ne(0.).any()
+
+
+@pytest.mark.parametrize('batch_first', [True, False])
+def test_time_distributed_return(device, batch_first):
+    torch.manual_seed(290129)
+    steps, batch_size, gamma = 1000, 30, 0.95
+    r = torch.randn(steps, batch_size, device=device)
+    exp = torch.empty_like(r)
+    exp[-1] = r[-1]
+    for step in range(steps - 2, -1, -1):
+        exp[step] = r[step] + gamma * exp[step + 1]
+    if batch_first:
+        r = r.t().contiguous()
+        exp = exp.t().contiguous()
+    act = util.time_distributed_return(r, gamma, batch_first=batch_first)
+    assert torch.allclose(exp, act, atol=1e-5)

@@ -35,6 +35,7 @@ __all__ = [
     'prefix_error_rates',
     'random_walk_advance',
     'sequence_log_probs',
+    'time_distributed_return',
 ]
 
 
@@ -289,6 +290,57 @@ def beam_search_advance(
             2, s.unsqueeze(0).expand(t - 1, batch_size, width))
         y = torch.cat([y_prev, y], 0)
     return score, y, s
+
+
+def time_distributed_return(r, gamma, batch_first=False):
+    r'''Accumulate future local rewards at every time step
+
+    In `reinforcement learning
+    <https://en.wikipedia.org/wiki/Reinforcement_learning>`__, the return is
+    defined as the sum of discounted future rewards. This function calculates
+    the return for a given time step :math:`t` as
+
+    .. math::
+
+        R_t = \sum_{t'=t} \gamma^(t' - t) r_{t'}
+
+    Where :math:`r_{t'}` gives the (local) reward at time :math:`t'` and
+    :math:`\gamma` is the discount factor. :math:`\gamma \in [0, 1)` implies
+    convergence, but this is not enforced here
+
+    Parameters
+    ----------
+    r : torch.FloatTensor
+        A two-dimensional tensor of shape ``(steps, batch_size)`` (or
+        ``(batch_size, steps)`` if `batch_first` is :obj:`True`) of local
+        rewards. The :math:`t` dimension is the step dimension
+    gamma : float
+        The discount factor
+    batch_first : bool, optional
+
+    Returns
+    -------
+    `R` : torch.FloatTensor
+        Of the same shape as `r`
+
+    See Also
+    --------
+    :ref:`Gradient Estimators`
+        Provides an example of reinforcement learning that uses this function
+    '''
+    if r.dim() != 2:
+        raise RuntimeError('r must be 2 dimensional')
+    if batch_first:
+        exp = torch.arange(r.shape[-1], device=r.device, dtype=r.dtype)
+        discount = torch.pow(gamma, exp)
+        discount = (discount.unsqueeze(1) / discount.unsqueeze(0)).tril()
+        R = torch.matmul(r, discount)
+    else:
+        exp = torch.arange(r.shape[0], device=r.device, dtype=r.dtype)
+        discount = torch.pow(gamma, exp)
+        discount = (discount.unsqueeze(0) / discount.unsqueeze(1)).triu()
+        R = torch.matmul(discount, r)
+    return R
 
 
 def error_rate(
