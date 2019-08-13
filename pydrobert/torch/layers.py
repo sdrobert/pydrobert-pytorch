@@ -56,12 +56,12 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
     Usually, this is in the context of encoder-decoder architectures, which is
     explained here.
 
-    Assume `query` is a tensor of shape ``(num_batch, query_size)``
+    Assume `query` is a tensor of shape ``(batch_size, query_size)``
     representing a single hidden state of a decoder RNN. Assume `key` is a
-    tensor of shape ``(T, num_batch, key_size)`` representing the encoder
+    tensor of shape ``(T, batch_size, key_size)`` representing the encoder
     output, ``dim == 0`` to specify that the variable-length dimension of `key`
     is the zero-th dimension, and ``value == key``. The output `out` will be a
-    tensor of shape ``(num_batch, key_size)``. Letting :math:`t` index the
+    tensor of shape ``(batch_size, key_size)``. Letting :math:`t` index the
     `dim`-th dimension:
 
         .. math::
@@ -69,15 +69,15 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
             out = \sum_t a_t value_t
 
     ``a`` is the attention vector. In our example, ``a`` will be of shape
-    ``(T, num_batch)``. ``a`` is the result of a softmax over the `dim`-th
-    dimension of another tensor ``e`` of shape ``(T, num_batch)`` with an
+    ``(T, batch_size)``. ``a`` is the result of a softmax over the `dim`-th
+    dimension of another tensor ``e`` of shape ``(T, batch_size)`` with an
     optional `mask`
 
     .. math::
 
         a = softmax(e * mask - (1 - mask) \infty, dim)
 
-    `mask` (if specified) is of shape ``(T, num_batch)`` and will set ``a`` to
+    `mask` (if specified) is of shape ``(T, batch_size)`` and will set ``a`` to
     zero wherever the mask is zero. `mask` can be used to indicate padded
     values when `key` consists of variable-length sequences.
 
@@ -112,20 +112,20 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
     A simple auto-regressive decoder using soft attention on encoder outputs
     with "concat"-style attention
 
-    >>> T, num_batch, encoded_size, hidden_size = 100, 5, 30, 124
+    >>> T, batch_size, encoded_size, hidden_size = 100, 5, 30, 124
     >>> num_classes, start, eos, max_decoder_steps = 20, -1, 0, 100
-    >>> encoded_lens = torch.randint(1, T + 1, (num_batch,))
+    >>> encoded_lens = torch.randint(1, T + 1, (batch_size,))
     >>> len_mask = torch.where(
     ...     torch.arange(T).unsqueeze(-1) < encoded_lens,
     ...     torch.tensor(1),
     ...     torch.tensor(0),
     ... )
-    >>> encoded = torch.randn(T, num_batch, encoded_size)
+    >>> encoded = torch.randn(T, batch_size, encoded_size)
     >>> rnn = torch.nn.RNNCell(encoded_size + 1, hidden_size)
     >>> ff = torch.nn.Linear(hidden_size, num_classes)
     >>> attention = ConcatSoftAttention(hidden_size, encoded_size)
-    >>> h = torch.zeros((num_batch, hidden_size))
-    >>> y = torch.full((1, num_batch), -1, dtype=torch.long)
+    >>> h = torch.zeros((batch_size, hidden_size))
+    >>> y = torch.full((1, batch_size), -1, dtype=torch.long)
     >>> for _ in range(max_decoder_steps):
     >>>     if y[-1].eq(eos).all():
     >>>         break

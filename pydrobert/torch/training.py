@@ -70,13 +70,13 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
 
         loss(logits, ref, hyp)
 
-    `hyp` is a long tensor of shape ``(num_batches, max_hyp_steps)`` if
-    `batch_first` is :obj:`False` otherwise ``(max_hyp_steps, num_batches)``
+    `hyp` is a long tensor of shape ``(max_hyp_steps, batch_size)`` if
+    `batch_first` is :obj:`False`, otherwise ``(batch_size, max_hyp_steps)``
     that provides the hypothesis transcriptions. Likewise, `ref` of shape
-    ``(num_batches, max_ref_steps)`` or ``(max_ref_steps, num_batches)``
+    ``(max_ref_steps, batch_size)`` or ``(batch_size, max_ref_steps)``
     providing reference transcriptions. `logits` is a 4-dimensional tensor of
-    shape ``(num_batches, max_hyp_steps, num_classes)`` if `batch_first` is
-    :obj:`True`, ``(max_hyp_steps, num_batches, num_classes)`` otherwise. A
+    shape ``(max_hyp_steps, batch_size, num_classes)`` if `batch_first` is
+    :obj:`False`, ``(batch_size, max_hyp_steps, num_classes)`` otherwise. A
     softmax over the step dimension defines the per-step distribution over
     class labels.
 
@@ -218,15 +218,15 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
         loss(log_probs, ref, hyp)
 
-    `log_probs` is a tensor of shape ``(num_batches, samples)`` providing the
+    `log_probs` is a tensor of shape ``(batch_size, samples)`` providing the
     log joint probabilities of every path. `hyp` is a long tensor of shape
-    ``(max_hyp_steps, num_batches, samples)`` if `batch_first` is :obj:`False`
-    otherwise ``(num_batches, samples, max_hyp_steps)`` that provides the
-    hypothesis transcriptions. Likewise, `ref` of shape ``(num_batches,
-    samples, max_ref_steps)`` or ``(max_ref_steps, num_batches, samples)``
-    providing reference transcriptions. ``num_batches`` enumerates the batches
-    whereas ``samples`` enumerates the list of samples for a given batch
-    element.
+    ``(max_hyp_steps, batch_size, samples)`` if `batch_first` is :obj:`False`
+    otherwise ``(batch_size, samples, max_hyp_steps)`` that provides the
+    hypothesis transcriptions. Likewise, `ref` of shape ``(max_ref_steps,
+    batch_size, samples)`` or ``(batch_size, samples, max_ref_steps)``
+    providing reference transcriptions. ``batch_size`` enumerates the batch
+    elements whereas ``samples`` enumerates the list of samples for a given
+    batch element.
 
     Using `log_probs`, the loss is calculated as
 
@@ -371,13 +371,13 @@ class MinimumErrorRateLoss(torch.nn.Module):
     def forward(self, log_probs, ref, hyp, warn=True):
         self.check_input(log_probs, ref, hyp)
         if self.batch_first:
-            num_batches, samples, max_ref_steps = ref.shape
-            num_batches_, samples_, max_hyp_steps = hyp.shape
+            batch_size, samples, max_ref_steps = ref.shape
+            batch_size_, samples_, max_hyp_steps = hyp.shape
             ref = ref.view(-1, max_ref_steps)
             hyp = hyp.view(-1, max_hyp_steps)
         else:
-            max_ref_steps, num_batches, samples = ref.shape
-            max_hyp_steps, num_batches_, samples_ = hyp.shape
+            max_ref_steps, batch_size, samples = ref.shape
+            max_hyp_steps, batch_size_, samples_ = hyp.shape
             ref = ref.view(max_ref_steps, -1)
             hyp = hyp.view(max_hyp_steps, -1)
         er = error_rate(
@@ -385,7 +385,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
             norm=self.norm, batch_first=self.batch_first,
             ins_cost=self.ins_cost, del_cost=self.del_cost,
             sub_cost=self.sub_cost, warn=warn,
-        ).view(num_batches, samples)
+        ).view(batch_size, samples)
         if self.sub_avg:
             er = er - er.mean(1, keepdim=True)
         loss = er * torch.nn.functional.softmax(log_probs, 1)

@@ -73,20 +73,20 @@ def beam_search_advance(
     ----------
     logits : torch.FloatTensor
         The conditional probabilities over class labels for the current time
-        step. Either of shape ``(num_batches, old_width, num_classes)``,
+        step. Either of shape ``(batch_size, old_width, num_classes)``,
         where ``old_width`` is the number of beams in the previous time step,
-        or ``(num_batches, num_classes)``, where it is assumed that
+        or ``(batch_size, num_classes)``, where it is assumed that
         ``old_width == 1``
     width : int
         The number of beams in the beam to produce for the current time step.
         ``width <= num_classes``
     log_prior : torch.FloatTensor, optional
         A tensor of (or proportional to) log prior probabilities of beams up
-        to the previous time step. Either of shape ``(num_batches, old_width)``
-        or ``(num_batches,)``. If unspecified, a uniform log prior will be used
+        to the previous time step. Either of shape ``(batch_size, old_width)``
+        or ``(batch_size,)``. If unspecified, a uniform log prior will be used
     y_prev : torch.LongTensor, optional
-        A tensor of shape ``(t - 1, num_batches, old_width)`` or
-        ``(t - 1, num_batches)`` specifying :math:`y_{<t}`. If unspecified,
+        A tensor of shape ``(t - 1, batch_size, old_width)`` or
+        ``(t - 1, batch_size)`` specifying :math:`y_{<t}`. If unspecified,
         it is assumed that ``t == 1``
     eos : int, optional
         A special end-of-sequence symbol indicating that the beam has ended.
@@ -94,7 +94,7 @@ def beam_search_advance(
         for some batch ``bt`` and beam ``bm``, that beam will be padded with
         an `eos` token and the score for that beam won't change
     lens : torch.LongTensor, optional
-        A tensor of shape ``(num_batches,)``. If ``t > lens[bt]`` for some
+        A tensor of shape ``(batch_size,)``. If ``t > lens[bt]`` for some
         batch ``bt``, all beams for ``bt`` will be considered finished. All
         scores will be fixed and `eos` will be appended to `y_prev`
     prevent_eos : bool, optional
@@ -106,13 +106,13 @@ def beam_search_advance(
     Returns
     -------
     score : torch.FloatTensor
-        Of shape ``(num_batches, width)`` of the log-joint probabilities of the
+        Of shape ``(batch_size, width)`` of the log-joint probabilities of the
         new beams in the beam
     y : torch.LongTensor
-        Of shape ``(t, num_batches, width)`` of indices of the class labels
+        Of shape ``(t, batch_size, width)`` of indices of the class labels
         generated up to this point
     s : torch.LongTensor
-        Of shape ``(num_batches, width)`` of indices of beams in the old beam
+        Of shape ``(batch_size, width)`` of indices of beams in the old beam
         which prefix the new beam. Note that beams in the new beam are sorted
         by descending probability
 
@@ -176,20 +176,20 @@ def beam_search_advance(
         raise RuntimeError('logits_t must have dimension of either 2 or 3')
     logits_t = torch.nn.functional.log_softmax(logits_t, 2)
     neg_inf = torch.tensor(-float('inf'), device=logits_t.device)
-    num_batches, old_width, num_classes = logits_t.shape
+    batch_size, old_width, num_classes = logits_t.shape
     if log_prior is None:
         log_prior = torch.full(
-            (num_batches, old_width),
+            (batch_size, old_width),
             -torch.log(torch.tensor(float(num_classes))),
             dtype=logits_t.dtype, device=logits_t.device,
         )
-    elif tuple(log_prior.shape) == (num_batches,) and old_width == 1:
+    elif tuple(log_prior.shape) == (batch_size,) and old_width == 1:
         log_prior = log_prior.unsqueeze(1)
     elif log_prior.shape != logits_t.shape[:-1]:
         raise RuntimeError(
             'If logits_t of shape {} then log_prior must have shape {}'.format(
-                (num_batches, old_width, num_classes),
-                (num_batches, old_width),
+                (batch_size, old_width, num_classes),
+                (batch_size, old_width),
             ))
     if prevent_eos and 0 <= eos < num_classes:
         # we have to put this before the num_done check so that it'll be
@@ -203,8 +203,8 @@ def beam_search_advance(
             raise RuntimeError(
                 'If logits_t of shape {} then y_prev must have shape '
                 '(*, {}, {})'.format(
-                    (num_batches, old_width, num_classes),
-                    num_batches, old_width,
+                    (batch_size, old_width, num_classes),
+                    batch_size, old_width,
                 )
             )
         eos_mask = y_prev[-1].eq(eos)
@@ -255,7 +255,7 @@ def beam_search_advance(
     if lens is not None:
         if lens.shape != logits_t.shape[:1]:
             raise RuntimeError(
-                'lens must be of shape ({},)'.format(num_batches))
+                'lens must be of shape ({},)'.format(batch_size))
         len_mask = lens.lt(t)
         if torch.any(len_mask):
             if old_width < width:
@@ -266,7 +266,7 @@ def beam_search_advance(
         else:
             len_mask = None
     joint = log_prior.unsqueeze(2) + logits_t
-    score, idxs = torch.topk(joint.view(num_batches, -1), width, dim=1)
+    score, idxs = torch.topk(joint.view(batch_size, -1), width, dim=1)
     s = idxs // num_classes
     y = (idxs % num_classes).unsqueeze(0)
     if eos_set is not None:
@@ -286,7 +286,7 @@ def beam_search_advance(
         )
     if y_prev is not None:
         y_prev = y_prev.gather(
-            2, s.unsqueeze(0).expand(t - 1, num_batches, width))
+            2, s.unsqueeze(0).expand(t - 1, batch_size, width))
         y = torch.cat([y_prev, y], 0)
     return score, y, s
 
@@ -300,11 +300,12 @@ def error_rate(
     <https://en.wikipedia.org/wiki/Levenshtein_distance>`__ normalized over
     reference sequence lengths.
 
-    Given a reference (gold-standard) transcript tensor `ref` of size
-    ``(max_ref_steps, batch_size)`` if ``batch_first == False`` or
-    ``(batch_size, max_hyp_steps)`` otherwise, and a similarly shaped tensor of
-    hypothesis transcripts `hyp`, this function produces a tensor `er` of shape
-    ``(batch_size,)`` storing the associated error rates.
+    Given a reference (gold-standard) transcript long tensor `ref` of size
+    ``(max_ref_steps, batch_size)`` if `batch_first` is :obj:`False` or
+    ``(batch_size, max_ref_steps)`` otherwise, and a long tensor `hyp` of shape
+    ``(max_hyp_steps, batch_size)`` or ``(batch_size, max_hyp_steps)``, this
+    function produces a tensor `er` of shape ``(batch_size,)`` storing the
+    associated error rates.
 
     `er` will not have a gradient, and is thus not directly suited to being a
     loss function
@@ -359,7 +360,7 @@ def optimal_completion(
 
     Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)``
     (or ``(batch_size, max_ref_steps)`` if `batch_first` is :obj:`True`) and a
-    hypothesis transcript `hyp` of shape ``(max_hyp_steps, batch_size)``, (or
+    hypothesis transcript `hyp` of shape ``(max_hyp_steps, batch_size)`` (or
     ``(batch_size, max_hyp_steps)``), this function produces a long tensor
     `optimals` of shape ``(max_hyp_steps + 1, batch_size, max_unique_next)``
     (or ``(batch_size, max_hyp_steps + 1, max_unique_next)``), where
@@ -511,7 +512,7 @@ def prefix_error_rates(
 
     Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)``
     (or ``(batch_size, max_ref_steps)`` if `batch_first` is :obj:`True`) and a
-    hypothesis transcript `hyp` of shape ``(max_hyp_steps, batch_size)``, (or
+    hypothesis transcript `hyp` of shape ``(max_hyp_steps, batch_size)`` (or
     ``(batch_size, max_hyp_steps)``), this function produces a tensor
     `prefix_ers` of shape ``(max_hyp_steps + 1, batch_size)`` (or
     ``(batch_size, max_hyp_steps + 1))`` which contains the error rates for
@@ -603,9 +604,9 @@ def random_walk_advance(
     ----------
     logits_t : torch.FloatTensor
         The conditional probabilities over class labels for the current time
-        step. Either of shape ``(num_batches, old_samp, num_classes)``,
+        step. Either of shape ``(batch_size, old_samp, num_classes)``,
         where ``old_samp`` is the number of samples in the previous time
-        step, or ``(num_batches, num_classes)``, where it is assumed that
+        step, or ``(batch_size, num_classes)``, where it is assumed that
         ``old_samp == 1``
     num_samp : int
         The number of samples to be drawn. Either ``old_samp == 1`` and/or
@@ -613,8 +614,8 @@ def random_walk_advance(
         samples will share the same prefix, or we are building off a subset of
         the samples from ``y_prev`` (in this case, always the first `num_samp`)
     y_prev : torch.LongTensor, optional
-        A tensor of shape ``(t - 1, num_batches, old_samp)`` or
-        ``(t - 1, num_batches)`` specifying :math:`y_{<t}`. If unspecified,
+        A tensor of shape ``(t - 1, batch_size, old_samp)`` or
+        ``(t - 1, batch_size)`` specifying :math:`y_{<t}`. If unspecified,
         it is assumed that ``t == 1``
     eos : int, optional
         A special end-of-sequence symbol indicating that the beam has ended.
@@ -622,7 +623,7 @@ def random_walk_advance(
         ``y_prev[-1, bt, smp]`` for some batch ``bt`` and sample ``smp``,
         `eos` will be appended to ``y_prev[:, bt, smp]``
     lens : torch.LongTensor, optional
-        A tensor of shape ``(num_batches,)``. If ``t > lens[bt]`` for some
+        A tensor of shape ``(batch_size,)``. If ``t > lens[bt]`` for some
         batch ``bt``, all samples for ``bt`` will be considered finished. `eos`
         will be appended to `y_prev`
     prevent_eos : bool, optional
@@ -638,13 +639,13 @@ def random_walk_advance(
     Returns
     -------
     y : torch.LongTensor
-        A long tensor of shape ``(t, num_batches, num_samp)`` of the sampled
+        A long tensor of shape ``(t, batch_size, num_samp)`` of the sampled
         sequences so far. Note that, since :math:`y_t` are drawn `i.i.d.`,
         there is no guarantee of the uniqueness of each `num_samp` samples
     z : torch.FloatTensor
         Only included if `include_relaxation` is :obj:`True`. `z` is a sample
         of a continuous relaxation of the categorical distribution of `logits`
-        of shape ``(num_batches, num_samp, num_classes). Assuming ``y_prev[-1,
+        of shape ``(batch_size, num_samp, num_classes). Assuming ``y_prev[-1,
         bt, smp] != eos``, ``y[-1, bt, smp] == z[bt, smp].argmax(dim-1)``. If
         ``y_prev[-1, bt, smp] == eos``, ``z[bt, smp, :] = -infinity``. The
         primary purpose of `z` is to be used as an argument (alongside `y`) in
@@ -710,7 +711,7 @@ def random_walk_advance(
         logits_t = logits_t.unsqueeze(1)
     elif logits_t.dim() != 3:
         raise RuntimeError('logits_t must have dimension of either 2 or 3')
-    num_batches, old_samp, num_classes = logits_t.shape
+    batch_size, old_samp, num_classes = logits_t.shape
     if prevent_eos and 0 <= eos < num_classes:
         logits_t[..., eos] = torch.tensor(
             -float('inf'), device=logits_t.device)
@@ -725,8 +726,8 @@ def random_walk_advance(
             raise RuntimeError(
                 'If logits_t of shape {} then y_prev must have shape '
                 '(*, {}, {})'.format(
-                    (num_batches, old_samp, num_classes),
-                    num_batches, old_samp,
+                    (batch_size, old_samp, num_classes),
+                    batch_size, old_samp,
                 )
             )
         y_prev = y_prev.expand(-1, -1, num_samp)
@@ -742,7 +743,7 @@ def random_walk_advance(
     if lens is not None:
         if lens.shape != logits_t.shape[:1]:
             raise RuntimeError(
-                'lens must be of shape ({},)'.format(num_batches))
+                'lens must be of shape ({},)'.format(batch_size))
         len_mask = lens.lt(t)
         if torch.any(len_mask):
             len_mask = len_mask.unsqueeze(1).expand(-1, num_samp)
