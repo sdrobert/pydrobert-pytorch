@@ -218,14 +218,14 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction):
             num_classes, (num_batches, samples, max_hyp_steps), device=device)
         hyp[..., 0] = 0
         ref = torch.randint(
-            num_classes, (num_batches, samples, max_ref_steps), device=device)
+            num_classes, (num_batches, max_ref_steps), device=device)
         ref[..., 0] = 0
     else:
         hyp = torch.randint(
             num_classes, (max_hyp_steps, num_batches, samples), device=device)
         hyp[0] = 0
         ref = torch.randint(
-            num_classes, (max_ref_steps, num_batches, samples), device=device)
+            num_classes, (max_ref_steps, num_batches), device=device)
         ref[0] = 0
     log_probs = torch.randn(num_batches, samples, device=device)
     loss = training.MinimumErrorRateLoss(
