@@ -381,14 +381,14 @@ class ConcatSoftAttention(GlobalSoftAttention):
         return s
 
 
-class MultiHeadedAttention(torch.nn.Module):
+class MultiHeadedAttention(GlobalSoftAttention):
     r'''Perform attention over a number of heads, concatenate, and project
 
     Multi-headed attention was proposed in [vaswani2017]_. It can be considered
-    a wrapper around standard :class:`GlobalSoftAttention` that results in a
-    similar output as a regular attention layer. The idea is to replicate
-    transformed versions of the `query`, `key`, and `value` `num_heads` times.
-    Letting :math:`h` index the head:
+    a wrapper around standard :class:`GlobalSoftAttention` that also performs
+    :class:`GlobalSoftAttention`, but with more parameters. The idea is to
+    replicate transformed versions of the `query`, `key`, and `value`
+    `num_heads` times. Letting :math:`h` index the head:
 
     .. math::
 
@@ -399,7 +399,9 @@ class MultiHeadedAttention(torch.nn.Module):
     If `query` is of shape ``(..., query_size)``, :math:`W^Q_h` is a learned
     matrix of shape ``(query_size, d_q)`` that acts on the final dimension of
     `query`. Likewise, :math:`W^K_h` is of shape ``(key_size, d_k)`` and
-    :math:`W^V_h` is of shape ``(value_size, d_v)``.
+    :math:`W^V_h` is of shape ``(value_size, d_v)``. Note here that the last
+    dimension of `value` must also be provided in `value_size`, unlike in
+    other attention layers.
 
     Each head is then determined via a wrapped :class:`GlobalSoftAttention`
     instance, `single_head_attention`:
@@ -473,16 +475,14 @@ class MultiHeadedAttention(torch.nn.Module):
             self, query_size, key_size, value_size, num_heads,
             single_head_attention, out_size=None, d_v=None,
             bias_WQ=False, bias_WK=False, bias_WV=False, bias_WC=False):
-        super(MultiHeadedAttention, self).__init__()
-        self.query_size = query_size
-        self.key_size = key_size
+        super(MultiHeadedAttention, self).__init__(
+            query_size, key_size, dim=single_head_attention.dim)
         self.value_size = value_size
         self.out_size = value_size if out_size is None else out_size
         self.num_heads = num_heads
         self.single_head_attention = single_head_attention
         # we don't keep these in sync in case someone's using
         # single_head_attention
-        self.dim = single_head_attention.dim
         self.d_q = single_head_attention.query_size
         self.d_k = single_head_attention.key_size
         self.d_v = max(1, value_size // num_heads) if d_v is None else d_v
@@ -496,21 +496,23 @@ class MultiHeadedAttention(torch.nn.Module):
             self.d_v * num_heads, self.out_size, bias=bias_WC)
         single_head_attention.reset_parameters()
 
+    def check_input(self, query, key, value, mask=None):
+        '''Check that input is formatted correctly, RuntimeError otherwise'''
+        super(MultiHeadedAttention, self).check_input(query, key, value, mask)
+        if value.shape[-1] != self.value_size:
+            raise RuntimeError('Last dimension of value must match value_size')
+
+    def score(self, query, key):
+        raise NotImplementedError(
+            'In MultiHeadedAttention, score() is handled by '
+            'single_head_attention')
+
     def forward(self, query, key, value, mask=None):
+        self.check_input(query, key, value, mask)
         query_shape = tuple(query.shape)
         key_shape = tuple(key.shape)
         value_shape = tuple(value.shape)
-        # we check dim here because we want to turn it into a positive
-        # index before passing it to the head. This is because there's going
-        # to be one more dimension to query, key, and value at the end that
-        # represents the `num_heads` dimension, and we don't want negative
-        # indices being wrongly offset because of it
-        key_dim = len(key_shape)
-        if self.dim > key_dim - 2 or self.dim < -key_dim + 1:
-            raise RuntimeError(
-                'dim must be in the range [{}, {}]'
-                ''.format(-key_dim + 1, key_dim - 2)
-            )
+        key_dim = key.dim()
         dim = (self.dim + key_dim) % key_dim
         query_heads = (
             self.WQ(query)
@@ -544,9 +546,8 @@ class MultiHeadedAttention(torch.nn.Module):
         self.single_head_attention.reset_parameters()
 
     def extra_repr(self):
-        return (
-            'query_size={}, key_size={}, value_size={}, out_size={}, dim={}, '
-            'num_heads={}, d_q={}, d_k={}, d_v={}'.format(
-                self.query_size, self.key_size, self.value_size, self.out_size,
-                self.dim, self.num_heads, self.d_q, self.d_k, self.d_v)
-        )
+        s = super(MultiHeadedAttention, self).extra_repr()
+        # rest of info in single_head_attention submodule
+        s += ', value_size={}, out_size={}, num_heads={}'.format(
+            self.value_size, self.out_size, self.num_heads)
+        return s
