@@ -85,7 +85,7 @@ def to_z(logits, dist, warn=True):
         log_theta = torch.nn.functional.log_softmax(logits, dim=-1)
         z = log_theta - torch.log(-torch.log(u))
     else:
-        raise ValueError("Unknown distribution {}".format(dist))
+        raise RuntimeError("Unknown distribution {}".format(dist))
     z.requires_grad_(True)
     return z
 
@@ -110,7 +110,7 @@ def to_b(z, dist):
         b = torch.zeros_like(z).scatter_(
             -1, z.argmax(dim=-1, keepdim=True), 1.)
     else:
-        raise ValueError("Unknown distribution {}".format(dist))
+        raise RuntimeError("Unknown distribution {}".format(dist))
     return b
 
 
@@ -173,7 +173,7 @@ def reinforce(fb, b, logits, dist):
             logits=logits).log_prob(b)
         fb = fb.unsqueeze(-1)
     else:
-        raise ValueError("Unknown distribution {}".format(dist))
+        raise RuntimeError("Unknown distribution {}".format(dist))
     g = fb * torch.autograd.grad(
         [log_pb], [logits], grad_outputs=torch.ones_like(log_pb))[0]
     return g
@@ -253,7 +253,7 @@ def relax(fb, b, logits, z, c, dist, components=False):
             logits=logits).log_prob(b)
         diff = diff[..., None]
     else:
-        raise ValueError("Unknown distribution {}".format(dist))
+        raise RuntimeError("Unknown distribution {}".format(dist))
     dlog_pb, = torch.autograd.grad(
         [log_pb], [logits], grad_outputs=torch.ones_like(log_pb))
     # we need `create_graph` to be true here or backpropagation through the
@@ -309,6 +309,10 @@ class REBARControlVariate(torch.nn.Module):
         :math:`z` will be continuous relaxations of one-hot samples of
         categorical distributions, but the discrete samples are index-based
         when ``dist == "cat"``. This might cause unexpected behaviours.
+
+    Attributes
+    ----------
+
     '''
 
     def __init__(self, f, dist, start_temp=0.1, start_eta=1.0, warn=True):
@@ -317,21 +321,13 @@ class REBARControlVariate(torch.nn.Module):
         super(REBARControlVariate, self).__init__()
         self.dist = dist
         self.f = f
-        if dist in BERNOULLI_SYNONYMS:
-            self._bernoulli = True
-        elif dist in ONEHOT_SYNONYMS:
-            self._bernoulli = False
-        elif dist in CATEGORICAL_SYNONYMS:
-            self._bernoulli = False
-            if warn:
-                warnings.warn(
-                    "'{}' implies categorical samples are index-based, but "
-                    "this instance will call 'f' with continuous relaxations "
-                    "of one-hot samples. It is likely that you want dist to "
-                    "be 'onehot' instead. To suppress this warning, set "
-                    "warn=False".format(dist))
-        else:
-            raise ValueError("Unknown distribution {}".format(dist))
+        if warn and dist in CATEGORICAL_SYNONYMS:
+            warnings.warn(
+                "'{}' implies categorical samples are index-based, but "
+                "this instance will call 'f' with continuous relaxations "
+                "of one-hot samples. It is likely that you want dist to "
+                "be 'onehot' instead. To suppress this warning, set "
+                "warn=False".format(dist))
         self.start_temp = start_temp
         self.start_eta = start_eta
         self.log_temp = torch.nn.Parameter(torch.Tensor(1))
@@ -339,12 +335,21 @@ class REBARControlVariate(torch.nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
+        if self.start_temp <= 0.:
+            raise RuntimeError("start_temp must be positive")
         self.log_temp.data.fill_(self.start_temp).log_()
         self.eta.data.fill_(self.start_eta)
 
+    def check_input(self, z):
+        if self.dist not in (
+                CATEGORICAL_SYNONYMS | BERNOULLI_SYNONYMS | ONEHOT_SYNONYMS):
+            raise RuntimeError(
+                'dist "{}" is not a valid distribution name'.format(self.dist))
+
     def forward(self, z):
+        self.check_input(z)
         z_temp = z / torch.exp(self.log_temp)
-        if self._bernoulli:
+        if self.dist in BERNOULLI_SYNONYMS:
             return self.eta * self.f(torch.sigmoid(z_temp))
         else:
             return self.eta * self.f(torch.softmax(z_temp, -1))
@@ -359,7 +364,7 @@ def _reattach_z_to_new_logits(logits, z, dist):
         # z = log_theta - torch.log(-torch.log(u))
         z = z.detach() + log_theta - log_theta.detach()
     else:
-        raise ValueError("Unknown distribution {}".format(dist))
+        raise RuntimeError("Unknown distribution {}".format(dist))
     return z
 
 
@@ -393,5 +398,5 @@ def _to_z_tilde(logits, b, dist):
                 -log_v / theta - log_v.gather(-1, b.argmax(-1, keepdim=True))),
         )
     else:
-        raise ValueError("Unknown distribution {}".format(dist))
+        raise RuntimeError("Unknown distribution {}".format(dist))
     return z_tilde

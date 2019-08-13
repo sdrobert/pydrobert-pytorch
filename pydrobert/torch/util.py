@@ -173,7 +173,7 @@ def beam_search_advance(
     if logits_t.dim() == 2:
         logits_t = logits_t.unsqueeze(1)
     elif logits_t.dim() != 3:
-        raise ValueError('logits_t must have dimension of either 2 or 3')
+        raise RuntimeError('logits_t must have dimension of either 2 or 3')
     logits_t = torch.nn.functional.log_softmax(logits_t, 2)
     neg_inf = torch.tensor(-float('inf'), device=logits_t.device)
     num_batches, old_width, num_classes = logits_t.shape
@@ -186,7 +186,7 @@ def beam_search_advance(
     elif tuple(log_prior.shape) == (num_batches,) and old_width == 1:
         log_prior = log_prior.unsqueeze(1)
     elif log_prior.shape != logits_t.shape[:-1]:
-        raise ValueError(
+        raise RuntimeError(
             'If logits_t of shape {} then log_prior must have shape {}'.format(
                 (num_batches, old_width, num_classes),
                 (num_batches, old_width),
@@ -200,7 +200,7 @@ def beam_search_advance(
         if y_prev.dim() == 2:
             y_prev = y_prev.unsqueeze(2)
         if y_prev.shape[1:] != log_prior.shape:
-            raise ValueError(
+            raise RuntimeError(
                 'If logits_t of shape {} then y_prev must have shape '
                 '(*, {}, {})'.format(
                     (num_batches, old_width, num_classes),
@@ -211,7 +211,7 @@ def beam_search_advance(
         num_done = eos_mask.long().sum(1)
         if num_done.sum().item():
             if old_width < width and torch.any(num_done == old_width):
-                raise ValueError(
+                raise RuntimeError(
                     'New beam width ({}) is wider than old beam width '
                     '({}), but all paths are already done in one or more '
                     'batch elements'.format(width, old_width))
@@ -254,11 +254,12 @@ def beam_search_advance(
     len_mask = None
     if lens is not None:
         if lens.shape != logits_t.shape[:1]:
-            raise ValueError('lens must be of shape ({},)'.format(num_batches))
+            raise RuntimeError(
+                'lens must be of shape ({},)'.format(num_batches))
         len_mask = lens.lt(t)
         if torch.any(len_mask):
             if old_width < width:
-                raise ValueError(
+                raise RuntimeError(
                     'New beam width ({}) is wider than old beam width '
                     '({}), but all paths are already done in one or more '
                     'batch elements'.format(width, old_width))
@@ -708,20 +709,20 @@ def random_walk_advance(
     if logits_t.dim() == 2:
         logits_t = logits_t.unsqueeze(1)
     elif logits_t.dim() != 3:
-        raise ValueError('logits_t must have dimension of either 2 or 3')
+        raise RuntimeError('logits_t must have dimension of either 2 or 3')
     num_batches, old_samp, num_classes = logits_t.shape
     if prevent_eos and 0 <= eos < num_classes:
         logits_t[..., eos] = torch.tensor(
             -float('inf'), device=logits_t.device)
     if old_samp != 1 and num_samp > old_samp:
-        raise ValueError(
+        raise RuntimeError(
             'either old_samp == 1 or num_samp <= old_samp must be true')
     eos_mask = None
     if y_prev is not None:
         if y_prev.dim() == 2:
             y_prev = y_prev.unsqueeze(2)
         if y_prev.shape[1:] != logits_t.shape[:-1]:
-            raise ValueError(
+            raise RuntimeError(
                 'If logits_t of shape {} then y_prev must have shape '
                 '(*, {}, {})'.format(
                     (num_batches, old_samp, num_classes),
@@ -740,7 +741,8 @@ def random_walk_advance(
     logits_t = logits_t.expand(-1, num_samp, -1)
     if lens is not None:
         if lens.shape != logits_t.shape[:1]:
-            raise ValueError('lens must be of shape ({},)'.format(num_batches))
+            raise RuntimeError(
+                'lens must be of shape ({},)'.format(num_batches))
         len_mask = lens.lt(t)
         if torch.any(len_mask):
             len_mask = len_mask.unsqueeze(1).expand(-1, num_samp)
@@ -820,15 +822,15 @@ def sequence_log_probs(logits, hyp, dim=0, eos=None):
     if isinstance(logits, torch.nn.utils.rnn.PackedSequence):
         return _sequence_log_probs_packed(logits, hyp)
     if isinstance(hyp, torch.nn.utils.rnn.PackedSequence):
-        raise ValueError(
+        raise RuntimeError(
             'both hyp and logits must be packed sequences, or neither')
     if logits.shape[:-1] != hyp.shape:
-        raise ValueError(
+        raise RuntimeError(
             'logits and hyp must have same shape (minus last dimension of '
             'logits)')
     hyp_dim = hyp.dim()
     if dim < -hyp_dim or dim > hyp_dim - 1:
-        raise ValueError(
+        raise RuntimeError(
             'Dimension out of range (expected to be in range of [{}, {}], but '
             'got {})'.format(-hyp_dim, hyp_dim - 1, dim))
     dim = (hyp_dim + dim) % hyp_dim
@@ -866,15 +868,15 @@ def _lens_from_eos(tok, eos, dim):
 
 def _sequence_log_probs_packed(logits, hyp):
     if not isinstance(hyp, torch.nn.utils.rnn.PackedSequence):
-        raise ValueError(
+        raise RuntimeError(
             'both hyp and logits must be packed sequences, or neither')
     logits, logits_lens = logits.data, logits.batch_sizes
     hyp, hyp_lens = hyp.data, hyp.batch_sizes
     if (hyp_lens != logits_lens).any():
-        raise ValueError(
+        raise RuntimeError(
             'hyp and logits must have the same sequence lengths')
     if logits.shape[:-1] != hyp.shape:
-        raise ValueError(
+        raise RuntimeError(
             'logits and hyp must have same shape (minus last dimension of '
             'logits)')
     num_classes = logits.shape[-1]
@@ -893,7 +895,7 @@ def _levenshtein(
         return_prf_dsts=False, exclude_last=False, padding=None):
     assert not return_mask or not return_prf_dsts
     if ref.dim() != 2 or hyp.dim() != 2:
-        raise ValueError('ref and hyp must be 2 dimensional')
+        raise RuntimeError('ref and hyp must be 2 dimensional')
     if batch_first:
         ref = ref.t()
         hyp = hyp.t()
@@ -903,7 +905,7 @@ def _levenshtein(
     max_hyp_steps, batch_size_ = hyp.shape
     device = ref.device
     if batch_size != batch_size_:
-        raise ValueError(
+        raise RuntimeError(
             'ref has batch size {}, but hyp has {}'.format(
                 batch_size, batch_size_))
     if eos is not None:
