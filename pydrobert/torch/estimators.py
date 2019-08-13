@@ -312,7 +312,8 @@ class REBARControlVariate(torch.nn.Module):
 
     Attributes
     ----------
-
+    f : callable
+    dist : {"bern", "cat", "onehot"}
     '''
 
     def __init__(self, f, dist, start_temp=0.1, start_eta=1.0, warn=True):
