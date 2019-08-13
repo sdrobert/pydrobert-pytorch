@@ -172,22 +172,40 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         '''
         raise NotImplementedError()
 
-    def forward(self, query, key, value, mask=None):
-        if query.dim() + 1 != key.dim():
-            raise ValueError('query must have one fewer dimension than key')
-        if key.dim() != value.dim():
-            raise ValueError(
+    def check_input(self, query, key, value, mask=None):
+        '''Check if input is properly formatted, RuntimeError otherwise
+
+        Warnings
+        --------
+        This method doesn't check that the tensors properly broadcast. If they
+        don't, they will fail later on. It only ensures the proper sizes and
+        that the final dimensions are appropriately sized where applicable
+
+        See Also
+        --------
+        :ref:`Advanced Attention and Transformer Networks`
+            For full broadcasting rules
+        '''
+        key_dim = key.dim()
+        if query.dim() != key_dim - 1:
+            raise RuntimeError('query must have one fewer dimension than key')
+        if key_dim != value.dim():
+            raise RuntimeError(
                 "key must have same number of dimensions as value")
         if query.shape[-1] != self.query_size:
-            raise ValueError('Last dimension of query must match query_size')
+            raise RuntimeError('Last dimension of query must match query_size')
         if key.shape[-1] != self.key_size:
-            raise ValueError('Last dimension of key must match key_size')
-        key_dim = key.dim()
+            raise RuntimeError('Last dimension of key must match key_size')
         if self.dim > key_dim - 2 or self.dim < -key_dim + 1:
-            raise ValueError(
+            raise RuntimeError(
                 'dim must be in the range [{}, {}]'
                 ''.format(-key_dim + 1, key_dim - 2)
             )
+        if mask is not None and mask.dim() != key_dim - 1:
+            raise RuntimeError('mask must have one fewer dimension than key')
+
+    def forward(self, query, key, value, mask=None):
+        self.check_input(query, key, value, mask)
         e = self.score(query, key)
         if mask is not None:
             e = e.masked_fill(mask.eq(0), -float('inf'))
@@ -489,7 +507,7 @@ class MultiHeadedAttention(torch.nn.Module):
         # indices being wrongly offset because of it
         key_dim = len(key_shape)
         if self.dim > key_dim - 2 or self.dim < -key_dim + 1:
-            raise ValuerError(
+            raise RuntimeError(
                 'dim must be in the range [{}, {}]'
                 ''.format(-key_dim + 1, key_dim - 2)
             )

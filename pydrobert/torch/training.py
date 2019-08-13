@@ -145,17 +145,25 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
     def weight(self, value):
         self._cross_ent.weight = value
 
-    def forward(self, logits, ref, hyp, warn=True):
+    def check_input(self, logits, ref, hyp):
+        '''Check if input formatted correctly, otherwise RuntimeError'''
         if logits.dim() != 3:
-            raise ValueError('logits must be 3 dimensional')
+            raise RuntimeError('logits must be 3 dimensional')
         if logits.shape[:-1] != hyp.shape:
-            raise ValueError('first two dims of logits must match hyp shape')
-        num_classes = logits.shape[-1]
+            raise RuntimeError('first two dims of logits must match hyp shape')
         if self.include_eos and self.eos is not None and (
-                (self.eos < 0) or (self.eos >= num_classes)):
-            raise ValueError(
+                (self.eos < 0) or (self.eos >= logits.shape[-1])):
+            raise RuntimeError(
                 'if include_eos=True, eos ({}) must be a class idx'.format(
                     self.eos))
+        if self.reduction not in {'mean', 'sum', 'none'}:
+            raise RuntimeError(
+                '"{}" is not a valid value for reduction'
+                ''.format(self.reduction))
+
+    def forward(self, logits, ref, hyp, warn=True):
+        self.check_input(logits, ref, hyp)
+        num_classes = logits.shape[-1]
         # the padding we use will never be exposed to the user, so we merely
         # ensure we're not trampling the eos
         padding = -2 if self.eos == -1 else -1
@@ -170,7 +178,7 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         logits = logits.unsqueeze(2).expand(-1, -1, max_unique_next, -1)
         logits = logits.contiguous()
         loss = self._cross_ent(
-            logits.view(-1, num_classes), optimals.flatten()
+            logits.view(-1, logits.shape[-1]), optimals.flatten()
         ).view_as(optimals)
         padding_mask = optimals.eq(padding)
         no_padding_mask = padding_mask.eq(0)
@@ -184,9 +192,6 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
             loss = loss.mean()
         elif self.reduction == 'sum':
             loss = loss.sum()
-        elif self.reduction != 'none':
-            raise ValueError(
-                '{} is not a valid value for reduction'.format(self.reduction))
         return loss
 
 
@@ -331,25 +336,37 @@ class MinimumErrorRateLoss(torch.nn.Module):
         self.reduction = reduction
 
     def check_input(self, log_probs, ref, hyp):
-        '''Check if the input is formatted correctly, otherwise ValueError'''
+        '''Check if the input is formatted correctly, otherwise RuntimeError'''
         if log_probs.dim() != 2:
-            raise ValueError('log_probs must be 2 dimensional')
+            raise RuntimeError('log_probs must be 2 dimensional')
         if ref.dim() != 3 or hyp.dim() != 3:
-            raise ValueError('ref and hyp must be 3 dimensional')
+            raise RuntimeError('ref and hyp must be 3 dimensional')
         if self.batch_first:
             if (
                     (ref.shape[:2] != hyp.shape[:2]) or
                     (ref.shape[:2] != log_probs.shape)):
-                raise ValueError(
+                raise RuntimeError(
                     'with batch_first=True, first two dimensions of ref, '
                     'hyp, and log_probs must match in size')
+            if ref.shape[1] < 2:
+                raise RuntimeError(
+                    'Batch must have at least two samples, got {}'
+                    ''.format(ref.shape[1]))
         else:
             if (
                     (ref.shape[1:] != hyp.shape[1:]) or
                     (ref.shape[1:] != log_probs.shape)):
-                raise ValueError(
+                raise RuntimeError(
                     'with batch_first=False, last two dimensions of ref, '
                     'hyp, and log_probs must match in size')
+            if ref.shape[2] < 2:
+                raise RuntimeError(
+                    'Batch must have at least two samples, got {}'
+                    ''.format(ref.shape[2]))
+        if self.reduction not in {'mean', 'sum', 'none'}:
+            raise RuntimeError(
+                '"{}" is not a valid value for reduction'
+                ''.format(self.reduction))
 
     def forward(self, log_probs, ref, hyp, warn=True):
         self.check_input(log_probs, ref, hyp)
@@ -363,10 +380,6 @@ class MinimumErrorRateLoss(torch.nn.Module):
             max_hyp_steps, num_batches_, samples_ = hyp.shape
             ref = ref.view(max_ref_steps, -1)
             hyp = hyp.view(max_hyp_steps, -1)
-        if (num_batches, samples) != (num_batches_, samples_):
-            raise ValueError('batch and path dims must match btw ref and hyp')
-        if samples < 2:
-            raise ValueError('must be more than one sample')
         er = error_rate(
             ref, hyp, eos=self.eos, include_eos=self.include_eos,
             norm=self.norm, batch_first=self.batch_first,
@@ -380,9 +393,6 @@ class MinimumErrorRateLoss(torch.nn.Module):
             loss = loss.mean()
         elif self.reduction == 'sum':
             loss = loss.sum()
-        elif self.reduction != 'none':
-            raise ValueError(
-                '{} is not a valid value for reduction'.format(self.reduction))
         return loss
 
 

@@ -13,13 +13,13 @@ dimension of `query`, and :math:`k` index the last index of `key`. Let
 :math:`t` is inserted as the `dim`-th dimension. Then :math:`query_{t=0,q}`
 must `broadcast
 <https://pytorch.org/docs/stable/notes/broadcasting.html#broadcasting-semantics>`__
-with :math:`key_k`. If specified, `mask` should broadcast with :math:`e`, that
-is, broadcast with a tensor of the same shape as :math:`key_k` after it has
-been broadcast to :math:`query_{t=0,q}`. Finally, `value` must broadcast with
-:math:`a_{k=0}`, that is, :math:`a` with an unsqueezed final dimension. Care
-should be taken to ensure that any added dimensions to `query`, `key`, and
-`value` ensure that the dimension that is to be attended to (reduced)
-broadcasts to the correct location.
+with :math:`key_k`. If specified, `mask` is an (n - 1)-dimensional tensor that
+broadcasts with :math:`e`, that is, broadcast with a tensor of the same shape
+as :math:`key_k` after it has been broadcast to :math:`query_{t=0,q}`. Finally,
+`value` must broadcast with :math:`a_{k=0}`, that is, :math:`a` with an
+unsqueezed final dimension. Care should be taken to ensure that any added
+dimensions to `query`, `key`, and `value` ensure that the dimension that is to
+be attended to (reduced) broadcasts to the correct location.
 
 We'll illustrate with an example. Here, we've designed a barebones version of a
 transformer network. There are lots of extra bits in a full transformer network
