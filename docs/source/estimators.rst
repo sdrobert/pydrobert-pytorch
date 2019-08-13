@@ -131,10 +131,7 @@ First the prep
 >>>         ref, hyp.long(), eos=eos, norm=False, padding=-1)
 >>>     r = -(dists[1:] - dists[:-1])
 >>>     r = r.masked_fill(dists[1:].eq(padding), 0.)
->>>     R = torch.empty_like(r)
->>>     R[-1] = r[-1]
->>>     for step_idx in range(r.shape[0] - 2, -1, -1):
->>>         R[step_idx] = r[step_idx] + gamma * R[step_idx + 1]
+>>>     R = time_distributed_return(r, gamma)
 >>>     return R
 >>> batch_size, inp_size, num_classes, num_samps = 10, 20, 5, 100
 >>> T, S, sos, hidden_size = 30, 10, -1, 40
