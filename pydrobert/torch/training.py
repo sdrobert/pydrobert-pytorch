@@ -783,16 +783,10 @@ class TrainingStateController(object):
                     'model has no reset_parameters() method, so cannot '
                     'reset parameters for epoch 0'
                 )
-            optim_defaults = dict(optimizer.defaults)
             if self.params.log10_learning_rate is not None:
-                optim_defaults['lr'] = 10 ** self.params.log10_learning_rate
-            else:
-                del optim_defaults['lr']
-            new_optimizer = type(optimizer)(
-                optimizer.param_groups,
-                **optim_defaults
-            )
-            optimizer.load_state_dict(new_optimizer.state_dict())
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = 10 ** self.params.log10_learning_rate
+            optimizer.state.clear()
         elif self.state_dir is not None:
             epoch_info = self[epoch]
             model_basename = self.params.saved_model_fmt.format(**epoch_info)
@@ -809,9 +803,10 @@ class TrainingStateController(object):
             )
             optimizer.load_state_dict(optimizer_state_dict)
         else:
-            print(
+            warnings.warn(
                 'Unable to load optimizer for epoch {}. No state dict!'
-                ''.format(epoch))
+                ''.format(epoch)
+            )
 
     def delete_model_and_optimizer_for_epoch(self, epoch):
         '''Delete state dicts for model and epoch off of disk, if they exist
@@ -893,7 +888,6 @@ class TrainingStateController(object):
             model.state_dict(),
             os.path.join(self.state_dir, model_basename),
         )
-        optimizer_state_dict
         torch.save(
             optimizer.state_dict(),
             os.path.join(self.state_dir, optimizer_basename),
