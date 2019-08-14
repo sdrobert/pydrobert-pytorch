@@ -71,7 +71,7 @@ def beam_search_advance(
 
     Parameters
     ----------
-    logits : torch.FloatTensor
+    logits_t : torch.FloatTensor
         The conditional probabilities over class labels for the current time
         step. Either of shape ``(batch_size, old_width, num_classes)``,
         where ``old_width`` is the number of beams in the previous time step,

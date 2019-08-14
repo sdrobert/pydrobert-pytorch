@@ -8,7 +8,6 @@ import torch
 import pytest
 import pydrobert.torch.training as training
 
-from pydrobert.torch.util import optimizer_to
 
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"

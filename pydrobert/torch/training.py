@@ -30,7 +30,7 @@ import torch
 import param
 import pydrobert.torch
 
-from pydrobert.torch.util import optimizer_to, error_rate, optimal_completion
+from pydrobert.torch.util import error_rate, optimal_completion
 
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
@@ -421,8 +421,8 @@ class TrainingStateParams(param.Parameterized):
     )
     log10_learning_rate = param.Number(
         None, softbounds=(-10, -2),
-        doc='Optimizer log-learning rate. If unspecified, uses the '
-        'built-in rate'
+        doc='Initial optimizer log-learning rate. If unspecified, the initial '
+        'learning rate of the optimizer instance remains unchanged'
     )
     early_stopping_threshold = param.Number(
         0.0, bounds=(0, None), softbounds=(0, 1.),
@@ -799,10 +799,14 @@ class TrainingStateController(object):
             optimizer_basename = self.params.saved_optimizer_fmt.format(
                 **epoch_info)
             model_state_dict = torch.load(
-                os.path.join(self.state_dir, model_basename))
+                os.path.join(self.state_dir, model_basename),
+                map_location='cpu',
+            )
             model.load_state_dict(model_state_dict)
             optimizer_state_dict = torch.load(
-                os.path.join(self.state_dir, optimizer_basename))
+                os.path.join(self.state_dir, optimizer_basename),
+                map_location='cpu',
+            )
             optimizer.load_state_dict(optimizer_state_dict)
         else:
             print(
@@ -885,15 +889,11 @@ class TrainingStateController(object):
         model_basename = self.params.saved_model_fmt.format(**info)
         optimizer_basename = self.params.saved_optimizer_fmt.format(
             **info)
-        model_state_dict = model.state_dict()
-        # we always save on the cpu
-        for key, val in model_state_dict.items():
-            model_state_dict[key] = val.cpu()
-        optimizer_to(optimizer, 'cpu')
         torch.save(
             model.state_dict(),
             os.path.join(self.state_dir, model_basename),
         )
+        optimizer_state_dict
         torch.save(
             optimizer.state_dict(),
             os.path.join(self.state_dir, optimizer_basename),
