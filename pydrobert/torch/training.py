@@ -773,13 +773,11 @@ class TrainingStateController(object):
         for the beginning of the experiment. Otherwise, we look for
         appropriately named files in ``self.state_dir``
         '''
-        model_device = next(model.parameters()).device
         if not epoch:
             if self.params.seed is not None:
                 torch.manual_seed(self.params.seed)
-            # reset on cpu. Different devices can randomize differently
             if hasattr(model, 'reset_parameters'):
-                model.cpu().reset_parameters()
+                model.reset_parameters()
             else:
                 warnings.warn(
                     'model has no reset_parameters() method, so cannot '
@@ -791,11 +789,9 @@ class TrainingStateController(object):
             else:
                 del optim_defaults['lr']
             new_optimizer = type(optimizer)(
-                model.parameters(),
+                optimizer.param_groups,
                 **optim_defaults
             )
-            model.to(model_device)
-            optimizer_to(optimizer, model_device)
             optimizer.load_state_dict(new_optimizer.state_dict())
         elif self.state_dir is not None:
             epoch_info = self[epoch]
@@ -803,14 +799,10 @@ class TrainingStateController(object):
             optimizer_basename = self.params.saved_optimizer_fmt.format(
                 **epoch_info)
             model_state_dict = torch.load(
-                os.path.join(self.state_dir, model_basename),
-                map_location=model_device
-            )
+                os.path.join(self.state_dir, model_basename))
             model.load_state_dict(model_state_dict)
             optimizer_state_dict = torch.load(
-                os.path.join(self.state_dir, optimizer_basename),
-                map_location=model_device
-            )
+                os.path.join(self.state_dir, optimizer_basename))
             optimizer.load_state_dict(optimizer_state_dict)
         else:
             print(

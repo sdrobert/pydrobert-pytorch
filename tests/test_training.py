@@ -57,6 +57,8 @@ def test_controller_stores_and_retrieves(temp_dir, device):
     controller.load_model_and_optimizer_for_epoch(model_2, optimizer_2, 0)
     for parameter_1, parameter_2 in zip(
             model.parameters(), model_2.parameters()):
+        assert parameter_1.device == device
+        assert parameter_2.device == device
         assert torch.allclose(parameter_1, parameter_2)
     epoch_info = {
         'epoch': 10,
@@ -74,12 +76,13 @@ def test_controller_stores_and_retrieves(temp_dir, device):
     controller.save_info_to_hist(epoch_info)
     assert controller[10] == epoch_info
     torch.manual_seed(4)
-    model_2 = DummyModel(2, 2)
+    model_2 = DummyModel(2, 2).to(device)
     optimizer_2 = torch.optim.Adam(model_2.parameters(), lr=20)
     controller.load_model_and_optimizer_for_epoch(model_2, optimizer_2, 10)
-    model_2.to(device)
     for parameter_1, parameter_2 in zip(
             model.parameters(), model_2.parameters()):
+        assert parameter_1.device == device
+        assert parameter_2.device == device
         assert torch.allclose(parameter_1, parameter_2)
     assert optimizer.param_groups[0]['lr'] == optimizer_2.param_groups[0]['lr']
     controller = training.TrainingStateController(
