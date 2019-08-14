@@ -17,10 +17,8 @@ __copyright__ = "Copyright 2018 Sean Robertson"
 
 
 class DummyModel(torch.nn.Module):
-    def __init__(self, num_filts, num_classes, seed=1):
+    def __init__(self, num_filts, num_classes):
         super(DummyModel, self).__init__()
-        self.seed = seed
-        torch.manual_seed(seed)
         self.fc = torch.nn.Linear(num_filts, num_classes)
         self.drop = torch.nn.Dropout(p=0.5)
 
@@ -29,7 +27,6 @@ class DummyModel(torch.nn.Module):
         return x.sum(1)  # sum out the context window
 
     def reset_parameters(self):
-        torch.manual_seed(self.seed)
         self.fc.reset_parameters()
 
     @property
@@ -42,10 +39,10 @@ class DummyModel(torch.nn.Module):
 
 
 def test_controller_stores_and_retrieves(temp_dir, device):
-    torch.manual_seed(3)
-    model = DummyModel(2, 2, seed=1).to(device)
+    torch.manual_seed(50)
+    model = DummyModel(2, 2).to(device)
     optimizer = torch.optim.Adam(model.parameters())
-    p = training.TrainingStateParams()
+    p = training.TrainingStateParams(seed=5)
     state_csv_path = os.path.join(temp_dir, 'a.csv')
     state_dir = os.path.join(temp_dir, 'states')
     controller = training.TrainingStateController(
@@ -54,6 +51,13 @@ def test_controller_stores_and_retrieves(temp_dir, device):
         state_dir=state_dir,
     )
     controller.add_entry('cool_guy_entry', int)
+    controller.load_model_and_optimizer_for_epoch(model, optimizer, 0)
+    model_2 = DummyModel(2, 2).to(device)
+    optimizer_2 = torch.optim.Adam(model_2.parameters())
+    controller.load_model_and_optimizer_for_epoch(model_2, optimizer_2, 0)
+    for parameter_1, parameter_2 in zip(
+            model.parameters(), model_2.parameters()):
+        assert torch.allclose(parameter_1, parameter_2)
     epoch_info = {
         'epoch': 10,
         'es_resume_cd': 3,
@@ -70,7 +74,7 @@ def test_controller_stores_and_retrieves(temp_dir, device):
     controller.save_info_to_hist(epoch_info)
     assert controller[10] == epoch_info
     torch.manual_seed(4)
-    model_2 = DummyModel(2, 2, seed=2)
+    model_2 = DummyModel(2, 2)
     optimizer_2 = torch.optim.Adam(model_2.parameters(), lr=20)
     controller.load_model_and_optimizer_for_epoch(model_2, optimizer_2, 10)
     model_2.to(device)
@@ -88,7 +92,7 @@ def test_controller_stores_and_retrieves(temp_dir, device):
     controller.add_entry('cool_guy_entry', int)
     assert controller[10] == epoch_info
     torch.manual_seed(4)
-    model_2 = DummyModel(2, 2, seed=2)
+    model_2 = DummyModel(2, 2)
     optimizer_2 = torch.optim.Adam(model_2.parameters(), lr=20)
     controller.load_model_and_optimizer_for_epoch(model_2, optimizer_2, 10)
     model_2.to(device)
@@ -143,11 +147,12 @@ def test_controller_scheduling():
 
 @pytest.mark.cpu
 def test_controller_best(temp_dir):
-    model_1 = DummyModel(100, 100, seed=1)
+    torch.manual_seed(10)
+    model_1 = DummyModel(100, 100)
     optimizer_1 = torch.optim.Adam(model_1.parameters(), lr=1)
-    model_2 = DummyModel(100, 100, seed=2)
+    model_2 = DummyModel(100, 100)
     optimizer_2 = torch.optim.Adam(model_2.parameters(), lr=2)
-    model_3 = DummyModel(100, 100, seed=1)
+    model_3 = DummyModel(100, 100)
     optimizer_3 = torch.optim.Adam(model_1.parameters(), lr=3)
     controller = training.TrainingStateController(
         training.TrainingStateParams(), state_dir=temp_dir)

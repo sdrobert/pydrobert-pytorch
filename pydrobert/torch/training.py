@@ -769,21 +769,27 @@ class TrainingStateController(object):
     def load_model_and_optimizer_for_epoch(self, model, optimizer, epoch=0):
         '''Load up model and optimizer states, or initialize them
 
-        If `epoch` is not specified or 0, the model and optimizer are
-        initialized with states for the beginning of the experiment. Otherwise,
-        we look for appropriately named files in ``self.state_dir``
+        If `epoch` is 0, the model and optimizer are initialized with states
+        for the beginning of the experiment. Otherwise, we look for
+        appropriately named files in ``self.state_dir``
         '''
         model_device = next(model.parameters()).device
         if not epoch:
+            if self.params.seed is not None:
+                torch.manual_seed(self.params.seed)
             # reset on cpu. Different devices can randomize differently
-            model.cpu().reset_parameters()
+            if hasattr(model, 'reset_parameters'):
+                model.cpu().reset_parameters()
+            else:
+                warnings.warn(
+                    'model has no reset_parameters() method, so cannot '
+                    'reset parameters for epoch 0'
+                )
             optim_defaults = dict(optimizer.defaults)
             if self.params.log10_learning_rate is not None:
                 optim_defaults['lr'] = 10 ** self.params.log10_learning_rate
             else:
                 del optim_defaults['lr']
-            if self.params.seed is not None:
-                torch.manual_seed(self.params.seed)
             new_optimizer = type(optimizer)(
                 model.parameters(),
                 **optim_defaults
