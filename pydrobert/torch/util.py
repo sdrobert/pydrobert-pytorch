@@ -330,6 +330,8 @@ def time_distributed_return(r, gamma, batch_first=False):
     '''
     if r.dim() != 2:
         raise RuntimeError('r must be 2 dimensional')
+    if not gamma:
+        return r
     if batch_first:
         exp = torch.arange(r.shape[-1], device=r.device, dtype=r.dtype)
         discount = torch.pow(gamma, exp)

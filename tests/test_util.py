@@ -434,9 +434,10 @@ def test_sequence_log_probs(device, dim):
 
 
 @pytest.mark.parametrize('batch_first', [True, False])
-def test_time_distributed_return(device, batch_first):
+@pytest.mark.parametrize('gamma', [0., 0.95])
+def test_time_distributed_return(device, batch_first, gamma):
     torch.manual_seed(290129)
-    steps, batch_size, gamma = 1000, 30, 0.95
+    steps, batch_size = 1000, 30
     r = torch.randn(steps, batch_size, device=device)
     exp = torch.empty_like(r)
     exp[-1] = r[-1]
