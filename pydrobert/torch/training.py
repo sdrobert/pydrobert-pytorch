@@ -30,7 +30,7 @@ import torch
 import param
 import pydrobert.torch
 
-from pydrobert.torch.util import optimizer_to, error_rate, optimal_completion
+from pydrobert.torch.util import error_rate, optimal_completion
 
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
@@ -421,8 +421,8 @@ class TrainingStateParams(param.Parameterized):
     )
     log10_learning_rate = param.Number(
         None, softbounds=(-10, -2),
-        doc='Optimizer log-learning rate. If unspecified, uses the '
-        'built-in rate'
+        doc='Initial optimizer log-learning rate. If unspecified, the initial '
+        'learning rate of the optimizer instance remains unchanged'
     )
     early_stopping_threshold = param.Number(
         0.0, bounds=(0, None), softbounds=(0, 1.),
@@ -769,28 +769,24 @@ class TrainingStateController(object):
     def load_model_and_optimizer_for_epoch(self, model, optimizer, epoch=0):
         '''Load up model and optimizer states, or initialize them
 
-        If `epoch` is not specified or 0, the model and optimizer are
-        initialized with states for the beginning of the experiment. Otherwise,
-        we look for appropriately named files in ``self.state_dir``
+        If `epoch` is 0, the model and optimizer are initialized with states
+        for the beginning of the experiment. Otherwise, we look for
+        appropriately named files in ``self.state_dir``
         '''
-        model_device = next(model.parameters()).device
         if not epoch:
-            # reset on cpu. Different devices can randomize differently
-            model.cpu().reset_parameters()
-            optim_defaults = dict(optimizer.defaults)
-            if self.params.log10_learning_rate is not None:
-                optim_defaults['lr'] = 10 ** self.params.log10_learning_rate
-            else:
-                del optim_defaults['lr']
             if self.params.seed is not None:
                 torch.manual_seed(self.params.seed)
-            new_optimizer = type(optimizer)(
-                model.parameters(),
-                **optim_defaults
-            )
-            model.to(model_device)
-            optimizer_to(optimizer, model_device)
-            optimizer.load_state_dict(new_optimizer.state_dict())
+            if hasattr(model, 'reset_parameters'):
+                model.reset_parameters()
+            else:
+                warnings.warn(
+                    'model has no reset_parameters() method, so cannot '
+                    'reset parameters for epoch 0'
+                )
+            if self.params.log10_learning_rate is not None:
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = 10 ** self.params.log10_learning_rate
+            optimizer.state.clear()
         elif self.state_dir is not None:
             epoch_info = self[epoch]
             model_basename = self.params.saved_model_fmt.format(**epoch_info)
@@ -798,18 +794,19 @@ class TrainingStateController(object):
                 **epoch_info)
             model_state_dict = torch.load(
                 os.path.join(self.state_dir, model_basename),
-                map_location=model_device
+                map_location='cpu',
             )
             model.load_state_dict(model_state_dict)
             optimizer_state_dict = torch.load(
                 os.path.join(self.state_dir, optimizer_basename),
-                map_location=model_device
+                map_location='cpu',
             )
             optimizer.load_state_dict(optimizer_state_dict)
         else:
-            print(
+            warnings.warn(
                 'Unable to load optimizer for epoch {}. No state dict!'
-                ''.format(epoch))
+                ''.format(epoch)
+            )
 
     def delete_model_and_optimizer_for_epoch(self, epoch):
         '''Delete state dicts for model and epoch off of disk, if they exist
@@ -887,11 +884,6 @@ class TrainingStateController(object):
         model_basename = self.params.saved_model_fmt.format(**info)
         optimizer_basename = self.params.saved_optimizer_fmt.format(
             **info)
-        model_state_dict = model.state_dict()
-        # we always save on the cpu
-        for key, val in model_state_dict.items():
-            model_state_dict[key] = val.cpu()
-        optimizer_to(optimizer, 'cpu')
         torch.save(
             model.state_dict(),
             os.path.join(self.state_dir, model_basename),
