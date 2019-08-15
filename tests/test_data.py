@@ -546,22 +546,21 @@ def test_spect_training_data_loader(
     num_utts, batch_size, num_filts = 20, 5, 11
     populate_torch_dir(temp_dir, num_utts, num_filts=num_filts)
     if split_params:
-        params = data.DataSetParams(batch_size=batch_size, seed=2)
+        params = data.DataSetParams(batch_size=batch_size)
         data_params = data.SpectDataParams(eos=eos)
     else:
-        params = data.SpectDataSetParams(
-            batch_size=batch_size, seed=2, eos=eos)
+        params = data.SpectDataSetParams(batch_size=batch_size, eos=eos)
         data_params = None
     # check missing either ali or ref gives None in batches
     data_loader = data.SpectTrainingDataLoader(
-        temp_dir, params, data_params=data_params, ali_subdir=None)
+        temp_dir, params, data_params=data_params, ali_subdir=None, seed=2)
     assert next(iter(data_loader))[1] is None
     data_loader = data.SpectTrainingDataLoader(
-        temp_dir, params, data_params=data_params, ref_subdir=None)
+        temp_dir, params, data_params=data_params, ref_subdir=None, seed=2)
     assert next(iter(data_loader))[2] is None
     assert next(iter(data_loader))[4] is None
     data_loader = data.SpectTrainingDataLoader(
-        temp_dir, params, data_params=data_params)
+        temp_dir, params, data_params=data_params, seed=2)
 
     def _get_epoch(sort):
         ep_feats, ep_ali, ep_ref = [], [], []
@@ -632,7 +631,7 @@ def test_spect_training_data_loader(
     data_loader.epoch = 1
     _compare_epochs(ep1, _get_epoch(False), True)
     data_loader = data.SpectTrainingDataLoader(
-        temp_dir, params, data_params=data_params, num_workers=4)
+        temp_dir, params, data_params=data_params, num_workers=4, seed=2)
     _compare_epochs(ep0, _get_epoch(False), True)
     _compare_epochs(ep1, _get_epoch(False), True)
     data_loader.batch_first = False
@@ -731,24 +730,25 @@ def test_spect_evaluation_data_loader(
 def test_window_training_data_loader(
         temp_dir, populate_torch_dir, split_params):
     populate_torch_dir(temp_dir, 5, num_filts=2)
+    seed, batch_size, context_left, context_right = 2, 5, 1, 1
     if split_params:
-        params = data.DataSetParams(batch_size=5, seed=2, drop_last=True)
+        params = data.DataSetParams(batch_size=batch_size, drop_last=True)
         data_params = data.ContextWindowDataParams(
-            context_left=1, context_right=1)
+            context_left=context_left, context_right=context_right)
     else:
         params = data.ContextWindowDataSetParams(
-            context_left=1, context_right=1, batch_size=5, seed=2,
-            drop_last=True)
+            context_left=context_left, context_right=context_right,
+            batch_size=batch_size, drop_last=True)
         data_params = None
     data_loader = data.ContextWindowTrainingDataLoader(
-        temp_dir, params, data_params=data_params)
+        temp_dir, params, data_params=data_params, seed=seed)
     total_windows_ep0 = 0
     for feat, ali in data_loader:
         windows = feat.shape[0]
         assert tuple(feat.shape) == (windows, 3, 2)
         assert tuple(ali.shape) == (windows,)
         total_windows_ep0 += windows
-    assert total_windows_ep0 >= 5
+    assert total_windows_ep0 >= batch_size
     feats_ep1_a, alis_ep1_a = [], []
     total_windows_ep1 = 0
     for feats, alis in data_loader:
@@ -760,7 +760,8 @@ def test_window_training_data_loader(
         total_windows_ep1 += windows
     assert total_windows_ep0 == total_windows_ep1
     data_loader = data.ContextWindowTrainingDataLoader(
-        temp_dir, params, init_epoch=1, data_params=data_params, num_workers=4)
+        temp_dir, params, init_epoch=1, data_params=data_params, num_workers=4,
+        seed=seed)
     feats_ep1_b, alis_ep1_b = [], []
     for feats, alis in data_loader:
         feats_ep1_b.append(feats)

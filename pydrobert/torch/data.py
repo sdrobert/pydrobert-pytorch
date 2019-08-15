@@ -1063,16 +1063,48 @@ class EpochRandomSampler(torch.utils.data.Sampler):
 
 
 class DataSetParams(param.Parameterized):
-    '''General parameters for a single partition of data'''
+    '''General parameters for a single partition of data
+
+    Notes
+    -----
+    Previously, :class:`DataSetParams` contained a `seed` parameter. Now, a
+    seed can be specified via keyword argument to training data loaders. There
+    are two reasons this was removed: one, not all data sets need a seed (e.g.
+    eval); and two, the initial seeding is likely redundant when paired with
+    the seed from :class:`pydrobert.torch.training.TrainingStateController`.
+
+    One can reproduce the old behaviour without using the `seed` keyword
+    argument by making "seed" an attribute in the `params` argument to training
+    data loaders. The loaders look for the attribute and use it if `seed` is
+    not explicitly set as a keyword argument. If you're okay with a warning,
+    you can force the attribute with:
+
+    >>> params = DataSetParams(seed=2)
+
+    To avoid the warning, first use a subclass with a seed parameter, such as
+    below
+
+    >>> class TrainingDataSetParams(DataSetParams):
+    >>>     seed = param.Integer(None)
+
+    Or maybe combine with :class:`pydrobert.torch.training.TrainingStateParams`
+
+    >>> class TrainingParams(DataSetParams, TrainingStateParams):
+    >>>     @classmethod
+    >>>     def build_from_optuna_trial(cls, trial, base=None, only=None):
+    >>>         base = cls() if base is None else base
+    >>>         params = DataSetParams.build_from_optuna_trial(
+    ...             trial, base, only)
+    >>>         params = TrainingStateParams.build_from_optuna_trial(
+    >>>             trial, params, only)
+    >>>         return params
+
+    The class method is only necessary if you plan on optimizing with Optuna.
+    '''
     batch_size = param.Integer(
         10, bounds=(1, None), softbounds=(5, 10),
         doc='Number of elements in a batch, which equals the number of '
         'utterances in the batch'
-    )
-    seed = param.Integer(
-        None,
-        doc='The seed used to shuffle data. The seed is incremented at every '
-        'epoch'
     )
     drop_last = param.Boolean(
         False,
@@ -1217,6 +1249,9 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         any found in `params`. If :obj:`None`, it is assumed that `params`
         is a :class:`SpectDataSetParams` and the requisite parameters from
         :class:`SpectDataParams` come from `params`
+    seed : int or :obj:`None`, optional
+        The seed used to shuffle data. If :obj:`None`, `params` is checked for
+        a `seed` parameter or, if none is found, one will be generated randomly
     kwargs : keyword arguments, optional
         Additional :class:`torch.utils.data.DataLoader` arguments
 
@@ -1317,7 +1352,8 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             self, data_dir, params, init_epoch=0, file_prefix='',
             file_suffix='.pt', warn_on_missing=True,
             feat_subdir='feat', ali_subdir='ali',
-            ref_subdir='ref', batch_first=True, data_params=None, **kwargs):
+            ref_subdir='ref', batch_first=True, data_params=None,
+            seed=None, **kwargs):
         for bad_kwarg in (
                 'batch_size', 'sampler', 'batch_sampler', 'shuffle',
                 'collate_fn'):
@@ -1327,6 +1363,8 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)))
         self.data_dir = data_dir
         self.params = params
+        if seed is None and hasattr(params, 'seed'):
+            seed = params.seed
         if data_params is None:
             self.data_params = params
         else:
@@ -1346,7 +1384,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
                 "'{}' must have either alignments or reference tokens for "
                 "training".format(data_dir))
         epoch_sampler = EpochRandomSampler(
-            self.data_source, init_epoch=init_epoch, base_seed=params.seed)
+            self.data_source, init_epoch=init_epoch, base_seed=seed)
         batch_sampler = torch.utils.data.BatchSampler(
             epoch_sampler, params.batch_size, drop_last=params.drop_last)
         super(SpectTrainingDataLoader, self).__init__(
@@ -1697,6 +1735,9 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
         pre-empt any found in `params`. If :obj:`None`, it is assumed that
         `params` is a :class:`ContextWindowDataSetParams` and the requisite
         parameters from :class:`ContextWindowDataParams` come from `params`
+    seed : int or :obj:`None`, optional
+        The seed used to shuffle data. If :obj:`None`, `params` is checked for
+        a `seed` parameter or, if none is found, one will be generated randomly
     kwargs : keyword arguments, optional
         Additional :class:`torch.utils.data.DataLoader` arguments
 
@@ -1744,7 +1785,8 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     def __init__(
             self, data_dir, params, init_epoch=0, file_prefix='',
             file_suffix='.pt', warn_on_missing=True,
-            feat_subdir='feat', ali_subdir='ali', data_params=None, **kwargs):
+            feat_subdir='feat', ali_subdir='ali', data_params=None,
+            seed=None, **kwargs):
         for bad_kwarg in (
                 'batch_size', 'sampler', 'batch_sampler', 'shuffle',
                 'collate_fn'):
@@ -1754,6 +1796,8 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)))
         self.data_dir = data_dir
         self.params = params
+        if seed is None and hasattr(params, 'seed'):
+            seed = params.seed
         if data_params is None:
             self.data_params = params
         else:
@@ -1772,7 +1816,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
                 "'{}' must have alignment info for training".format(
                     data_dir))
         epoch_sampler = EpochRandomSampler(
-            self.data_source, init_epoch=init_epoch, base_seed=params.seed)
+            self.data_source, init_epoch=init_epoch, base_seed=seed)
         batch_sampler = torch.utils.data.BatchSampler(
             epoch_sampler, params.batch_size, drop_last=params.drop_last)
         super(ContextWindowTrainingDataLoader, self).__init__(
