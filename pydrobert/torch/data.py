@@ -1129,7 +1129,6 @@ class SpectDataParams(param.Parameterized):
 
 class SpectDataSetParams(SpectDataParams, DataSetParams):
     '''Data set parameters for a specific partition of spectral data'''
-    pass
 
 
 def spect_seq_to_batch(seq, batch_first=True):
@@ -1198,7 +1197,11 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     Parameters
     ----------
     data_dir : str
-    params : SpectDataSetParams
+    params : SpectDataSetParams or DataSetParams
+        Either provides all the parameters necessary to instantiate this
+        loader (a :class:`SpectDataSetParams`) or just those related to the
+        set/partition (a :class:`DataSetParams`). If the latter, `data_params`
+        must be specified
     file_prefix : str, optional
     file_suffix : str, optional
     warn_on_missing : bool, optional
@@ -1208,6 +1211,12 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     init_epoch : int, optional
         Where training should resume from
     batch_first : bool, optional
+    data_params : SpectDataParams or :obj:`None`, optional
+        If non-null, provides general information on the data as a whole.
+        parameters from :class:`SpectDataParams` in `data_params` will pre-empt
+        any found in `params`. If :obj:`None`, it is assumed that `params`
+        is a :class:`SpectDataSetParams` and the requisite parameters from
+        :class:`SpectDataParams` come from `params`
     kwargs : keyword arguments, optional
         Additional :class:`torch.utils.data.DataLoader` arguments
 
@@ -1236,7 +1245,9 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
 
     Attributes
     ----------
-    params : SpectDataSetParams
+    params : SpectDataSetParams or DataSetParams
+    data_params : SpectDataSetParams or SpectDataParams
+        Is the argument of `data_params` if not :obj:`None`, else `params`
     data_dir : str
     data_source : SpectDataSet
         The instance that will serve unbatched utterances
@@ -1306,7 +1317,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             self, data_dir, params, init_epoch=0, file_prefix='',
             file_suffix='.pt', warn_on_missing=True,
             feat_subdir='feat', ali_subdir='ali',
-            ref_subdir='ref', batch_first=True, **kwargs):
+            ref_subdir='ref', batch_first=True, data_params=None, **kwargs):
         for bad_kwarg in (
                 'batch_size', 'sampler', 'batch_sampler', 'shuffle',
                 'collate_fn'):
@@ -1316,13 +1327,17 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)))
         self.data_dir = data_dir
         self.params = params
+        if data_params is None:
+            self.data_params = params
+        else:
+            self.data_params = data_params
         self.batch_first = batch_first
         self.data_source = SpectDataSet(
             data_dir,
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
-            eos=params.eos,
+            eos=self.data_params.eos,
             feat_subdir=feat_subdir, ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
         )
@@ -1360,11 +1375,21 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     ----------
     data_dir : str
     params : SpectDataSetParams
+        Either provides all the parameters necessary to instantiate this
+        loader (a :class:`SpectDataSetParams`) or just those related to the
+        set/partition (a :class:`DataSetParams`). If the latter, `data_params`
+        must be specified
     file_prefix : str, optional
     file_suffix : str, optional
     warn_on_missing : bool, optional
     feat_subdir, ali_subdir, ref_subdir : str, optional
     batch_first : bool, optional
+    data_params : SpectDataParams or :obj:`None`, optional
+        If non-null, provides general information on the data as a whole.
+        parameters from :class:`SpectDataParams` in `data_params` will pre-empt
+        any found in `params`. If :obj:`None`, it is assumed that `params`
+        is a :class:`SpectDataSetParams` and the requisite parameters from
+        :class:`SpectDataParams` come from `params`
     kwargs : keyword arguments, optional
         Additional :class:`torch.utils.data.DataLoader` arguments
 
@@ -1372,6 +1397,8 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     ----------
     data_dir : str
     params : SpectDataSetParams
+    data_params : SpectDataSetParams or SpectDataParams
+        Is the argument of `data_params` if not :obj:`None`, else `params`
     batch_first : bool
     data_source : SpectEvaluationDataLoader.SEvalDataSet
         Serves the utterances. A :class:`SpectDataSet`, but adds utterance IDs
@@ -1475,7 +1502,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     def __init__(
             self, data_dir, params, file_prefix='', file_suffix='.pt',
             warn_on_missing=True, feat_subdir='feat', ali_subdir='ali',
-            ref_subdir='ref', batch_first=True, **kwargs):
+            ref_subdir='ref', batch_first=True, data_params=None, **kwargs):
         for bad_kwarg in (
                 'batch_size', 'sampler', 'batch_sampler', 'shuffle',
                 'collate_fn'):
@@ -1485,13 +1512,17 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)))
         self.data_dir = data_dir
         self.params = params
+        if data_params is None:
+            self.data_params = params
+        else:
+            self.data_params = data_params
         self.batch_first = batch_first
         self.data_source = self.SEvalDataSet(
             data_dir,
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
-            eos=params.eos,
+            eos=self.data_params.eos,
             feat_subdir=feat_subdir, ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
         )
@@ -1607,7 +1638,7 @@ class ContextWindowDataParams(SpectDataParams):
         return params
 
 
-class ContextWindowDataSetParams(ContextWindowDataParams, SpectDataSetParams):
+class ContextWindowDataSetParams(ContextWindowDataParams, DataSetParams):
     '''Data set parameters for specific partition of windowed spectral data'''
 
     @classmethod
@@ -1618,7 +1649,7 @@ class ContextWindowDataSetParams(ContextWindowDataParams, SpectDataSetParams):
         optimization framework. This class method constructs a
         :class:`ContextWindowDataParams` instance with parameter values sampled
         using `trial`. Sampled parameters are inherited entirely from
-        :class:`ContextWindowDataParams` and :class:`SpectDataSetParams`
+        :class:`ContextWindowDataParams` and :class:`DataSetParams`
 
         Parameters
         ----------
@@ -1636,7 +1667,7 @@ class ContextWindowDataSetParams(ContextWindowDataParams, SpectDataSetParams):
             Sampled parameter values are populated in `params`
         '''
         params = cls() if base is None else base
-        params = SpectDataSetParams.build_from_optuna_trial(
+        params = DataSetParams.build_from_optuna_trial(
             trial, base=params, only=only)
         params = ContextWindowDataParams.build_from_optuna_trial(
             trial, base=params, only=only)
@@ -1649,13 +1680,23 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     Parameters
     ----------
     data_dir : str
-    params : ContextWindowDataSetParams
+    params : ContextWindowDataSetParams or DataSetParams
+        Either provides all the parameters necessary to instantiate this
+        loader (a :class:`ContextWindowDataSetParams`) or just those related to
+        the set/partition (a :class:`DataSetParams`). If the latter,
+        `data_params` must be specified
     file_prefix : str, optional
     file_suffix : str, optional
     warn_on_missing : bool, optional
     feat_subdir, ali_subdir : str, optional
     init_epoch : int, optional
         Where training should resume from
+    data_params : ContextWindowDataParams or :obj:`None`, optional
+        If non-null, provides general information on the data as a whole.
+        parameters from :class:`ContextWindowDataParams` in `data_params` will
+        pre-empt any found in `params`. If :obj:`None`, it is assumed that
+        `params` is a :class:`ContextWindowDataSetParams` and the requisite
+        parameters from :class:`ContextWindowDataParams` come from `params`
     kwargs : keyword arguments, optional
         Additional :class:`torch.utils.data.DataLoader` arguments
 
@@ -1663,7 +1704,9 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     ----------
     epoch : int
     data_dir : str
-    params : ContextWindowDataSetParams
+    params : ContextWindowDataSetParams or DataSetParams
+    data_params : ContextWindowDataSetParams or ContextWindowDataParams
+        Is the argument of `data_params` if not :obj:`None`, else `params`
     data_source : ContextWindowDataSet
         The instance that serves an utterance-worth of context windows
 
@@ -1701,7 +1744,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     def __init__(
             self, data_dir, params, init_epoch=0, file_prefix='',
             file_suffix='.pt', warn_on_missing=True,
-            feat_subdir='feat', ali_subdir='ali', **kwargs):
+            feat_subdir='feat', ali_subdir='ali', data_params=None, **kwargs):
         for bad_kwarg in (
                 'batch_size', 'sampler', 'batch_sampler', 'shuffle',
                 'collate_fn'):
@@ -1711,9 +1754,14 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)))
         self.data_dir = data_dir
         self.params = params
+        if data_params is None:
+            self.data_params = params
+        else:
+            self.data_params = data_params
         self.data_source = ContextWindowDataSet(
-            data_dir, params.context_left, params.context_right,
-            reverse=params.reverse,
+            data_dir, self.data_params.context_left,
+            self.data_params.context_right,
+            reverse=self.data_params.reverse,
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
@@ -1749,18 +1797,30 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     Parameters
     ----------
     data_dir : str
-    params : ContextWindowDataSetParams
+    params : ContextWindowDataSetParams or DataSetParams
+        Either provides all the parameters necessary to instantiate this
+        loader (a :class:`ContextWindowDataSetParams`) or just those related to
+        the set/partition (a :class:`DataSetParams`). If the latter,
+        `data_params` must be specified
     file_prefix : str, optional
     file_suffix : str, optional
     warn_on_missing : bool, optional
     feat_subdir, ali_subdir : str, optional
+    data_params : ContextWindowDataParams or :obj:`None`, optional
+        If non-null, provides general information on the data as a whole.
+        parameters from :class:`ContextWindowDataParams` in `data_params` will
+        pre-empt any found in `params`. If :obj:`None`, it is assumed that
+        `params` is a :class:`ContextWindowDataSetParams` and the requisite
+        parameters from :class:`ContextWindowDataParams` come from `params`
     kwargs : keyword arguments, optional
         Additional :class:`torch.utils.data.DataLoader` arguments
 
     Attributes
     ----------
     data_dir : str
-    params : SpectDataParams
+    params : ContextWindowDataSetParams or DataSetParams
+    data_params : ContextWindowDataSetParams or ContextWindowDataParams
+        Is the argument of `data_params` if not :obj:`None`, else `params`
     data_source : ContextWindowEvaluationDataLoader.CWEvalDataSet
         Serves utterances. A :class:`ContextWindowDataSet`, but adds feature
         sizes and utterance ids to each yielded tuple
@@ -1825,7 +1885,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     def __init__(
             self, data_dir, params, file_prefix='', file_suffix='.pt',
             warn_on_missing=True, feat_subdir='feat', ali_subdir='ali',
-            **kwargs):
+            data_params=None, **kwargs):
         for bad_kwarg in (
                 'batch_size', 'sampler', 'batch_sampler', 'shuffle',
                 'collate_fn'):
@@ -1835,9 +1895,14 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)))
         self.data_dir = data_dir
         self.params = params
+        if data_params is None:
+            self.data_params = params
+        else:
+            self.data_params = data_params
         self.data_source = self.CWEvalDataSet(
-            data_dir, params.context_left, params.context_right,
-            reverse=params.reverse,
+            data_dir, self.data_params.context_left,
+            self.data_params.context_right,
+            reverse=self.data_params.reverse,
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
