@@ -142,7 +142,7 @@ def test_beam_search_advance(device, prevent_eos):
 @pytest.mark.parametrize('norm', [True, False])
 @pytest.mark.parametrize('include_eos', [0, 1])
 @pytest.mark.parametrize('batch_first', [True, False])
-def test_error_rate(device, norm, include_eos, batch_first):
+def test_error_rate_against_known(device, norm, include_eos, batch_first):
     eos = 0
     pairs = (
         (
@@ -218,6 +218,47 @@ def test_error_rate(device, norm, include_eos, batch_first):
         ref, hyp, eos=eos, warn=False, norm=norm, include_eos=include_eos,
         batch_first=batch_first
     )
+    assert torch.allclose(exp, act)
+
+
+@pytest.mark.parametrize('ins_cost', [-0.1, 0.0, 1.0])
+@pytest.mark.parametrize('del_cost', [-0.1, 0.0, 1.0])
+@pytest.mark.parametrize('sub_cost', [-0.1, 0.0, 1.0])
+@pytest.mark.parametrize('ref_bigger', [True, False])
+def test_error_rate_against_simple_impl(
+        device, ins_cost, del_cost, sub_cost, ref_bigger):
+    torch.manual_seed(2502)
+    hyp_steps, ref_steps, batch_size, num_classes = 10, 9, 50, 10
+    if ref_bigger:
+        ref_steps, hyp_steps = hyp_steps, ref_steps
+    ref = torch.randint(num_classes, (ref_steps, batch_size), device=device)
+    hyp = torch.randint(num_classes, (hyp_steps, batch_size), device=device)
+    # here's a standard, non-vectorized (except for batch) implementation that
+    # is hard to screw up
+    cost_matrix = torch.empty(
+        hyp_steps + 1, ref_steps + 1, batch_size, device=device)
+    cost_matrix[0] = torch.arange(
+        float(ref_steps + 1), device=device).unsqueeze(-1) * del_cost
+    cost_matrix[:, 0] = torch.arange(
+        float(hyp_steps + 1), device=device).unsqueeze(-1) * ins_cost
+    for hyp_idx in range(1, hyp_steps + 1):
+        for ref_idx in range(1, ref_steps + 1):
+            sub = torch.where(
+                ref[ref_idx - 1] == hyp[hyp_idx - 1],
+                torch.tensor(0., device=device),
+                torch.tensor(sub_cost, device=device),
+            )
+            cost_matrix[hyp_idx, ref_idx] = torch.min(
+                torch.min(
+                    cost_matrix[hyp_idx - 1, ref_idx - 1] + sub,
+                    cost_matrix[hyp_idx - 1, ref_idx] + ins_cost,
+                ),
+                cost_matrix[hyp_idx, ref_idx - 1] + del_cost,
+            )
+    exp = cost_matrix[-1, -1]
+    act = util.error_rate(
+        ref, hyp, norm=False, ins_cost=ins_cost, del_cost=del_cost,
+        sub_cost=sub_cost)
     assert torch.allclose(exp, act)
 
 

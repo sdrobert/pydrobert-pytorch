@@ -1023,7 +1023,7 @@ def _levenshtein(
     # direct col right corresponds to a deletion
     row = torch.arange(
         max_ref_steps + 1, device=device, dtype=torch.float
-    ).unsqueeze(1).expand(max_ref_steps + 1, batch_size)
+    ).unsqueeze(1).expand(max_ref_steps + 1, batch_size) * del_cost
     last_row = torch.empty_like(row)
     # we vectorize as much as we can. Neither substitutions nor insertions
     # require values from the current row to be computed, and since the last
