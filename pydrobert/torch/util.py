@@ -989,14 +989,40 @@ def _levenshtein(
         prefix_ers[0] = ref_lens
     # direct row down corresponds to insertion
     # direct col right corresponds to a deletion
-    row = torch.arange(
-        max_ref_steps + 1, device=device, dtype=torch.float
-    ).unsqueeze(1).expand(max_ref_steps + 1, batch_size)
-    last_row = torch.empty_like(row)
     # we vectorize as much as we can. Neither substitutions nor insertions
     # require values from the current row to be computed, and since the last
-    # row can't be altered, we can easily vectorize there. We can't do the same
-    # with deletions because they rely on what came before in the row
+    # row can't be altered, we can easily vectorize there.
+    # To vectorize deletions, we use del_matrix. It has entries
+    #
+    # 0   inf inf inf ...
+    # d   0   inf inf ...
+    # 2d  d   0   inf ...
+    # ...
+    #
+    # Where "d" is del_cost. When we sum with the intermediate values of the
+    # next row "v" (containing the minimum of insertion and subs costs), we get
+    #
+    # v[0]    inf     inf     inf ...
+    # v[0]+d  v[1]    inf     inf ...
+    # v[0]+2d v[1]+d  v[2]    inf ...
+    # ...
+    #
+    # And we take the minimum of each row. The dynamic programming algorithm
+    # for levenshtein would usually handle deletions as:
+    #
+    # for i=1..|v|:
+    #     v[i] = min(v[i], v[i-1]+d)
+    #
+    # if we unroll the loop, we get the minimum of the elements of each row of
+    # the above matrix
+    row = torch.arange(
+        max_ref_steps + 1, device=device, dtype=torch.float
+    ) * del_cost
+    del_mat = row.unsqueeze(1) - row
+    del_mat = del_mat + torch.full_like(del_mat, float('inf')).triu(1)
+    del_mat = del_mat.unsqueeze(-1)  # batch
+    row = row.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
+    last_row = torch.empty_like(row)
     for hyp_idx in range(1, max_hyp_steps + 1):
         last_row = row
         row = torch.where(
@@ -1010,8 +1036,7 @@ def _levenshtein(
             last_row[:-1] + sub_cost,
         )
         row[1:] = torch.min(row[1:], sub_row)
-        for ref_idx in range(1, max_ref_steps + 1):
-            row[ref_idx] = torch.min(row[ref_idx], row[ref_idx - 1] + del_cost)
+        row = (del_mat + row).min(1)[0]
         if return_mask and (hyp_idx < max_hyp_steps or not exclude_last):
             # As proven in the OCD paper, the optimal targets are always the
             # first character of a suffix of the reference transcript that
