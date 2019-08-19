@@ -83,6 +83,8 @@ intersphinx_mapping = {
     'torch': ('https://pytorch.org/docs/stable/', None),
     'python': ('https://docs.python.org/', None),
     'numpy': ('https://docs.scipy.org/doc/numpy/', None),
+    'pydrobert.param': (
+        'https://pydrobert-param.readthedocs.io/en/stable/', None),
 }
 
 
