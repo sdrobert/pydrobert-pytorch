@@ -1065,6 +1065,9 @@ class EpochRandomSampler(torch.utils.data.Sampler):
 class DataSetParams(param.Parameterized):
     '''General parameters for a single partition of data
 
+    This implements the :class:`pydrobert.param.optuna.TunableParameterized`
+    interface
+
     Notes
     -----
     Previously, :class:`DataSetParams` contained a `seed` parameter. Now, a
@@ -1116,36 +1119,20 @@ class DataSetParams(param.Parameterized):
         'restricted to these utterances'
     )
 
+    _tunable = ('batch_size',)
+
     @classmethod
-    def build_from_optuna_trial(cls, trial, base=None, only=None):
-        '''Build a DataSetParams by sampling from an Optuna trial
+    def get_tunable(cls):
+        return set(cls._tunable)
 
-        `Optuna <https://optuna.org/>`__ is a define-by-run hyperparameter
-        optimization framework. This class method constructs a
-        :class:`DataSetParams` instance with parameter values sampled using
-        `trial`. The folling parameter values can be sampled
-
-        - batch_size
-
-        Parameters
-        ----------
-        trial : optuna.trial.Trial
-        base : DataSetParams or None, optional
-            If set, parameter values will be loaded into this instance. If
-            unset, a new instance will be created
-        only : collection or None, optional
-            Only sample parameters with names in this set. If :obj:`None`,
-            all the above will be sampled
-
-        Returns
-        -------
-        params : DataSetParams
-            Sampled parameter values are populated in `params`
-        '''
+    @classmethod
+    def suggest_params(cls, trial, base=None, only=None, prefix=''):
         params = cls() if base is None else base
-        if only is None or 'batch_size' in only:
+        if only is None:
+            only = cls._tunable
+        if 'batch_size' in only:
             bounds = params.params()['batch_size'].get_soft_bounds()
-            val = trial.suggest_int('batch_size', *bounds)
+            val = trial.suggest_int(prefix + 'batch_size', *bounds)
             params.batch_size = val
         return params
 
@@ -1160,7 +1147,11 @@ class SpectDataParams(param.Parameterized):
 
 
 class SpectDataSetParams(SpectDataParams, DataSetParams):
-    '''Data set parameters for a specific partition of spectral data'''
+    '''Data set parameters for a specific partition of spectral data
+
+    This implements the :class:`pydrobert.param.optuna.TunableParameterized`
+    interface
+    '''
 
 
 def spect_seq_to_batch(seq, batch_first=True):
@@ -1612,6 +1603,11 @@ def context_window_seq_to_batch(seq):
 
 
 class ContextWindowDataParams(SpectDataParams):
+    '''Parameters for spectral data split into overlapping context windows
+
+    This implements the :class:`pydrobert.param.optuna.TunableParameterized`
+    interface
+    '''
     # context windows are more model parameters than data parameters, but
     # we're going to extract them as part of the data loading process, which
     # is easily parallelized by the DataLoader
@@ -1631,84 +1627,51 @@ class ContextWindowDataParams(SpectDataParams):
         'dimension'
     )
 
+    _tunable = ('context_left', 'context_right', 'reverse')
+
     @classmethod
-    def build_from_optuna_trial(cls, trial, base=None, only=None):
-        '''Build a ContextWindowDataParams by sampling from an Optuna trial
+    def get_tunable(cls):
+        return set(cls._tunable)
 
-        `Optuna <https://optuna.org/>`__ is a define-by-run hyperparameter
-        optimization framework. This class method constructs a
-        :class:`ContextWindowDataParams` instance with parameter values sampled
-        using `trial`.
-
-        - context_left
-        - context_right
-        - reverse
-
-        Parameters
-        ----------
-        trial : optuna.trial.Trial
-        base : ContextWindowDataParams or None, optional
-            If set, parameter values will be loaded into this instance. If
-            unset, a new instance will be created
-        only : collection or None, optional
-            Only sample parameters with names in this set. If :obj:`None`,
-            all the above will be sampled
-
-        Returns
-        -------
-        params : ContextWindowDataParams
-            Sampled parameter values are populated in `params`
-        '''
+    @classmethod
+    def suggest_params(cls, trial, base=None, only=None, prefix=''):
         params = cls() if base is None else base
         if only is None:
-            only = {'context_left', 'context_right', 'reverse'}
+            only = cls._tunable
         pdict = params.params()
         for name in only:
             pp = pdict.get(name, None)
             if pp is None:
                 continue
-            softbounds = pp.get_soft_bounds()
-            if isinstance(pp, param.Integer):
-                val = trial.suggest_int(name, *softbounds)
-            else:  # boolean
-                val = trial.suggest_categorical(name, [True, False])
+            if name in {'context_left', 'context_right'}:
+                softbounds = pp.get_soft_bounds()
+                val = trial.suggest_int(prefix + name, *softbounds)
+            elif name == 'reverse':
+                val = trial.suggest_categorical(prefix + name, [True, False])
             setattr(params, name, val)
         return params
 
 
 class ContextWindowDataSetParams(ContextWindowDataParams, DataSetParams):
-    '''Data set parameters for specific partition of windowed spectral data'''
+    '''Data set parameters for specific partition of windowed spectral data
+
+    This implements the :class:`pydrobert.param.optuna.TunableParameterized`
+    interface
+    '''
 
     @classmethod
-    def build_from_optuna_trial(cls, trial, base=None, only=None):
-        '''Build a ContextWindowDataSetParams by sampling from an Optuna trial
+    def get_tunable(cls):
+        return (
+            DataSetParams.get_tunable() |
+            ContextWindowDataParams.get_tunable())
 
-        `Optuna <https://optuna.org/>`__ is a define-by-run hyperparameter
-        optimization framework. This class method constructs a
-        :class:`ContextWindowDataParams` instance with parameter values sampled
-        using `trial`. Sampled parameters are inherited entirely from
-        :class:`ContextWindowDataParams` and :class:`DataSetParams`
-
-        Parameters
-        ----------
-        trial : optuna.trial.Trial
-        base : ContextWindowDataSetParams or None, optional
-            If set, parameter values will be loaded into this instance. If
-            unset, a new instance will be created
-        only : collection or None, optional
-            Only sample parameters with names in this set. If :obj:`None`,
-            all the above will be sampled
-
-        Returns
-        -------
-        params : ContextWindowDataSetParams
-            Sampled parameter values are populated in `params`
-        '''
+    @classmethod
+    def suggest_params(cls, trial, base=None, only=None, prefix=''):
         params = cls() if base is None else base
-        params = DataSetParams.build_from_optuna_trial(
-            trial, base=params, only=only)
-        params = ContextWindowDataParams.build_from_optuna_trial(
-            trial, base=params, only=only)
+        params = DataSetParams.suggest_params(
+            trial, base=params, only=only, prefix=prefix)
+        params = ContextWindowDataParams.suggest_params(
+            trial, base=params, only=only, prefix=prefix)
         return params
 
 

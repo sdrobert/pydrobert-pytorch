@@ -835,17 +835,39 @@ def test_window_evaluation_data_loader(
 
 
 @pytest.mark.cpu
-def test_context_window_data_set_params_build_from_optuna_trial():
-    optuna = pytest.importorskip('optuna')  # conda doesn't have it
-    low = data.SpectDataSetParams.params()['batch_size'].softbounds[0]
+def test_pydrobert_param_optuna_hooks():
+    poptuna = pytest.importorskip('pydrobert.param.optuna')
+    optuna = pytest.importorskip('optuna')
+    for class_ in (
+            data.DataSetParams, data.SpectDataSetParams,
+            data.ContextWindowDataParams, data.ContextWindowDataSetParams):
+        assert issubclass(class_, poptuna.TunableParameterized)
+    global_dict = {
+        'data_set': data.DataSetParams(),
+        'spect_data': data.SpectDataParams(),
+        'spect_data_set': data.SpectDataSetParams(),
+        'context_window_data': data.ContextWindowDataParams(),
+        'context_window_data_set': data.ContextWindowDataSetParams(),
+    }
+    assert (
+        {
+            'data_set.batch_size', 'spect_data.eos',
+            'spect_data_set.batch_size', 'context_window_data.reverse',
+            'context_window_data_set.batch_size',
+        } - poptuna.get_param_dict_tunable(global_dict) == {
+            'spect_data.eos'
+        }
+    )
 
     def objective(trial):
-        params = data.ContextWindowDataSetParams.build_from_optuna_trial(
-            trial, only={'batch_size', 'context_left'})
-        assert isinstance(params, data.ContextWindowDataParams)
-        return params.batch_size ** 2
+        param_dict = poptuna.suggest_param_dict(trial, global_dict)
+        return param_dict['data_set'].batch_size
 
-    sampler = optuna.samplers.TPESampler(seed=30)
+    sampler = optuna.samplers.RandomSampler(seed=5)
     study = optuna.create_study(sampler=sampler)
-    study.optimize(objective, n_trials=30)
-    assert study.best_params['batch_size'] == low
+    study.optimize(objective, n_trials=10)
+    assert not {
+        'data_set.batch_size', 'spect_data_set.batch_size',
+        'context_window_data.reverse', 'context_window_data_set.batch_size',
+    } - set(study.best_params)
+    assert study.best_params['data_set.batch_size'] < 7

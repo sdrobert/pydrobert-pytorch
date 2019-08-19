@@ -510,13 +510,14 @@ class TrainingStateParams(param.Parameterized):
         'reduce_lr_patience', 'reduce_lr_cooldown',
     )
 
+    @classmethod
     def get_tunable(cls):
         return set(cls._tunable)
 
     @classmethod
     def suggest_params(cls, trial, base=None, only=None, prefix=''):
         if only is None:
-            only = cls.get_tunable()
+            only = cls._tunable
         params = cls() if base is None else base
         pdict = params.params()
         eps = torch.finfo(torch.float).eps
@@ -525,9 +526,14 @@ class TrainingStateParams(param.Parameterized):
             if pp is None:
                 continue
             softbounds = pp.get_soft_bounds()
-            if isinstance(pp, param.Integer):
+            if name in {
+                    'num_epochs',
+                    'early_stopping_patience', 'early_stopping_burnin',
+                    'reduce_lr_patience', 'reduce_lr_cooldown'}:
                 val = trial.suggest_int(prefix + name, *softbounds)
-            else:
+            elif name in {
+                    'log10_learning_rate', 'early_stopping_threshold',
+                    'reduce_lr_patience'}:
                 softbounds = softbounds[0] + eps, softbounds[1]
                 val = trial.suggest_uniform(prefix + name, *softbounds)
             setattr(params, name, val)
