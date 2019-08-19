@@ -4,8 +4,6 @@ from __future__ import print_function
 
 import os
 
-from unittest.mock import MagicMock
-
 import torch
 import pytest
 import pydrobert.torch.training as training

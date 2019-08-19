@@ -413,7 +413,11 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
 
 class TrainingStateParams(param.Parameterized):
-    '''Parameters controlling a TrainingStateController'''
+    '''Parameters controlling a TrainingStateController
+
+    This class implements the
+    :class:`pydrobert.param.optuna.TunableParameterized` interface
+    '''
     num_epochs = param.Integer(
         None, bounds=(1, None), softbounds=(10, 100),
         doc='Total number of epochs to run for. If unspecified, runs '
