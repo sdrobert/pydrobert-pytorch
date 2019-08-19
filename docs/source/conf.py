@@ -66,6 +66,7 @@ extensions = [
     'sphinx.ext.napoleon',
     'sphinx.ext.autosectionlabel',
     'sphinx.ext.intersphinx',
+    'sphinx.ext.viewcode',
 ]
 
 naploeon_numpy_docstring = True
