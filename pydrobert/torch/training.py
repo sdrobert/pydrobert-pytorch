@@ -413,7 +413,11 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
 
 class TrainingStateParams(param.Parameterized):
-    '''Parameters controlling a TrainingStateController'''
+    '''Parameters controlling a TrainingStateController
+
+    This class implements the
+    :class:`pydrobert.param.optuna.TunableParameterized` interface
+    '''
     num_epochs = param.Integer(
         None, bounds=(1, None), softbounds=(10, 100),
         doc='Total number of epochs to run for. If unspecified, runs '
@@ -499,46 +503,21 @@ class TrainingStateParams(param.Parameterized):
         'string (see TrainingStateController)'
     )
 
+    _tunable = (
+        'num_epochs', 'log10_learning_rate',
+        'early_stopping_threshold', 'early_stopping_patience',
+        'early_stopping_burnin', 'reduce_lr_threshold',
+        'reduce_lr_patience', 'reduce_lr_cooldown',
+    )
+
     @classmethod
-    def build_from_optuna_trial(cls, trial, base=None, only=None):
-        '''Build a TrainingStateParams by sampling from an Optuna trial
+    def get_tunable(cls):
+        return set(cls._tunable)
 
-        `Optuna <https://optuna.org/>`__ is a define-by-run hyperparameter
-        optimization framework. This class method constructs a
-        :class:`TrainingStateParams` instance with parameter values sampled
-        using `trial`. The folling parameter values can be sampled
-
-        - num_epochs
-        - log10_learning_rate
-        - early_stopping_threshold
-        - early_stopping_patience
-        - early_stopping_burnin
-        - reduce_lr_threshold
-        - reduce_lr_patience
-        - reduce_lr_cooldown
-
-        Parameters
-        ----------
-        trial : optuna.trial.Trial
-        base : TrainingStateParams or None, optional
-            If set, parameter values will be loaded into this instance. If
-            unset, a new instance will be created
-        only : collection or None, optional
-            Only sample parameters with names in this set. If :obj:`None`,
-            all the above will be sampled
-
-        Returns
-        -------
-        params : TrainingStateController
-            Sampled parameter values are populated in `params`
-        '''
+    @classmethod
+    def suggest_params(cls, trial, base=None, only=None, prefix=''):
         if only is None:
-            only = {
-                'num_epochs', 'log10_learning_rate',
-                'early_stopping_threshold', 'early_stopping_patience',
-                'early_stopping_burnin', 'reduce_lr_threshold',
-                'reduce_lr_patience', 'reduce_lr_cooldown',
-            }
+            only = cls._tunable
         params = cls() if base is None else base
         pdict = params.params()
         eps = torch.finfo(torch.float).eps
@@ -547,11 +526,16 @@ class TrainingStateParams(param.Parameterized):
             if pp is None:
                 continue
             softbounds = pp.get_soft_bounds()
-            if isinstance(pp, param.Integer):
-                val = trial.suggest_int(name, *softbounds)
-            else:
+            if name in {
+                    'num_epochs',
+                    'early_stopping_patience', 'early_stopping_burnin',
+                    'reduce_lr_patience', 'reduce_lr_cooldown'}:
+                val = trial.suggest_int(prefix + name, *softbounds)
+            elif name in {
+                    'log10_learning_rate', 'early_stopping_threshold',
+                    'reduce_lr_patience'}:
                 softbounds = softbounds[0] + eps, softbounds[1]
-                val = trial.suggest_uniform(name, *softbounds)
+                val = trial.suggest_uniform(prefix + name, *softbounds)
             setattr(params, name, val)
         return params
 

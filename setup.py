@@ -51,7 +51,7 @@ def main():
         ],
         setup_requires=SETUP_REQUIRES,
         tests_require=[
-            'pytest', 'scipy', 'optuna',
+            'pytest', 'scipy',
         ],
         entry_points={
             'console_scripts': [

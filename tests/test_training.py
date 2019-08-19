@@ -8,7 +8,6 @@ import torch
 import pytest
 import pydrobert.torch.training as training
 
-
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
@@ -343,16 +342,20 @@ def test_hard_optimal_completion_distillation_loss(
 
 
 @pytest.mark.cpu
-def test_training_state_params_build_from_optuna_trial():
-    optuna = pytest.importorskip('optuna')  # conda doesn't have it
-    low = training.TrainingStateParams.params()['num_epochs'].softbounds[0]
+def test_pydrobert_param_optuna_hooks():
+    poptuna = pytest.importorskip('pydrobert.param.optuna')
+    optuna = pytest.importorskip('optuna')
+    assert issubclass(
+        training.TrainingStateParams, poptuna.TunableParameterized)
+    global_dict = {'training': training.TrainingStateParams()}
+    assert 'training.log10_learning_rate' in poptuna.get_param_dict_tunable(
+        global_dict)
 
     def objective(trial):
-        params = training.TrainingStateParams.build_from_optuna_trial(
-            trial, only={'num_epochs', 'log10_learning_rate', 'ignore_me'})
-        return params.num_epochs ** 2
+        param_dict = poptuna.suggest_param_dict(trial, global_dict)
+        return param_dict['training'].log10_learning_rate
 
-    sampler = optuna.samplers.TPESampler(seed=10)
+    sampler = optuna.samplers.RandomSampler(seed=5)
     study = optuna.create_study(sampler=sampler)
-    study.optimize(objective, n_trials=30)
-    assert study.best_params['num_epochs'] == low
+    study.optimize(objective, n_trials=50)
+    assert study.best_params['training.log10_learning_rate'] < -5

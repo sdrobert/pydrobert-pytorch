@@ -1,4 +1,4 @@
 future
 numpy
-torch
+torch>=1.0.1
 param
