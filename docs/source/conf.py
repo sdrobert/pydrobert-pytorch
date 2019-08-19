@@ -15,6 +15,8 @@ import sys
 import param
 import future.utils
 
+param.parameterized.docstring_signature = False
+param.parameterized.docstring_describe_params = False
 
 # this saves us when dealing with with_metaclass on mocked objects
 
@@ -51,9 +53,6 @@ project = 'pydrobert-pytorch'
 copyright = '2019, Sean Robertson'
 author = 'Sean Robertson'
 
-# The full version, including alpha/beta/rc tags
-release = '0.0.2'
-
 language = 'en'
 
 # -- General configuration ---------------------------------------------------
@@ -66,6 +65,7 @@ extensions = [
     'sphinx.ext.napoleon',
     'sphinx.ext.autosectionlabel',
     'sphinx.ext.intersphinx',
+    'sphinx.ext.viewcode',
 ]
 
 naploeon_numpy_docstring = True
@@ -82,6 +82,8 @@ intersphinx_mapping = {
     'torch': ('https://pytorch.org/docs/stable/', None),
     'python': ('https://docs.python.org/', None),
     'numpy': ('https://docs.scipy.org/doc/numpy/', None),
+    'pydrobert.param': (
+        'https://pydrobert-param.readthedocs.io/en/stable/', None),
 }
 
 
@@ -98,7 +100,7 @@ else:
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
 
-highlight_language = 'none'
+highlight_language = 'default'
 
 master_doc = 'index'
 
@@ -115,35 +117,25 @@ ipython_colours = {
 
 def my_handler(app, what, name, obj, options, lines):
     if 'Params' in name.split('.')[-1]:
-        found_bounds, found_docs, idx = False, False, 0
-        while idx < len(lines):
-            line = lines[idx]
-            if '===' in line:
-                lines.pop(idx)
-                continue
-            if found_docs:
-                for colour in ipython_colours:
-                    line = line.replace(colour, '')
-                if not line.strip():
-                    lines.pop(idx)
-                    continue
-                name = line.split(':')[0].strip()
-                param = obj.params()[name]
-                doc = param.doc
-                deft = param.default
-                bounds = param.bounds if hasattr(param, 'bounds') else None
-                lines[idx] = '**{}**: {} *default={}{}*'.format(
-                    name, doc, deft,
-                    ', bounds={}'.format(bounds) if bounds else '')
-                lines.insert(idx + 1, '')
-                lines.insert(idx + 1, '')
-                idx += 3
-            elif 'Parameter docstrings' in line:
-                found_docs = True
-                lines[idx] = ''
-                idx += 1
-            else:
-                lines.pop(idx)
+        pdict = obj.param.objects(instance=False)
+        del pdict['name']
+        new_lines = []
+        for name, p in pdict.items():
+            doc = p.doc
+            deft = p.default
+            bounds = p.bounds if hasattr(p, 'bounds') else None
+            new_lines.append('- **{}**: {}. *default={}{}*'.format(
+                name, doc, deft,
+                ', bounds={}'.format(bounds) if bounds else ''))
+            new_lines.append('')
+            new_lines.append('')
+        if new_lines:
+            new_lines.insert(0, '')
+            new_lines.insert(0, '')
+            new_lines.insert(1, '**Parameters**')
+            new_lines.insert(2, '')
+            new_lines.insert(2, '')
+            lines += new_lines
         options['undoc-members'] = False
 
 

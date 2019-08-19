@@ -512,10 +512,12 @@ class TrainingStateParams(param.Parameterized):
 
     @classmethod
     def get_tunable(cls):
+        '''Returns a set of tunable parameters'''
         return set(cls._tunable)
 
     @classmethod
     def suggest_params(cls, trial, base=None, only=None, prefix=''):
+        '''Populate a parameterized instance with values from trial'''
         if only is None:
             only = cls._tunable
         params = cls() if base is None else base

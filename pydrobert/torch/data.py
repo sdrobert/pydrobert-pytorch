@@ -1123,10 +1123,12 @@ class DataSetParams(param.Parameterized):
 
     @classmethod
     def get_tunable(cls):
+        '''Returns a set of tunable parameters'''
         return set(cls._tunable)
 
     @classmethod
     def suggest_params(cls, trial, base=None, only=None, prefix=''):
+        '''Populate a parameterized instance with values from trial'''
         params = cls() if base is None else base
         if only is None:
             only = cls._tunable
@@ -1631,10 +1633,12 @@ class ContextWindowDataParams(SpectDataParams):
 
     @classmethod
     def get_tunable(cls):
+        '''Returns a set of tunable parameters'''
         return set(cls._tunable)
 
     @classmethod
     def suggest_params(cls, trial, base=None, only=None, prefix=''):
+        '''Populate a parameterized instance with values from trial'''
         params = cls() if base is None else base
         if only is None:
             only = cls._tunable
@@ -1661,12 +1665,14 @@ class ContextWindowDataSetParams(ContextWindowDataParams, DataSetParams):
 
     @classmethod
     def get_tunable(cls):
+        '''Returns a set of tunable parameters'''
         return (
             DataSetParams.get_tunable() |
             ContextWindowDataParams.get_tunable())
 
     @classmethod
     def suggest_params(cls, trial, base=None, only=None, prefix=''):
+        '''Populate a parameterized instance with values from trial'''
         params = cls() if base is None else base
         params = DataSetParams.suggest_params(
             trial, base=params, only=only, prefix=prefix)
