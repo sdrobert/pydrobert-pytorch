@@ -17,7 +17,8 @@
 Notes
 -----
 Though loss functions could be considered neural layers, because they are
-specific to training, they are included in ``pydrobert.torch.training`` instead
+specific to training, they are included in :mod:`pydrobert.torch.training`
+instead
 '''
 
 from __future__ import absolute_import

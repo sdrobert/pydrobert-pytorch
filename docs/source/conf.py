@@ -51,9 +51,6 @@ project = 'pydrobert-pytorch'
 copyright = '2019, Sean Robertson'
 author = 'Sean Robertson'
 
-# The full version, including alpha/beta/rc tags
-release = '0.0.2'
-
 language = 'en'
 
 # -- General configuration ---------------------------------------------------
@@ -101,7 +98,7 @@ else:
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
 
-highlight_language = 'none'
+highlight_language = 'default'
 
 master_doc = 'index'
 

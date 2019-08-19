@@ -67,7 +67,7 @@ We're going to reduce the 0-th dimension (of size ``T``) of `kv`, but the 0-th
 dimension of :math:`query_{t=0,q}` has to be accounted for when creating
 :math:`e`. Then, through broadcasting, we expect :math:`e` to be shaped as
 
-::
+.. code-block:: none
 
     query_{t=0,q}   1   T   num_batch
     key_k           T   1   num_batch
@@ -85,7 +85,7 @@ We've unsqueezed `mask` to have shape ``(T, 1, num_batch)``. `mask` is
 responsible for ensuring only non-padded values of `key` are considered.
 It broadcasts with :math:`e` as:
 
-::
+.. code-block:: none
 
     mask            T   1   num_batch
     e               T   T   num_batch
@@ -100,7 +100,7 @@ mask would've introduced ``NaN`` into ``a[:, i]`` for some ``i``.
 
 Finally, `value` must broadcast with :math:`a_{k=0}`:
 
-::
+.. code-block:: none
 
     a_{k=0}         T   T   num_batch
     value           T   1   num_batch
