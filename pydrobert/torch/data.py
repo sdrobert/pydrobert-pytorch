@@ -1119,19 +1119,17 @@ class DataSetParams(param.Parameterized):
         'restricted to these utterances'
     )
 
-    _tunable = ('batch_size',)
-
     @classmethod
     def get_tunable(cls):
         '''Returns a set of tunable parameters'''
-        return set(cls._tunable)
+        return {'batch_size'}
 
     @classmethod
     def suggest_params(cls, trial, base=None, only=None, prefix=''):
         '''Populate a parameterized instance with values from trial'''
         params = cls() if base is None else base
         if only is None:
-            only = cls._tunable
+            only = cls.get_tunable()
         if 'batch_size' in only:
             bounds = params.params()['batch_size'].get_soft_bounds()
             val = trial.suggest_int(prefix + 'batch_size', *bounds)
@@ -1629,12 +1627,10 @@ class ContextWindowDataParams(SpectDataParams):
         'dimension'
     )
 
-    _tunable = ('context_left', 'context_right', 'reverse')
-
     @classmethod
     def get_tunable(cls):
         '''Returns a set of tunable parameters'''
-        return set(cls._tunable)
+        return {'context_left', 'context_right', 'reverse'}
 
     @classmethod
     def suggest_params(cls, trial, base=None, only=None, prefix=''):
@@ -1643,16 +1639,14 @@ class ContextWindowDataParams(SpectDataParams):
         if only is None:
             only = cls._tunable
         pdict = params.params()
-        for name in only:
-            pp = pdict.get(name, None)
-            if pp is None:
-                continue
-            if name in {'context_left', 'context_right'}:
-                softbounds = pp.get_soft_bounds()
-                val = trial.suggest_int(prefix + name, *softbounds)
-            elif name == 'reverse':
-                val = trial.suggest_categorical(prefix + name, [True, False])
-            setattr(params, name, val)
+        for name in ('context_left', 'context_right'):
+            if name in only:
+                softbounds = pdict[name].get_soft_bounds()
+                setattr(params, name, trial.suggest_int(
+                    prefix + name, *softbounds))
+        if 'reverse' in only:
+            params.reverse = trial.suggest_categorical(
+                prefix + 'reverse', [True, False])
         return params
 
 
@@ -1673,9 +1667,8 @@ class ContextWindowDataSetParams(ContextWindowDataParams, DataSetParams):
     @classmethod
     def suggest_params(cls, trial, base=None, only=None, prefix=''):
         '''Populate a parameterized instance with values from trial'''
-        params = cls() if base is None else base
         params = DataSetParams.suggest_params(
-            trial, base=params, only=only, prefix=prefix)
+            trial, base=base, only=only, prefix=prefix)
         params = ContextWindowDataParams.suggest_params(
             trial, base=params, only=only, prefix=prefix)
         return params

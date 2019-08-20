@@ -431,8 +431,8 @@ class TrainingStateParams(param.Parameterized):
     early_stopping_threshold = param.Number(
         0.0, bounds=(0, None), softbounds=(0, 1.),
         doc='Minimum magnitude decrease in validation metric from the last '
-        'best that resets the early stopping clock. If zero, the learning '
-        'rate will never be reduced'
+        'best that resets the early stopping clock. If zero, early stopping '
+        'will never be performed'
     )
     early_stopping_patience = param.Integer(
         1, bounds=(1, None), softbounds=(1, 30),
@@ -451,7 +451,7 @@ class TrainingStateParams(param.Parameterized):
         'the learning rate will never be reduced'
     )
     reduce_lr_factor = param.Number(
-        None, bounds=(0, 1), softbounds=(0, .5),
+        None, bounds=(0, 1), softbounds=(.1, .5),
         inclusive_bounds=(False, False),
         doc='Factor by which to multiply the learning rate if there has '
         'been no improvement in the  after "reduce_lr_patience" '
@@ -503,42 +503,90 @@ class TrainingStateParams(param.Parameterized):
         'string (see TrainingStateController)'
     )
 
-    _tunable = (
-        'num_epochs', 'log10_learning_rate',
-        'early_stopping_threshold', 'early_stopping_patience',
-        'early_stopping_burnin', 'reduce_lr_threshold',
-        'reduce_lr_patience', 'reduce_lr_cooldown',
-    )
-
     @classmethod
     def get_tunable(cls):
         '''Returns a set of tunable parameters'''
-        return set(cls._tunable)
+        return {
+            'num_epochs', 'log10_learning_rate', 'early_stopping_threshold',
+            'early_stopping_patience', 'early_stopping_burnin',
+            'reduce_lr_factor', 'reduce_lr_threshold',
+            'reduce_lr_patience', 'reduce_lr_cooldown',
+        }
 
     @classmethod
     def suggest_params(cls, trial, base=None, only=None, prefix=''):
         '''Populate a parameterized instance with values from trial'''
         if only is None:
-            only = cls._tunable
+            only = cls.get_tunable()
         params = cls() if base is None else base
         pdict = params.params()
-        eps = torch.finfo(torch.float).eps
-        for name in only:
-            pp = pdict.get(name, None)
-            if pp is None:
-                continue
-            softbounds = pp.get_soft_bounds()
-            if name in {
-                    'num_epochs',
-                    'early_stopping_patience', 'early_stopping_burnin',
-                    'reduce_lr_patience', 'reduce_lr_cooldown'}:
-                val = trial.suggest_int(prefix + name, *softbounds)
-            elif name in {
-                    'log10_learning_rate', 'early_stopping_threshold',
-                    'reduce_lr_patience'}:
-                softbounds = softbounds[0] + eps, softbounds[1]
-                val = trial.suggest_uniform(prefix + name, *softbounds)
-            setattr(params, name, val)
+        if 'log10_learning_rate' in only:
+            softbounds = pdict['log10_learning_rate'].get_soft_bounds()
+            params.log10_learning_rate = trial.suggest_uniform(
+                prefix + 'log10_learning_rate', *softbounds)
+        if 'num_epochs' in only:
+            softbounds = pdict['num_epochs'].get_soft_bounds()
+            params.num_epochs = trial.suggest_int(
+                prefix + 'num_epochs', *softbounds)
+        if params.num_epochs is None:
+            num_epochs = float('inf')
+        else:
+            num_epochs = params.num_epochs
+        # if we sample patience and burnin so that their collective total
+        # reaches or exceeds the number of epochs, they are effectively
+        # disabled. Rather than allowing vast sums above the number of epochs,
+        # we only allow the sum to reach the remaining epochs
+        remaining_epochs = num_epochs
+        if 'early_stopping_patience' not in only:
+            remaining_epochs -= params.early_stopping_patience
+        if 'early_stopping_burnin' not in only:
+            remaining_epochs -= params.early_stopping_burnin
+        remaining_epochs = max(0, remaining_epochs)
+        if remaining_epochs and 'early_stopping_threshold' in only:
+            softbounds = pdict['early_stopping_threshold'].get_soft_bounds()
+            params.early_stopping_threshold = trial.suggest_uniform(
+                prefix + 'early_stopping_threshold', *softbounds)
+        if not params.early_stopping_threshold:
+            remaining_epochs = 0
+        if remaining_epochs and 'early_stopping_patience' in only:
+            softbounds = pdict['early_stopping_patience'].get_soft_bounds()
+            softbounds = tuple(min(x, remaining_epochs) for x in softbounds)
+            params.early_stopping_patience = trial.suggest_int(
+                prefix + 'early_stopping_patience', *softbounds)
+            remaining_epochs -= params.early_stopping_patience
+            assert remaining_epochs >= 0
+        if remaining_epochs and 'early_stopping_burnin' in only:
+            softbounds = pdict['early_stopping_burnin'].get_soft_bounds()
+            softbounds = tuple(min(x, remaining_epochs) for x in softbounds)
+            params.early_stopping_burnin = trial.suggest_int(
+                prefix + 'early_stopping_burnin', *softbounds)
+            remaining_epochs -= params.early_stopping_burnin
+            assert remaining_epochs >= 0
+        # we do the same thing, but for the learning rate scheduler
+        remaining_epochs = num_epochs
+        if 'reduce_lr_patience' not in only:
+            remaining_epochs -= params.reduce_lr_patience
+        remaining_epochs = max(0, remaining_epochs)
+        if remaining_epochs and 'reduce_lr_threshold' in only:
+            softbounds = pdict['reduce_lr_threshold'].get_soft_bounds()
+            params.reduce_lr_threshold = trial.suggest_uniform(
+                prefix + 'reduce_lr_threshold', *softbounds)
+        if not params.reduce_lr_threshold:
+            remaining_epochs = 0
+        if remaining_epochs and 'reduce_lr_patience' in only:
+            softbounds = pdict['reduce_lr_patience'].get_soft_bounds()
+            softbounds = tuple(min(x, remaining_epochs) for x in softbounds)
+            params.reduce_lr_patience = trial.suggest_int(
+                prefix + 'reduce_lr_patience', *softbounds)
+            remaining_epochs -= params.reduce_lr_patience
+        if remaining_epochs and 'reduce_lr_factor' in only:
+            softbounds = pdict['reduce_lr_factor'].get_soft_bounds()
+            params.reduce_lr_factor = trial.suggest_uniform(
+                prefix + 'reduce_lr_factor', *softbounds)
+        if remaining_epochs and 'reduce_lr_cooldown' in only:
+            softbounds = pdict['reduce_lr_cooldown'].get_soft_bounds()
+            params.reduce_lr_cooldown = trial.suggest_int(
+                prefix + 'reduce_lr_cooldown', *softbounds)
         return params
 
 
