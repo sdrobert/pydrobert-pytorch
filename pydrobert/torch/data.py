@@ -1131,7 +1131,7 @@ class DataSetParams(param.Parameterized):
         if only is None:
             only = cls.get_tunable()
         if 'batch_size' in only:
-            bounds = params.params()['batch_size'].get_soft_bounds()
+            bounds = params.param.params()['batch_size'].get_soft_bounds()
             val = trial.suggest_int(prefix + 'batch_size', *bounds)
             params.batch_size = val
         return params
@@ -1638,7 +1638,7 @@ class ContextWindowDataParams(SpectDataParams):
         params = cls() if base is None else base
         if only is None:
             only = cls._tunable
-        pdict = params.params()
+        pdict = params.param.params()
         for name in ('context_left', 'context_right'):
             if name in only:
                 softbounds = pdict[name].get_soft_bounds()

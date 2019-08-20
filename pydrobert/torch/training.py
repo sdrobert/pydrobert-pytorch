@@ -519,7 +519,7 @@ class TrainingStateParams(param.Parameterized):
         if only is None:
             only = cls.get_tunable()
         params = cls() if base is None else base
-        pdict = params.params()
+        pdict = params.param.params()
         if 'log10_learning_rate' in only:
             softbounds = pdict['log10_learning_rate'].get_soft_bounds()
             params.log10_learning_rate = trial.suggest_uniform(
