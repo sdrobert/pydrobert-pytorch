@@ -107,6 +107,21 @@ def test_controller_stores_and_retrieves(temp_dir, device):
 
 
 @pytest.mark.cpu
+def test_controller_stops_at_num_epochs():
+    num_epochs = 10
+    model = torch.nn.Linear(2, 2)
+    optimizer = torch.optim.Adam(model.parameters())
+    params = training.TrainingStateParams(
+        num_epochs=num_epochs, early_stopping_threshold=0.0)
+    controller = training.TrainingStateController(params)
+    for _ in range(9):
+        assert controller.update_for_epoch(model, optimizer, 0.1, 0.1)
+        assert controller.continue_training()
+    assert not controller.update_for_epoch(model, optimizer, 0.1, 0.1)
+    assert not controller.continue_training()
+
+
+@pytest.mark.cpu
 def test_controller_scheduling():
 
     def is_close(a, b):
@@ -128,17 +143,22 @@ def test_controller_scheduling():
     init_lr = optimizer.param_groups[0]['lr']
     for _ in range(8):
         assert controller.update_for_epoch(model, optimizer, 1, 1)
+        assert controller.continue_training()
     assert is_close(optimizer.param_groups[0]['lr'], init_lr)
     assert controller.update_for_epoch(model, optimizer, 1, 1)
     assert is_close(optimizer.param_groups[0]['lr'], init_lr / 2)
     for _ in range(6):
         assert controller.update_for_epoch(model, optimizer, .89, .89)
+        assert controller.continue_training()
     assert is_close(optimizer.param_groups[0]['lr'], init_lr / 2)
     assert controller.update_for_epoch(model, optimizer, .68, .68)
+    assert controller.continue_training()
     assert is_close(optimizer.param_groups[0]['lr'], init_lr / 2)
     for _ in range(9):
         assert controller.update_for_epoch(model, optimizer, .68, .68)
+        assert controller.continue_training()
     assert not controller.update_for_epoch(model, optimizer, .68, .68)
+    assert not controller.continue_training()
     p.early_stopping_threshold = 0.0
     p.reduce_lr_threshold = 0.0
     controller = training.TrainingStateController(p)
@@ -146,6 +166,7 @@ def test_controller_scheduling():
     init_lr = optimizer.param_groups[0]['lr']
     for _ in range(20):
         assert controller.update_for_epoch(model, optimizer, 0., 0.)
+        assert controller.continue_training()
     assert is_close(optimizer.param_groups[0]['lr'], init_lr)
 
 

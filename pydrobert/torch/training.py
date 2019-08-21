@@ -1002,6 +1002,36 @@ class TrainingStateController(object):
                 val_met_fmt_str.format(info['val_met']),
             ] + [str(info[x]) for x in self.user_entry_types])
 
+    def continue_training(self, epoch=None):
+        '''Return a boolean on whether to continue training
+
+        Useful when resuming training. Will check the training history at the
+        target `epoch` and determine whether training should continue from that
+        point, based on the total number of epochs and the early stopping
+        criterion.
+
+        Parameters
+        ----------
+        epoch : int or :obj:`None`, optional
+            The epoch to check the history of. If :obj:`None`, the last epoch
+            will be inferred
+
+        Returns
+        -------
+        cont : bool
+            :obj:`True` if training should continue
+        '''
+        if epoch is None:
+            epoch = self.get_last_epoch()
+        info = self[epoch]
+        if not self.params.num_epochs:
+            cont = True
+        else:
+            cont = epoch < self.params.num_epochs
+        if self.params.early_stopping_threshold and not info["es_patience_cd"]:
+            cont = False
+        return cont
+
     def update_for_epoch(
             self, model, optimizer, train_met, val_met, epoch=None,
             **kwargs):
@@ -1024,16 +1054,19 @@ class TrainingStateController(object):
 
         Returns
         -------
-        continue_training : bool
+        cont : bool
             Whether to continue training. This can be set to :obj:`False`
             either by hitting the max number of epochs or by early stopping
         '''
         if epoch is None:
             epoch = self.get_last_epoch() + 1
         if not self.params.num_epochs:
-            continue_training = True
+            cont = True
         else:
-            continue_training = epoch < self.params.num_epochs
+            cont = epoch < self.params.num_epochs
+            if epoch > self.params.num_epochs:
+                warnings.warn(
+                    'Training is continuing, despite passing num_epochs')
         info = dict(self.get_info(epoch - 1, None))
         if info is None:
             raise ValueError(
@@ -1066,10 +1099,17 @@ class TrainingStateController(object):
         elif (max(best_info['val_met'] - val_met, 0) <
                 self.params.early_stopping_threshold):
             info["es_patience_cd"] -= 1
-            if not info["es_patience_cd"]:
-                continue_training = False
+            if info["es_patience_cd"] < 0:
+                warnings.warn(
+                    "Early stopping criterion was already met, but training "
+                    "has continued")
+                info["es_patience_cd"] = 0
         else:
             info["es_patience_cd"] = self.params.early_stopping_patience
+        # we do it this way in case someone continues training after early
+        # stopping has been reached
+        if self.params.early_stopping_threshold and not info["es_patience_cd"]:
+            cont = False
         if info["rlr_resume_cd"]:
             info["rlr_resume_cd"] -= 1
         elif (max(best_info['val_met'] - val_met, 0) <
@@ -1105,4 +1145,4 @@ class TrainingStateController(object):
         finally:
             self.save_model_and_optimizer_with_info(model, optimizer, info)
             self.save_info_to_hist(info)
-        return continue_training
+        return cont
