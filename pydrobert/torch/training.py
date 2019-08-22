@@ -661,6 +661,8 @@ class TrainingStateController(object):
     cache_hist : dict
         A dictionary of cached results per epoch. Is not guaranteed to be
         up-to-date with `state_csv_path` unless :func:`update_cache` is called
+    fmt_dict : dict
+        A dictionary of format strings for the CSV entries
     '''
 
     def __init__(self, params, state_csv_path=None, state_dir=None, warn=True):
@@ -680,8 +682,38 @@ class TrainingStateController(object):
         self.state_dir = state_dir
         self.cache_hist = dict()
         self.user_entry_types = OrderedDict()
+        self.fmt_dict = dict()
+        if params.num_epochs is None:
+            self.fmt_dict['epoch'] = '{:010d}'
+        else:
+            self.fmt_dict['epoch'] = '{{:0{}d}}'.format(
+                int(math.log10(params.num_epochs)) + 1)
+        self.fmt_dict['es_resume_cd'] = '{{:0{}d}}'.format(
+            int(math.log10(max(params.early_stopping_burnin, 1))) + 1)
+        self.fmt_dict['es_patience_cd'] = '{{:0{}d}}'.format(
+            int(math.log10(max(params.early_stopping_patience, 1))) + 1)
+        self.fmt_dict['rlr_resume_cd'] = '{{:0{}d}}'.format(
+            int(math.log10(max(
+                params.reduce_lr_cooldown,
+                params.reduce_lr_burnin,
+                1,
+            ))) + 1
+        )
+        self.fmt_dict['rlr_patience_cd'] = '{{:0{}d}}'.format(
+            int(math.log10(max(params.reduce_lr_patience, 1))) + 1)
+        self.fmt_dict['lr'] = '{{:.{}e}}'.format(self.SCIENTIFIC_PRECISION - 1)
+        self.fmt_dict['train_met'] = self.fmt_dict['lr']
+        self.fmt_dict['val_met'] = self.fmt_dict['lr']
 
-    def add_entry(self, name, type_=str):
+    '''The number of digits in significand of scientific notation
+
+    Controls how many digits are saved when writing metrics and learning rate
+    to disk (i.e. the ``x`` in ``x * 10^y``). Used when generating the format
+    strings in ``self.fmt_dict`` on initialization
+    '''
+    SCIENTIFIC_PRECISION = 5
+
+    def add_entry(self, name, type_=str, fmt='{}'):
         '''Add an entry to to be stored and retrieved at every epoch
 
         This method is useful when training loops need specialized, persistent
@@ -697,7 +729,10 @@ class TrainingStateController(object):
         name : str
         type_ : type, optional
             `type_` should be a type that is serialized from a string via
-            `type_(str_obj)` and serialized to a string via `str(type_obj)`
+            ``type_(str_obj)`` and serialized to a string via
+            ``fmt.format(obj)``
+        fmt : str, optional
+            The format string used to serialize the objects into strings
 
         Examples
         --------
@@ -729,6 +764,7 @@ class TrainingStateController(object):
         if not isinstance(type_, type):
             raise ValueError('type_ ({}) must be a type'.format(type_))
         self.user_entry_types[name] = type_
+        self.fmt_dict[name] = fmt
         self.update_cache()
 
     def update_cache(self):
@@ -778,7 +814,8 @@ class TrainingStateController(object):
     def get_best_epoch(self, train_met=False):
         '''Get the epoch that has lead to the best validation metric val so far
 
-        The "best" is the lowest recorded.
+        The "best" is the lowest recorded validation metric. In the case of
+        ties, the earlier epoch is chosen.
 
         Parameters
         ----------
@@ -789,15 +826,25 @@ class TrainingStateController(object):
         -------
         epoch : int
             The corresponding 'best' epoch, or :obj:`0` if no epochs have run
+
+        Notes
+        -----
+        Negligible differences between epochs are determined by
+        :obj:`TrainingStateController.METRIC_PRECISION`, which is relative
+        to the metrics base 10. This is in contrast to early stopping criteria
+        and learning rate annealing, whose thresholds are absolute.
         '''
         ent = 'train_met' if train_met else 'val_met'
+        fmt = self.fmt_dict[ent]
         self.update_cache()
         min_epoch = 0
         min_met = self.cache_hist[0][ent]
+        min_met = float(fmt.format(min_met))
         for info in self.cache_hist.values():
-            if min_met > info[ent]:
+            cur = float(fmt.format(info[ent]))
+            if cur < min_met:
                 min_epoch = info['epoch']
-                min_met = info[ent]
+                min_met = cur
         return min_epoch
 
     def load_model_for_epoch(self, model, epoch=None, strict=True):
@@ -1004,61 +1051,24 @@ class TrainingStateController(object):
         self.cache_hist[info['epoch']] = info
         if self.state_csv_path is None:
             return
-        if not self.params.num_epochs:
-            epoch_fmt_str = '{:010d}'
-        else:
-            epoch_fmt_str = '{{:0{}d}}'.format(
-                int(math.log10(self.params.num_epochs)) + 1)
-        es_resume_cd_fmt_str = '{{:0{}d}}'.format(
-            int(math.log10(max(
-                self.params.early_stopping_burnin,
-                1,
-                ))) + 1
-        )
-        es_patience_cd_fmt_str = '{{:0{}d}}'.format(
-            int(math.log10(max(
-                self.params.early_stopping_patience,
-                1,
-                ))) + 1
-        )
-        rlr_resume_cd_fmt_str = '{{:0{}d}}'.format(
-            int(math.log10(max(
-                self.params.reduce_lr_cooldown,
-                self.params.reduce_lr_burnin,
-                1,
-            ))) + 1
-        )
-        rlr_patience_cd_fmt_str = '{{:0{}d}}'.format(
-            int(math.log10(max(
-                self.params.reduce_lr_patience,
-                1,
-            ))) + 1
-        )
-        lr_fmt_str = train_met_fmt_str = val_met_fmt_str = '{:10e}'
+        names = [
+            'epoch',
+            'es_resume_cd',
+            'es_patience_cd',
+            'rlr_resume_cd',
+            'rlr_patience_cd',
+            'lr',
+            'train_met',
+            'val_met',
+        ]
+        names += list(self.user_entry_types)
         write_header = not os.path.exists(self.state_csv_path)
         with open(self.state_csv_path, 'a') as f:
             wr = writer(f)
             if write_header:
-                wr.writerow([
-                    'epoch',
-                    'es_resume_cd',
-                    'es_patience_cd',
-                    'rlr_resume_cd',
-                    'rlr_patience_cd',
-                    'lr',
-                    'train_met',
-                    'val_met',
-                ] + list(self.user_entry_types))
+                wr.writerow(names)
             wr.writerow([
-                epoch_fmt_str.format(info['epoch']),
-                es_resume_cd_fmt_str.format(info['es_resume_cd']),
-                es_patience_cd_fmt_str.format(info['es_patience_cd']),
-                rlr_resume_cd_fmt_str.format(info['rlr_resume_cd']),
-                rlr_patience_cd_fmt_str.format(info['rlr_patience_cd']),
-                lr_fmt_str.format(info['lr']),
-                train_met_fmt_str.format(info['train_met']),
-                val_met_fmt_str.format(info['val_met']),
-            ] + [str(info[x]) for x in self.user_entry_types])
+                self.fmt_dict[k].format(info[k]) for k in names])
 
     def continue_training(self, epoch=None):
         '''Return a boolean on whether to continue training

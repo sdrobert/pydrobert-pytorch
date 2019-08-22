@@ -199,6 +199,7 @@ def test_controller_best(temp_dir):
     optimizer_2 = torch.optim.Adam(model_2.parameters(), lr=2)
     model_3 = torch.nn.Linear(100, 100)
     optimizer_3 = torch.optim.Adam(model_1.parameters(), lr=3)
+    training.TrainingStateController.SCIENTIFIC_PRECISION = 5
     controller = training.TrainingStateController(
         training.TrainingStateParams(), state_dir=temp_dir)
     assert controller.get_best_epoch() == 0
@@ -222,7 +223,8 @@ def test_controller_best(temp_dir):
     assert optimizer_3.param_groups[0]['lr'] == 2
     controller.update_for_epoch(model_1, optimizer_1, .6, .6)
     assert controller.get_best_epoch() == 1
-    controller.update_for_epoch(model_1, optimizer_1, .4, .4)
+    # round-on-even dictates .400005 will round to .40000
+    controller.update_for_epoch(model_1, optimizer_1, .400005, .400005)
     assert controller.get_best_epoch() == 5
     controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 5)
     for parameter_1, parameter_3 in zip(
@@ -231,6 +233,14 @@ def test_controller_best(temp_dir):
     with pytest.raises(IOError):
         # no longer the best
         controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 1)
+    # this block ensures that negligible differences in the loss aren't being
+    # considered "better." This is necessary to remain consistent
+    # with the truncated floats saved to history
+    controller.update_for_epoch(model_1, optimizer_1, .4, .4)
+    # last
+    controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 6)
+    # best (because ~ equal and older)
+    controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 5)
     # ensure we're keeping track of the last when the model name is not
     # unique
     controller = training.TrainingStateController(
