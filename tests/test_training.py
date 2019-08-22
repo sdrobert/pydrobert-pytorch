@@ -104,6 +104,26 @@ def test_controller_stores_and_retrieves(temp_dir, device):
             model.parameters(), model_2.parameters(), model_3.parameters()):
         assert not torch.allclose(parameter_1, parameter_2)
         assert torch.allclose(parameter_2, parameter_3)
+    torch.manual_seed(300)
+    model_2 = torch.nn.Linear(2, 2).to(device)
+    optimizer_2 = torch.optim.Adam(model_2.parameters())
+    epoch_info['epoch'] = 3
+    epoch_info['val_met'] = 2
+    controller.save_model_and_optimizer_with_info(
+        model_2, optimizer_2, epoch_info)
+    controller.save_info_to_hist(epoch_info)
+    # by default, load_model_and_optimizer_for_epoch loads last
+    controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3)
+    for parameter_1, parameter_2, parameter_3 in zip(
+            model.parameters(), model_2.parameters(), model_3.parameters()):
+        assert torch.allclose(parameter_1, parameter_3)
+        assert not torch.allclose(parameter_2, parameter_3)
+    # by default, load_model_for_epoch loads best
+    controller.load_model_for_epoch(model_3)
+    for parameter_1, parameter_2, parameter_3 in zip(
+            model.parameters(), model_2.parameters(), model_3.parameters()):
+        assert not torch.allclose(parameter_1, parameter_3)
+        assert torch.allclose(parameter_2, parameter_3)
 
 
 @pytest.mark.cpu

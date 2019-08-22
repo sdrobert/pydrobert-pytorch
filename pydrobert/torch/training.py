@@ -800,13 +800,55 @@ class TrainingStateController(object):
                 min_met = info[ent]
         return min_epoch
 
+    def load_model_for_epoch(self, model, epoch=None):
+        '''Load up just the model, or initialize it
+
+        Parameters
+        ----------
+        model : torch.nn.Module
+            Model state will be loaded into this
+        epoch : int or :obj:`None`, optional
+            The epoch from which the states should be loaded. We look for the
+            appropriately named files in ``self.state_dir``. If `epoch` is
+            :obj:`None`, the best epoch in recorded history will be loaded. If
+            it's 0, the model is initialized with states from the beginning of
+            the experiment
+        '''
+        if epoch is None:
+            epoch = self.get_best_epoch()
+        if not epoch:
+            if self.params.seed is not None:
+                torch.manual_seed(self.params.seed)
+            if hasattr(model, 'reset_parameters'):
+                model.reset_parameters()
+            else:
+                warnings.warn(
+                    'model has no reset_parameters() method, so cannot '
+                    'reset parameters for epoch 0'
+                )
+        elif self.state_dir is not None:
+            epoch_info = self[epoch]
+            model_basename = self.params.saved_model_fmt.format(**epoch_info)
+            model_state_dict = torch.load(
+                os.path.join(self.state_dir, model_basename),
+                map_location='cpu',
+            )
+            model.load_state_dict(model_state_dict)
+        else:
+            warnings.warn(
+                'Unable to load model for epoch {}. No state directory!'
+                ''.format(epoch)
+            )
+
     def load_model_and_optimizer_for_epoch(self, model, optimizer, epoch=None):
         '''Load up model and optimizer states, or initialize them
 
         Parameters
         ----------
         model : torch.nn.Module
+            Model state will be loaded into this
         optimizer : torch.optim.Optimizer
+            Optimizer state will be loaded into this
         epoch : int or :obj:`None`, optional
             The epoch from which the states should be loaded. We look for the
             appropriately named files in ``self.state_dir``. If `epoch` is
@@ -847,8 +889,8 @@ class TrainingStateController(object):
             optimizer.load_state_dict(optimizer_state_dict)
         else:
             warnings.warn(
-                'Unable to load optimizer for epoch {}. No state dict!'
-                ''.format(epoch)
+                'Unable to load model and optimizer for epoch {}. No state'
+                'directory!'.format(epoch)
             )
 
     def delete_model_and_optimizer_for_epoch(self, epoch):
