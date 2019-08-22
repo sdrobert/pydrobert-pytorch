@@ -608,8 +608,8 @@ class TrainingStateController(object):
     ...    params,
     ...    state_csv_path='log.csv',
     ...    state_dir='states')
-    >>> controller.load_model_and_optimizer_for_epoch(
-    ...     model, optimizer, controller.get_last_epoch())  # load previous
+    >>> # load previous
+    >>> controller.load_model_and_optimizer_for_epoch(model, optimizer)
     >>> for epoch in range(params.num_epochs):
     >>>     # do training loop for epoch
     >>>     train_loss, val_loss = 0.1, 0.01
@@ -800,13 +800,22 @@ class TrainingStateController(object):
                 min_met = info[ent]
         return min_epoch
 
-    def load_model_and_optimizer_for_epoch(self, model, optimizer, epoch=0):
+    def load_model_and_optimizer_for_epoch(self, model, optimizer, epoch=None):
         '''Load up model and optimizer states, or initialize them
 
-        If `epoch` is 0, the model and optimizer are initialized with states
-        for the beginning of the experiment. Otherwise, we look for
-        appropriately named files in ``self.state_dir``
+        Parameters
+        ----------
+        model : torch.nn.Module
+        optimizer : torch.optim.Optimizer
+        epoch : int or :obj:`None`, optional
+            The epoch from which the states should be loaded. We look for the
+            appropriately named files in ``self.state_dir``. If `epoch` is
+            :obj:`None`, the last epoch in recorded history will be loaded. If
+            it's 0, the model and optimizer are initialized with states
+            for the beginning of the experiment.
         '''
+        if epoch is None:
+            epoch = self.get_last_epoch()
         if not epoch:
             if self.params.seed is not None:
                 torch.manual_seed(self.params.seed)
