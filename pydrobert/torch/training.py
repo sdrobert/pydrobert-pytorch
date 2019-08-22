@@ -800,7 +800,7 @@ class TrainingStateController(object):
                 min_met = info[ent]
         return min_epoch
 
-    def load_model_for_epoch(self, model, epoch=None):
+    def load_model_for_epoch(self, model, epoch=None, strict=True):
         '''Load up just the model, or initialize it
 
         Parameters
@@ -813,6 +813,9 @@ class TrainingStateController(object):
             :obj:`None`, the best epoch in recorded history will be loaded. If
             it's 0, the model is initialized with states from the beginning of
             the experiment
+        strict : bool, optional
+            Whether to strictly enforce that the keys in ``model.state_dict()``
+            match those that were saved
         '''
         if epoch is None:
             epoch = self.get_best_epoch()
@@ -833,14 +836,15 @@ class TrainingStateController(object):
                 os.path.join(self.state_dir, model_basename),
                 map_location='cpu',
             )
-            model.load_state_dict(model_state_dict)
+            model.load_state_dict(model_state_dict, strict=strict)
         else:
             warnings.warn(
                 'Unable to load model for epoch {}. No state directory!'
                 ''.format(epoch)
             )
 
-    def load_model_and_optimizer_for_epoch(self, model, optimizer, epoch=None):
+    def load_model_and_optimizer_for_epoch(
+            self, model, optimizer, epoch=None, strict=True):
         '''Load up model and optimizer states, or initialize them
 
         Parameters
@@ -855,6 +859,9 @@ class TrainingStateController(object):
             :obj:`None`, the last epoch in recorded history will be loaded. If
             it's 0, the model and optimizer are initialized with states
             for the beginning of the experiment.
+        strict : bool, optional
+            Whether to strictly enforce that the keys in ``model.state_dict()``
+            match those that were saved
         '''
         if epoch is None:
             epoch = self.get_last_epoch()
@@ -881,7 +888,7 @@ class TrainingStateController(object):
                 os.path.join(self.state_dir, model_basename),
                 map_location='cpu',
             )
-            model.load_state_dict(model_state_dict)
+            model.load_state_dict(model_state_dict, strict=strict)
             optimizer_state_dict = torch.load(
                 os.path.join(self.state_dir, optimizer_basename),
                 map_location='cpu',
