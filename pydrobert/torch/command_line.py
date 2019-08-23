@@ -166,6 +166,7 @@ def get_torch_spect_data_dir_info(args=None):
                     class_idx, info_dict['max_ali_class'])
                 counts[class_idx] = counts.get(class_idx, 0) + 1
         if ref is not None:
+            ref = ref[..., 0]
             if ref.min().item() < 0:
                 raise ValueError('Got a negative ref class idx')
             info_dict['max_ref_class'] = max(

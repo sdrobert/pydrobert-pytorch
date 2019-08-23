@@ -43,6 +43,18 @@ def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
     for class_idx in range(11):
         key = 'count_{:02d}'.format(class_idx)
         assert table[key] == alis.count(class_idx)
+    # ensure we're only looking at the ids in the recorded refs
+    torch.save(
+        torch.tensor([[100, 0, 101]]),
+        os.path.join(temp_dir, 'ref', 'utt19.pt'))
+    assert not command_line.get_torch_spect_data_dir_info(
+        [temp_dir, table_path])
+    table = dict()
+    with open(table_path) as table_file:
+        for line in table_file:
+            line = line.split()
+            table[line[0]] = int(line[1])
+    assert table['max_ref_class'] == 100
     # invalidate the data set and try again
     torch.save(torch.rand(1, 4), os.path.join(temp_dir, 'feat', 'utt19.pt'))
     with pytest.raises(ValueError):
