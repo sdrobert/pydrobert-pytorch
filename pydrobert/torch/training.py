@@ -450,12 +450,11 @@ class TrainingStateParams(param.Parameterized):
         'best that resets the clock for reducing the learning rate. If zero, '
         'the learning rate will never be reduced'
     )
-    reduce_lr_factor = param.Number(
-        None, bounds=(0, 1), softbounds=(.1, .5),
-        inclusive_bounds=(False, False),
+    reduce_lr_factor = param.Magnitude(
+        0.1, softbounds=(.1, .5), inclusive_bounds=(False, False),
         doc='Factor by which to multiply the learning rate if there has '
         'been no improvement in the  after "reduce_lr_patience" '
-        'epochs. If unset, uses the pytorch defaults'
+        'epochs'
     )
     reduce_lr_patience = param.Integer(
         1, bounds=(1, None), softbounds=(1, 30),
