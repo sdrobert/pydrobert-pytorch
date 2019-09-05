@@ -70,11 +70,14 @@ class ControlVariate(torch.nn.Module):
     def reset_parameters(self):
         self.weight.data.uniform_(-1., 1.)
 
-    def forward(self, inp):
+    def forward(self, inp, y=None):
         outp = inp * self.weight
         if self.dist != "bern":
             outp = outp.sum(-1)
-        return outp
+        if y:
+            return outp + y
+        else:
+            return outp
 
 
 @pytest.mark.parametrize("seed", [4, 5, 6])
@@ -124,11 +127,11 @@ def test_model_backprop(dist, device, est):
     model = torch.nn.Linear(dim3, dim3).to(device)
     inp = torch.randn(dim1, dim2, dim3, device=device)
 
-    def f(x):
+    def f(x, y=None):
         if dist == "onehot":
-            return x[..., -1]
+            return x[..., -1] + y
         else:
-            return x
+            return x + y
     if est == "rebar":
         c = estimators.REBARControlVariate(f, dist).to(device)
     else:
@@ -138,9 +141,9 @@ def test_model_backprop(dist, device, est):
     logits = model(inp)
     z = estimators.to_z(logits, dist)
     b = estimators.to_b(z, dist)
-    fb = f(b)
+    fb = f(b, y=1)
     diff, dlog_pb, dc_z, dc_z_tilde = estimators.relax(
-        fb, b, logits, z, c, dist, components=True)
+        fb, b, logits, z, c, dist, components=True, y=1)
     g = diff * dlog_pb + dc_z - dc_z_tilde
     (g ** 2).sum().backward()
     if est == "rebar":
