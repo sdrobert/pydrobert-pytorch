@@ -581,7 +581,7 @@ class TrainingStateParams(param.Parameterized):
             params.reduce_lr_patience = trial.suggest_int(
                 prefix + 'reduce_lr_patience', *softbounds)
             remaining_epochs -= params.reduce_lr_patience
-        if remaining_epochs and 'reduce_lr_burnin' in obly:
+        if remaining_epochs and 'reduce_lr_burnin' in only:
             softbounds = pdict['reduce_lr_burnin'].get_soft_bounds()
             softbounds = tuple(min(x, remaining_epochs) for x in softbounds)
             params.reduce_lr_burnin = trial.suggest_int(
