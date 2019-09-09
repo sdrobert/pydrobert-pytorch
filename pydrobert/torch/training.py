@@ -932,7 +932,14 @@ class TrainingStateController(object):
             if self.params.log10_learning_rate is not None:
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = 10 ** self.params.log10_learning_rate
-            optimizer.state.clear()
+            # there is no public API for resetting the state dictionary, so
+            # we create a new instance as best as possible and copy the state
+            # over from there. Note that settings like weight decay are already
+            # part of the parameter group, so we don't need to worry about
+            # initializing with them.
+            brand_new_optimizer = type(optimizer)(optimizer.param_groups)
+            optimizer.load_state_dict(brand_new_optimizer.state_dict())
+            del brand_new_optimizer
         elif self.state_dir is not None:
             epoch_info = self[epoch]
             model_basename = self.params.saved_model_fmt.format(**epoch_info)
