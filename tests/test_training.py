@@ -14,10 +14,16 @@ __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2018 Sean Robertson"
 
 
-def test_controller_stores_and_retrieves(temp_dir, device):
+@pytest.mark.parametrize('opt_class', [
+    torch.optim.Adam,
+    torch.optim.Adagrad,
+    torch.optim.LBFGS,
+    torch.optim.SGD,
+])
+def test_controller_stores_and_retrieves(temp_dir, device, opt_class):
     torch.manual_seed(50)
     model = torch.nn.Linear(2, 2).to(device)
-    optimizer = torch.optim.Adam(model.parameters())
+    optimizer = opt_class(model.parameters(), lr=20)
     p = training.TrainingStateParams(seed=5, log10_learning_rate=-1)
     state_csv_path = os.path.join(temp_dir, 'a.csv')
     state_dir = os.path.join(temp_dir, 'states')
@@ -29,11 +35,16 @@ def test_controller_stores_and_retrieves(temp_dir, device):
     controller.add_entry('cool_guy_entry', int)
     controller.load_model_and_optimizer_for_epoch(model, optimizer, 0)
     assert optimizer.param_groups[0]['lr'] == 10 ** p.log10_learning_rate
-    optimizer.zero_grad()
     inp = torch.randn(5, 2, device=device)
-    model(inp).sum().backward()
+
+    def closure():
+        optimizer.zero_grad()
+        loss = model(inp).sum()
+        loss.backward()
+        return loss
+
     model_2 = torch.nn.Linear(2, 2).to(device)
-    optimizer_2 = torch.optim.Adam(model_2.parameters())
+    optimizer_2 = opt_class(model_2.parameters(), lr=20)
     controller.load_model_and_optimizer_for_epoch(model_2, optimizer_2, 0)
     assert optimizer_2.param_groups[0]['lr'] == 10 ** p.log10_learning_rate
     for parameter_1, parameter_2 in zip(
@@ -41,13 +52,18 @@ def test_controller_stores_and_retrieves(temp_dir, device):
         assert parameter_1.device == device
         assert parameter_2.device == device
         assert torch.allclose(parameter_1, parameter_2)
-    optimizer.step()
+    optimizer.step(closure)
     for parameter_1, parameter_2 in zip(
             model.parameters(), model_2.parameters()):
         assert not torch.allclose(parameter_1, parameter_2)
-    optimizer_2.zero_grad()
-    model_2(inp).sum().backward()
-    optimizer_2.step()
+
+    def closure():
+        optimizer_2.zero_grad()
+        loss = model_2(inp).sum()
+        loss.backward()
+        return loss
+
+    optimizer_2.step(closure)
     for parameter_1, parameter_2 in zip(
             model.parameters(), model_2.parameters()):
         assert torch.allclose(parameter_1, parameter_2)
@@ -67,16 +83,14 @@ def test_controller_stores_and_retrieves(temp_dir, device):
     assert controller[10] == epoch_info
     torch.manual_seed(4)
     model_2 = torch.nn.Linear(2, 2).to(device)
-    optimizer_2 = torch.optim.Adam(model_2.parameters(), lr=20)
+    optimizer_2 = opt_class(model_2.parameters(), lr=20)
     controller.load_model_and_optimizer_for_epoch(model_2, optimizer_2, 10)
     for parameter_1, parameter_2 in zip(
             model.parameters(), model_2.parameters()):
         assert parameter_1.device == device
         assert parameter_2.device == device
         assert torch.allclose(parameter_1, parameter_2)
-    optimizer_2.zero_grad()
-    model_2(inp).sum().backward()
-    optimizer_2.step()
+    optimizer_2.step(closure)
     for parameter_1, parameter_2 in zip(
             model.parameters(), model_2.parameters()):
         assert not torch.allclose(parameter_1, parameter_2)
@@ -90,23 +104,28 @@ def test_controller_stores_and_retrieves(temp_dir, device):
     controller.add_entry('cool_guy_entry', int)
     assert controller[10] == epoch_info
     model_3 = torch.nn.Linear(2, 2).to(device)
-    optimizer_3 = torch.optim.Adam(model_3.parameters(), lr=20)
+    optimizer_3 = opt_class(model_3.parameters(), lr=20)
     controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 10)
     model_3.to(device)
     for parameter_1, parameter_3 in zip(
             model.parameters(), model_3.parameters()):
         assert parameter_3.device == device
         assert torch.allclose(parameter_1, parameter_3)
-    optimizer_3.zero_grad()
-    model_3(inp).sum().backward()
-    optimizer_3.step()
+
+    def closure():
+        optimizer_3.zero_grad()
+        loss = model_3(inp).sum()
+        loss.backward()
+        return loss
+
+    optimizer_3.step(closure)
     for parameter_1, parameter_2, parameter_3 in zip(
             model.parameters(), model_2.parameters(), model_3.parameters()):
         assert not torch.allclose(parameter_1, parameter_2)
         assert torch.allclose(parameter_2, parameter_3)
     torch.manual_seed(300)
     model_2 = torch.nn.Linear(2, 2).to(device)
-    optimizer_2 = torch.optim.Adam(model_2.parameters())
+    optimizer_2 = opt_class(model_2.parameters(), lr=20)
     epoch_info['epoch'] = 3
     epoch_info['val_met'] = 2
     controller.save_model_and_optimizer_with_info(
