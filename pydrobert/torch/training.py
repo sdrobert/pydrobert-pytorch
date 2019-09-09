@@ -510,6 +510,7 @@ class TrainingStateParams(param.Parameterized):
             'early_stopping_patience', 'early_stopping_burnin',
             'reduce_lr_factor', 'reduce_lr_threshold',
             'reduce_lr_patience', 'reduce_lr_cooldown',
+            'reduce_lr_burnin',
         }
 
     @classmethod
@@ -565,6 +566,8 @@ class TrainingStateParams(param.Parameterized):
         remaining_epochs = num_epochs
         if 'reduce_lr_patience' not in only:
             remaining_epochs -= params.reduce_lr_patience
+        if 'reduce_lr_burnin' not in only:
+            remaining_epoch -= params.reduce_lr_burnin
         remaining_epochs = max(0, remaining_epochs)
         if remaining_epochs and 'reduce_lr_threshold' in only:
             softbounds = pdict['reduce_lr_threshold'].get_soft_bounds()
@@ -578,6 +581,11 @@ class TrainingStateParams(param.Parameterized):
             params.reduce_lr_patience = trial.suggest_int(
                 prefix + 'reduce_lr_patience', *softbounds)
             remaining_epochs -= params.reduce_lr_patience
+        if remaining_epochs and 'reduce_lr_burnin' in obly:
+            softbounds = pdict['reduce_lr_burnin'].get_soft_bounds()
+            softbounds = tuple(min(x, remaining_epochs) for x in softbounds)
+            params.reduce_lr_burnin = trial.suggest_int(
+                prefix + 'reduce_lr_burnin', *softbounds)
         if remaining_epochs and 'reduce_lr_factor' in only:
             softbounds = pdict['reduce_lr_factor'].get_soft_bounds()
             params.reduce_lr_factor = trial.suggest_uniform(
