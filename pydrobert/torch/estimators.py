@@ -161,8 +161,6 @@ def reinforce(fb, b, logits, dist):
     a common (but sub-optimal) loss function is the mean-squared error between
     `fb` and :math:`c`
     '''
-    fb = fb.detach()
-    b = b.detach()
     if dist in BERNOULLI_SYNONYMS:
         log_pb = torch.distributions.Bernoulli(logits=logits).log_prob(b)
     elif dist in CATEGORICAL_SYNONYMS:
@@ -233,8 +231,6 @@ def relax(fb, b, logits, z, c, dist, components=False, **kwargs):
     estimator, use an instance of :class:`REBARControlVariate` for `c`. See the
     class for more details.
     '''
-    fb = fb.detach()
-    b = b.detach()
     # in all computations (including those made by the user later), we don't
     # want to backpropagate past "logits" into the model. We make a detached
     # copy of logits and rebuild the graph from the detached copy to z

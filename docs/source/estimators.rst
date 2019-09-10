@@ -120,90 +120,34 @@ Keep in mind that, while there are `num_samps` samples per input, this is not
 quite the same as a Markov Estimator. This is because the underlying
 parameterization `logits` is dependent upon the sample prefix.
 
-First the prep
+The following code generates random input and references for some number of
+seeds and keeps track of the convergence of both the original REINFORCE
+estimator and the RELAX estimator with a very small bidirectional RNN as a
+control variate. Data are saved to a `Pandas <https://pandas.pydata.org/>`__
+dataframe, then to CSV. Later, we plot the aggregated per-iteration
+descriptive statistics using `Matplotlib <https://matplotlib.org/>`__. This
+file is saved as ``estimator_convergence.py`` in this file's directory.
 
->>> import torch
->>> from pydrobert.torch.estimators import *
->>> from pydrobert.torch.util import *
->>> eos, padding = 0, -1
->>> def f(hyp, ref, gamma=.95):
->>>     dists = prefix_error_rates(
->>>         ref, hyp.long(), eos=eos, norm=False, padding=-1)
->>>     r = -(dists[1:] - dists[:-1])
->>>     r = r.masked_fill(dists[1:].eq(padding), 0.)
->>>     R = time_distributed_return(r, gamma)
->>>     return R
->>> batch_size, inp_size, num_classes, num_samps = 10, 20, 5, 100
->>> T, S, sos, hidden_size = 30, 10, -1, 40
->>> inp = torch.randn(T, batch_size, inp_size)
->>> ref_lens = torch.randint(1, S + 1, (batch_size,))
->>> ref = torch.nn.utils.rnn.pad_sequence(
->>>     [torch.randint(1, num_classes, (x + 1,)) for x in ref_lens],
->>>     padding_value=padding,
->>> )
->>> ref[ref_lens, range(batch_size)] = eos
->>> # repeat the same reference transcription for each sample
->>> ref_rep = ref.unsqueeze(-1).repeat(1, 1, num_samps)
->>> cell = torch.nn.RNNCell(inp_size + 1, hidden_size)
->>> ff = torch.nn.Linear(hidden_size, num_classes)
->>> c_rnn = torch.nn.RNN(num_classes, hidden_size)
->>> c_ff = torch.nn.Linear(hidden_size, 1)
->>> def c(z):
->>>     mask = z.eq(-float('inf')).any(-1)
->>>     z = z.masked_fill(mask.unsqueeze(-1), 0.)
->>>     z, _ = c_rnn(z)
->>>     z = c_ff(z)
->>>     return z.squeeze(-1)
->>> optim = torch.optim.Adam(
->>>     tuple(cell.parameters()) + tuple(ff.parameters()) +
->>>     tuple(c_rnn.parameters()) + tuple(c_ff.parameters())
->>> )
+.. include:: estimator_convergence.py
+   :code: python
 
-The following is the training loop: it can be repeated ad-infinitum. Over time,
-the printed value will decrease.
-
->>> h_t = torch.zeros(batch_size, 1, hidden_size)
->>> hyp = torch.full((1, batch_size, 1), sos, dtype=torch.long)
->>> optim.zero_grad()
->>> logits = z = None
->>> for inp_t in inp:
->>>     hyp_tm1 = hyp[-1]
->>>     old_samp = hyp_tm1.shape[-1]
->>>     inp_t = inp_t.unsqueeze(1).expand(batch_size, old_samp, inp_size)
->>>     x_t = torch.cat([inp_t, hyp_tm1.unsqueeze(2).float()], -1)
->>>     h_t = cell(
->>>         x_t.view(batch_size * old_samp, inp_size + 1),
->>>         h_t.view(batch_size * old_samp, hidden_size),
->>>     ).view(batch_size, old_samp, hidden_size)
->>>     logits_t = ff(h_t)  # (batch_size, old_samp, num_classes)
->>>     hyp, z_t = random_walk_advance(
->>>         logits_t, num_samps, hyp, eos, include_relaxation=True)
->>>     if old_samp == 1:
->>>         h_t = h_t.repeat(1, num_samps, 1).contiguous()
->>>         logits = logits_t.unsqueeze(0).expand(-1, -1, num_samps, -1)
->>>         z = z_t.unsqueeze(0)
->>>     else:
->>>         logits = torch.cat([logits, logits_t.unsqueeze(0)], dim=0)
->>>         z = torch.cat([z, z_t.unsqueeze(0)], dim=0)
->>> ref_rep = ref_rep.view(-1, batch_size * num_samps)
->>> hyp = hyp[1:].view(-1, batch_size * num_samps) # get rid of start symbol
->>> logits = logits.view(-1, batch_size * num_samps, num_classes)
->>> z = z.view(-1, batch_size * num_samps, num_classes)
->>> #g = reinforce(f(hyp, ref_rep), hyp, logits, 'cat')  # (1)
->>> g = relax(f(hyp, ref_rep), hyp, logits, z, c, 'cat')  # (2)
->>> logits.backward(-g)
->>> if g.grad_fn is not None:
->>>     (g ** 2).mean().backward()
->>> optim.step()
->>> print(error_rate(ref_rep, hyp, eos=eos).mean())
-
-You can toggle the lines ``(1)`` and ``(2)`` to choose your estimator. Below
-shows (some) sample training curves comparing REINFORCE and RELAX. RNG was
-fixed.
+For me, the results (saved in ``estimator_convergence.csv``) were as below
 
 .. image:: estimator_convergence.png
 
-It took a while for RELAX to converge. This is partly due to the control
-variate merely replacing padded `z` values (:math:`-\infty`) with zeros.
-However, RELAX did eventually drop below the mean of REINFORCE at around the
-700th iteration -- and continues to drop -- whereas REINFORCE plateaued.
+The legend has the format ``<estimator>-{d,g}-<hidden_size>``, where ``d`` is
+a difference-based loss function for the control variate, and ``g`` tries to
+minimize the variance of the estimated gradient. Solid lines represent the
+mean error rates, whereas dashed lines represent the loss of the control
+variate.
+
+In this situation, I found that the score function without a baseline did best.
+The graph shows that all estimators that use a control variate quickly learn to
+match the reward function (0 loss implies a perfect match). If the baseline
+matches the reward function too well, then the estimate is very low variance
+but approaches 0. Hence, we find that decreasing the hidden size of the control
+variate increases the control variate loss, but improves the objective overall.
+An earlier version of this script didn't properly handle padding in the control
+variate, which seemed to add enough variance back that the model could converge
+to a lower mean error rate. In other words, it's important that your control
+variate isn't *too* good.
