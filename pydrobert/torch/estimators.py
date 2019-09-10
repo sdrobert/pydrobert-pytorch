@@ -100,7 +100,7 @@ def to_b(z, dist):
 
     Returns
     -------
-    b : torch.Tensor
+    b : torch.FloatTensor
     '''
     if dist in BERNOULLI_SYNONYMS:
         b = z.gt(0.).to(z)
@@ -114,7 +114,7 @@ def to_b(z, dist):
     return b
 
 
-def to_fb(f, b):
+def to_fb(f, b, **kwargs):
     '''Simply call f(b)'''
     return f(b)
 
@@ -161,8 +161,6 @@ def reinforce(fb, b, logits, dist):
     a common (but sub-optimal) loss function is the mean-squared error between
     `fb` and :math:`c`
     '''
-    fb = fb.detach()
-    b = b.detach()
     if dist in BERNOULLI_SYNONYMS:
         log_pb = torch.distributions.Bernoulli(logits=logits).log_prob(b)
     elif dist in CATEGORICAL_SYNONYMS:
@@ -179,7 +177,7 @@ def reinforce(fb, b, logits, dist):
     return g
 
 
-def relax(fb, b, logits, z, c, dist, components=False):
+def relax(fb, b, logits, z, c, dist, components=False, **kwargs):
     r'''Perform RELAX gradient estimation
 
     RELAX [grathwohl2017]_ has a single-sample implementation as
@@ -215,6 +213,8 @@ def relax(fb, b, logits, z, c, dist, components=False):
         ``z[..., 0]`` (minus the last dimension) if Categorical.
     dist : {"bern", "cat"}
     components : bool, optional
+    kwargs : keyword arguments, optional
+        Additional keyword arguments to pass to `c`
 
     Returns
     -------
@@ -231,16 +231,14 @@ def relax(fb, b, logits, z, c, dist, components=False):
     estimator, use an instance of :class:`REBARControlVariate` for `c`. See the
     class for more details.
     '''
-    fb = fb.detach()
-    b = b.detach()
     # in all computations (including those made by the user later), we don't
     # want to backpropagate past "logits" into the model. We make a detached
     # copy of logits and rebuild the graph from the detached copy to z
     logits = logits.detach().requires_grad_(True)
     z = _reattach_z_to_new_logits(logits, z, dist)
     z_tilde = _to_z_tilde(logits, b, dist)
-    c_z = c(z)
-    c_z_tilde = c(z_tilde)
+    c_z = c(z, **kwargs)
+    c_z_tilde = c(z_tilde, **kwargs)
     diff = fb - c_z_tilde
     if dist in BERNOULLI_SYNONYMS:
         log_pb = torch.distributions.Bernoulli(logits=logits).log_prob(b)
@@ -298,7 +296,9 @@ class REBARControlVariate(torch.nn.Module):
     Parameters
     ----------
     f : callable
-        The objective whose expectation we seek to minimize
+        The objective whose expectation we seek to minimize. Any additional
+        keyword arguments specified when calling this instance will be passed
+        along to `f`
     dist: {"bern", "cat", "onehot"}
     start_temp : float, optional
         The initial value for :math:`\lambda \in (0,\infty)`
@@ -347,13 +347,13 @@ class REBARControlVariate(torch.nn.Module):
             raise RuntimeError(
                 'dist "{}" is not a valid distribution name'.format(self.dist))
 
-    def forward(self, z):
+    def forward(self, z, **kwargs):
         self.check_input(z)
         z_temp = z / torch.exp(self.log_temp)
         if self.dist in BERNOULLI_SYNONYMS:
-            return self.eta * self.f(torch.sigmoid(z_temp))
+            return self.eta * self.f(torch.sigmoid(z_temp), **kwargs)
         else:
-            return self.eta * self.f(torch.softmax(z_temp, -1))
+            return self.eta * self.f(torch.softmax(z_temp, -1), **kwargs)
 
 
 def _reattach_z_to_new_logits(logits, z, dist):
