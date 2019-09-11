@@ -567,7 +567,7 @@ class TrainingStateParams(param.Parameterized):
         if 'reduce_lr_patience' not in only:
             remaining_epochs -= params.reduce_lr_patience
         if 'reduce_lr_burnin' not in only:
-            remaining_epoch -= params.reduce_lr_burnin
+            remaining_epochs -= params.reduce_lr_burnin
         remaining_epochs = max(0, remaining_epochs)
         if remaining_epochs and 'reduce_lr_threshold' in only:
             softbounds = pdict['reduce_lr_threshold'].get_soft_bounds()
