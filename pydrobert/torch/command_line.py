@@ -656,12 +656,20 @@ def _compute_torch_token_data_dir_parse_args(args):
         'of IDs'
     )
     parser.add_argument(
+        '--replace', type=argparse.FileType('r'), default=None,
+        help='A file containing pairs of elements per line. The first is the '
+        'element to replace, the second what to replace it with. If '
+        '``--id2token`` is specified, the file should contain tokens. If '
+        '``--id2token`` is not specified, the file should contain IDs '
+        '(integers). This is processed before ``--ignore``'
+    )
+    parser.add_argument(
         '--ignore', type=argparse.FileType('r'), default=None,
         help='A file containing a whitespace-delimited list of elements to '
         'ignore in both the reference and hypothesis transcripts. If '
-        '``--id2token`` is specified, the file should contain words. If '
+        '``--id2token`` is specified, the file should contain tokens. If '
         '``--id2token`` is not specified, the file should contain IDs '
-        '(integers)'
+        '(integers). This is processed after ``--replace``'
     )
     parser.add_argument(
         '--file-prefix', default='',
@@ -749,6 +757,18 @@ def compute_torch_token_data_dir_error_rates(args=None):
             options.id2token, not options.swap, options.swap)
     else:
         id2token = None
+    replace = dict()
+    if options.replace:
+        for line in options.replace:
+            replaced, replacement = line.strip().split()
+            if id2token is None:
+                try:
+                    replaced, replacement = int(replaced), int(replacement)
+                except ValueError:
+                    raise ValueError(
+                        'If --id2token is not set, all elements in "{}" must '
+                        'be integers'.format(options.replace.name))
+            replace[replaced] = replacement
     if options.ignore:
         ignore = set(options.ignore.read().strip().split())
         if id2token is None:
@@ -812,8 +832,8 @@ def compute_torch_token_data_dir_error_rates(args=None):
         ref = torch.nn.utils.rnn.pad_sequence(
             [
                 torch.tensor([
-                    token2id[token] for token in transcript
-                    if token not in ignore
+                    token2id[replace.get(token, token)] for token in transcript
+                    if replace.get(token, token) not in ignore
                 ] + [eos])
                 for _, transcript in batch_ref_transcripts
             ],
@@ -822,8 +842,8 @@ def compute_torch_token_data_dir_error_rates(args=None):
         hyp = torch.nn.utils.rnn.pad_sequence(
             [
                 torch.tensor([
-                    token2id[token] for token in transcript
-                    if token not in ignore
+                    token2id[replace.get(token, token)] for token in transcript
+                    if replace.get(token, token) not in ignore
                 ] + [eos])
                 for _, transcript in batch_hyp_transcripts
             ],

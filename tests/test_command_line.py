@@ -266,6 +266,7 @@ def test_compute_torch_token_data_dir_error_rates(
     torch.manual_seed(3820)
     tokens_path = os.path.join(temp_dir, 'map')
     ignore_path = os.path.join(temp_dir, 'ignore')
+    replace_path = os.path.join(temp_dir, 'replace')
     out_path = os.path.join(temp_dir, 'out')
     ref_dir = os.path.join(temp_dir, 'ref')
     hyp_dir = os.path.join(temp_dir, 'hyp')
@@ -277,12 +278,21 @@ def test_compute_torch_token_data_dir_error_rates(
     missing_prob = .1
     max_fillers = 5
     ignore_chars = '_#'
+    replace_chars = '*/'
     with open(ignore_path, 'w') as f:
         if tokens is None:
             f.write(' '.join([str(ord(c) - ord('a')) for c in ignore_chars]))
         else:
             f.write(' '.join(ignore_chars))
         f.flush()
+    with open(replace_path, 'w') as f:
+        for c in replace_chars:
+            if tokens is None:
+                f.write('{} {}\n'.format(
+                    ord(c) - ord('a'), ord(ignore_chars[0]) - ord('a')))
+            else:
+                f.write('{} {}\n'.format(c, ignore_chars[0]))
+    ignore_chars += replace_chars
     tuples = (
         ('cat', 'bat', 1, 1),
         ('transubstantiation', 'transwhatnow', 10, 10),
@@ -336,7 +346,8 @@ def test_compute_torch_token_data_dir_error_rates(
         exp[str(utt_id)] = er
     args = [
         ref_dir, hyp_dir, out_path,
-        '--ignore', ignore_path, '--warn-missing',
+        '--ignore', ignore_path, '--replace', replace_path,
+        '--warn-missing',
     ]
     if not norm:
         args.append('--distances')
