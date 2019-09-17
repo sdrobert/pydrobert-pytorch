@@ -15,17 +15,22 @@ __copyright__ = "Copyright 2019 Sean Robertson"
 
 
 @pytest.mark.cpu
-def test_beam_search_advance_greedy():
+@pytest.mark.parametrize('distribution', [True, False])
+def test_beam_search_advance_greedy(distribution):
     torch.manual_seed(50)
     N, C, T = 30, 100, 25
     logits = torch.randn(T, N, C)
-    greedy_logits, greedy_paths = torch.nn.functional.log_softmax(
-        logits, -1).max(2)
+    if distribution:
+        greedy_logits, greedy_paths = torch.nn.functional.log_softmax(
+            logits, -1).max(2)
+    else:
+        greedy_logits, greedy_paths = logits.max(2)
     greedy_scores = greedy_logits.sum(0) + torch.log(torch.tensor(1 / C))
     y = None
     score = None
     for logit in logits:
-        score, y, _ = util.beam_search_advance(logit, 1, score, y)
+        score, y, _ = util.beam_search_advance(
+            logit, 1, score, y, distribution=distribution)
     score, y = score.squeeze(1), y.squeeze(2)
     assert torch.allclose(score, greedy_scores)
     assert torch.all(y == greedy_paths)

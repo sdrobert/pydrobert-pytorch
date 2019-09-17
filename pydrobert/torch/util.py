@@ -40,7 +40,8 @@ __all__ = [
 
 def beam_search_advance(
         logits_t, width, log_prior=None, y_prev=None,
-        eos=pydrobert.torch.INDEX_PAD_VALUE, lens=None, prevent_eos=False):
+        eos=pydrobert.torch.INDEX_PAD_VALUE, lens=None, prevent_eos=False,
+        distribution=True):
     r'''Advance a beam search
 
     Suppose a model outputs a un-normalized log-probability distribution over
@@ -48,7 +49,7 @@ def beam_search_advance(
 
     .. math::
 
-        Pr(y_t = c; log\_prior) = exp(logits_{t,c}) / \sum_k exp(logits_{t,k})
+        Pr(y_t = c ; log\_prior) = exp(logits_{t,c}) / \sum_k exp(logits_{t,k})
 
     We assume :math:`logits_t` is a function of what comes before
     :math:`logits_t = f(logits_{<t}, y_{<t})`. Alternatively, letting
@@ -65,9 +66,10 @@ def beam_search_advance(
     n-best list.
 
     This function is called at every time step. It updates old beam
-    log-probabilities (`log_prior`) with new ones (`score`) from the joint
-    distribution with `logits`, and updates us the class indices emitted
-    between them (`y`). See the examples section for how this might work.
+    log-probabilities (`log_prior`) with new ones (`score`) from the
+    conditional derived from `logits_t`, and updates us the class indices
+    emitted between them (`y`). See the examples section for how this might
+    work.
 
     Parameters
     ----------
@@ -102,6 +104,12 @@ def beam_search_advance(
         a beam unless it has finished (either with a prior `eos` or through
         `lens`). Note that this will only have an effect when ``0 <= eos <=
         num_classes``
+    distribution : bool, optional
+        If :obj:`False`, a log-softmax will not be applied to `logits_t` prior
+        to calculating the beams. Disabling `distribution` should be avoided
+        when the beam search is being performed directly on model output.
+        Setting `distribution` to :obj:`False` is useful when bootstrapping
+        a language model probability distribution to the search
 
     Returns
     -------
@@ -174,7 +182,8 @@ def beam_search_advance(
         logits_t = logits_t.unsqueeze(1)
     elif logits_t.dim() != 3:
         raise RuntimeError('logits_t must have dimension of either 2 or 3')
-    logits_t = torch.nn.functional.log_softmax(logits_t, 2)
+    if distribution:
+        logits_t = torch.nn.functional.log_softmax(logits_t, 2)
     neg_inf = torch.tensor(-float('inf'), device=logits_t.device)
     batch_size, old_width, num_classes = logits_t.shape
     if log_prior is None:
@@ -499,7 +508,7 @@ def optimal_completion(
 
     See Also
     --------
-    pydrobert.torch.training.HardOptimalCompletionDistillationLoss
+    pydrobert.torch.layers.HardOptimalCompletionDistillationLoss
         A loss function that uses these optimal completions to train a model
     '''
     mask = _levenshtein(
@@ -657,7 +666,6 @@ def random_walk_advance(
         If :obj:`True`, a tuple will be returned whose second element is `z`,
         see below
 
-
     Returns
     -------
     y : torch.LongTensor
@@ -723,6 +731,13 @@ def random_walk_advance(
     >>>     y = random_walk_advance(logits_t, W, y, eos)
     >>>     if old_samp == 1:
     >>>         h_t = h_t.expand(-1, W, H).contiguous()
+
+    Notes
+    -----
+
+    Unlike in the beam search, `logits_t` must be transformed into a
+    probability distribution. Otherwise, we would not be able to sample the
+    next step
 
     See Also
     --------
@@ -839,7 +854,7 @@ def sequence_log_probs(logits, hyp, dim=0, eos=None):
 
     See Also
     --------
-    pydrobert.torch.training.MinimumErrorRateLoss
+    pydrobert.torch.layers.MinimumErrorRateLoss
         An example training regime that uses this function
     '''
     if isinstance(logits, torch.nn.utils.rnn.PackedSequence):
