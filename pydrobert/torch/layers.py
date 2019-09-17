@@ -44,10 +44,179 @@ __all__ = [
     'HardOptimalCompletionDistillationLoss',
     'MimimumErrorRateLoss',
     'MultiHeadedAttention',
+    'SequentialLanguageModel',
 ]
 
 # XXX(sdrobert): a quick note on style. pytorch doesn't tend to protect its
 # read-only attributes using private members, so we do the same
+
+
+class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
+    r'''A language model whose sequence probability is built sequentially
+
+    A language model provides the (log-)probability of a sequence of tokens. A
+    sequential language model assumes that the probability distribution can be
+    factored into a product of probabilities of the current token given the
+    prior sequence, i.e. for token sequence :math:`\{w_s\}`
+
+    .. math::
+
+        P(w) = \prod_{s=1}^S P(w_s | w_{s - 1}, w_{s - 2}, \ldots w_1)
+
+    This definition includes statistical language models, such as n-grams,
+    where the probability of the current token is based only on a fixed-length
+    history, as well as recurrent neural language models [mikolov2010]_.
+
+    Subclasses have the following signature:
+
+        lm(hist, full=False)
+
+    Where `hist` is a :class:`torch.LongTensor` of shape ``(s - 1, *)``
+    corresponding to the sequence up to but excluding the current step ``s``,
+    where ``s >= 1``. Letting ``i`` be a multi-index of all but the first
+    dimension of `hist`, ``hist[:, i]`` is the i-th sequence :math:`(w^{(i)}_1,
+    w^{(i)}_2, \ldots, w^{(i)}_{s - 1})`.
+
+    When `full` is :obj:`False`, it outputs a :class:`torch.FloatTensor`
+    `log_probs` of shape ``(*, vocab_size)``, where ``log_probs[i, v]`` equals
+    :math:`\log P(w^{(i)}_s = v | w^{(i)}_{s-1}, \ldots)`
+
+    When `full` is :obj:`True`, `log_probs` is of shape ``(s, *, vocab_size)``
+    where each ``log_probs[s', i, v]`` equals :math:`\log P(w^{(i)}_{s'} = v |
+    w^{(i)}_{s' - 1}, \ldots)`
+
+    Parameters
+    ----------
+    vocab_size : int
+        The vocabulary size. Controls the size of the final output dimension,
+        as well as what values of `hist` are considered in-vocabulary
+    eos : int, optional
+        An optional end-of-sequence token. If this token is found in `hist`,
+        values succeeding it in `log_prob` will be replaced with zero. `eos`
+        need not be in-vocabulary
+    oov : int, optional
+        An optional out-of-vocabulary token. If any elements of `hist` are not
+        `eos` or not within the range ``[0, vocab_size)``, they will be
+        replaced with this token. `oov` must be in-vocabulary itself
+
+    Attributes
+    ----------
+    vocab_size : int
+    eos : int or :obj:`None`
+    oov : int or :obj:`None`
+    '''
+
+    def __init__(self, vocab_size, eos=None, oov=None):
+        super(SequentialLanguageModel, self).__init__()
+        self.vocab_size = vocab_size
+        self.eos = eos
+        self.oov = oov
+        if vocab_size < 1:
+            raise ValueError('vocab_size must be positive')
+        if self.oov is not None and self.oov < 0 or self.oov >= vocab_size:
+            raise ValueError('oov must be within [0, vocab_size)')
+
+    def check_input(self, hist, **kwargs):
+        '''Check if the input is formatted correctly, otherwise RuntimeError'''
+        if not hist.dim():
+            raise RuntimeError('hist must be at least 1-D')
+        if self.oov is None:
+            oov_mask = kwargs.get('oov_mask', None)
+            if oov_mask is None:
+                oov_mask = hist.ge(self.vocab_size) | hist.lt(0)
+                eos_mask = kwargs.get('eos_mask', None)
+                if eos_mask is None and self.eos is not None:
+                    eos_mask = hist.eq(self.eos).cumsum(0, dtype=torch.long)
+                    eos_mask = eos_mask.ne(0)
+                if eos_mask is not None:
+                    oov_mask = oov_mask & eos_mask.eq(0)
+            if oov_mask.any():
+                raise RuntimeError(
+                    'Found values in hist that were not eos and not between '
+                    '[0, {})'.format(self.vocab_size))
+
+    @abc.abstractmethod
+    def calc_last_log_probs(self, hist, eos_mask):
+        '''Calculate log probabilities conditioned on history
+
+        Do not call this directly; instead, call the instance.
+
+        Subclasses implement this method. `hist` is of shape ``(s, N)``, where
+        ``s`` is the sequence dimension and ``N`` is the batch dimension. ``s``
+        can be zero, indicating no history is available. All out-of-vocabulary
+        elements (except eos) have been replaced with the oov token (if `oov`
+        is not :obj:`None`). If eos is not :obj:`None`, `eos_mask` is also not
+        :obj:`None` and of size ``(s, N)``. ``hist[s', n] == eos`` iff
+        ``eos_mask[s', n].ne(0)``. `hist` has been right-filled with eos s.t.
+        if ``hist[s', n] == eos`` and ``s' < s - 1`` then
+        ``hist[s' + 1, n] == eos``
+        '''
+        raise NotImplementedError()
+
+    def calc_full_log_probs(self, hist, eos_mask):
+        '''Calculate log probabilities at each step of history and next
+
+        Do not call this directly; instead, call the instance with the keyword
+        argument `full` set to :obj:`True`.
+
+        Subclasses may implement this method to avoid repeated computation.
+        It should produce an output identical to the following
+        default implementation
+
+        >>> out = torch.stack([
+        >>>     self.calc_last_log_probs(
+        >>>         hist[:s], None if eos_mask is None else eos_mask[:s])
+        >>>     for s in range(hist.shape[0] + 1)
+        >>> ], dim=0)
+        '''
+        return torch.stack([
+            self.calc_last_log_probs(
+                hist[:s], None if eos_mask is None else eos_mask[:s])
+            for s in range(hist.shape[0] + 1)
+        ], dim=0)
+
+    def forward(self, hist, full=False):
+        if self.eos is not None:
+            eos_mask = hist.eq(self.eos).cumsum(0, dtype=torch.long).ne(0)
+        else:
+            eos_mask = None
+        if self.oov is not None:
+            oov_mask = hist.ge(self.vocab_size) | hist.lt(0)
+            if eos_mask is not None:
+                oov_mask = oov_mask & eos_mask.eq(0)
+        else:
+            oov_mask = None
+        self.check_input(hist, eos_mask=eos_mask, oov_mask=oov_mask)
+        if oov_mask is not None:
+            hist = hist.masked_fill(oov_mask, self.oov)
+        if eos_mask is not None:
+            hist = hist.masked_fill(eos_mask, self.eos)
+        hist_shape = hist.shape
+        first, rest = hist_shape[0], hist_shape[1:].numel()
+        hist = hist.view(hist_shape[0], rest)
+        if full:
+            out_shape = (first + 1,) + tuple(hist_shape[1:])
+            out_shape += (self.vocab_size,)
+            out = self.calc_full_log_probs(
+                hist,
+                None if eos_mask is None else eos_mask.view(first, rest))
+            out = out.reshape(*out_shape)
+            if eos_mask is not None and eos_mask.shape[0]:
+                eos_mask = torch.cat(
+                    [eos_mask[:1].ne(eos_mask[:1]), eos_mask], dim=0)
+                out = out.masked_fill(eos_mask.unsqueeze(-1), 0.)
+        else:
+            out_shape = tuple(hist_shape[1:]) + (self.vocab_size,)
+            out = self.calc_last_log_probs(
+                hist,
+                None if eos_mask is None else eos_mask.view(first, rest))
+            out = out.reshape(*out_shape)
+            if eos_mask is not None and eos_mask.shape[0]:
+                out = out.masked_fill(eos_mask[-1].unsqueeze(-1), 0.)
+        return out
+
+    def reset_parameters(self):
+        pass
 
 
 class HardOptimalCompletionDistillationLoss(torch.nn.Module):

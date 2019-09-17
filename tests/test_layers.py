@@ -139,6 +139,54 @@ def test_hard_optimal_completion_distillation_loss(
     assert not torch.all(g.eq(0.))
 
 
+def test_sequential_language_model(device):
+
+    class LM(layers.SequentialLanguageModel):
+        def __init__(self, vocab_size, eos=None, oov=None):
+            super(LM, self).__init__(vocab_size, eos=eos, oov=oov)
+            self.embed = torch.nn.Embedding(vocab_size, vocab_size)
+
+        def calc_last_log_probs(self, hist, eos_mask):
+            if hist.shape[0]:
+                out = torch.nn.functional.log_softmax(
+                        self.embed(hist[-1]), dim=-1)
+            else:
+                out = -torch.full(
+                    (hist.shape[1], self.vocab_size,),
+                    self.vocab_size, device=device).log()
+            return out
+
+    torch.manual_seed(61094)
+    S, vocab_size, max_dim, max_dim_size = 30, 20, 10, 5
+    eos, oov = 0, vocab_size - 1
+    num_dim = torch.randint(2, max_dim + 1, (1,), device=device).item()
+    hist_shape = [S] + torch.randint(
+        1, max_dim_size, (num_dim,), device=device).tolist()
+    hist = torch.randint(
+        -vocab_size // 5, (vocab_size * 6) // 5, hist_shape, device=device)
+    hist = hist.masked_fill(hist.eq(eos), vocab_size + 1)
+    N = torch.tensor(hist_shape[1:]).prod().item()
+    first_eos_locs = torch.randint(1, hist_shape[0], (N,), device=device)
+    hist.view(-1, N)[first_eos_locs, range(N)] = eos
+    lm = LM(vocab_size, eos, oov)
+    log_probs = lm(hist, full=True)
+    assert (
+        list(log_probs.shape) ==
+        [hist_shape[0] + 1] + hist_shape[1:] + [vocab_size]
+    )
+    for log_probs_n, first_eos_n in zip(
+            log_probs.view(-1, N, vocab_size).transpose(0, 1),
+            first_eos_locs.tolist()):
+        # the index first_eos_n in log_probs refers to the probabilties of the
+        # current token being whatever given the history first_eos_n - 1, so
+        # we haven't yet stored the eos in history.
+        assert not log_probs_n[:first_eos_n + 1].eq(0.).any()
+        assert log_probs_n[first_eos_n + 1:].eq(0.).all()
+    for s in range(log_probs.shape[0]):
+        assert torch.allclose(log_probs[s], lm(hist[:s]))
+    assert torch.allclose(lm(hist[:0], full=True).squeeze(0), log_probs[0])
+
+
 @pytest.mark.parametrize('dim', [0, 1])
 def test_global_soft_attention(device, dim):
 
