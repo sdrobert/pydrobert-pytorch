@@ -139,10 +139,11 @@ def test_hard_optimal_completion_distillation_loss(
     assert not torch.all(g.eq(0.))
 
 
-def test_sequential_language_model(device):
+@pytest.mark.parametrize('sos', [None, 0])
+def test_sequential_language_model(device, sos):
 
     class LM(layers.SequentialLanguageModel):
-        def __init__(self, vocab_size, eos=None, oov=None):
+        def __init__(self, vocab_size, sos=None, eos=None, oov=None):
             super(LM, self).__init__(vocab_size, eos=eos, oov=oov)
             self.embed = torch.nn.Embedding(vocab_size, vocab_size)
 
@@ -151,6 +152,7 @@ def test_sequential_language_model(device):
                 out = torch.nn.functional.log_softmax(
                         self.embed(hist[-1]), dim=-1)
             else:
+                assert self.sos is None
                 out = -torch.full(
                     (hist.shape[1], self.vocab_size,),
                     self.vocab_size, device=device).log()
@@ -158,7 +160,7 @@ def test_sequential_language_model(device):
 
     torch.manual_seed(61094)
     S, vocab_size, max_dim, max_dim_size = 30, 20, 10, 5
-    eos, oov = 0, vocab_size - 1
+    eos, oov = vocab_size - 2, vocab_size - 1
     num_dim = torch.randint(2, max_dim + 1, (1,), device=device).item()
     hist_shape = [S] + torch.randint(
         1, max_dim_size, (num_dim,), device=device).tolist()
@@ -168,8 +170,8 @@ def test_sequential_language_model(device):
     N = torch.tensor(hist_shape[1:]).prod().item()
     first_eos_locs = torch.randint(1, hist_shape[0], (N,), device=device)
     hist.view(-1, N)[first_eos_locs, range(N)] = eos
-    lm = LM(vocab_size, eos, oov)
-    log_probs = lm(hist, full=True)
+    lm = LM(vocab_size, sos, eos, oov)
+    log_probs = lm(hist,  full=True)
     assert (
         list(log_probs.shape) ==
         [hist_shape[0] + 1] + hist_shape[1:] + [vocab_size]

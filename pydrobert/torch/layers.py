@@ -26,6 +26,7 @@ from __future__ import division
 from __future__ import print_function
 
 import abc
+import warnings
 
 import torch
 
@@ -90,6 +91,12 @@ class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
     vocab_size : int
         The vocabulary size. Controls the size of the final output dimension,
         as well as what values of `hist` are considered in-vocabulary
+    sos : int, optional
+        An optional start-of-sequence token. Setting this option will prepend
+        `hist` with a tensor full of `sos`. `sos` can be in- or
+        out-of-vocabulary. Setting `sos` does not change the size of the
+        output, regardless of whether `full` is :obj:`True`: the prepended
+        tensor is considered context for ``s' == 0``
     eos : int, optional
         An optional end-of-sequence token. If this token is found in `hist`,
         values succeeding it in `log_prob` will be replaced with zero. `eos`
@@ -102,24 +109,28 @@ class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
     Attributes
     ----------
     vocab_size : int
+    sos : int or :obj:`None`
     eos : int or :obj:`None`
     oov : int or :obj:`None`
     '''
 
-    def __init__(self, vocab_size, eos=None, oov=None):
+    def __init__(self, vocab_size, sos=None, eos=None, oov=None):
         super(SequentialLanguageModel, self).__init__()
         self.vocab_size = vocab_size
+        self.sos = sos
         self.eos = eos
         self.oov = oov
         if vocab_size < 1:
             raise ValueError('vocab_size must be positive')
+        if sos is not None and sos == eos:
+            raise ValueError('sos cannot equal eos')
         if self.oov is not None and self.oov < 0 or self.oov >= vocab_size:
             raise ValueError('oov must be within [0, vocab_size)')
 
     def check_input(self, hist, **kwargs):
         '''Check if the input is formatted correctly, otherwise RuntimeError'''
-        if not hist.dim():
-            raise RuntimeError('hist must be at least 1-D')
+        if hist.dim() < 2:
+            raise RuntimeError('hist must be at least 2-D')
         if self.oov is None:
             oov_mask = kwargs.get('oov_mask', None)
             if oov_mask is None:
@@ -149,7 +160,9 @@ class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         :obj:`None` and of size ``(s, N)``. ``hist[s', n] == eos`` iff
         ``eos_mask[s', n].ne(0)``. `hist` has been right-filled with eos s.t.
         if ``hist[s', n] == eos`` and ``s' < s - 1`` then
-        ``hist[s' + 1, n] == eos``
+        ``hist[s' + 1, n] == eos``. If sos has been set, `hist` has been
+        prepended with a vector of ``(N,)`` filled with the symbol, which may
+        or may not be in-vocabulary
         '''
         raise NotImplementedError()
 
@@ -166,16 +179,31 @@ class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         >>> out = torch.stack([
         >>>     self.calc_last_log_probs(
         >>>         hist[:s], None if eos_mask is None else eos_mask[:s])
-        >>>     for s in range(hist.shape[0] + 1)
+        >>>     for s in range(0 if self.sos is None else 1, hist.shape[0] + 1)
         >>> ], dim=0)
+
+        If sos has been set, `hist` has been prepended with a vector of sos.
+        In this case, the probability of the empty slice of `hist` should not
+        be calculated
         '''
         return torch.stack([
             self.calc_last_log_probs(
                 hist[:s], None if eos_mask is None else eos_mask[:s])
-            for s in range(hist.shape[0] + 1)
+            for s in range(0 if self.sos is None else 1, hist.shape[0] + 1)
         ], dim=0)
 
     def forward(self, hist, full=False):
+        if self.sos is not None:
+            if hist.dim() < 2:
+                raise RuntimeError('hist must be at least 2-D')
+            sos_prepend = torch.full(
+                (1,) + hist.shape[1:], self.sos,
+                dtype=hist.dtype, device=hist.device)
+            if hist.shape[0]:
+                hist = torch.cat([sos_prepend, hist], dim=0)
+            else:
+                hist = sos_prepend
+            del sos_prepend
         if self.eos is not None:
             eos_mask = hist.eq(self.eos).cumsum(0, dtype=torch.long).ne(0)
         else:
