@@ -3,6 +3,7 @@ from __future__ import division
 from __future__ import print_function
 
 from itertools import chain
+from tempfile import SpooledTemporaryFile
 
 import torch
 import pytest
@@ -12,6 +13,118 @@ __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
+
+
+@pytest.mark.cpu
+def test_parse_arpa_lm():
+    file_ = SpooledTemporaryFile(mode='w+')
+    file_.write(r'''\
+This is from https://cmusphinx.github.io/wiki/arpaformat/
+
+\data\
+ngram 1=7
+ngram 2=7
+
+\1-grams:
+-1.0000 <unk>	-0.2553
+-98.9366 <s>	 -0.3064
+-1.0000 </s>	 0.0000
+-0.6990 wood	 -0.2553
+-0.6990 cindy	-0.2553
+-0.6990 pittsburgh		-0.2553
+-0.6990 jean	 -0.1973
+
+\2-grams:
+-0.2553 <unk> wood
+-0.2553 <s> <unk>
+-0.2553 wood pittsburgh
+-0.2553 cindy jean
+-0.2553 pittsburgh cindy
+-0.5563 jean </s>
+-0.5563 jean wood
+
+\end\
+''')
+    file_.seek(0)
+    ngram_list = util.parse_arpa_lm(file_)
+    assert len(ngram_list) == 2
+    assert set(ngram_list[0]) == {
+        '<unk>', '<s>', '</s>', 'wood', 'cindy', 'pittsburgh', 'jean'}
+    assert set(ngram_list[1]) == {
+        ('<unk>', 'wood'),
+        ('<s>', '<unk>'),
+        ('wood', 'pittsburgh'),
+        ('cindy', 'jean'),
+        ('pittsburgh', 'cindy'),
+        ('jean', '</s>'),
+        ('jean', 'wood'),
+    }
+    assert abs(ngram_list[0]['cindy'][0] + 0.6990) < 1e-4
+    assert abs(ngram_list[0]['jean'][1] + 0.1973) < 1e-4
+    assert abs(ngram_list[1][('cindy', 'jean')] + 0.2553) < 1e-4
+    file_.seek(0)
+    token2id = dict((c, hash(c)) for c in ngram_list[0])
+    ngram_list = util.parse_arpa_lm(file_, token2id=token2id)
+    assert set(ngram_list[0]) == set(token2id.values())
+    file_.seek(0)
+    file_.write(r'''\
+Here's one where we skip right to 10-grams
+
+\data\
+ngram 10 = 1
+
+\10-grams:
+0.0 1 2 3 4 5 6 7 8 9 10
+
+\end\
+''')
+    file_.seek(0)
+    ngram_list = util.parse_arpa_lm(file_)
+    assert all(x == dict() for x in ngram_list[:-1])
+    assert not ngram_list[9][tuple(str(x) for x in range(1, 11))]
+    file_.seek(0)
+    file_.write(r'''\
+Here's one where we omit backoff probabilities erroneously
+
+\data\
+ngram 1=1
+ngram 2=1
+
+\1-grams:
+0.0 a
+
+\2-grams:
+0.0 a
+
+\end\
+''')
+    file_.seek(0)
+    with pytest.raises(IOError):
+        util.parse_arpa_lm(file_)
+    file_.seek(0)
+    file_.write(r'''\
+Here's one where we erroneously include backoffs
+
+\data\
+ngram 1 = 1
+
+\1-grams:
+0.0 a 0.0
+
+\end\
+''')
+    file_.seek(0)
+    with pytest.raises(IOError):
+        util.parse_arpa_lm(file_)
+    file_.seek(0)
+    file_.write(r'''\
+Here's an empty one
+
+\data\
+\end\
+''')
+    file_.seek(0)
+    assert util.parse_arpa_lm(file_) == []
 
 
 @pytest.mark.cpu

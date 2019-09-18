@@ -18,6 +18,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import re
 import warnings
 
 import torch
@@ -31,11 +32,134 @@ __all__ = [
     'beam_search_advance',
     'error_rate',
     'optimal_completion',
+    'parse_arpa',
     'prefix_error_rates',
     'random_walk_advance',
     'sequence_log_probs',
     'time_distributed_return',
 ]
+
+
+def parse_arpa_lm(file_, token2id=None):
+    r'''Parse an ARPA statistical language model
+
+    An `ARPA language model <https://cmusphinx.github.io/wiki/arpaformat/>`__
+    is a n-gram model with back-off probabilities. It is formatted as
+
+    ::
+
+        \data\
+        ngram 1=<count>
+        ngram 2=<count>
+        ...
+        ngram <N>=<count>
+
+        \1-grams:
+        <logp> <token[t]> <logb>
+        <logp> <token[t]> <logb>
+        ...
+
+        \2-grams:
+        <logp> <token[t-1]> <token[t]> <logb>
+        ...
+
+        \<N>-grams:
+        <logp> <token[t-<N>+1]> ... <token[t]>
+        ...
+
+        \end\
+
+    Parameters
+    ----------
+    file_ : str or file
+        Either the path or a file pointer to the file
+    token2id : dict, optional
+        A dictionary whose keys are token strings and values are ids. If set,
+        tokens will be replaced with ids on read
+
+    Returns
+    -------
+    ngram_list : list
+        A list of the same length as there are unique classes of n-grams in the
+        file (e.g. if the file contains up to tri-grams then `ngram_list` will
+        be of length 3). Each element is a dictionary whose key is the word
+        sequence (earliest word first). For 1-grams, this is just the word. For
+        n > 1, this is a tuple of words. Values are either a tuple of
+        ``logp, logb`` of the log-probability and backoff log-probability, or,
+        in the case of the final n-gram that doesn't need a backoff, just the
+        log probability
+    '''
+    if isinstance(file_, str):
+        with open(file_) as f:
+            return parse_arpa_lm(f, token2id=token2id)
+    line = ''
+    for line in file_:
+        if line.strip() == '\\data\\':
+            break
+    if line.strip() != '\\data\\':
+        raise IOError('Could not find \\data\\ line. Is this an ARPA file?')
+    ngram_counts = []
+    count_pattern = re.compile(r'^ngram\s+(\d+)\s*=\s*(\d+)$')
+    for line in file_:
+        line = line.strip()
+        if not line:
+            continue
+        match = count_pattern.match(line)
+        if match is None:
+            break
+        n, count = (int(x) for x in match.groups())
+        if len(ngram_counts) < n:
+            ngram_counts.extend(0 for _ in range(n - len(ngram_counts)))
+        ngram_counts[n - 1] = count
+    ngram_list = [dict() for _ in ngram_counts]
+    ngram_header_pattern = re.compile(r'^\\(\d+)-grams:$')
+    ngram_entry_pattern_backoff = re.compile(
+        r'^(-?\d+(?:\.\d+)?)\s+(.*?)\s+(-?\d+(?:\.\d+)?)$')
+    ngram_entry_pattern_nobackoff = re.compile(
+        r'^(-?\d+(?:\.\d+)?)\s+(.*)()$')
+    while line != '\\end\\':
+        match = ngram_header_pattern.match(line)
+        if match is None:
+            raise IOError('line "{}" is not valid'.format(line))
+        ngram = int(match.group(1))
+        if ngram > len(ngram_counts):
+            raise IOError(
+                '{}-grams count was not listed, but found entry'
+                ''.format(ngram))
+        dict_ = ngram_list[ngram - 1]
+        if ngram != len(ngram_counts):
+            ngram_entry_pattern = ngram_entry_pattern_backoff
+        else:
+            ngram_entry_pattern = ngram_entry_pattern_nobackoff
+        for line in file_:
+            line = line.strip()
+            if not line:
+                continue
+            match = ngram_entry_pattern.match(line)
+            if match is None:
+                break
+            logp, tokens, logb = match.groups()
+            tokens = tuple(tokens.strip().split())
+            if len(tokens) != ngram:
+                raise IOError(
+                    'expected line "{}" to be a(n) {}-gram'
+                    ''.format(line, ngram))
+            if token2id is not None:
+                tokens = tuple(token2id[tok] for tok in tokens)
+            if ngram == 1:
+                tokens = tokens[0]
+            if ngram != len(ngram_counts):
+                dict_[tokens] = (float(logp), float(logb.strip()))
+            else:
+                dict_[tokens] = float(logp)
+    if line != '\\end\\':
+        raise IOError('Could not find \\end\\ line')
+    for ngram_m1, (ngram_count, dict_) in enumerate(
+            zip(ngram_counts, ngram_list)):
+        if len(dict_) != ngram_count:
+            raise IOError('Expected {} {}-grams, got {}'.format(
+                ngram_count, ngram_m1, len(dict_)))
+    return ngram_list
 
 
 def beam_search_advance(
