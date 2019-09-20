@@ -7,6 +7,9 @@ References
 .. [mikolov2010] T. Mikolov, M. Karafiát, L. Burget, J. Černocký, and S.
    Khudanpur, "Recurrent neural network based language model," presented at
    Interspeech, Makuhari, Japan, 2010.
+.. [heafield2011] K. Heafield, "KenLM: faster and smaller language model
+   queries," in Proceedings of the Sixth Workshop on Statistical Machine
+   Translation, Edinburgh, Scotland, 2011, pp. 187-197.
 .. [bahdanau2015] D. Bahdanau, K. Cho, and Y. Bengio, "Neural Machine
    Translation by Jointly Learning to Align and Translate.," in 3rd
    International Conference on Learning Representations, ICLR 2015, San Diego,
