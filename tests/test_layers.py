@@ -318,7 +318,7 @@ def test_sequential_language_model(device, sos):
     N = torch.tensor(hist_shape[1:]).prod().item()
     first_eos_locs = torch.randint(1, hist_shape[0], (N,), device=device)
     hist.view(-1, N)[first_eos_locs, range(N)] = eos
-    lm = LM(vocab_size, sos, eos, oov)
+    lm = LM(vocab_size, sos, eos, oov).to(device)
     log_probs = lm(hist,  full=True)
     assert (
         list(log_probs.shape) ==
