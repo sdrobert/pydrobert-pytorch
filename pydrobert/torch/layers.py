@@ -142,6 +142,9 @@ class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
                     eos_mask = eos_mask.ne(0)
                 if eos_mask is not None:
                     oov_mask = oov_mask & eos_mask.eq(0)
+            if kwargs.get('skip_first', False):
+                assert self.sos is not None
+                oov_mask = oov_mask[1:]
             if oov_mask.any():
                 raise RuntimeError(
                     'Found values in hist that were not eos and not between '
@@ -215,25 +218,31 @@ class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
                 oov_mask = oov_mask & eos_mask.eq(0)
         else:
             oov_mask = None
-        self.check_input(hist, eos_mask=eos_mask, oov_mask=oov_mask)
+        self.check_input(
+            hist, eos_mask=eos_mask, oov_mask=oov_mask,
+            skip_first=self.sos is not None
+        )
         if oov_mask is not None:
             hist = hist.masked_fill(oov_mask, self.oov)
         if eos_mask is not None:
             hist = hist.masked_fill(eos_mask, self.eos)
         hist_shape = hist.shape
         first, rest = hist_shape[0], hist_shape[1:].numel()
-        hist = hist.view(hist_shape[0], rest)
+        hist = hist.view(first, rest)
         if full:
-            out_shape = (first + 1,) + tuple(hist_shape[1:])
-            out_shape += (self.vocab_size,)
+            out_shape = (-1,)
+            out_shape += tuple(hist_shape[1:]) + (self.vocab_size,)
             out = self.calc_full_log_probs(
                 hist,
                 None if eos_mask is None else eos_mask.view(first, rest))
             out = out.reshape(*out_shape)
-            if eos_mask is not None and eos_mask.shape[0]:
-                eos_mask = torch.cat(
-                    [eos_mask[:1].ne(eos_mask[:1]), eos_mask], dim=0)
-                out = out.masked_fill(eos_mask.unsqueeze(-1), 0.)
+            if eos_mask is not None:
+                if self.sos is not None:
+                    eos_mask = eos_mask[1:]
+                if eos_mask.shape[0]:
+                    eos_mask = torch.cat(
+                        [eos_mask[:1].ne(eos_mask[:1]), eos_mask], dim=0)
+                    out = out.masked_fill(eos_mask.unsqueeze(-1), 0.)
         else:
             out_shape = tuple(hist_shape[1:]) + (self.vocab_size,)
             out = self.calc_last_log_probs(
@@ -370,15 +379,18 @@ class LookupLanguageModel(SequentialLanguageModel):
         device = hist.device
         assert len(self.ids) == K
         assert len(self.logs) == L
-        if self.eos is not None and self.eos < 0:
-            # eos is out-of-vocabulary. Replace with in-vocabulary (we're
-            # ignoring it anyway
-            hist = hist.masked_fill(hist.lt(0), 0)
+        if (
+                self.eos is not None and
+                (self.eos < 0 or self.eos >= self.vocab_size)):
+            # eos is out-of-vocabulary. Replace with in-vocabulary (it'll be
+            # zero-filled by the parent class)
+            hist = hist.masked_fill(hist.eq(self.eos), 0)
         if self.shift:
             hist = hist.masked_fill(hist.eq(self.sos), -self.shift)
             hist = hist + self.shift
         hist = hist[max(0, hist.shape[0] - (N - 1)):]
-        cur_step = torch.arange(V, dtype=hist.dtype, device=device)
+        cur_step = torch.arange(
+            self.shift, V + self.shift, dtype=hist.dtype, device=device)
         cur_step = cur_step.view(1, 1, V).expand(-1, B, -1)
         if hist.shape[0]:
             hist = hist.unsqueeze(-1).expand(-1, -1, V)
@@ -395,12 +407,9 @@ class LookupLanguageModel(SequentialLanguageModel):
         assert X and K
         hist = hist.view(-1, M)  # pretend M is batch; reshape at end
         out = torch.zeros(M, dtype=torch.float, device=device)
-        if eos_mask is not None:
-            running_mask = eos_mask[-1].unsqueeze(-1).expand(V).eq(0).view(M)
-        else:
-            running_mask = torch.ones_like(out, dtype=torch.uint8).eq(1)
+        running_mask = torch.ones_like(out, dtype=torch.uint8).eq(1)
         vrange = torch.arange(V, dtype=torch.int32, device=device)
-        while running_mask.any():
+        while True:
             children = tokens = hist[0]
             if hist.shape[0] == 1:
                 # unigrams always exist. Add the log-probability and exit
@@ -608,6 +617,13 @@ class LookupLanguageModel(SequentialLanguageModel):
             N -= 1
             parents = children
         assert allocated == L - X
+        # see if we can shrink the pointer size
+        max_offset = pointers.max().item()
+        for pointer_type in (
+                torch.uint8, torch.int16, torch.int32, torch.int64):
+            if torch.iinfo(pointer_type).max >= max_offset:
+                break
+        pointers = pointers.to(pointer_type)
         return logs, ids, pointers
 
 

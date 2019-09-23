@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import os
 import itertools
 
 import pytest
@@ -87,9 +88,10 @@ def test_lookup_language_model_builds_trie(ngram_list, pointers, ids, logs):
 
 
 @pytest.mark.parametrize('N', [1, 2, 5])
-def test_lookup_language_model_log_probs(device, N):
+@pytest.mark.parametrize('sos', [-2, None])
+def test_lookup_language_model_log_probs(device, N, sos):
     torch.manual_seed(1900)
-    vocab_size = 10
+    vocab_size, eos = 10, -1
     ngram_list = []
     for n in range(1, N + 1):
         max_ngrams = vocab_size ** n
@@ -153,11 +155,75 @@ def test_lookup_language_model_log_probs(device, N):
         for nm1, ngram_queries in enumerate(all_queries[:-1])
     ]
     del all_queries
-    lm = layers.LookupLanguageModel(vocab_size, ngram_list=ngram_list)
+    # the sos shouldn't matter -- it isn't in the lookup table. The lm will
+    # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
+    # be 0
+    lm = layers.LookupLanguageModel(
+        vocab_size, sos=sos, eos=eos, ngram_list=ngram_list)
     lm = lm.to(device)
     for exp, hist in zip(exps, hists):
         act = lm(hist)
         assert torch.allclose(exp, act, atol=1e-5)
+        hist = torch.cat([
+            hist,
+            torch.full(
+                (1,) + hist.shape[1:], eos, dtype=torch.long, device=device)
+        ])
+        act = lm(hist, full=True)
+        assert torch.allclose(exp, act[-2], atol=1e-5)
+        assert torch.allclose(torch.zeros_like(exp), act[-1])
+
+
+@pytest.mark.gpu   # this is a really slow test on the cpu
+def test_lookup_republic():
+    device = torch.device('cuda:0')
+    dir_ = os.path.join(os.path.dirname(__file__), 'republic')
+    arpa_file = os.path.join(dir_, 'republic.arpa')
+    assert os.path.exists(arpa_file)
+    token2id_file = os.path.join(dir_, 'token2id.map')
+    assert os.path.exists(token2id_file)
+    queries_file = os.path.join(dir_, 'queries.txt')
+    assert os.path.exists(queries_file)
+    exp_file = os.path.join(dir_, 'exp.txt')
+    assert os.path.exists(exp_file)
+    token2id = dict()
+    with open(token2id_file) as f:
+        for line in f:
+            token, id_ = line.strip().split()
+            assert token not in token2id
+            token2id[token] = int(id_)
+    sos, eos, oov = token2id['<s>'], token2id['</s>'], token2id['<unk>']
+    vocab_size = len(token2id)
+    assert all(x in token2id.values() for x in range(vocab_size))
+    queries = []
+    with open(queries_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            query = [token2id.get(token, oov) for token in line.split()]
+            queries.append(torch.tensor(query, device=device))
+    queries = torch.nn.utils.rnn.pad_sequence(queries, padding_value=eos)
+    exp = []
+    with open(exp_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            exp.append(float(line))
+    exp = torch.tensor(exp, device=device)
+    assert exp.shape[0] == queries.shape[1]
+    import pydrobert.torch.util as util
+    ngram_list = util.parse_arpa_lm(arpa_file, token2id=token2id)
+    del token2id
+    lm = layers.LookupLanguageModel(
+        vocab_size, sos=sos, eos=eos, oov=oov, ngram_list=ngram_list)
+    lm = lm.to(device)
+    log_probs = lm(queries, full=True)
+    queries = torch.cat([queries, torch.full_like(queries[:1], eos)])
+    assert log_probs.shape[:-1] == queries.shape
+    log_probs = log_probs.gather(2, queries.unsqueeze(2)).squeeze(2)
+    assert torch.allclose(log_probs.sum(0), exp, atol=1e-5)
 
 
 @pytest.mark.parametrize('batch_first', [True, False])
@@ -319,7 +385,7 @@ def test_sequential_language_model(device, sos):
     first_eos_locs = torch.randint(1, hist_shape[0], (N,), device=device)
     hist.view(-1, N)[first_eos_locs, range(N)] = eos
     lm = LM(vocab_size, sos, eos, oov).to(device)
-    log_probs = lm(hist,  full=True)
+    log_probs = lm(hist, full=True)
     assert (
         list(log_probs.shape) ==
         [hist_shape[0] + 1] + hist_shape[1:] + [vocab_size]
