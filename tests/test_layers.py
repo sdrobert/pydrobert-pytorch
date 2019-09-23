@@ -215,7 +215,6 @@ def test_lookup_republic():
     assert exp.shape[0] == queries.shape[1]
     import pydrobert.torch.util as util
     ngram_list = util.parse_arpa_lm(arpa_file, token2id=token2id)
-    del token2id
     lm = layers.LookupLanguageModel(
         vocab_size, sos=sos, eos=eos, oov=oov, ngram_list=ngram_list)
     lm = lm.to(device)

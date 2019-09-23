@@ -618,12 +618,13 @@ class LookupLanguageModel(SequentialLanguageModel):
             parents = children
         assert allocated == L - X
         # see if we can shrink the pointer size
-        max_offset = pointers.max().item()
-        for pointer_type in (
-                torch.uint8, torch.int16, torch.int32, torch.int64):
-            if torch.iinfo(pointer_type).max >= max_offset:
-                break
-        pointers = pointers.to(pointer_type)
+        if len(pointers):
+            max_offset = pointers.max().item()
+            for pointer_type in (
+                    torch.uint8, torch.int16, torch.int32, torch.int64):
+                if torch.iinfo(pointer_type).max >= max_offset:
+                    break
+            pointers = pointers.to(pointer_type)
         return logs, ids, pointers
 
 
