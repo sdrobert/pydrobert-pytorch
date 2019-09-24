@@ -175,7 +175,7 @@ def test_lookup_language_model_log_probs(device, N, sos):
 
 
 @pytest.mark.gpu   # this is a really slow test on the cpu
-def test_lookup_republic():
+def test_lookup_language_model_republic():
     device = torch.device('cuda:0')
     dir_ = os.path.join(os.path.dirname(__file__), 'republic')
     arpa_file = os.path.join(dir_, 'republic.arpa')
@@ -223,6 +223,66 @@ def test_lookup_republic():
     assert log_probs.shape[:-1] == queries.shape
     log_probs = log_probs.gather(2, queries.unsqueeze(2)).squeeze(2)
     assert torch.allclose(log_probs.sum(0), exp, atol=1e-5)
+
+
+@pytest.mark.cpu
+def test_lookup_language_model_state_dict():
+    vocab_size, sos, eos = 10, -1, 0
+    uni_list = [{0: 0.0, 1: 0.1, 2: 0.2}]
+    lm_a = layers.LookupLanguageModel(
+        vocab_size, sos=sos, eos=eos, ngram_list=uni_list)
+    lm_b = layers.LookupLanguageModel(vocab_size, sos=sos, eos=eos)
+
+    def compare(assert_same):
+        same_max_ngram = (lm_a.max_ngram == lm_b.max_ngram)
+        same_max_ngram_nodes = (lm_a.max_ngram_nodes == lm_b.max_ngram_nodes)
+        same_pointers = len(lm_a.pointers) == len(lm_b.pointers)
+        if same_pointers:
+            same_pointers = (lm_a.pointers == lm_b.pointers).all()
+        same_ids = len(lm_a.ids) == len(lm_b.ids)
+        if same_ids:
+            same_ids = (lm_a.ids == lm_b.ids).all()
+        same_logs = len(lm_a.logs) == len(lm_b.logs)
+        if same_logs:
+            nan_mask = torch.isnan(lm_a.logs)
+            assert (nan_mask == torch.isnan(lm_b.logs)).all()
+            same_logs = torch.allclose(
+                lm_a.logs.masked_select(nan_mask.eq(0)),
+                lm_b.logs.masked_select(nan_mask.eq(0)), atol=1e-5)
+        if assert_same:
+            assert same_max_ngram
+            assert same_max_ngram_nodes
+            assert same_pointers
+            assert same_ids
+            assert same_logs
+        else:
+            assert not (
+                same_max_ngram and same_max_ngram_nodes and same_pointers and
+                same_ids and same_logs
+            )
+
+    compare(False)
+    lm_b.load_state_dict(lm_a.state_dict())
+    compare(True)
+    bi_list = [
+        {2: (0.2, -0.2), 3: (0.3, -0.3)},
+        {(0, 3): 0.03, (2, 4): 0.24}
+    ]
+    lm_a = layers.LookupLanguageModel(
+        vocab_size, sos=sos, eos=eos, ngram_list=bi_list)
+    compare(False)
+    lm_b.load_state_dict(lm_a.state_dict())
+    compare(True)
+    tri_list = [
+        {0: (0.0, 0.0)},
+        dict(),
+        {(0, 0, 0): 0.0, (4, 4, 4): 0.444, (2, 3, 2): 0.232}
+    ]
+    lm_a = layers.LookupLanguageModel(
+        vocab_size, sos=sos, eos=eos, ngram_list=tri_list)
+    compare(False)
+    lm_b.load_state_dict(lm_a.state_dict())
+    compare(True)
 
 
 @pytest.mark.parametrize('batch_first', [True, False])

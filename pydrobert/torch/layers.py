@@ -478,7 +478,59 @@ class LookupLanguageModel(SequentialLanguageModel):
         return out.view(B, V)
 
     def load_state_dict(self, state_dict, **kwargs):
-        raise NotImplementedError()
+        error_prefix = 'Error(s) in loading state_dict for {}:\n'.format(
+            self.__class__.__name__)
+        missing_keys = {'pointers', 'ids', 'logs'} - set(state_dict)
+        if missing_keys:
+            raise RuntimeError('Missing key(s) in state_dict: "{}".'.format(
+                '", "'.join(missing_keys)))
+        pointers = state_dict['pointers']
+        ids = state_dict['ids']
+        logs = state_dict['logs']
+        if len(ids) and len(pointers):
+            # n > 1
+            if len(pointers) < self.vocab_size + self.shift + 1:
+                raise RuntimeError(
+                    error_prefix +
+                    'Expected {} unigram probabilities, got {} '
+                    '(vocab_size, eos, and sos must be correct!)'.format(
+                        self.vocab_size + self.shift,
+                        len(pointers) - 1))
+            X, K, L = len(pointers), len(ids), len(logs)
+            U = self.vocab_size + self.shift + 1
+            self.max_ngram = 1
+            self.max_ngram_nodes = last_ptr = U - 1
+            error = RuntimeError(
+                error_prefix +
+                'buffer contains unexpected value (are you sure '
+                "you've set vocab_size, eos, and sos correctly?)")
+            while last_ptr < len(pointers):
+                offset = pointers[last_ptr].item()
+                if offset <= 0:
+                    raise error
+                last_ptr += offset
+                self.max_ngram_nodes = offset - 1
+                self.max_ngram += 1
+            # last_ptr should be X + G
+            if (last_ptr != K + U) or (last_ptr != L - X):
+                raise RuntimeError(error_prefix + 'Unexpected buffer length')
+        else:  # n == 1
+            if len(pointers) != len(ids):
+                raise RuntimeError(error_prefix + 'Incompatible trie buffers')
+            if len(logs) != self.vocab_size + self.shift:
+                raise RuntimeError(
+                    error_prefix +
+                    'Expected {} unigram probabilities, got {} '
+                    '(vocab_size, eos, and sos must be correct!)'
+                    ''.format(self.vocab_size + self.shift, len(logs)))
+            self.max_ngram_nodes = self.vocab_size + self.shift
+            self.max_ngram = 1
+        # resize
+        self.pointers = torch.empty_like(pointers, device=self.pointers.device)
+        self.ids = torch.empty_like(ids, device=self.ids.device)
+        self.logs = torch.empty_like(logs, device=self.logs.device)
+        return super(LookupLanguageModel, self).load_state_dict(
+            state_dict, **kwargs)
 
     def _build_trie(self, ngram_list):
         if not len(ngram_list):
