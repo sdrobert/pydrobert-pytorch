@@ -18,6 +18,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import re
 import warnings
 
 import torch
@@ -31,6 +32,7 @@ __all__ = [
     'beam_search_advance',
     'error_rate',
     'optimal_completion',
+    'parse_arpa',
     'prefix_error_rates',
     'random_walk_advance',
     'sequence_log_probs',
@@ -38,9 +40,132 @@ __all__ = [
 ]
 
 
+def parse_arpa_lm(file_, token2id=None):
+    r'''Parse an ARPA statistical language model
+
+    An `ARPA language model <https://cmusphinx.github.io/wiki/arpaformat/>`__
+    is a n-gram model with back-off probabilities. It is formatted as
+
+    ::
+
+        \data\
+        ngram 1=<count>
+        ngram 2=<count>
+        ...
+        ngram <N>=<count>
+
+        \1-grams:
+        <logp> <token[t]> <logb>
+        <logp> <token[t]> <logb>
+        ...
+
+        \2-grams:
+        <logp> <token[t-1]> <token[t]> <logb>
+        ...
+
+        \<N>-grams:
+        <logp> <token[t-<N>+1]> ... <token[t]>
+        ...
+
+        \end\
+
+    Parameters
+    ----------
+    file_ : str or file
+        Either the path or a file pointer to the file
+    token2id : dict, optional
+        A dictionary whose keys are token strings and values are ids. If set,
+        tokens will be replaced with ids on read
+
+    Returns
+    -------
+    ngram_list : list
+        A list of the same length as there are unique classes of n-grams in the
+        file (e.g. if the file contains up to tri-grams then `ngram_list` will
+        be of length 3). Each element is a dictionary whose key is the word
+        sequence (earliest word first). For 1-grams, this is just the word. For
+        n > 1, this is a tuple of words. Values are either a tuple of
+        ``logp, logb`` of the log-probability and backoff log-probability, or,
+        in the case of the final n-gram that doesn't need a backoff, just the
+        log probability
+    '''
+    if isinstance(file_, str):
+        with open(file_) as f:
+            return parse_arpa_lm(f, token2id=token2id)
+    line = ''
+    for line in file_:
+        if line.strip() == '\\data\\':
+            break
+    if line.strip() != '\\data\\':
+        raise IOError('Could not find \\data\\ line. Is this an ARPA file?')
+    ngram_counts = []
+    count_pattern = re.compile(r'^ngram\s+(\d+)\s*=\s*(\d+)$')
+    for line in file_:
+        line = line.strip()
+        if not line:
+            continue
+        match = count_pattern.match(line)
+        if match is None:
+            break
+        n, count = (int(x) for x in match.groups())
+        if len(ngram_counts) < n:
+            ngram_counts.extend(0 for _ in range(n - len(ngram_counts)))
+        ngram_counts[n - 1] = count
+    ngram_list = [dict() for _ in ngram_counts]
+    ngram_header_pattern = re.compile(r'^\\(\d+)-grams:$')
+    ngram_entry_pattern_backoff = re.compile(
+        r'^(-?\d+(?:\.\d+)?)\s+(.*?)\s+(-?\d+(?:\.\d+)?)$')
+    ngram_entry_pattern_nobackoff = re.compile(
+        r'^(-?\d+(?:\.\d+)?)\s+(.*)()$')
+    while line != '\\end\\':
+        match = ngram_header_pattern.match(line)
+        if match is None:
+            raise IOError('line "{}" is not valid'.format(line))
+        ngram = int(match.group(1))
+        if ngram > len(ngram_counts):
+            raise IOError(
+                '{}-grams count was not listed, but found entry'
+                ''.format(ngram))
+        dict_ = ngram_list[ngram - 1]
+        if ngram != len(ngram_counts):
+            ngram_entry_pattern = ngram_entry_pattern_backoff
+        else:
+            ngram_entry_pattern = ngram_entry_pattern_nobackoff
+        for line in file_:
+            line = line.strip()
+            if not line:
+                continue
+            match = ngram_entry_pattern.match(line)
+            if match is None:
+                break
+            logp, tokens, logb = match.groups()
+            tokens = tuple(tokens.strip().split())
+            if len(tokens) != ngram:
+                raise IOError(
+                    'expected line "{}" to be a(n) {}-gram'
+                    ''.format(line, ngram))
+            if token2id is not None:
+                tokens = tuple(token2id[tok] for tok in tokens)
+            if ngram == 1:
+                tokens = tokens[0]
+            if ngram != len(ngram_counts):
+                dict_[tokens] = (float(logp), float(logb.strip()))
+            else:
+                dict_[tokens] = float(logp)
+    if line != '\\end\\':
+        raise IOError('Could not find \\end\\ line')
+    for ngram_m1, (ngram_count, dict_) in enumerate(
+            zip(ngram_counts, ngram_list)):
+        if len(dict_) != ngram_count:
+            raise IOError('Expected {} {}-grams, got {}'.format(
+                ngram_count, ngram_m1, len(dict_)))
+    return ngram_list
+
+
 def beam_search_advance(
         logits_t, width, log_prior=None, y_prev=None,
-        eos=pydrobert.torch.INDEX_PAD_VALUE, lens=None, prevent_eos=False):
+        eos=pydrobert.torch.INDEX_PAD_VALUE, lens=None, prevent_eos=False,
+        distribution=True):
     r'''Advance a beam search
 
     Suppose a model outputs a un-normalized log-probability distribution over
@@ -48,7 +173,7 @@ def beam_search_advance(
 
     .. math::
 
-        Pr(y_t = c; log\_prior) = exp(logits_{t,c}) / \sum_k exp(logits_{t,k})
+        Pr(y_t = c ; log\_prior) = exp(logits_{t,c}) / \sum_k exp(logits_{t,k})
 
     We assume :math:`logits_t` is a function of what comes before
     :math:`logits_t = f(logits_{<t}, y_{<t})`. Alternatively, letting
@@ -65,9 +190,10 @@ def beam_search_advance(
     n-best list.
 
     This function is called at every time step. It updates old beam
-    log-probabilities (`log_prior`) with new ones (`score`) from the joint
-    distribution with `logits`, and updates us the class indices emitted
-    between them (`y`). See the examples section for how this might work.
+    log-probabilities (`log_prior`) with new ones (`score`) from the
+    conditional derived from `logits_t`, and updates us the class indices
+    emitted between them (`y`). See the examples section for how this might
+    work.
 
     Parameters
     ----------
@@ -102,6 +228,12 @@ def beam_search_advance(
         a beam unless it has finished (either with a prior `eos` or through
         `lens`). Note that this will only have an effect when ``0 <= eos <=
         num_classes``
+    distribution : bool, optional
+        If :obj:`False`, a log-softmax will not be applied to `logits_t` prior
+        to calculating the beams. Disabling `distribution` should be avoided
+        when the beam search is being performed directly on model output.
+        Setting `distribution` to :obj:`False` is useful when bootstrapping
+        a language model probability distribution to the search
 
     Returns
     -------
@@ -148,8 +280,21 @@ def beam_search_advance(
     >>>     best_beam_path = best_beam_path.masked_select(not_special_mask)
     >>>     bests.append(best_beam_path)
 
-    ``W``-best list for non-auto-regressive model. We don't emit an `eos`,
-    instead completing the sequence when we've hit the target length via `lens`
+    Were we to have a :class:`pydrobert.torch.layers.SequentialLanguageModel`,
+    we could modify `logits_t`, and thus the search, to account for it:
+
+    >>> # ... same as before
+    >>> logits_t = torch.nn.functional.log_softmax(logits_t, -1)
+    >>> logits_t = logits_t + lmb * lm(y)  # lmb is some constant
+    >>> score, y, s_t = beam_search_advance(
+    ...     logits_t, W, score, y, eos, distribution=False)
+    >>> # ... same as before
+
+    Note that `score` would no longer reflect a log-joint probability.
+
+    The following produces a ``W``-best list for non-auto-regressive model. We
+    don't emit an `eos`, instead completing the sequence when we've hit the
+    target length via `lens`
 
     >>> N, I, C, T, W, H = 5, 5, 10, 100, 5, 10
     >>> rnn = torch.nn.RNN(I, H)
@@ -174,7 +319,8 @@ def beam_search_advance(
         logits_t = logits_t.unsqueeze(1)
     elif logits_t.dim() != 3:
         raise RuntimeError('logits_t must have dimension of either 2 or 3')
-    logits_t = torch.nn.functional.log_softmax(logits_t, 2)
+    if distribution:
+        logits_t = torch.nn.functional.log_softmax(logits_t, 2)
     neg_inf = torch.tensor(-float('inf'), device=logits_t.device)
     batch_size, old_width, num_classes = logits_t.shape
     if log_prior is None:
@@ -499,7 +645,7 @@ def optimal_completion(
 
     See Also
     --------
-    pydrobert.torch.training.HardOptimalCompletionDistillationLoss
+    pydrobert.torch.layers.HardOptimalCompletionDistillationLoss
         A loss function that uses these optimal completions to train a model
     '''
     mask = _levenshtein(
@@ -657,7 +803,6 @@ def random_walk_advance(
         If :obj:`True`, a tuple will be returned whose second element is `z`,
         see below
 
-
     Returns
     -------
     y : torch.LongTensor
@@ -723,6 +868,13 @@ def random_walk_advance(
     >>>     y = random_walk_advance(logits_t, W, y, eos)
     >>>     if old_samp == 1:
     >>>         h_t = h_t.expand(-1, W, H).contiguous()
+
+    Notes
+    -----
+
+    Unlike in the beam search, `logits_t` must be transformed into a
+    probability distribution. Otherwise, we would not be able to sample the
+    next step
 
     See Also
     --------
@@ -839,7 +991,7 @@ def sequence_log_probs(logits, hyp, dim=0, eos=None):
 
     See Also
     --------
-    pydrobert.torch.training.MinimumErrorRateLoss
+    pydrobert.torch.layers.MinimumErrorRateLoss
         An example training regime that uses this function
     '''
     if isinstance(logits, torch.nn.utils.rnn.PackedSequence):

@@ -4,6 +4,12 @@ References
 .. [williams1992] R. J. Williams, "Simple statistical gradient-following
    algorithms for connectionist reinforcement learning," Machine Learning,
    vol. 8, no. 3, pp. 229-256, May 1992.
+.. [mikolov2010] T. Mikolov, M. Karafiát, L. Burget, J. Černocký, and S.
+   Khudanpur, "Recurrent neural network based language model," presented at
+   Interspeech, Makuhari, Japan, 2010.
+.. [heafield2011] K. Heafield, "KenLM: faster and smaller language model
+   queries," in Proceedings of the Sixth Workshop on Statistical Machine
+   Translation, Edinburgh, Scotland, 2011, pp. 187-197.
 .. [bahdanau2015] D. Bahdanau, K. Cho, and Y. Bengio, "Neural Machine
    Translation by Jointly Learning to Align and Translate.," in 3rd
    International Conference on Learning Representations, ICLR 2015, San Diego,

@@ -1,0 +1,62 @@
+This test data is based off two sources.
+
+First, the Project Gutenberg record of Plato's Republic
+(https://www.gutenberg.org/cache/epub/1497/pg1497.txt). The license can be
+found at the end of the file.
+
+Second, we use KenLM (https://kheafield.com/code/kenlm/) to generate the
+language model and come up with expected sentence-level log probabilities.
+KenLM is licensed under the LGPL, but I'm only distributing the output here
+(https://www.gnu.org/licenses/gpl-faq.en.html#WhatCaseIsOutputGPL). If you
+plan on using the KenLM code, please be aware of the license.
+
+We preprocess the text with:
+
+awk '
+BEGIN {begun=0}
+/INTRODUCTION AND ANALYSIS/ {begun=1}
+/End of the Project Guten/ {begun=0}
+begun {print}' pg1497.txt | \
+  tr '\n' ' ' | \
+  tr --delete '\r[\200-\377]' | \
+  tr '[:upper:]' '[:lower:]' | \
+  sed 's/([^)]*)//g' | \
+  tr '"'"'"';,:/\-=+*)(' ' ' | \
+  tr '?!' '.' | \
+  sed 's/\.\.*/\./g' | \
+  sed 's/\. /\n/g' | \
+  sed 's/\.+/\./g' | \
+  tr -s '[:blank:]' | \
+  sed 's/^ *//g' > republic.txt
+
+We restrict the vocabulary to the words that aren't hapax legomena:
+
+cat republic.txt | \
+  tr ' ' '\n' | \
+  sort | \
+  uniq -c | \
+  sort -bgr | \
+  awk '$1 > 1 {print $2}' > vocab.txt
+
+Then convert that to a token2id map:
+
+cat <(echo '<unk>'; echo '<s>'; echo '</s>') vocab.txt | \
+  sort -u | \
+  awk 'NF {print}' | \
+  awk '{print $1, NR-1}' > token2id.map
+
+Now we use KenLM to generate the language model in ARPA format:
+
+bin/lmplz \
+  -o 5 \
+  --limit_vocab_file vocab.txt \
+  --text republic.txt > republic.arpa
+
+And pick some random queries:
+
+sort -R -u republic.txt | head -n 5 > queries.txt
+
+Get the expected sentence-level probs:
+
+bin/query -v sentence republic.arpa < queries.txt | \
+  awk '/Total/ {print $2}' > exp.txt

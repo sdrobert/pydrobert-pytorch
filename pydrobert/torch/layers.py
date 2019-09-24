@@ -26,6 +26,7 @@ from __future__ import division
 from __future__ import print_function
 
 import abc
+import warnings
 
 import torch
 
@@ -42,12 +43,662 @@ __all__ = [
     'GeneralizedDotProductSoftAttention',
     'GlobalSoftAttention',
     'HardOptimalCompletionDistillationLoss',
+    'LookupLanguageModel',
     'MimimumErrorRateLoss',
     'MultiHeadedAttention',
+    'SequentialLanguageModel',
 ]
 
 # XXX(sdrobert): a quick note on style. pytorch doesn't tend to protect its
 # read-only attributes using private members, so we do the same
+
+
+class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
+    r'''A language model whose sequence probability is built sequentially
+
+    A language model provides the (log-)probability of a sequence of tokens. A
+    sequential language model assumes that the probability distribution can be
+    factored into a product of probabilities of the current token given the
+    prior sequence, i.e. for token sequence :math:`\{w_s\}`
+
+    .. math::
+
+        P(w) = \prod_{s=1}^S P(w_s | w_{s - 1}, w_{s - 2}, \ldots w_1)
+
+    This definition includes statistical language models, such as n-grams,
+    where the probability of the current token is based only on a fixed-length
+    history, as well as recurrent neural language models [mikolov2010]_.
+
+    Subclasses have the following signature:
+
+        lm(hist, full=False)
+
+    Where `hist` is a :class:`torch.LongTensor` of shape ``(s - 1, *)``
+    corresponding to the sequence up to but excluding the current step ``s``,
+    where ``s >= 1``. Letting ``i`` be a multi-index of all but the first
+    dimension of `hist`, ``hist[:, i]`` is the i-th sequence :math:`(w^{(i)}_1,
+    w^{(i)}_2, \ldots, w^{(i)}_{s - 1})`.
+
+    When `full` is :obj:`False`, it outputs a :class:`torch.FloatTensor`
+    `log_probs` of shape ``(*, vocab_size)``, where ``log_probs[i, v]`` equals
+    :math:`\log P(w^{(i)}_s = v | w^{(i)}_{s-1}, \ldots)`
+
+    When `full` is :obj:`True`, `log_probs` is of shape ``(s, *, vocab_size)``
+    where each ``log_probs[s', i, v]`` equals :math:`\log P(w^{(i)}_{s'} = v |
+    w^{(i)}_{s' - 1}, \ldots)`
+
+    Parameters
+    ----------
+    vocab_size : int
+        The vocabulary size. Controls the size of the final output dimension,
+        as well as what values of `hist` are considered in-vocabulary
+    sos : int, optional
+        An optional start-of-sequence token. Setting this option will prepend
+        `hist` with a tensor full of `sos`. `sos` can be in- or
+        out-of-vocabulary. Setting `sos` does not change the size of the
+        output, regardless of whether `full` is :obj:`True`: the prepended
+        tensor is considered context for ``s' == 0``
+    eos : int, optional
+        An optional end-of-sequence token. If this token is found in `hist`,
+        values succeeding it in `log_prob` will be replaced with zero. `eos`
+        need not be in-vocabulary
+    oov : int, optional
+        An optional out-of-vocabulary token. If any elements of `hist` are not
+        `eos` or not within the range ``[0, vocab_size)``, they will be
+        replaced with this token. `oov` must be in-vocabulary itself
+
+    Attributes
+    ----------
+    vocab_size : int
+    sos : int or :obj:`None`
+    eos : int or :obj:`None`
+    oov : int or :obj:`None`
+    '''
+
+    def __init__(self, vocab_size, sos=None, eos=None, oov=None):
+        super(SequentialLanguageModel, self).__init__()
+        self.vocab_size = vocab_size
+        self.sos = sos
+        self.eos = eos
+        self.oov = oov
+        if vocab_size < 1:
+            raise ValueError('vocab_size must be positive')
+        if sos is not None and sos == eos:
+            raise ValueError('sos cannot equal eos')
+        if self.oov is not None and (self.oov < 0 or self.oov >= vocab_size):
+            raise ValueError('oov must be within [0, vocab_size)')
+
+    def extra_repr(self):
+        s = 'vocab_size={}'.format(self.vocab_size)
+        if self.sos is not None:
+            s += ', sos={}'.format(self.sos)
+        if self.eos is not None:
+            s += ', eos={}'.format(self.eos)
+        if self.oov is not None:
+            s += ', oov={}'.format(self.oov)
+        return s
+
+    def check_input(self, hist, **kwargs):
+        '''Check if the input is formatted correctly, otherwise RuntimeError'''
+        if hist.dim() < 2:
+            raise RuntimeError('hist must be at least 2-D')
+        if self.oov is None:
+            oov_mask = kwargs.get('oov_mask', None)
+            if oov_mask is None:
+                oov_mask = hist.ge(self.vocab_size) | hist.lt(0)
+                eos_mask = kwargs.get('eos_mask', None)
+                if eos_mask is None and self.eos is not None:
+                    eos_mask = hist.eq(self.eos).cumsum(0, dtype=torch.long)
+                    eos_mask = eos_mask.ne(0)
+                if eos_mask is not None:
+                    oov_mask = oov_mask & eos_mask.eq(0)
+            if kwargs.get('skip_first', False):
+                assert self.sos is not None
+                oov_mask = oov_mask[1:]
+            if oov_mask.any():
+                raise RuntimeError(
+                    'Found values in hist that were not eos and not between '
+                    '[0, {})'.format(self.vocab_size))
+
+    @abc.abstractmethod
+    def calc_last_log_probs(self, hist, eos_mask):
+        '''Calculate log probabilities conditioned on history
+
+        Do not call this directly; instead, call the instance.
+
+        Subclasses implement this method. `hist` is of shape ``(s, N)``, where
+        ``s`` is the sequence dimension and ``N`` is the batch dimension. ``s``
+        can be zero, indicating no history is available. All out-of-vocabulary
+        elements (except eos) have been replaced with the oov token (if `oov`
+        is not :obj:`None`). If eos is not :obj:`None`, `eos_mask` is also not
+        :obj:`None` and of size ``(s, N)``. ``hist[s', n] == eos`` iff
+        ``eos_mask[s', n].ne(0)``. `hist` has been right-filled with eos s.t.
+        if ``hist[s', n] == eos`` and ``s' < s - 1`` then
+        ``hist[s' + 1, n] == eos``. If sos has been set, `hist` has been
+        prepended with a vector of ``(N,)`` filled with the symbol, which may
+        or may not be in-vocabulary
+        '''
+        raise NotImplementedError()
+
+    def calc_full_log_probs(self, hist, eos_mask):
+        '''Calculate log probabilities at each step of history and next
+
+        Do not call this directly; instead, call the instance with the keyword
+        argument `full` set to :obj:`True`.
+
+        Subclasses may implement this method to avoid repeated computation.
+        It should produce an output identical to the following
+        default implementation
+
+        >>> out = torch.stack([
+        >>>     self.calc_last_log_probs(
+        >>>         hist[:s], None if eos_mask is None else eos_mask[:s])
+        >>>     for s in range(0 if self.sos is None else 1, hist.shape[0] + 1)
+        >>> ], dim=0)
+
+        If sos has been set, `hist` has been prepended with a vector of sos.
+        In this case, the probability of the empty slice of `hist` should not
+        be calculated
+        '''
+        return torch.stack([
+            self.calc_last_log_probs(
+                hist[:s], None if eos_mask is None else eos_mask[:s])
+            for s in range(0 if self.sos is None else 1, hist.shape[0] + 1)
+        ], dim=0)
+
+    def forward(self, hist, full=False):
+        if self.sos is not None:
+            if hist.dim() < 2:
+                raise RuntimeError('hist must be at least 2-D')
+            sos_prepend = torch.full(
+                (1,) + hist.shape[1:], self.sos,
+                dtype=hist.dtype, device=hist.device)
+            if hist.shape[0]:
+                hist = torch.cat([sos_prepend, hist], dim=0)
+            else:
+                hist = sos_prepend
+            del sos_prepend
+        if self.eos is not None:
+            eos_mask = hist.eq(self.eos).cumsum(0, dtype=torch.long).ne(0)
+        else:
+            eos_mask = None
+        if self.oov is not None:
+            oov_mask = hist.ge(self.vocab_size) | hist.lt(0)
+            if eos_mask is not None:
+                oov_mask = oov_mask & eos_mask.eq(0)
+        else:
+            oov_mask = None
+        self.check_input(
+            hist, eos_mask=eos_mask, oov_mask=oov_mask,
+            skip_first=self.sos is not None
+        )
+        if oov_mask is not None:
+            hist = hist.masked_fill(oov_mask, self.oov)
+        if eos_mask is not None:
+            hist = hist.masked_fill(eos_mask, self.eos)
+        hist_shape = hist.shape
+        first, rest = hist_shape[0], hist_shape[1:].numel()
+        hist = hist.view(first, rest)
+        if full:
+            out_shape = (-1,)
+            out_shape += tuple(hist_shape[1:]) + (self.vocab_size,)
+            out = self.calc_full_log_probs(
+                hist,
+                None if eos_mask is None else eos_mask.view(first, rest))
+            out = out.reshape(*out_shape)
+            if eos_mask is not None:
+                if self.sos is not None:
+                    eos_mask = eos_mask[1:]
+                if eos_mask.shape[0]:
+                    eos_mask = torch.cat(
+                        [eos_mask[:1].ne(eos_mask[:1]), eos_mask], dim=0)
+                    out = out.masked_fill(eos_mask.unsqueeze(-1), 0.)
+        else:
+            out_shape = tuple(hist_shape[1:]) + (self.vocab_size,)
+            out = self.calc_last_log_probs(
+                hist,
+                None if eos_mask is None else eos_mask.view(first, rest))
+            out = out.reshape(*out_shape)
+            if eos_mask is not None and eos_mask.shape[0]:
+                out = out.masked_fill(eos_mask[-1].unsqueeze(-1), 0.)
+        return out
+
+    def reset_parameters(self):
+        pass
+
+
+class LookupLanguageModel(SequentialLanguageModel):
+    r'''Construct a backoff n-gram model from a fixed lookup table
+
+    An instance of this model will search for a stored log-probability of the
+    current token given a fixed-length history in a lookup table. If it can't
+    find it, it backs off to a shorter length history and incurs a penalty:
+
+    .. math::
+
+        Pr(w_t|w_{t-1},\ldots,w_{t-(N-1)}) = \begin{cases}
+            Entry(w_{t-(N-1)}, w_{t-(N-1)+1}, \ldots, w_t)
+                & \text{if } Entry(w_{t-(N-1)}, \ldots) > 0 \\
+            Backoff(w_{t-(N-1)}, \ldots, w_{t-1})
+            Pr(w_t|w_{t-1},\ldots,w_{t-(N-1)+1}) & \text{else}
+        \end{cases}
+
+    Missing entries are assumed to have value 0. and missing backoff penalties
+    are assumed to have value 1.
+
+    Parameters
+    ----------
+    vocab_size : int
+    sos : int, optional
+    eos : int, optional
+    oov : int, optional
+    ngram_list : sequence, optional
+        A list of dictionaries whose entry at index ``i`` corresponds to a
+        table of ``i+1``-grams. Keys must all be ids, not strings. Unigram
+        keys are just ids; for n > 1 keys are tuples of ids with the latest
+        word last. Values in the dictionary of the highest order n-gram
+        (last in `ngram_list`) are the log-probabilities of the keys. Lower
+        order n-grams' dictionaries' values are pairs of log-probability and
+        log-backoff penalty. If `ngram_list` is not specified, a unigram model
+        with a uniform prior will be built
+
+    Notes
+    -----
+    Initializing an instance from an `ngram_list` is expensive. `ngram_list` is
+    converted to a trie (something like [heafield2011]_) so that it takes up
+    less space in memory, which can take some time.
+
+    Rather than re-initializing repeatedly, it is recommended you save and load
+    this module's state dict. :func:`load_state_dict` as been overridden to
+    support loading different table sizes, avoiding the need for an accurate
+    `ngram_list` on initialization:
+
+    >>> # first time
+    >>> lm = LookupLanguageModel(vocab_size, sos, eos, oov, ngram_list)  # slow
+    >>> state_dict = lm.state_dict()
+    >>> # save state dict, quit, startup, then reload state dict
+    >>> lm = LookupLanguageModel(vocab_size, sos, eos, oov)  # fast!
+    >>> lm.load_state_dict(state_dict)
+
+    See Also
+    --------
+    pydrobert.util.parse_arpa_lm
+        How to read a pretrained table of n-grams into `ngram_list`. The
+        parameter `token2id` should be specified to ensure id-based keys.
+    '''
+
+    # XXX(sdrobert): as discussed in [heafield2011], we could potentially speed
+    # up computations by keeping track of prefix probs and storing them in
+    # case of backoff. This makes sense in a serial case, when we can choose to
+    # explore or not explore a path. In a massively parallel environment, I'm
+    # not sure it's worth the effort...
+
+    def __init__(
+            self, vocab_size, sos=None, eos=None, oov=None, ngram_list=None):
+        super(LookupLanguageModel, self).__init__(
+            vocab_size, sos=sos, eos=eos, oov=oov)
+        if sos is not None and (sos < 0 or sos > vocab_size):
+            # we want sos to refer to an index but it's oov, so we'll shift all
+            # indices in hyp up by one and fill the occurrences of sos with 0
+            self.shift = 1
+        else:
+            self.shift = 0
+        if ngram_list is None:
+            logs = -torch.full(
+                (self.shift + vocab_size,),
+                vocab_size, dtype=torch.float).log()
+            ids = pointers = torch.tensor([], dtype=torch.uint8)
+            self.max_ngram = 1
+            self.max_ngram_nodes = self.shift + vocab_size
+        else:
+            self.max_ngram = len(ngram_list)
+            self.max_ngram_nodes = None  # changed by build_trie
+            logs, ids, pointers = self._build_trie(ngram_list)
+        self.register_buffer('logs', logs)
+        self.register_buffer('ids', ids)
+        self.register_buffer('pointers', pointers)
+
+    def extra_repr(self):
+        s = super(LookupLanguageModel, self).extra_repr()
+        s += ', max_ngram={}'.format(self.max_ngram)
+        return s
+
+    def calc_last_log_probs(self, hist, eos_mask):
+        # we produce two tries with the same node ids: one for logp and one for
+        # logb. Let N be the maximal n-gram. The children of the root are
+        # 1-grams, their children are 2-grams, etc. Thus, x-gram is synonymous
+        # for level x of the trie. The logb trie does not have N-gram children
+        # b/c there are no backoffs for the maximal n-gram.
+        #
+        # pointers is a flattened array of size X of pointers of internal
+        # nodes. They are only populated when N > 1. pointers is arranged in
+        # a breadth-first manner: levels = [
+        #   1-grams + 1; 2-grams + 1; ...; (N - 1)-grams + 1]
+        # pointers contain positive offsets from their current node to the
+        # first index of its children. The immediately subsequent pointer is
+        # the exclusive offset to the end of the range of children; if the
+        # values of the pointer and subsequent pointer are equal, the node has
+        # no children. The subsequent pointer is either the inclusive offset
+        # of the start of a sibling's children, or a dummy pointer (the +1s
+        # above) for the final child in a level.
+        #
+        # ids = [2-grams + 1; ...; N-grams], that is, remove the 1-grams
+        # level from pointers and add the N-grams level. Thus, to convert from
+        # a pointers index to an ids index, one need only subtract U
+        # (vocab_size + shift + 1 % N). id values correspond to the last token
+        # in a reverse n-gram produced by the path through the tree so far.
+        #
+        # logs = [
+        #   1-grams + 1; 2-grams + 1; ...; N-grams;
+        #   1-grams + 1; 2-grams + 1; ...; (N-1)-grams]. The first X values
+        # are the log-probabilities. Letting G be the number of N-gram nodes,
+        # the remaining X - G entries are the backoff probabilities
+        B, V, N = hist.shape[1], self.vocab_size, self.max_ngram
+        M, G, X = B * V, self.max_ngram_nodes, len(self.pointers)
+        U = V + self.shift + (1 % N)
+        K, L = X + G - U, 2 * X + G
+        device = hist.device
+        assert len(self.ids) == K
+        assert len(self.logs) == L
+        if (
+                self.eos is not None and
+                (self.eos < 0 or self.eos >= self.vocab_size)):
+            # eos is out-of-vocabulary. Replace with in-vocabulary (it'll be
+            # zero-filled by the parent class)
+            hist = hist.masked_fill(hist.eq(self.eos), 0)
+        if self.shift:
+            hist = hist.masked_fill(hist.eq(self.sos), -self.shift)
+            hist = hist + self.shift
+        hist = hist[max(0, hist.shape[0] - (N - 1)):]
+        cur_step = torch.arange(
+            self.shift, V + self.shift, dtype=hist.dtype, device=device)
+        cur_step = cur_step.view(1, 1, V).expand(-1, B, -1)
+        if hist.shape[0]:
+            hist = hist.unsqueeze(-1).expand(-1, -1, V)
+            hist = torch.cat([hist, cur_step], dim=0)
+        else:
+            hist = cur_step
+        del cur_step
+        if N == 1 or hist.shape[0] == 1:
+            # we're a unigram model, or we've only got unigram history
+            hist = hist[-1]  # (B, V)
+            logs = self.logs[:G].unsqueeze(0).expand(B, G)
+            return logs.gather(1, hist)  # (B, V)
+        # we're now definitely not a unigram model w/ non-empty history
+        assert X and K
+        hist = hist.view(-1, M)  # pretend M is batch; reshape at end
+        out = torch.zeros(M, dtype=torch.float, device=device)
+        running_mask = torch.ones_like(out, dtype=torch.uint8).eq(1)
+        vrange = torch.arange(V, dtype=torch.int32, device=device)
+        while True:
+            children = tokens = hist[0]
+            if hist.shape[0] == 1:
+                # unigrams always exist. Add the log-probability and exit
+                out = torch.where(running_mask, out + self.logs[tokens], out)
+                break
+            offsets = self.pointers[children].to(torch.int32)  # (M,)
+            num_children = self.pointers[children + 1].to(torch.int32)
+            # the +1 is because we've shifted over one, meaning the offset
+            # pointing to the same location is one less
+            num_children = num_children - offsets + 1  # (M,)
+            parents = children
+            first_children = parents + offsets.long()
+            step_mask = running_mask
+            for t in range(1, hist.shape[0]):
+                next_step = step_mask & num_children.ne(0)
+                tokens = hist[t]
+                S = num_children.max()
+                all_children = (
+                    first_children.unsqueeze(1) +
+                    vrange[:S].unsqueeze(0).long()
+                )
+                matches = self.ids[
+                    all_children.clamp(max=K + U - 1) - U].long()
+                matches = matches == tokens.unsqueeze(1)
+                matches = matches & (
+                    vrange[:S].unsqueeze(0) < num_children.unsqueeze(1))
+                matches = matches & step_mask.unsqueeze(1)
+                next_step = matches.any(1)
+                if t == hist.shape[0] - 1:
+                    # we're last. Add probabilities
+                    logs = torch.where(
+                        matches,
+                        self.logs[all_children],
+                        torch.zeros_like(all_children, dtype=torch.float),
+                    ).sum(1)  # (M,)
+                    # the trie has dummy lower-order n-grams. If there's
+                    # an (n+1) gram passing through it. We do not want to
+                    # match these - we will back off further
+                    finite = torch.isfinite(logs)
+                    out = torch.where(finite, out + logs, out)
+                    next_step = next_step & finite
+                    running_mask = running_mask & next_step.eq(0)
+                    new_backoff = step_mask & next_step.eq(0)
+                    # add backoff for newly failed paths
+                    out = torch.where(
+                        new_backoff,
+                        out + self.logs[X + G + parents],
+                        out,
+                    )
+                else:
+                    # we're not last. Update children
+                    children = torch.where(
+                        matches,
+                        all_children,
+                        torch.zeros_like(all_children),
+                    ).sum(1)
+                # this'll be invalid for the last step, so don't re-use!
+                step_mask = next_step
+                if t != hist.shape[0] - 1:
+                    offsets = self.pointers[children].to(torch.int32)
+                    num_children = self.pointers[children + 1].to(torch.int32)
+                    num_children = num_children - offsets + 1
+                    parents = children
+                    first_children = parents + offsets.long()
+            hist = hist[1:]
+        return out.view(B, V)
+
+    def load_state_dict(self, state_dict, **kwargs):
+        error_prefix = 'Error(s) in loading state_dict for {}:\n'.format(
+            self.__class__.__name__)
+        missing_keys = {'pointers', 'ids', 'logs'} - set(state_dict)
+        if missing_keys:
+            raise RuntimeError('Missing key(s) in state_dict: "{}".'.format(
+                '", "'.join(missing_keys)))
+        pointers = state_dict['pointers']
+        ids = state_dict['ids']
+        logs = state_dict['logs']
+        if len(ids) and len(pointers):
+            # n > 1
+            if len(pointers) < self.vocab_size + self.shift + 1:
+                raise RuntimeError(
+                    error_prefix +
+                    'Expected {} unigram probabilities, got {} '
+                    '(vocab_size, eos, and sos must be correct!)'.format(
+                        self.vocab_size + self.shift,
+                        len(pointers) - 1))
+            X, K, L = len(pointers), len(ids), len(logs)
+            U = self.vocab_size + self.shift + 1
+            self.max_ngram = 1
+            self.max_ngram_nodes = last_ptr = U - 1
+            error = RuntimeError(
+                error_prefix +
+                'buffer contains unexpected value (are you sure '
+                "you've set vocab_size, eos, and sos correctly?)")
+            while last_ptr < len(pointers):
+                offset = pointers[last_ptr].item()
+                if offset <= 0:
+                    raise error
+                last_ptr += offset
+                self.max_ngram_nodes = offset - 1
+                self.max_ngram += 1
+            # last_ptr should be X + G
+            if (last_ptr != K + U) or (last_ptr != L - X):
+                raise RuntimeError(error_prefix + 'Unexpected buffer length')
+        else:  # n == 1
+            if len(pointers) != len(ids):
+                raise RuntimeError(error_prefix + 'Incompatible trie buffers')
+            if len(logs) != self.vocab_size + self.shift:
+                raise RuntimeError(
+                    error_prefix +
+                    'Expected {} unigram probabilities, got {} '
+                    '(vocab_size, eos, and sos must be correct!)'
+                    ''.format(self.vocab_size + self.shift, len(logs)))
+            self.max_ngram_nodes = self.vocab_size + self.shift
+            self.max_ngram = 1
+        # resize
+        self.pointers = torch.empty_like(pointers, device=self.pointers.device)
+        self.ids = torch.empty_like(ids, device=self.ids.device)
+        self.logs = torch.empty_like(logs, device=self.logs.device)
+        return super(LookupLanguageModel, self).load_state_dict(
+            state_dict, **kwargs)
+
+    def _build_trie(self, ngram_list):
+        if not len(ngram_list):
+            raise ValueError('ngram_list must contain at least unigrams')
+        ngram_list = [x.copy() for x in ngram_list]
+        total_entries, nan, inf = 0, float('nan'), float('inf')
+        unigrams = set(range(self.vocab_size))
+        if self.shift:
+            unigrams.add(self.sos)
+        for n in range(self.max_ngram - 1, -1, -1):
+            dict_ = ngram_list[n]
+            is_last = n == self.max_ngram - 1
+            if is_last and not dict_:
+                raise ValueError(
+                    'Final element in ngram_list must not be empty')
+            if is_last:
+                dummy_value = -inf
+            else:
+                dummy_value = -inf, 0.0
+            if not n:
+                keys = set(dict_.keys())
+                if keys - unigrams:
+                    raise ValueError(
+                        'Unexpected unigrams in ngram_list: {} (are these '
+                        'ids?)'.format(keys - unigrams))
+                dict_.update((key, dummy_value) for key in unigrams - keys)
+            else:
+                for seq in dict_:
+                    if len(seq) != n + 1:
+                        raise ValueError(
+                            'Key {0} in {1}-gram is not a sequence of length '
+                            '{1}'.format(n + 1, seq))
+                    if set(seq) - unigrams:
+                        raise ValueError(
+                            'Unexpected tokens in {}-gram in ngram_list: {} ('
+                            'are these ids?)'
+                            ''.format(n + 1, set(seq) - unigrams))
+                    prefix = seq[:-1]
+                    if len(prefix) == 1:
+                        prefix = prefix[0]
+                    if prefix not in ngram_list[n - 1]:
+                        ngram_list[n - 1][prefix] = -inf, 0.0
+            total_entries += len(dict_)
+            if is_last:
+                self.max_ngram_nodes = len(dict_)
+        if self.shift:
+            ngram_list[0] = dict(
+                (0, v) if k == self.sos else (k + 1, v)
+                for (k, v) in ngram_list[0].items()
+            )
+            for n in range(1, self.max_ngram):
+                ngram_list[n] = dict(
+                    (tuple(0 if t == self.eos else t + 1 for t in k), v)
+                    for (k, v) in ngram_list[n].items()
+                )
+        N, G, V = self.max_ngram, self.max_ngram_nodes, self.vocab_size
+        U, X = V + self.shift + (1 % N), total_entries - G + (N - 1)
+        K, L = X + G - U, 2 * X + G
+        if N > 1:
+            # what's the maximum possible offset? It's the maximal possible
+            # distance between a parent and child, or an n-gram and an
+            # (n+1)-gram. Let the former have S nodes in the level, the latter
+            # T nodes. Let a, b, and c correspond to offsets of distinct paths
+            # through the trie and x be the dummy offset. The longest offset in
+            # pointers is produced as a value of b like this:
+            #
+            #   abcccc...cxaaaa...bx
+            #
+            # i.e. there are a lot of branches of a in (n+1) but only one
+            # parent, and there are a lot of branches of c in n but no
+            # descendants. The hop from b to x is of size S - 1, and the hop
+            # from x to the next b is of size T, so the worst potential hop is
+            # S + T - 1
+            max_potential_offset = max(
+                len(ngram_list[n]) + len(ngram_list[n - 1]) - 1
+                for n in range(1, N)
+            )
+        else:
+            max_potential_offset = 0  # no descendants
+        for pointer_type in (
+                torch.uint8, torch.int16, torch.int32, torch.int64):
+            if torch.iinfo(pointer_type).max >= max_potential_offset:
+                break
+        if torch.iinfo(pointer_type).max < max_potential_offset:
+            # should not happen
+            raise ValueError('too many childen')
+        for id_type in (
+                torch.uint8, torch.int16, torch.int32, torch.int64):
+            if torch.iinfo(id_type).max >= U:
+                break
+        if torch.iinfo(id_type).max < U:
+            # should never happen in a practical situation
+            raise ValueError('vocab too large')
+        pointers = torch.zeros(X, dtype=pointer_type)
+        ids = torch.zeros(K, dtype=id_type)
+        logs = torch.zeros(L, dtype=torch.float)
+        dict_ = ngram_list.pop(0)
+        unigram_values = [dict_[x] for x in range(U - 1 % N)]
+        allocated = U - 1 % N
+        if N == 1:
+            logs.copy_(torch.tensor(unigram_values))
+        else:
+            logs[:allocated].copy_(
+                torch.tensor([x[0] for x in unigram_values]))
+            logs[X + G:X + G + allocated].copy_(
+                torch.tensor([x[1] for x in unigram_values]))
+        del unigram_values
+        parents = dict(((x,), x) for x in range(U - 1))
+        N -= 1
+        while N:
+            dict_ = ngram_list.pop(0)
+            start = allocated
+            pointers[allocated] = len(dict_) + 1
+            logs[allocated] = logs[X + G + allocated] = nan
+            allocated += 1
+            keys = sorted(dict_.keys())
+            children = dict()
+            for key in keys:
+                value = dict_[key]
+                children[key] = allocated
+                ids[allocated - U] = key[-1]
+                if N == 1:
+                    logs[allocated] = value
+                else:
+                    logs[allocated] = value[0]
+                    logs[allocated + X + G] = value[1]
+                prefix = key[:-1]
+                parent = parents[prefix]
+                while parent >= 0 and not pointers[parent]:
+                    pointers[parent] = allocated - parent
+                    parent -= 1
+                allocated += 1
+            while not pointers[start - 1]:
+                pointers[start - 1] = pointers[start] + 1
+                start -= 1
+            N -= 1
+            parents = children
+        assert allocated == L - X
+        # see if we can shrink the pointer size
+        if len(pointers):
+            max_offset = pointers.max().item()
+            for pointer_type in (
+                    torch.uint8, torch.int16, torch.int32, torch.int64):
+                if torch.iinfo(pointer_type).max >= max_offset:
+                    break
+            pointers = pointers.to(pointer_type)
+        return logs, ids, pointers
 
 
 class HardOptimalCompletionDistillationLoss(torch.nn.Module):

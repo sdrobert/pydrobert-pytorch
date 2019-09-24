@@ -2,6 +2,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import os
+import itertools
+
 import pytest
 import torch
 import pydrobert.torch.layers as layers
@@ -10,6 +13,276 @@ __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
+
+INF = float('inf')
+NAN = float('nan')
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize('ngram_list,pointers,ids,logs', [
+    (
+        None,
+        torch.tensor([], dtype=torch.uint8),
+        torch.tensor([], dtype=torch.uint8),
+        -torch.tensor([5] * 5, dtype=torch.float).log(),
+    ),
+    (
+        [{0: 0.0, 1: 0.1, 4: 0.4}],
+        torch.tensor([], dtype=torch.uint8),
+        torch.tensor([], dtype=torch.uint8),
+        torch.tensor([0.0, 0.1, -INF, -INF, 0.4]),
+    ),
+    (
+        [
+            {1: (0.1, -0.1), 2: (0.2, -0.2), 3: (0.3, -0.3)},
+            {(1, 0): 1.0, (1, 1): 1.1, (3, 2): 3.3},
+        ],
+        torch.tensor([6, 5, 6, 5, 5, 4], dtype=torch.uint8),
+        torch.tensor([0, 1, 2], dtype=torch.uint8),
+        torch.tensor([
+            -INF, 0.1,  0.2,  0.3,  -INF, NAN,  # logp 1-gram
+            1.0,  1.1,  3.3,                    # logp 2-gram
+            0.0,  -0.1, -0.2, -0.3, 0.0,  NAN,  # logb 1-gram
+        ]),
+    ),
+    (
+        [
+            {1: (0.1, -0.1), 2: (0.2, -0.2), 3: (0.3, -0.3), 4: (0.4, -0.4)},
+            {
+                (1, 1): (1.1, -1.1), (2, 3): (2.3, -2.3), (2, 4): (2.4, -2.4),
+                (4, 1): (4.1, -4.1)
+            },
+            {(0, 0, 1): 0.01, (0, 0, 2): 0.02, (4, 1, 4): 4.14},
+        ],
+        torch.tensor([
+            6, 6, 6, 7, 6, 6,  # 1-gram -> 2-gram
+            6, 7, 6, 5, 4, 4,  # 2-gram -> 3-gram
+        ], dtype=torch.uint8),
+        torch.tensor([
+            0, 1, 3, 4, 1, 0,   # 2-gram suffix
+            1, 2, 4,            # 3-gram suffix
+        ], dtype=torch.uint8),
+        torch.tensor([
+            -INF, 0.1,  0.2,  0.3,  0.4,  NAN,  # logp 1-gram
+            -INF, 1.1,  2.3,  2.4,  4.1,  NAN,  # logp 2-gram
+            0.01, 0.02, 4.14,                   # logp 3-gram
+            0.0,  -0.1, -0.2, -0.3, -0.4, NAN,  # logb 1-gram
+            0.0,  -1.1, -2.3, -2.4, -4.1, NAN,  # Logb 2-gram
+        ]),
+    ),
+], ids=['deft', 'unigram', 'bigram', 'trigram'])
+def test_lookup_language_model_builds_trie(ngram_list, pointers, ids, logs):
+    vocab_size = 5
+    lm = layers.LookupLanguageModel(vocab_size, ngram_list=ngram_list)
+    assert lm.pointers.shape == pointers.shape
+    assert lm.ids.shape == ids.shape
+    assert lm.logs.shape == logs.shape
+    assert (lm.ids == ids).all()
+    assert (lm.pointers == pointers).all()
+    nan_mask = torch.isnan(lm.logs)
+    assert torch.isnan(lm.logs).eq(nan_mask).all()
+    assert torch.allclose(
+        logs.masked_select(~nan_mask),
+        lm.logs.masked_select(~nan_mask)
+    )
+
+
+@pytest.mark.parametrize('N', [1, 2, 5])
+@pytest.mark.parametrize('sos', [-2, None])
+def test_lookup_language_model_log_probs(device, N, sos):
+    torch.manual_seed(1900)
+    vocab_size, eos = 10, -1
+    ngram_list = []
+    for n in range(1, N + 1):
+        max_ngrams = vocab_size ** n
+        has_ngram = torch.randint(2, (max_ngrams,), device=device).eq(1)
+        dict_ = dict()
+        last = n == N
+        for idx, has in enumerate(has_ngram):
+            if not has:
+                continue
+            key = []
+            for _ in range(n):
+                key.append(idx % vocab_size)
+                idx //= vocab_size
+            if n == 1:
+                key = key[0]
+            else:
+                key = tuple(key)
+            if last:
+                dict_[key] = torch.randn((1,), device=device).item()
+            else:
+                dict_[key] = torch.randn((2,), device=device).tolist()
+        ngram_list.append(dict_)
+    # we're not going to pad anything
+    all_queries = [[(x,) for x in range(vocab_size)]]
+    for _ in range(2, N + 1):
+        all_queries.append([
+            x + (y,)
+            for (x, y) in itertools.product(all_queries[-1], range(vocab_size))
+        ])
+
+    def lookup(list_, query):
+        if len(list_) > len(query):
+            return lookup(list_[:-1], query)
+        if len(list_) == 1:
+            if N == 1:
+                return list_[0].get(query[0], -INF)
+            else:
+                return list_[0].get(query[0], (-INF, 0.0))[0]
+        val = list_[-1].get(query, None)
+        if val is None:
+            if len(list_) == 2:
+                backoff = list_[-2].get(query[0], (-INF, 0.0))[1]
+            else:
+                backoff = list_[-2].get(query[:-1], (-INF, 0.0))[1]
+            return backoff + lookup(list_[:-1], query[1:])
+        if len(list_) == N:
+            return val
+        else:
+            return val[0]
+
+    exps = [
+        torch.tensor(
+            [lookup(ngram_list, query) for query in ngram_queries],
+            device=device
+        ).view(-1, vocab_size)
+        for ngram_queries in all_queries
+    ]
+    hists = [torch.empty(0, 1, dtype=torch.long, device=device)] + [
+        torch.tensor(
+            ngram_queries, device=device).view(-1, nm1 + 1).t()
+        for nm1, ngram_queries in enumerate(all_queries[:-1])
+    ]
+    del all_queries
+    # the sos shouldn't matter -- it isn't in the lookup table. The lm will
+    # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
+    # be 0
+    lm = layers.LookupLanguageModel(
+        vocab_size, sos=sos, eos=eos, ngram_list=ngram_list)
+    lm = lm.to(device)
+    for exp, hist in zip(exps, hists):
+        act = lm(hist)
+        assert torch.allclose(exp, act, atol=1e-5)
+        hist = torch.cat([
+            hist,
+            torch.full(
+                (1,) + hist.shape[1:], eos, dtype=torch.long, device=device)
+        ])
+        act = lm(hist, full=True)
+        assert torch.allclose(exp, act[-2], atol=1e-5)
+        assert torch.allclose(torch.zeros_like(exp), act[-1])
+
+
+@pytest.mark.gpu   # this is a really slow test on the cpu
+def test_lookup_language_model_republic():
+    device = torch.device('cuda:0')
+    dir_ = os.path.join(os.path.dirname(__file__), 'republic')
+    arpa_file = os.path.join(dir_, 'republic.arpa')
+    assert os.path.exists(arpa_file)
+    token2id_file = os.path.join(dir_, 'token2id.map')
+    assert os.path.exists(token2id_file)
+    queries_file = os.path.join(dir_, 'queries.txt')
+    assert os.path.exists(queries_file)
+    exp_file = os.path.join(dir_, 'exp.txt')
+    assert os.path.exists(exp_file)
+    token2id = dict()
+    with open(token2id_file) as f:
+        for line in f:
+            token, id_ = line.strip().split()
+            assert token not in token2id
+            token2id[token] = int(id_)
+    sos, eos, oov = token2id['<s>'], token2id['</s>'], token2id['<unk>']
+    vocab_size = len(token2id)
+    assert all(x in token2id.values() for x in range(vocab_size))
+    queries = []
+    with open(queries_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            query = [token2id.get(token, oov) for token in line.split()]
+            queries.append(torch.tensor(query, device=device))
+    queries = torch.nn.utils.rnn.pad_sequence(queries, padding_value=eos)
+    exp = []
+    with open(exp_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            exp.append(float(line))
+    exp = torch.tensor(exp, device=device)
+    assert exp.shape[0] == queries.shape[1]
+    import pydrobert.torch.util as util
+    ngram_list = util.parse_arpa_lm(arpa_file, token2id=token2id)
+    lm = layers.LookupLanguageModel(
+        vocab_size, sos=sos, eos=eos, oov=oov, ngram_list=ngram_list)
+    lm = lm.to(device)
+    log_probs = lm(queries, full=True)
+    queries = torch.cat([queries, torch.full_like(queries[:1], eos)])
+    assert log_probs.shape[:-1] == queries.shape
+    log_probs = log_probs.gather(2, queries.unsqueeze(2)).squeeze(2)
+    assert torch.allclose(log_probs.sum(0), exp, atol=1e-5)
+
+
+@pytest.mark.cpu
+def test_lookup_language_model_state_dict():
+    vocab_size, sos, eos = 10, -1, 0
+    uni_list = [{0: 0.0, 1: 0.1, 2: 0.2}]
+    lm_a = layers.LookupLanguageModel(
+        vocab_size, sos=sos, eos=eos, ngram_list=uni_list)
+    lm_b = layers.LookupLanguageModel(vocab_size, sos=sos, eos=eos)
+
+    def compare(assert_same):
+        same_max_ngram = (lm_a.max_ngram == lm_b.max_ngram)
+        same_max_ngram_nodes = (lm_a.max_ngram_nodes == lm_b.max_ngram_nodes)
+        same_pointers = len(lm_a.pointers) == len(lm_b.pointers)
+        if same_pointers:
+            same_pointers = (lm_a.pointers == lm_b.pointers).all()
+        same_ids = len(lm_a.ids) == len(lm_b.ids)
+        if same_ids:
+            same_ids = (lm_a.ids == lm_b.ids).all()
+        same_logs = len(lm_a.logs) == len(lm_b.logs)
+        if same_logs:
+            nan_mask = torch.isnan(lm_a.logs)
+            assert (nan_mask == torch.isnan(lm_b.logs)).all()
+            same_logs = torch.allclose(
+                lm_a.logs.masked_select(nan_mask.eq(0)),
+                lm_b.logs.masked_select(nan_mask.eq(0)), atol=1e-5)
+        if assert_same:
+            assert same_max_ngram
+            assert same_max_ngram_nodes
+            assert same_pointers
+            assert same_ids
+            assert same_logs
+        else:
+            assert not (
+                same_max_ngram and same_max_ngram_nodes and same_pointers and
+                same_ids and same_logs
+            )
+
+    compare(False)
+    lm_b.load_state_dict(lm_a.state_dict())
+    compare(True)
+    bi_list = [
+        {2: (0.2, -0.2), 3: (0.3, -0.3)},
+        {(0, 3): 0.03, (2, 4): 0.24}
+    ]
+    lm_a = layers.LookupLanguageModel(
+        vocab_size, sos=sos, eos=eos, ngram_list=bi_list)
+    compare(False)
+    lm_b.load_state_dict(lm_a.state_dict())
+    compare(True)
+    tri_list = [
+        {0: (0.0, 0.0)},
+        dict(),
+        {(0, 0, 0): 0.0, (4, 4, 4): 0.444, (2, 3, 2): 0.232}
+    ]
+    lm_a = layers.LookupLanguageModel(
+        vocab_size, sos=sos, eos=eos, ngram_list=tri_list)
+    compare(False)
+    lm_b.load_state_dict(lm_a.state_dict())
+    compare(True)
 
 
 @pytest.mark.parametrize('batch_first', [True, False])
@@ -137,6 +410,56 @@ def test_hard_optimal_completion_distillation_loss(
     g, = torch.autograd.grad([l1], [logits])
     assert torch.all(g.masked_select(inv_len_mask.unsqueeze(-1)).eq(0.))
     assert not torch.all(g.eq(0.))
+
+
+@pytest.mark.parametrize('sos', [None, 0])
+def test_sequential_language_model(device, sos):
+
+    class LM(layers.SequentialLanguageModel):
+        def __init__(self, vocab_size, sos=None, eos=None, oov=None):
+            super(LM, self).__init__(vocab_size, eos=eos, oov=oov)
+            self.embed = torch.nn.Embedding(vocab_size, vocab_size)
+
+        def calc_last_log_probs(self, hist, eos_mask):
+            if hist.shape[0]:
+                out = torch.nn.functional.log_softmax(
+                        self.embed(hist[-1]), dim=-1)
+            else:
+                assert self.sos is None
+                out = -torch.full(
+                    (hist.shape[1], self.vocab_size,),
+                    self.vocab_size, device=device).log()
+            return out
+
+    torch.manual_seed(61094)
+    S, vocab_size, max_dim, max_dim_size = 30, 20, 10, 5
+    eos, oov = vocab_size - 2, vocab_size - 1
+    num_dim = torch.randint(2, max_dim + 1, (1,), device=device).item()
+    hist_shape = [S] + torch.randint(
+        1, max_dim_size, (num_dim,), device=device).tolist()
+    hist = torch.randint(
+        -vocab_size // 5, (vocab_size * 6) // 5, hist_shape, device=device)
+    hist = hist.masked_fill(hist.eq(eos), vocab_size + 1)
+    N = torch.tensor(hist_shape[1:]).prod().item()
+    first_eos_locs = torch.randint(1, hist_shape[0], (N,), device=device)
+    hist.view(-1, N)[first_eos_locs, range(N)] = eos
+    lm = LM(vocab_size, sos, eos, oov).to(device)
+    log_probs = lm(hist, full=True)
+    assert (
+        list(log_probs.shape) ==
+        [hist_shape[0] + 1] + hist_shape[1:] + [vocab_size]
+    )
+    for log_probs_n, first_eos_n in zip(
+            log_probs.view(-1, N, vocab_size).transpose(0, 1),
+            first_eos_locs.tolist()):
+        # the index first_eos_n in log_probs refers to the probabilties of the
+        # current token being whatever given the history first_eos_n - 1, so
+        # we haven't yet stored the eos in history.
+        assert not log_probs_n[:first_eos_n + 1].eq(0.).any()
+        assert log_probs_n[first_eos_n + 1:].eq(0.).all()
+    for s in range(log_probs.shape[0]):
+        assert torch.allclose(log_probs[s], lm(hist[:s]))
+    assert torch.allclose(lm(hist[:0], full=True).squeeze(0), log_probs[0])
 
 
 @pytest.mark.parametrize('dim', [0, 1])
