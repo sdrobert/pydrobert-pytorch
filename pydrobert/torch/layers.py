@@ -128,6 +128,16 @@ class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         if self.oov is not None and (self.oov < 0 or self.oov >= vocab_size):
             raise ValueError('oov must be within [0, vocab_size)')
 
+    def extra_repr(self):
+        s = 'vocab_size={}'.format(self.vocab_size)
+        if self.sos is not None:
+            s += ', sos={}'.format(self.sos)
+        if self.eos is not None:
+            s += ', eos={}'.format(self.eos)
+        if self.oov is not None:
+            s += ', oov={}'.format(self.oov)
+        return s
+
     def check_input(self, hist, **kwargs):
         '''Check if the input is formatted correctly, otherwise RuntimeError'''
         if hist.dim() < 2:
@@ -317,6 +327,12 @@ class LookupLanguageModel(SequentialLanguageModel):
         parameter `token2id` should be specified to ensure id-based keys.
     '''
 
+    # XXX(sdrobert): as discussed in [heafield2011], we could potentially speed
+    # up computations by keeping track of prefix probs and storing them in
+    # case of backoff. This makes sense in a serial case, when we can choose to
+    # explore or not explore a path. In a massively parallel environment, I'm
+    # not sure it's worth the effort...
+
     def __init__(
             self, vocab_size, sos=None, eos=None, oov=None, ngram_list=None):
         super(LookupLanguageModel, self).__init__(
@@ -341,6 +357,11 @@ class LookupLanguageModel(SequentialLanguageModel):
         self.register_buffer('logs', logs)
         self.register_buffer('ids', ids)
         self.register_buffer('pointers', pointers)
+
+    def extra_repr(self):
+        s = super(LookupLanguageModel, self).extra_repr()
+        s += ', max_ngram={}'.format(self.max_ngram)
+        return s
 
     def calc_last_log_probs(self, hist, eos_mask):
         # we produce two tries with the same node ids: one for logp and one for

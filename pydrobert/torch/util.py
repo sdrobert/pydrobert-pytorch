@@ -280,8 +280,21 @@ def beam_search_advance(
     >>>     best_beam_path = best_beam_path.masked_select(not_special_mask)
     >>>     bests.append(best_beam_path)
 
-    ``W``-best list for non-auto-regressive model. We don't emit an `eos`,
-    instead completing the sequence when we've hit the target length via `lens`
+    Were we to have a :class:`pydrobert.torch.layers.SequentialLanguageModel`,
+    we could modify `logits_t`, and thus the search, to account for it:
+
+    >>> # ... same as before
+    >>> logits_t = torch.nn.functional.log_softmax(logits_t, -1)
+    >>> logits_t = logits_t + lmb * lm(y)  # lmb is some constant
+    >>> score, y, s_t = beam_search_advance(
+    ...     logits_t, W, score, y, eos, distribution=False)
+    >>> # ... same as before
+
+    Note that `score` would no longer reflect a log-joint probability.
+
+    The following produces a ``W``-best list for non-auto-regressive model. We
+    don't emit an `eos`, instead completing the sequence when we've hit the
+    target length via `lens`
 
     >>> N, I, C, T, W, H = 5, 5, 10, 100, 5, 10
     >>> rnn = torch.nn.RNN(I, H)
