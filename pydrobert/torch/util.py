@@ -113,10 +113,7 @@ def parse_arpa_lm(file_, token2id=None):
         ngram_counts[n - 1] = count
     ngram_list = [dict() for _ in ngram_counts]
     ngram_header_pattern = re.compile(r'^\\(\d+)-grams:$')
-    ngram_entry_pattern_backoff = re.compile(
-        r'^(-?\d+(?:\.\d+)?)\s+(.*?)\s+(-?\d+(?:\.\d+)?)$')
-    ngram_entry_pattern_nobackoff = re.compile(
-        r'^(-?\d+(?:\.\d+)?)\s+(.*)()$')
+    ngram_entry_pattern = re.compile(r'^(-?\d+(?:\.\d+)?)\s+(.*)$')
     while line != '\\end\\':
         match = ngram_header_pattern.match(line)
         if match is None:
@@ -127,10 +124,6 @@ def parse_arpa_lm(file_, token2id=None):
                 '{}-grams count was not listed, but found entry'
                 ''.format(ngram))
         dict_ = ngram_list[ngram - 1]
-        if ngram != len(ngram_counts):
-            ngram_entry_pattern = ngram_entry_pattern_backoff
-        else:
-            ngram_entry_pattern = ngram_entry_pattern_nobackoff
         for line in file_:
             line = line.strip()
             if not line:
@@ -138,8 +131,17 @@ def parse_arpa_lm(file_, token2id=None):
             match = ngram_entry_pattern.match(line)
             if match is None:
                 break
-            logp, tokens, logb = match.groups()
-            tokens = tuple(tokens.strip().split())
+            logp, rest = match.groups()
+            tokens = tuple(rest.strip().split())
+            # IRSTLM and SRILM allow for implicit backoffs on non-final
+            # n-grams, but final n-grams must not have backoffs
+            logb = 0.0
+            if len(tokens) == ngram + 1 and ngram < len(ngram_list):
+                try:
+                    logb = float(tokens[-1])
+                    tokens = tokens[:-1]
+                except ValueError:
+                    pass
             if len(tokens) != ngram:
                 raise IOError(
                     'expected line "{}" to be a(n) {}-gram'
@@ -149,7 +151,7 @@ def parse_arpa_lm(file_, token2id=None):
             if ngram == 1:
                 tokens = tokens[0]
             if ngram != len(ngram_counts):
-                dict_[tokens] = (float(logp), float(logb.strip()))
+                dict_[tokens] = (float(logp), logb)
             else:
                 dict_[tokens] = float(logp)
     if line != '\\end\\':
