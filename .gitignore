@@ -105,3 +105,4 @@ venv.bak/
 
 .ftpignore
 .ftpconfig
+.vscode

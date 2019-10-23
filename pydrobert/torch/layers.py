@@ -1232,6 +1232,7 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         e = self.score(query, key)
         if mask is not None:
             e = e.masked_fill(mask.eq(0), -float('inf'))
+            print('a', mask[0, :, 0].eq(0), e[0, :, 0])
         a = torch.nn.functional.softmax(e, self.dim)
         c = (a.unsqueeze(-1) * value).sum(self.dim)
         return c
