@@ -26,7 +26,6 @@ from __future__ import division
 from __future__ import print_function
 
 import abc
-import warnings
 
 import torch
 
@@ -44,7 +43,7 @@ __all__ = [
     'GlobalSoftAttention',
     'HardOptimalCompletionDistillationLoss',
     'LookupLanguageModel',
-    'MimimumErrorRateLoss',
+    'MinimumErrorRateLoss',
     'MultiHeadedAttention',
     'SequentialLanguageModel',
 ]
@@ -820,7 +819,6 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
 
     def forward(self, logits, ref, hyp, warn=True):
         self.check_input(logits, ref, hyp)
-        num_classes = logits.shape[-1]
         # the padding we use will never be exposed to the user, so we merely
         # ensure we're not trampling the eos
         padding = -2 if self.eos == -1 else -1

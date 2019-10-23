@@ -32,7 +32,7 @@ __all__ = [
     'beam_search_advance',
     'error_rate',
     'optimal_completion',
-    'parse_arpa',
+    'parse_arpa_lm',
     'prefix_error_rates',
     'random_walk_advance',
     'sequence_log_probs',
@@ -1122,7 +1122,6 @@ def _levenshtein(
     ins_cost = torch.tensor(float(ins_cost), device=device)
     del_cost = torch.tensor(float(del_cost), device=device)
     sub_cost = torch.tensor(float(sub_cost), device=device)
-    zero = torch.tensor(0., device=device)
     batch_range = torch.arange(batch_size, device=device)
     if return_mask:
         # this dtype business is a workaround for different default mask

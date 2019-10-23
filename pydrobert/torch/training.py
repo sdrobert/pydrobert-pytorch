@@ -34,7 +34,6 @@ from collections import OrderedDict
 
 import torch
 import param
-import pydrobert.torch
 
 
 __author__ = "Sean Robertson"
@@ -618,7 +617,7 @@ class TrainingStateController(object):
             **epoch_info)
         try:
             os.remove(os.path.join(self.state_dir, model_basename))
-        except OSError as e:
+        except OSError:
             pass
         try:
             os.remove(os.path.join(self.state_dir, optimizer_basename))
