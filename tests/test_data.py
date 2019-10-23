@@ -4,7 +4,7 @@ from __future__ import print_function
 
 import os
 
-from itertools import repeat, chain
+from itertools import repeat
 try:
     # we want to write string literals in 2.7, not unicode
     from StringIO import StringIO
@@ -462,7 +462,6 @@ def test_epoch_random_sampler(temp_dir):
 def test_context_window_seq_to_batch(feat_sizes, include_ali):
     torch.manual_seed(1)
     feats = tuple(torch.rand(*x) for x in feat_sizes)
-    num_frames = sum(x[0] for x in feat_sizes)
     if include_ali:
         alis = tuple(torch.randint(10, (x[0],)).long() for x in feat_sizes)
     else:

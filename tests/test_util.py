@@ -2,7 +2,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from itertools import chain
 from tempfile import SpooledTemporaryFile
 
 import torch
@@ -20,6 +19,7 @@ def test_parse_arpa_lm():
     file_ = SpooledTemporaryFile(mode='w+')
     file_.write(r'''\
 This is from https://cmusphinx.github.io/wiki/arpaformat/
+I've removed the backoff for </s> b/c IRSTLM likes to do things like that
 
 \data\
 ngram 1=7
@@ -28,7 +28,7 @@ ngram 2=7
 \1-grams:
 -1.0000 <unk>	-0.2553
 -98.9366 <s>	 -0.3064
--1.0000 </s>	 0.0000
+-1.0000 </s>
 -0.6990 wood	 -0.2553
 -0.6990 cindy	-0.2553
 -0.6990 pittsburgh		-0.2553
@@ -82,25 +82,6 @@ ngram 10 = 1
     ngram_list = util.parse_arpa_lm(file_)
     assert all(x == dict() for x in ngram_list[:-1])
     assert not ngram_list[9][tuple(str(x) for x in range(1, 11))]
-    file_.seek(0)
-    file_.write(r'''\
-Here's one where we omit backoff probabilities erroneously
-
-\data\
-ngram 1=1
-ngram 2=1
-
-\1-grams:
-0.0 a
-
-\2-grams:
-0.0 a
-
-\end\
-''')
-    file_.seek(0)
-    with pytest.raises(IOError):
-        util.parse_arpa_lm(file_)
     file_.seek(0)
     file_.write(r'''\
 Here's one where we erroneously include backoffs

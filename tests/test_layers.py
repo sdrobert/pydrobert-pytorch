@@ -587,9 +587,11 @@ def test_dot_product_soft_attention_on_transformer_input():
     assert torch.allclose(g_v1, g_v2, atol=1e-5)
     mask = torch.randint(2, (num_batch, len_q, len_k)).eq(1)
     out1 = matrix_attention(query, key, value, mask)
+    # the "contiguous" is necessary for 1.3.0
+    # https://github.com/pytorch/pytorch/issues/28502
     out2 = our_attention(
         query, key.unsqueeze(2), value.unsqueeze(2),
-        mask.transpose(1, 2).eq(0)  # we use the inverse of their mask
+        mask.transpose(1, 2).contiguous().eq(0)  # we use the inverse of mask
     )
     assert torch.allclose(out1, out2, atol=1e-5)
 
