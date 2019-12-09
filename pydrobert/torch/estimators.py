@@ -54,6 +54,20 @@ BERNOULLI_SYNONYMS = {"bern", "Bern", "bernoulli", "Bernoulli"}
 CATEGORICAL_SYNONYMS = {"cat", "Cat", "categorical", "Categorical"}
 ONEHOT_SYNONYMS = {"onehot", "OneHotCategorical"}
 
+# XXX(sdrobert): Implementation detail
+# The Gumbel relaxation does not *require* a softmax to be applied to the
+# logits before normalization. You can sample
+#
+# z_i = logits_i - log(-log u_i)
+#
+# Then z' becomes (for sample b_k = 1)
+#
+# z'_i = logits_k - log(-log v_k)  for i == k
+#      = -log((log v_k)/(sum_l exp logits_l) - (log v_i)/(exp logits_i))  else
+#
+# However, when I ran tests, I found this was slower to compute and less
+# numerically stable (though unbiased) than just taking the softmax beforehand
+
 
 def to_z(logits, dist, warn=True):
     '''Samples a continuous relaxation of `dist` parameterized by `logits`
