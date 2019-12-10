@@ -19,7 +19,7 @@ NAN = float('nan')
 
 
 @pytest.mark.cpu
-@pytest.mark.parametrize('ngram_list,pointers,ids,logs', [
+@pytest.mark.parametrize('prob_list,pointers,ids,logs', [
     (
         None,
         torch.tensor([], dtype=torch.uint8),
@@ -71,9 +71,9 @@ NAN = float('nan')
         ]),
     ),
 ], ids=['deft', 'unigram', 'bigram', 'trigram'])
-def test_lookup_language_model_builds_trie(ngram_list, pointers, ids, logs):
+def test_lookup_language_model_builds_trie(prob_list, pointers, ids, logs):
     vocab_size = 5
-    lm = layers.LookupLanguageModel(vocab_size, ngram_list=ngram_list)
+    lm = layers.LookupLanguageModel(vocab_size, prob_list=prob_list)
     assert lm.pointers.shape == pointers.shape
     assert lm.ids.shape == ids.shape
     assert lm.logs.shape == logs.shape
@@ -92,7 +92,7 @@ def test_lookup_language_model_builds_trie(ngram_list, pointers, ids, logs):
 def test_lookup_language_model_log_probs(device, N, sos):
     torch.manual_seed(1900)
     vocab_size, eos = 10, -1
-    ngram_list = []
+    prob_list = []
     for n in range(1, N + 1):
         max_ngrams = vocab_size ** n
         has_ngram = torch.randint(2, (max_ngrams,), device=device).eq(1)
@@ -113,7 +113,7 @@ def test_lookup_language_model_log_probs(device, N, sos):
                 dict_[key] = torch.randn((1,), device=device).item()
             else:
                 dict_[key] = torch.randn((2,), device=device).tolist()
-        ngram_list.append(dict_)
+        prob_list.append(dict_)
     # we're not going to pad anything
     all_queries = [[(x,) for x in range(vocab_size)]]
     for _ in range(2, N + 1):
@@ -144,7 +144,7 @@ def test_lookup_language_model_log_probs(device, N, sos):
 
     exps = [
         torch.tensor(
-            [lookup(ngram_list, query) for query in ngram_queries],
+            [lookup(prob_list, query) for query in ngram_queries],
             device=device
         ).view(-1, vocab_size)
         for ngram_queries in all_queries
@@ -159,7 +159,7 @@ def test_lookup_language_model_log_probs(device, N, sos):
     # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
     # be 0
     lm = layers.LookupLanguageModel(
-        vocab_size, sos=sos, eos=eos, ngram_list=ngram_list)
+        vocab_size, sos=sos, eos=eos, prob_list=prob_list)
     lm = lm.to(device)
     for exp, hist in zip(exps, hists):
         act = lm(hist)
@@ -214,9 +214,9 @@ def test_lookup_language_model_republic():
     exp = torch.tensor(exp, device=device)
     assert exp.shape[0] == queries.shape[1]
     import pydrobert.torch.util as util
-    ngram_list = util.parse_arpa_lm(arpa_file, token2id=token2id)
+    prob_list = util.parse_arpa_lm(arpa_file, token2id=token2id)
     lm = layers.LookupLanguageModel(
-        vocab_size, sos=sos, eos=eos, oov=oov, ngram_list=ngram_list)
+        vocab_size, sos=sos, eos=eos, oov=oov, prob_list=prob_list)
     lm = lm.to(device)
     log_probs = lm(queries, full=True)
     queries = torch.cat([queries, torch.full_like(queries[:1], eos)])
@@ -230,7 +230,7 @@ def test_lookup_language_model_state_dict():
     vocab_size, sos, eos = 10, -1, 0
     uni_list = [{0: 0.0, 1: 0.1, 2: 0.2}]
     lm_a = layers.LookupLanguageModel(
-        vocab_size, sos=sos, eos=eos, ngram_list=uni_list)
+        vocab_size, sos=sos, eos=eos, prob_list=uni_list)
     lm_b = layers.LookupLanguageModel(vocab_size, sos=sos, eos=eos)
 
     def compare(assert_same):
@@ -269,7 +269,7 @@ def test_lookup_language_model_state_dict():
         {(0, 3): 0.03, (2, 4): 0.24}
     ]
     lm_a = layers.LookupLanguageModel(
-        vocab_size, sos=sos, eos=eos, ngram_list=bi_list)
+        vocab_size, sos=sos, eos=eos, prob_list=bi_list)
     compare(False)
     lm_b.load_state_dict(lm_a.state_dict())
     compare(True)
@@ -279,7 +279,7 @@ def test_lookup_language_model_state_dict():
         {(0, 0, 0): 0.0, (4, 4, 4): 0.444, (2, 3, 2): 0.232}
     ]
     lm_a = layers.LookupLanguageModel(
-        vocab_size, sos=sos, eos=eos, ngram_list=tri_list)
+        vocab_size, sos=sos, eos=eos, prob_list=tri_list)
     compare(False)
     lm_b.load_state_dict(lm_a.state_dict())
     compare(True)

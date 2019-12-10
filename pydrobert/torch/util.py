@@ -44,7 +44,7 @@ def parse_arpa_lm(file_, token2id=None):
     r'''Parse an ARPA statistical language model
 
     An `ARPA language model <https://cmusphinx.github.io/wiki/arpaformat/>`__
-    is a n-gram model with back-off probabilities. It is formatted as
+    is an n-gram model with back-off probabilities. It is formatted as
 
     ::
 
@@ -79,15 +79,15 @@ def parse_arpa_lm(file_, token2id=None):
 
     Returns
     -------
-    ngram_list : list
-        A list of the same length as there are unique classes of n-grams in the
-        file (e.g. if the file contains up to tri-grams then `ngram_list` will
-        be of length 3). Each element is a dictionary whose key is the word
-        sequence (earliest word first). For 1-grams, this is just the word. For
-        n > 1, this is a tuple of words. Values are either a tuple of
-        ``logp, logb`` of the log-probability and backoff log-probability, or,
-        in the case of the final n-gram that doesn't need a backoff, just the
-        log probability
+    prob_list : list
+        A list of the same length as there are orders of n-grams in the
+        file (e.g. if the file contains up to tri-gram probabilities then
+        `prob_list` will be of length 3). Each element is a dictionary whose
+        key is the word sequence (earliest word first). For 1-grams, this is
+        just the word. For n > 1, this is a tuple of words. Values are either
+        a tuple of ``logp, logb`` of the log-probability and backoff
+        log-probability, or, in the case of the highest-order n-grams that
+        don't need a backoff, just the log probability
     '''
     if isinstance(file_, str):
         with open(file_) as f:
@@ -111,7 +111,7 @@ def parse_arpa_lm(file_, token2id=None):
         if len(ngram_counts) < n:
             ngram_counts.extend(0 for _ in range(n - len(ngram_counts)))
         ngram_counts[n - 1] = count
-    ngram_list = [dict() for _ in ngram_counts]
+    prob_list = [dict() for _ in ngram_counts]
     ngram_header_pattern = re.compile(r'^\\(\d+)-grams:$')
     ngram_entry_pattern = re.compile(r'^(-?\d+(?:\.\d+)?)\s+(.*)$')
     while line != '\\end\\':
@@ -123,7 +123,7 @@ def parse_arpa_lm(file_, token2id=None):
             raise IOError(
                 '{}-grams count was not listed, but found entry'
                 ''.format(ngram))
-        dict_ = ngram_list[ngram - 1]
+        dict_ = prob_list[ngram - 1]
         for line in file_:
             line = line.strip()
             if not line:
@@ -136,7 +136,7 @@ def parse_arpa_lm(file_, token2id=None):
             # IRSTLM and SRILM allow for implicit backoffs on non-final
             # n-grams, but final n-grams must not have backoffs
             logb = 0.0
-            if len(tokens) == ngram + 1 and ngram < len(ngram_list):
+            if len(tokens) == ngram + 1 and ngram < len(prob_list):
                 try:
                     logb = float(tokens[-1])
                     tokens = tokens[:-1]
@@ -157,11 +157,11 @@ def parse_arpa_lm(file_, token2id=None):
     if line != '\\end\\':
         raise IOError('Could not find \\end\\ line')
     for ngram_m1, (ngram_count, dict_) in enumerate(
-            zip(ngram_counts, ngram_list)):
+            zip(ngram_counts, prob_list)):
         if len(dict_) != ngram_count:
             raise IOError('Expected {} {}-grams, got {}'.format(
                 ngram_count, ngram_m1, len(dict_)))
-    return ngram_list
+    return prob_list
 
 
 def beam_search_advance(
