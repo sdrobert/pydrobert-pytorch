@@ -291,29 +291,30 @@ class LookupLanguageModel(SequentialLanguageModel):
     sos : int, optional
     eos : int, optional
     oov : int, optional
-    ngram_list : sequence, optional
+    prob_list : sequence, optional
+
         A list of dictionaries whose entry at index ``i`` corresponds to a
-        table of ``i+1``-grams. Keys must all be ids, not strings. Unigram
-        keys are just ids; for n > 1 keys are tuples of ids with the latest
-        word last. Values in the dictionary of the highest order n-gram
-        (last in `ngram_list`) are the log-probabilities of the keys. Lower
-        order n-grams' dictionaries' values are pairs of log-probability and
-        log-backoff penalty. If `ngram_list` is not specified, a unigram model
+        table of ``i+1``-gram probabilities. Keys must all be ids, not strings.
+        Unigram keys are just ids; for n > 1 keys are tuples of ids with the
+        latest word last. Values in the dictionary of the highest order n-gram
+        dictionaries (last in `prob_list`) are the log-probabilities of the
+        keys. Lower order dictionaries' values are pairs of log-probability and
+        log-backoff penalty. If `prob_list` is not specified, a unigram model
         with a uniform prior will be built
 
     Notes
     -----
-    Initializing an instance from an `ngram_list` is expensive. `ngram_list` is
+    Initializing an instance from an `prob_list` is expensive. `prob_list` is
     converted to a trie (something like [heafield2011]_) so that it takes up
     less space in memory, which can take some time.
 
     Rather than re-initializing repeatedly, it is recommended you save and load
     this module's state dict. :func:`load_state_dict` as been overridden to
     support loading different table sizes, avoiding the need for an accurate
-    `ngram_list` on initialization:
+    `prob_list` on initialization:
 
     >>> # first time
-    >>> lm = LookupLanguageModel(vocab_size, sos, eos, oov, ngram_list)  # slow
+    >>> lm = LookupLanguageModel(vocab_size, sos, eos, oov, prob_list)  # slow
     >>> state_dict = lm.state_dict()
     >>> # save state dict, quit, startup, then reload state dict
     >>> lm = LookupLanguageModel(vocab_size, sos, eos, oov)  # fast!
@@ -322,8 +323,9 @@ class LookupLanguageModel(SequentialLanguageModel):
     See Also
     --------
     pydrobert.util.parse_arpa_lm
-        How to read a pretrained table of n-grams into `ngram_list`. The
-        parameter `token2id` should be specified to ensure id-based keys.
+        How to read a pretrained table of n-gram probabilities into
+        `prob_list`. The parameter `token2id` should be specified to ensure
+        id-based keys.
     '''
 
     # XXX(sdrobert): as discussed in [heafield2011], we could potentially speed
@@ -333,7 +335,7 @@ class LookupLanguageModel(SequentialLanguageModel):
     # not sure it's worth the effort...
 
     def __init__(
-            self, vocab_size, sos=None, eos=None, oov=None, ngram_list=None):
+            self, vocab_size, sos=None, eos=None, oov=None, prob_list=None):
         super(LookupLanguageModel, self).__init__(
             vocab_size, sos=sos, eos=eos, oov=oov)
         if sos is not None and (sos < 0 or sos > vocab_size):
@@ -342,7 +344,7 @@ class LookupLanguageModel(SequentialLanguageModel):
             self.shift = 1
         else:
             self.shift = 0
-        if ngram_list is None:
+        if prob_list is None:
             logs = -torch.full(
                 (self.shift + vocab_size,),
                 vocab_size, dtype=torch.float).log()
@@ -350,9 +352,9 @@ class LookupLanguageModel(SequentialLanguageModel):
             self.max_ngram = 1
             self.max_ngram_nodes = self.shift + vocab_size
         else:
-            self.max_ngram = len(ngram_list)
+            self.max_ngram = len(prob_list)
             self.max_ngram_nodes = None  # changed by build_trie
-            logs, ids, pointers = self._build_trie(ngram_list)
+            logs, ids, pointers = self._build_trie(prob_list)
         self.register_buffer('logs', logs)
         self.register_buffer('ids', ids)
         self.register_buffer('pointers', pointers)
@@ -552,20 +554,20 @@ class LookupLanguageModel(SequentialLanguageModel):
         return super(LookupLanguageModel, self).load_state_dict(
             state_dict, **kwargs)
 
-    def _build_trie(self, ngram_list):
-        if not len(ngram_list):
-            raise ValueError('ngram_list must contain at least unigrams')
-        ngram_list = [x.copy() for x in ngram_list]
+    def _build_trie(self, prob_list):
+        if not len(prob_list):
+            raise ValueError('prob_list must contain at least unigrams')
+        prob_list = [x.copy() for x in prob_list]
         total_entries, nan, inf = 0, float('nan'), float('inf')
         unigrams = set(range(self.vocab_size))
         if self.shift:
             unigrams.add(self.sos)
         for n in range(self.max_ngram - 1, -1, -1):
-            dict_ = ngram_list[n]
+            dict_ = prob_list[n]
             is_last = n == self.max_ngram - 1
             if is_last and not dict_:
                 raise ValueError(
-                    'Final element in ngram_list must not be empty')
+                    'Final element in prob_list must not be empty')
             if is_last:
                 dummy_value = -inf
             else:
@@ -574,7 +576,7 @@ class LookupLanguageModel(SequentialLanguageModel):
                 keys = set(dict_.keys())
                 if keys - unigrams:
                     raise ValueError(
-                        'Unexpected unigrams in ngram_list: {} (are these '
+                        'Unexpected unigrams in prob_list: {} (are these '
                         'ids?)'.format(keys - unigrams))
                 dict_.update((key, dummy_value) for key in unigrams - keys)
             else:
@@ -585,26 +587,26 @@ class LookupLanguageModel(SequentialLanguageModel):
                             '{1}'.format(n + 1, seq))
                     if set(seq) - unigrams:
                         raise ValueError(
-                            'Unexpected tokens in {}-gram in ngram_list: {} ('
+                            'Unexpected tokens in {}-gram in prob_list: {} ('
                             'are these ids?)'
                             ''.format(n + 1, set(seq) - unigrams))
                     prefix = seq[:-1]
                     if len(prefix) == 1:
                         prefix = prefix[0]
-                    if prefix not in ngram_list[n - 1]:
-                        ngram_list[n - 1][prefix] = -inf, 0.0
+                    if prefix not in prob_list[n - 1]:
+                        prob_list[n - 1][prefix] = -inf, 0.0
             total_entries += len(dict_)
             if is_last:
                 self.max_ngram_nodes = len(dict_)
         if self.shift:
-            ngram_list[0] = dict(
+            prob_list[0] = dict(
                 (0, v) if k == self.sos else (k + 1, v)
-                for (k, v) in ngram_list[0].items()
+                for (k, v) in prob_list[0].items()
             )
             for n in range(1, self.max_ngram):
-                ngram_list[n] = dict(
+                prob_list[n] = dict(
                     (tuple(0 if t == self.eos else t + 1 for t in k), v)
-                    for (k, v) in ngram_list[n].items()
+                    for (k, v) in prob_list[n].items()
                 )
         N, G, V = self.max_ngram, self.max_ngram_nodes, self.vocab_size
         U, X = V + self.shift + (1 % N), total_entries - G + (N - 1)
@@ -625,7 +627,7 @@ class LookupLanguageModel(SequentialLanguageModel):
             # from x to the next b is of size T, so the worst potential hop is
             # S + T - 1
             max_potential_offset = max(
-                len(ngram_list[n]) + len(ngram_list[n - 1]) - 1
+                len(prob_list[n]) + len(prob_list[n - 1]) - 1
                 for n in range(1, N)
             )
         else:
@@ -647,7 +649,7 @@ class LookupLanguageModel(SequentialLanguageModel):
         pointers = torch.zeros(X, dtype=pointer_type)
         ids = torch.zeros(K, dtype=id_type)
         logs = torch.zeros(L, dtype=torch.float)
-        dict_ = ngram_list.pop(0)
+        dict_ = prob_list.pop(0)
         unigram_values = [dict_[x] for x in range(U - 1 % N)]
         allocated = U - 1 % N
         if N == 1:
@@ -661,7 +663,7 @@ class LookupLanguageModel(SequentialLanguageModel):
         parents = dict(((x,), x) for x in range(U - 1))
         N -= 1
         while N:
-            dict_ = ngram_list.pop(0)
+            dict_ = prob_list.pop(0)
             start = allocated
             pointers[allocated] = len(dict_) + 1
             logs[allocated] = logs[X + G + allocated] = nan
