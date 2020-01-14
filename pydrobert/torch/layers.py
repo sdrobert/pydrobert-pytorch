@@ -292,7 +292,6 @@ class LookupLanguageModel(SequentialLanguageModel):
     eos : int, optional
     oov : int, optional
     prob_list : sequence, optional
-
         A list of dictionaries whose entry at index ``i`` corresponds to a
         table of ``i+1``-gram probabilities. Keys must all be ids, not strings.
         Unigram keys are just ids; for n > 1 keys are tuples of ids with the
@@ -301,6 +300,15 @@ class LookupLanguageModel(SequentialLanguageModel):
         keys. Lower order dictionaries' values are pairs of log-probability and
         log-backoff penalty. If `prob_list` is not specified, a unigram model
         with a uniform prior will be built
+    pad_sos_to_n : bool, optional
+        For backoff models, it is usually the case that the input sequence is
+        pre-padded with `sos` (n - 1) times rather than just once so that the
+        context window is always of size `n`. If `pad_sos_to_n` is
+        :obj:`False`, we will not perform the additional padding (though there
+        will still be a sequence-initial `sos`). If no `sos` token is
+        specified, this option is moot. It is usually safe to keep this setting
+        :obj:`True` since no language model should assign a backoff penalty
+        to prefixes of `sos` symbols.
 
     Notes
     -----
@@ -335,9 +343,11 @@ class LookupLanguageModel(SequentialLanguageModel):
     # not sure it's worth the effort...
 
     def __init__(
-            self, vocab_size, sos=None, eos=None, oov=None, prob_list=None):
+            self, vocab_size, sos=None, eos=None, oov=None, prob_list=None,
+            pad_sos_to_n=True):
         super(LookupLanguageModel, self).__init__(
             vocab_size, sos=sos, eos=eos, oov=oov)
+        self.pad_sos_to_n = pad_sos_to_n
         if sos is not None and (sos < 0 or sos > vocab_size):
             # we want sos to refer to an index but it's oov, so we'll shift all
             # indices in hyp up by one and fill the occurrences of sos with 0
@@ -362,6 +372,8 @@ class LookupLanguageModel(SequentialLanguageModel):
     def extra_repr(self):
         s = super(LookupLanguageModel, self).extra_repr()
         s += ', max_ngram={}'.format(self.max_ngram)
+        if not self.pad_sos_to_n:
+            s += ', pad_sos_to_n=False'
         return s
 
     def calc_last_log_probs(self, hist, eos_mask):
@@ -407,10 +419,18 @@ class LookupLanguageModel(SequentialLanguageModel):
             # eos is out-of-vocabulary. Replace with in-vocabulary (it'll be
             # zero-filled by the parent class)
             hist = hist.masked_fill(hist.eq(self.eos), 0)
+        hist = hist[max(0, hist.shape[0] - (N - 1)):]
+        if (
+                self.pad_sos_to_n and self.sos is not None and
+                hist.shape[0] != N - 1):
+            sos_prepend = torch.full(
+                (N - 1 - hist.shape[0],) + hist.shape[1:], self.sos,
+                dtype=hist.dtype, device=hist.device)
+            hist = torch.cat([sos_prepend, hist], dim=0)
+            del sos_prepend
         if self.shift:
             hist = hist.masked_fill(hist.eq(self.sos), -self.shift)
             hist = hist + self.shift
-        hist = hist[max(0, hist.shape[0] - (N - 1)):]
         cur_step = torch.arange(
             self.shift, V + self.shift, dtype=hist.dtype, device=device)
         cur_step = cur_step.view(1, 1, V).expand(-1, B, -1)

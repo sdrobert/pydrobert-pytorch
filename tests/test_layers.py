@@ -174,6 +174,36 @@ def test_lookup_language_model_log_probs(device, N, sos):
         assert torch.allclose(torch.zeros_like(exp), act[-1])
 
 
+def test_lookup_language_model_sos_context(device):
+    # 0 = sos
+    prob_list = [
+        {
+            0: (-99, 0.), 1: (0.1, -0.1), 2: (0.2, -0.2), 3: (0.3, -0.3),
+        },
+        {(0, 1): (0.01, -0.01), (0, 2): (0.02, -0.02)},
+        {(0, 0, 1): 0.001},
+    ]
+    lm = layers.LookupLanguageModel(4, sos=0, prob_list=prob_list)
+    lm.to(device)
+    # with pad_sos_to_n = True
+    # P(0|0, 0) = P(0) = -99
+    # P(1|0, 0) = 0.001
+    # P(2|0, 0) = P(2|0) = 0.02
+    # P(3|0, 0) = P(3) = 0.3
+    exp = torch.tensor([[[-99., 0.001, 0.02, 0.3]]], device=device)
+    act = lm(torch.empty((0, 1), device=device, dtype=int))
+    assert torch.allclose(exp, act, atol=1e-5)
+    lm.pad_sos_to_n = False
+    # with pad_sos_to_n = False
+    # P(0|0) = P(0) = -99
+    # P(1|0) = 0.01
+    # P(2|0) = 0.02
+    # P(3|0) = P(3) = 0.3
+    exp[..., 1] = 0.01
+    act = lm(torch.empty((0, 1), device=device, dtype=int))
+    assert torch.allclose(exp, act, atol=1e-5)
+
+
 @pytest.mark.gpu   # this is a really slow test on the cpu
 def test_lookup_language_model_republic():
     device = torch.device('cuda:0')
