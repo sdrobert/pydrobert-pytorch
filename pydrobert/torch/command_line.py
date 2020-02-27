@@ -225,6 +225,10 @@ def _trn_to_torch_token_data_dir_parse_args(args):
         '--swap', action='store_true', default=False,
         help='If set, swaps the order of key and value in `token2id`'
     )
+    parser.add_argument(
+        '--unk-symbol', default=None,
+        help='If set, will map out-of-vocabulary tokens to this symbol'
+    )
     return parser.parse_args(args)
 
 
@@ -256,11 +260,12 @@ def _parse_token2id(file, swap, return_swap):
 
 def _save_transcripts_to_dir(
         transcripts, token2id, file_prefix, file_suffix, dir_,
-        frame_shift_ms=None):
+        frame_shift_ms=None, unk=None):
     if not os.path.isdir(dir_):
         os.makedirs(dir_)
     for utt_id, transcript in transcripts:
-        tok = data.transcript_to_token(transcript, token2id, frame_shift_ms)
+        tok = data.transcript_to_token(
+            transcript, token2id, frame_shift_ms, unk)
         path = os.path.join(dir_, file_prefix + utt_id + file_suffix)
         torch.save(tok, path)
 
@@ -289,6 +294,9 @@ def trn_to_torch_token_data_dir(args=None):
         return ex.code
     token2id = _parse_token2id(
         options.token2id, options.swap, options.swap)
+    if options.unk_symbol is not None and options.unk_symbol not in token2id:
+        raise ValueError(
+            'Unk symbol "{}" is not in token2id'.format(options.unk_symbol))
     transcripts = data.read_trn(options.trn)
     # we manually search for alternates in a first pass, as we don't know what
     # filters users have on warnings
@@ -311,7 +319,7 @@ def trn_to_torch_token_data_dir(args=None):
                 old_transcript = x[0]
     _save_transcripts_to_dir(
         transcripts, token2id, options.file_prefix, options.file_suffix,
-        options.dir)
+        options.dir, unk=options.unk_symbol)
     return 0
 
 

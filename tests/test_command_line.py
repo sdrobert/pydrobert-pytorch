@@ -90,10 +90,13 @@ a b b c (utt1)
 
 d { e / f } g (utt3)
 {{{h / i} / j} / k} (utt4)
+A a (utt5)
 ''')
     with warnings.catch_warnings(record=True):
         assert not command_line.trn_to_torch_token_data_dir(
-            [trn_path, tokens_path, ref_dir, '--alt-handler=first'] +
+            [
+                trn_path, tokens_path, ref_dir,
+                '--alt-handler=first', '--unk-symbol=c'] +
             (['--swap'] if tokens == 'id2token' else [])
         )
     act_utt1 = torch.load(os.path.join(ref_dir, 'utt1.pt'))
@@ -106,6 +109,9 @@ d { e / f } g (utt3)
         [3, -1, -1], [4, -1, -1], [6, -1, -1]]))
     act_utt4 = torch.load(os.path.join(ref_dir, 'utt4.pt'))
     assert torch.all(act_utt4 == torch.tensor([[7, -1, -1]]))
+    act_utt5 = torch.load(os.path.join(ref_dir, 'utt5.pt'))
+    assert torch.all(act_utt5 == torch.tensor([
+        [2, -1, -1], [0, -1, -1]]))
 
 
 @pytest.mark.cpu
