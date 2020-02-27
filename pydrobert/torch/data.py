@@ -799,18 +799,22 @@ def write_ctm(transcripts, ctm, utt2wc='A'):
         ctm.write('{} {} {} {} {}\n'.format(*segment))
 
 
-def transcript_to_token(transcript, token2id=None, frame_shift_ms=None):
+def transcript_to_token(
+        transcript, token2id=None, frame_shift_ms=None, unk=None):
     '''Convert a transcript to a SpectDataSet token sequence
 
     This method converts `transcript` of length ``R`` to a
     :class:`torch.LongTensor` `tok` of shape ``(R, 3)``, the latter suitable as
     a reference or hypothesis token sequence for an utterance of
     :class:`SpectDataSet`. An element of `transcript` can either be a ``token``
-    or a 3-tuple of ``(token, start, end)``. ``id = token2id.get(token, token)
-    if token2id is not None else token`` dictates the conversion from ``token``
-    to identifier. If `frame_shift_ms` is specified, ``start`` and ``end`` are
-    taken as the start and end times, in seconds, of the token, and will be
-    converted to frames for `tok`. If `frame_shift_ms` is unspecified,
+    or a 3-tuple of ``(token, start, end)``. If `token2id` is not :obj:`None`,
+    the token id is determined by checking ``token2id[token]``. If the token
+    does not exist in `token2id` and `unk` is not :obj:`None`, the token will
+    be replaced with `unk`. If `unk` is :obj:`None`, `token` will be used
+    directly as the id. If `token2id` is not specified, `token` will be used
+    directly as the identifier. If `frame_shift_ms` is specified, ``start`` and
+    ``end`` are taken as the start and end times, in seconds, of the token, and
+    will be converted to frames for `tok`. If `frame_shift_ms` is unspecified,
     ``start`` and ``end`` are assumed to already be frame times. If ``start``
     and ``end`` were unspecified, values of ``-1``, representing unknown, will
     be inserted into ``r[i, 1:]``
@@ -820,11 +824,19 @@ def transcript_to_token(transcript, token2id=None, frame_shift_ms=None):
     transcript : sequence
     token2id : dict, optional
     frame_shift_ms : int, optional
+    unk : str or int, optional
+        If not :obj:`None`, specifies the out-of-vocabulary token. If `unk`
+        exists in `token2id`, the ``token2id[unk]`` will be used as the
+        out-of-vocabulary identifier. If ``token2id[unk]`` does not exist,
+        `unk` will be assumed to be the identifier already. If `token2id`
+        is :obj:`None`, `unk` has no effect.
 
     Returns
     -------
     tok : torch.LongTensor
     '''
+    if token2id is not None and unk in token2id:
+        unk = token2id[unk]
     tok = torch.empty((len(transcript), 3), dtype=torch.long)
     for i, token in enumerate(transcript):
         start = end = -1
@@ -837,8 +849,11 @@ def transcript_to_token(transcript, token2id=None, frame_shift_ms=None):
                 start, end = int(start), int(end)
         except TypeError:
             pass
-        id = token2id.get(token, token) if token2id is not None else token
-        tok[i, 0] = id
+        if token2id is None:
+            id_ = token
+        else:
+            id_ = token2id.get(token, token if unk is None else unk)
+        tok[i, 0] = id_
         tok[i, 1] = start
         tok[i, 2] = end
     return tok

@@ -365,21 +365,26 @@ last A 0.0 10.0111 hullo
 
 
 @pytest.mark.cpu
-@pytest.mark.parametrize('transcript,token2id,exp', [
-    ([], None, torch.LongTensor(0, 3)),
+@pytest.mark.parametrize('transcript,token2id,unk,exp', [
+    ([], None, None, torch.LongTensor(0, 3)),
     (
         [1, 2, 3, 4],
-        None,
+        None, None,
         torch.LongTensor([[1, -1, -1], [2, -1, -1], [3, -1, -1], [4, -1, -1]]),
     ),
     (
         [1, ('a', 4, 10), 'a', 3],
-        {'a': 2},
+        {'a': 2}, None,
         torch.LongTensor([[1, -1, -1], [2, 4, 10], [2, -1, -1], [3, -1, -1]]),
     ),
+    (
+        ['foo', 1, 'bar'],
+        {'foo': 0, 'baz': 3}, 'baz',
+        torch.LongTensor([[0, -1, -1], [3, -1, -1], [3, -1, -1]]),
+    ),
 ])
-def test_transcript_to_token(transcript, token2id, exp):
-    act = data.transcript_to_token(transcript, token2id)
+def test_transcript_to_token(transcript, token2id, unk, exp):
+    act = data.transcript_to_token(transcript, token2id, unk=unk)
     assert torch.all(exp == act)
     transcript = ['foo'] + transcript
     with pytest.raises(Exception):

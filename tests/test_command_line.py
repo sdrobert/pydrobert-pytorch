@@ -90,10 +90,13 @@ a b b c (utt1)
 
 d { e / f } g (utt3)
 {{{h / i} / j} / k} (utt4)
+A a (utt5)
 ''')
     with warnings.catch_warnings(record=True):
         assert not command_line.trn_to_torch_token_data_dir(
-            [trn_path, tokens_path, ref_dir, '--alt-handler=first'] +
+            [
+                trn_path, tokens_path, ref_dir,
+                '--alt-handler=first', '--unk-symbol=c'] +
             (['--swap'] if tokens == 'id2token' else [])
         )
     act_utt1 = torch.load(os.path.join(ref_dir, 'utt1.pt'))
@@ -106,6 +109,9 @@ d { e / f } g (utt3)
         [3, -1, -1], [4, -1, -1], [6, -1, -1]]))
     act_utt4 = torch.load(os.path.join(ref_dir, 'utt4.pt'))
     assert torch.all(act_utt4 == torch.tensor([[7, -1, -1]]))
+    act_utt5 = torch.load(os.path.join(ref_dir, 'utt5.pt'))
+    assert torch.all(act_utt5 == torch.tensor([
+        [2, -1, -1], [0, -1, -1]]))
 
 
 @pytest.mark.cpu
@@ -176,8 +182,10 @@ w_1 A 0.3 1.0 c   ;; ignore this comment
 w_2 A 0.0 0.0 b
 w_3 A 0.0 1000.0 d
 w_3 A 1.0 0.1 d
+w_4 A 0.0 2.0 Z
+w_4 A 0.1 1.1 a
 ''')
-    args = [ctm_path, tokens_path, ref_dir]
+    args = [ctm_path, tokens_path, ref_dir, '--unk-symbol=a']
     if tokens == 'id2token':
         args.append('--swap')
     if channels == 'utt2wc':
@@ -196,6 +204,10 @@ w_3 A 1.0 0.1 d
         os.path.join(ref_dir, 'u_3.pt' if channels else 'w_3.pt'))
     assert torch.all(act_utt3 == torch.tensor([
         [3, 0, 100000], [3, 100, 110]]))
+    act_utt4 = torch.load(
+        os.path.join(ref_dir, 'u_4.pt' if channels else 'w_4.pt'))
+    assert torch.all(act_utt4 == torch.tensor(
+        [[0, 0, 200], [0, 10, 120]]))
 
 
 @pytest.mark.cpu
