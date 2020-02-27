@@ -182,8 +182,10 @@ w_1 A 0.3 1.0 c   ;; ignore this comment
 w_2 A 0.0 0.0 b
 w_3 A 0.0 1000.0 d
 w_3 A 1.0 0.1 d
+w_4 A 0.0 2.0 Z
+w_4 A 0.1 1.1 a
 ''')
-    args = [ctm_path, tokens_path, ref_dir]
+    args = [ctm_path, tokens_path, ref_dir, '--unk-symbol=a']
     if tokens == 'id2token':
         args.append('--swap')
     if channels == 'utt2wc':
@@ -202,6 +204,10 @@ w_3 A 1.0 0.1 d
         os.path.join(ref_dir, 'u_3.pt' if channels else 'w_3.pt'))
     assert torch.all(act_utt3 == torch.tensor([
         [3, 0, 100000], [3, 100, 110]]))
+    act_utt4 = torch.load(
+        os.path.join(ref_dir, 'u_4.pt' if channels else 'w_4.pt'))
+    assert torch.all(act_utt4 == torch.tensor(
+        [[0, 0, 200], [0, 10, 120]]))
 
 
 @pytest.mark.cpu
