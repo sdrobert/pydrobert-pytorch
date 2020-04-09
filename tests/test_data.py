@@ -227,14 +227,15 @@ def test_spect_data_set_validity(temp_dir, eos):
 
 
 @pytest.mark.cpu
-def test_read_trn():
+@pytest.mark.parametrize('processes', [0, 2])
+def test_read_trn(processes):
     trn = StringIO()
     trn.write('''\
 here is a simple example (a)
 nothing should go wrong (b)
 ''')
     trn.seek(0)
-    act = data.read_trn(trn)
+    act = data.read_trn(trn, processes=processes)
     assert act == [
         ('a', ['here', 'is', 'a', 'simple', 'example']),
         ('b', ['nothing', 'should', 'go', 'wrong']),
@@ -247,7 +248,7 @@ here is an { example /with} some alternates (a)
 a11 (d)
 ''')
     trn.seek(0)
-    act = data.read_trn(trn, warn=False)
+    act = data.read_trn(trn, warn=False, processes=processes)
     assert act == [
         ('a', [
             'here', 'is', 'an',

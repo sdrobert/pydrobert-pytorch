@@ -496,7 +496,87 @@ def validate_spect_data_set(data_set):
                             idx2))
 
 
-def read_trn(trn, warn=True):
+class _AltTree(object):
+    def __init__(self, parent=None):
+        self.parent = parent
+        self.tokens = []
+        if parent is not None:
+            parent.tokens.append([self.tokens])
+
+    def new_branch(self):
+        assert self.parent
+        self.tokens = []
+        self.parent.tokens[-1].append(self.tokens)
+
+
+def _trn_line_to_transcript(x):
+    line, warn = x
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        last_open = line.rindex('(')
+        last_close = line.rindex(')')
+        if last_open > last_close:
+            raise ValueError()
+    except ValueError:
+        raise IOError('Line does not end in utterance id')
+    utt_id = line[last_open + 1:last_close]
+    line = line[:last_open].strip()
+    transcript = []
+    token = ''
+    alt_tree = _AltTree()
+    found_alt = False
+    while len(line):
+        c = line[0]
+        line = line[1:]
+        if c == '{':
+            found_alt = True
+            if token:
+                if alt_tree.parent is None:
+                    transcript.append(token)
+                else:
+                    alt_tree.tokens.append(token)
+                token = ''
+            alt_tree = _AltTree(alt_tree)
+        elif c == '/' and alt_tree.parent is not None:
+            if token:
+                alt_tree.tokens.append(token)
+                token = ''
+            alt_tree.new_branch()
+        elif c == '}' and alt_tree.parent is not None:
+            if token:
+                alt_tree.tokens.append(token)
+                token = ''
+            if not alt_tree.tokens:
+                raise IOError('Empty alternate found ("{ }")')
+            alt_tree = alt_tree.parent
+            if alt_tree.parent is None:
+                assert len(alt_tree.tokens) == 1
+                transcript.append((alt_tree.tokens[0], -1, -1))
+                alt_tree.tokens = []
+        elif c == ' ':
+            if token:
+                if alt_tree.parent is None:
+                    transcript.append(token)
+                else:
+                    alt_tree.tokens.append(token)
+                token = ''
+        else:
+            token += c
+    if token and alt_tree.parent is None:
+        transcript.append(token)
+    if found_alt and warn:
+        warnings.warn(
+            'Found an alternate in transcription for utt="{}". '
+            'Transcript will contain an array of alternates at that '
+            'point, and will not be compatible with transcript_to_token '
+            'until resolved. To suppress this warning, set warn=False'
+            ''.format(utt_id))
+    return utt_id, transcript
+
+
+def read_trn(trn, warn=True, processes=0):
     '''Read a NIST sclite transcript file into a list of transcripts
 
     `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__
@@ -542,85 +622,20 @@ def read_trn(trn, warn=True):
     # - ...and internal parentheses are treated as words
     # - Spaces are treated as part of the utterance id
     # - Seg faults on empty alternates
-    class AltTree(object):
-        def __init__(self, parent=None):
-            self.parent = parent
-            self.tokens = []
-            if parent is not None:
-                parent.tokens.append([self.tokens])
 
-        def new_branch(self):
-            assert self.parent
-            self.tokens = []
-            self.parent.tokens[-1].append(self.tokens)
     if isinstance(trn, basestring):
         with open(trn, 'r') as trn:
             return read_trn(trn)
-    transcripts = []
-    for line in trn:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            last_open = line.rindex('(')
-            last_close = line.rindex(')')
-            if last_open > last_close:
-                raise ValueError()
-        except ValueError:
-            raise IOError('Line does not end in utterance id')
-        utt_id = line[last_open + 1:last_close]
-        line = line[:last_open].strip()
-        transcript = []
-        token = ''
-        alt_tree = AltTree()
-        found_alt = False
-        while len(line):
-            c = line[0]
-            line = line[1:]
-            if c == '{':
-                found_alt = True
-                if token:
-                    if alt_tree.parent is None:
-                        transcript.append(token)
-                    else:
-                        alt_tree.tokens.append(token)
-                    token = ''
-                alt_tree = AltTree(alt_tree)
-            elif c == '/' and alt_tree.parent is not None:
-                if token:
-                    alt_tree.tokens.append(token)
-                    token = ''
-                alt_tree.new_branch()
-            elif c == '}' and alt_tree.parent is not None:
-                if token:
-                    alt_tree.tokens.append(token)
-                    token = ''
-                if not alt_tree.tokens:
-                    raise IOError('Empty alternate found ("{ }")')
-                alt_tree = alt_tree.parent
-                if alt_tree.parent is None:
-                    assert len(alt_tree.tokens) == 1
-                    transcript.append((alt_tree.tokens[0], -1, -1))
-                    alt_tree.tokens = []
-            elif c == ' ':
-                if token:
-                    if alt_tree.parent is None:
-                        transcript.append(token)
-                    else:
-                        alt_tree.tokens.append(token)
-                    token = ''
-            else:
-                token += c
-        if token and alt_tree.parent is None:
-            transcript.append(token)
-        if found_alt and warn:
-            warnings.warn(
-                'Found an alternate in transcription for utt="{}". '
-                'Transcript will contain an array of alternates at that '
-                'point, and will not be compatible with transcript_to_token '
-                'until resolved. To suppress this warning, set warn=False'
-                ''.format(utt_id))
-        transcripts.append((utt_id, transcript))
+    if processes == 0:
+        transcripts = []
+        for line in trn:
+            x = _trn_line_to_transcript((line, warn))
+            if x is not None:
+                transcripts.append(x)
+    else:
+        with torch.multiprocessing.Pool(processes) as pool:
+            transcripts = pool.map(
+                _trn_line_to_transcript, ((line, warn) for line in trn))
     return transcripts
 
 
