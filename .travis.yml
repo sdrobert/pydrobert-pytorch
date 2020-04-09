@@ -11,7 +11,8 @@ python:
 install:
   - pip install -U pip setuptools setuptools_scm
   - pip install -r requirements.txt
-  - pip install scipy pytest pydrobert-param optuna
+  - pip install scipy pytest pydrobert-param
+  - pip install optuna || echo "No optuna (py 2.7?)"
 
 script:
   - python setup.py test --addopts="-m cpu -x"
