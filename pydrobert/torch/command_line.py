@@ -353,37 +353,68 @@ def _torch_token_data_dir_to_trn_parse_args(args=None):
         '--swap', action='store_true', default=False,
         help='If set, swaps the order of key and value in `id2token`'
     )
+    parser.add_argument(
+        '--num-workers', type=int, default=torch.multiprocessing.cpu_count(),
+        help='The number of workers to spawn to process the data. 0 is serial.'
+        ' Defaults to the cpu count'
+    )
     return parser.parse_args(args)
 
 
-def _load_transcripts_from_data_dir(
-        dir_, id2token, file_prefix, file_suffix, frame_shift_ms=None,
-        strip_timing=False):
-    fpl = len(file_prefix)
-    neg_fsl = -len(file_suffix)
-    utt_ids = sorted(
-        x[fpl:neg_fsl]
-        for x in os.listdir(dir_)
-        if x.startswith(file_prefix) and
-        x.endswith(file_suffix)
-    )
-    transcripts = []
-    for utt_id in utt_ids:
+class _TranscriptDataSet(torch.utils.data.Dataset):
+
+    def __init__(
+            self, dir_, id2token, file_prefix, file_suffix,
+            frame_shift_ms, strip_timing):
+        super(_TranscriptDataSet, self).__init__()
+        fpl = len(file_prefix)
+        neg_fsl = -len(file_suffix)
+        self.utt_ids = sorted(
+            x[fpl:neg_fsl]
+            for x in os.listdir(dir_)
+            if x.startswith(file_prefix) and
+            x.endswith(file_suffix)
+        )
+        self.dir_ = dir_
+        self.file_prefix = file_prefix
+        self.file_suffix = file_suffix
+        self.id2token = id2token
+        self.frame_shift_ms = frame_shift_ms
+        self.strip_timing = strip_timing
+
+    def __getitem__(self, index):
+        utt_id = self.utt_ids[index]
         tok = torch.load(os.path.join(
-            dir_, file_prefix + utt_id + file_suffix))
-        transcript = data.token_to_transcript(tok, id2token, frame_shift_ms)
+            self.dir_, self.file_prefix + utt_id + self.file_suffix))
+        transcript = data.token_to_transcript(
+            tok, self.id2token, self.frame_shift_ms)
         for idx in range(len(transcript)):
             token = transcript[idx]
             if isinstance(token, tuple):
                 token = token[0]
-                if strip_timing:
+                if self.strip_timing:
                     transcript[idx] = token
-            if isinstance(token, int) and id2token is not None:
-                assert token not in id2token
+            if isinstance(token, int) and self.id2token is not None:
+                assert token not in self.id2token
                 raise ValueError(
                     'Utterance "{}": ID "{}" could not be found in id2token'
                     ''.format(utt_id, token))
-        transcripts.append((utt_id, transcript))
+        return utt_id, transcript
+
+    def __len__(self):
+        return len(self.utt_ids)
+
+
+def _load_transcripts_from_data_dir(
+        dir_, id2token, file_prefix, file_suffix, frame_shift_ms=None,
+        strip_timing=False, num_workers=0):
+    ds = _TranscriptDataSet(
+        dir_, id2token, file_prefix, file_suffix, frame_shift_ms,
+        strip_timing)
+    dl = torch.utils.data.DataLoader(
+        ds, batch_size=None, num_workers=num_workers)
+    transcripts = list(dl)
+    del dl, ds
     return transcripts
 
 
@@ -399,11 +430,12 @@ def torch_token_data_dir_to_trn(args=None):
         here is another (utterance_b)
 
     This command scans the contents of a directory like ``ref/`` in a
-    :class:`pydrobert.torch.data.SpectDataSet` and converts each such file into
-    a transcription. Each such transcription is then written to a "trn" file.
-    See the command :func:`get_torch_spect_data_dir_info` (command line
+    :class:`pydrobert.torch.data.SpectDataSet` or ``src/`` or ``tgt/`` in a
+    :class:`pydrobert.torch.data.BitextDataSet` and converts each such file
+    into a transcription. Each such transcription is then written to a "trn"
+    file. See the command :func:`get_torch_spect_data_dir_info` (command line
     "get-torch-spect-data-dir-info") for more information on a
-    :class:`pydrobert.torch.data.SpectDataSet`
+    :class:`pydrobert.torch.data.SpectDataSet`.
     '''
     try:
         options = _torch_token_data_dir_to_trn_parse_args(args)
@@ -415,7 +447,8 @@ def torch_token_data_dir_to_trn(args=None):
     id2token = _parse_token2id(
         options.id2token, not options.swap, options.swap)
     transcripts = _load_transcripts_from_data_dir(
-        options.dir, id2token, options.file_prefix, options.file_suffix)
+        options.dir, id2token, options.file_prefix, options.file_suffix,
+        strip_timing=True, num_workers=options.num_workers)
     data.write_trn(transcripts, options.trn)
     return 0
 
