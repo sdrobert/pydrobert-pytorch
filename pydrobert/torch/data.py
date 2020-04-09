@@ -633,9 +633,17 @@ def read_trn(trn, warn=True, processes=0):
             if x is not None:
                 transcripts.append(x)
     else:
+        try:
         with torch.multiprocessing.Pool(processes) as pool:
             transcripts = pool.map(
                 _trn_line_to_transcript, ((line, warn) for line in trn))
+        except AttributeError:  # py2.7
+            pool = torch.multiprocessing.Pool(processes)
+            try:
+                transcripts = pool.map(
+                    _trn_line_to_transcript, ((line, warn) for line in trn))
+            finally:
+                pool.close()
     return transcripts
 
 
