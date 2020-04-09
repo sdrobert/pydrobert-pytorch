@@ -366,26 +366,27 @@ last A 0.0 10.0111 hullo
 
 
 @pytest.mark.cpu
-@pytest.mark.parametrize('transcript,token2id,unk,exp', [
-    ([], None, None, torch.LongTensor(0, 3)),
+@pytest.mark.parametrize('transcript,token2id,unk,skip_frame_times,exp', [
+    ([], None, None, False, torch.LongTensor(0, 3)),
     (
         [1, 2, 3, 4],
-        None, None,
-        torch.LongTensor([[1, -1, -1], [2, -1, -1], [3, -1, -1], [4, -1, -1]]),
+        None, None, True,
+        torch.LongTensor([1, 2, 3, 4]),
     ),
     (
         [1, ('a', 4, 10), 'a', 3],
-        {'a': 2}, None,
+        {'a': 2}, None, False,
         torch.LongTensor([[1, -1, -1], [2, 4, 10], [2, -1, -1], [3, -1, -1]]),
     ),
     (
         ['foo', 1, 'bar'],
-        {'foo': 0, 'baz': 3}, 'baz',
+        {'foo': 0, 'baz': 3}, 'baz', False,
         torch.LongTensor([[0, -1, -1], [3, -1, -1], [3, -1, -1]]),
     ),
 ])
-def test_transcript_to_token(transcript, token2id, unk, exp):
-    act = data.transcript_to_token(transcript, token2id, unk=unk)
+def test_transcript_to_token(transcript, token2id, unk, skip_frame_times, exp):
+    act = data.transcript_to_token(
+        transcript, token2id, unk=unk, skip_frame_times=skip_frame_times)
     assert torch.all(exp == act)
     transcript = ['foo'] + transcript
     with pytest.raises(Exception):
@@ -404,7 +405,8 @@ def test_transcript_to_token(transcript, token2id, unk, exp):
         torch.LongTensor([[1, 3, 4], [3, 4, 5], [2, -1, -1]]),
         {1: 'a', 2: 'b'},
         [('a', 3, 4), (3, 4, 5), 'b'],
-    )
+    ),
+    (torch.tensor(range(10)), None, list(range(10))),
 ])
 def test_token_to_transcript(tok, id2token, exp):
     act = data.token_to_transcript(tok, id2token)

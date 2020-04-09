@@ -634,9 +634,9 @@ def read_trn(trn, warn=True, processes=0):
                 transcripts.append(x)
     else:
         try:
-        with torch.multiprocessing.Pool(processes) as pool:
-            transcripts = pool.map(
-                _trn_line_to_transcript, ((line, warn) for line in trn))
+            with torch.multiprocessing.Pool(processes) as pool:
+                transcripts = pool.map(
+                    _trn_line_to_transcript, ((line, warn) for line in trn))
         except AttributeError:  # py2.7
             pool = torch.multiprocessing.Pool(processes)
             try:
@@ -823,8 +823,9 @@ def write_ctm(transcripts, ctm, utt2wc='A'):
 
 
 def transcript_to_token(
-        transcript, token2id=None, frame_shift_ms=None, unk=None):
-    '''Convert a transcript to a SpectDataSet token sequence
+        transcript, token2id=None, frame_shift_ms=None, unk=None,
+        skip_frame_times=False):
+    '''Convert a transcript to a token sequence
 
     This method converts `transcript` of length ``R`` to a
     :class:`torch.LongTensor` `tok` of shape ``(R, 3)``, the latter suitable as
@@ -853,6 +854,9 @@ def transcript_to_token(
         out-of-vocabulary identifier. If ``token2id[unk]`` does not exist,
         `unk` will be assumed to be the identifier already. If `token2id`
         is :obj:`None`, `unk` has no effect.
+    skip_frame_times : bool, optional
+        If :obj:`True`, `tok` will be of shape ``(R,)`` and contain only
+        the token ids. Suitable for :class:`BitextDataSet`
 
     Returns
     -------
@@ -860,7 +864,10 @@ def transcript_to_token(
     '''
     if token2id is not None and unk in token2id:
         unk = token2id[unk]
-    tok = torch.empty((len(transcript), 3), dtype=torch.long)
+    tok_size = (len(transcript),)
+    if not skip_frame_times:
+        tok_size = tok_size + (3,)
+    tok = torch.empty(tok_size, dtype=torch.long)
     for i, token in enumerate(transcript):
         start = end = -1
         try:
@@ -876,20 +883,25 @@ def transcript_to_token(
             id_ = token
         else:
             id_ = token2id.get(token, token if unk is None else unk)
-        tok[i, 0] = id_
-        tok[i, 1] = start
-        tok[i, 2] = end
+        if skip_frame_times:
+            tok[i] = id_
+        else:
+            tok[i, 0] = id_
+            tok[i, 1] = start
+            tok[i, 2] = end
     return tok
 
 
 def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
-    '''Convert a SpectDataSet token sequence to a transcript
+    '''Convert a token sequence to a transcript
 
-    The inverse operation of :func:`transcript_to_token`
+    The inverse operation of :func:`transcript_to_token`.
 
     Parameters
     ----------
     tok : torch.LongTensor
+        Either of shape ``(R, 3)`` for :class:`SpectDataSet` sequences or
+        ``(R,)`` for :class:`BitextDataSet` sequences.
     id2token : dict, optional
     frame_shift_ms : int, optional
 
@@ -899,8 +911,12 @@ def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
     '''
     transcript = []
     for tup in tok:
-        id, start, end = tup.tolist()
-        token = id2token.get(id, id) if id2token is not None else id
+        x = tup.tolist()
+        try:
+            id_, start, end = x  # (R, 3)
+        except TypeError:
+            id_, start, end = x, -1, -1
+        token = id2token.get(id_, id_) if id2token is not None else id_
         if start == -1 or end == -1:
             transcript.append(token)
         else:
