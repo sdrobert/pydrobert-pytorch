@@ -78,7 +78,8 @@ def _write_token2id(path, swap, collapse_vowels=False):
 
 @pytest.mark.cpu
 @pytest.mark.parametrize('tokens', ['token2id', 'id2token'])
-def test_trn_to_torch_token_data_dir(temp_dir, tokens):
+@pytest.mark.parametrize('skip_frame_times', [True, False])
+def test_trn_to_torch_token_data_dir(temp_dir, tokens, skip_frame_times):
     trn_path = os.path.join(temp_dir, 'ref.trn')
     tokens_path = os.path.join(temp_dir, 'token2id')
     ref_dir = os.path.join(temp_dir, 'ref')
@@ -98,21 +99,29 @@ A a (utt5)
                 trn_path, tokens_path, ref_dir,
                 '--alt-handler=first', '--unk-symbol=c',
                 '--chunk-size=1'] +
-            (['--swap'] if tokens == 'id2token' else [])
+            (['--swap'] if tokens == 'id2token' else []) +
+            (['--skip-frame-times'] if skip_frame_times else [])
         )
+    exp_utt1 = torch.tensor([0, 1, 1, 2])
+    exp_utt3 = torch.tensor([3, 4, 6])
+    exp_utt4 = torch.tensor([7])
+    exp_utt5 = torch.tensor([2, 0])
+    if not skip_frame_times:
+        neg1_tensor = torch.tensor([[-1, -1]] * 10)
+        exp_utt1 = torch.cat([exp_utt1.unsqueeze(-1), neg1_tensor[:4]], -1)
+        exp_utt3 = torch.cat([exp_utt3.unsqueeze(-1), neg1_tensor[:3]], -1)
+        exp_utt4 = torch.cat([exp_utt4.unsqueeze(-1), neg1_tensor[:1]], -1)
+        exp_utt5 = torch.cat([exp_utt5.unsqueeze(-1), neg1_tensor[:2]], -1)
     act_utt1 = torch.load(os.path.join(ref_dir, 'utt1.pt'))
-    assert torch.all(act_utt1 == torch.tensor([
-        [0, -1, -1], [1, -1, -1], [1, -1, -1], [2, -1, -1]]))
+    assert torch.all(act_utt1 == exp_utt1)
     act_utt2 = torch.load(os.path.join(ref_dir, 'utt2.pt'))
     assert not act_utt2.numel()
     act_utt3 = torch.load(os.path.join(ref_dir, 'utt3.pt'))
-    assert torch.all(act_utt3 == torch.tensor([
-        [3, -1, -1], [4, -1, -1], [6, -1, -1]]))
+    assert torch.all(act_utt3 == exp_utt3)
     act_utt4 = torch.load(os.path.join(ref_dir, 'utt4.pt'))
-    assert torch.all(act_utt4 == torch.tensor([[7, -1, -1]]))
+    assert torch.all(act_utt4 == exp_utt4)
     act_utt5 = torch.load(os.path.join(ref_dir, 'utt5.pt'))
-    assert torch.all(act_utt5 == torch.tensor([
-        [2, -1, -1], [0, -1, -1]]))
+    assert torch.all(act_utt5 == exp_utt5)
 
 
 @pytest.mark.cpu

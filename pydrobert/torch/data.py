@@ -638,7 +638,7 @@ def read_trn(trn, warn=True, processes=0, chunk_size=1000):
         time an alteration appears in the "trn" file. Alterations appear in
         `transcripts` as elements of ``([[alt_1_word_1, alt_1_word_2, ...],
         [alt_2_word_1, alt_2_word_2, ...], ...], -1, -1)`` so that
-        ``transcript_to_token`` will not attempt to process alterations as
+        :func:`transcript_to_token` will not attempt to process alterations as
         token start and end times
     processes : int, optional
         The number of processes used to parse the lines of the trn file. If

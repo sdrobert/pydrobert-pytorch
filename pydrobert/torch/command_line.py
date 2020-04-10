@@ -240,6 +240,13 @@ def _trn_to_torch_token_data_dir_parse_args(args):
         help='The number of lines that a worker will process at once. Impacts '
         'speed and memory consumption.'
     )
+    parser.add_argument(
+        '--skip-frame-times', action='store_true', default=False,
+        help='If true, will store token tensors of shape (R,) instead of '
+        '(R, 3), foregoing segment start and end times (which trn does not '
+        'have). Useful for BitextDatasets, but cannot be used with '
+        'SpectDatasets'
+    )
     return parser.parse_args(args)
 
 
@@ -271,20 +278,22 @@ def _parse_token2id(file, swap, return_swap):
 
 def _save_transcripts_to_dir_worker(
         token2id, file_prefix, file_suffix, dir_, frame_shift_ms, unk,
-        queue):
-    transcripts = queue.get()
+        skip_frame_times, queue, first_timeout=30, rest_timeout=10):
+    transcripts = queue.get(True, first_timeout)
     while transcripts is not None:
         for utt_id, transcript in transcripts:
             tok = data.transcript_to_token(
-                transcript, token2id, frame_shift_ms, unk)
+                transcript, token2id, frame_shift_ms, unk,
+                skip_frame_times)
             path = os.path.join(dir_, file_prefix + utt_id + file_suffix)
             torch.save(tok, path)
-        transcripts = queue.get()
+        transcripts = queue.get(True, rest_timeout)
 
 
 def _save_transcripts_to_dir(
         transcripts, token2id, file_prefix, file_suffix, dir_,
-        frame_shift_ms=None, unk=None, num_workers=0, chunk_size=1000):
+        frame_shift_ms=None, unk=None, skip_frame_times=False,
+        num_workers=0, chunk_size=1000):
     if not os.path.isdir(dir_):
         os.makedirs(dir_)
     if num_workers:
@@ -293,7 +302,7 @@ def _save_transcripts_to_dir(
                 num_workers, _save_transcripts_to_dir_worker,
                 (
                     token2id, file_prefix, file_suffix, dir_, frame_shift_ms,
-                    unk, queue
+                    unk, skip_frame_times, queue
                 )) as pool:
             chunk = tuple(itertools.islice(transcripts, chunk_size))
             while len(chunk):
@@ -306,7 +315,7 @@ def _save_transcripts_to_dir(
     else:
         for utt_id, transcript in transcripts:
             tok = data.transcript_to_token(
-                transcript, token2id, frame_shift_ms, unk)
+                transcript, token2id, frame_shift_ms, unk, skip_frame_times)
             path = os.path.join(dir_, file_prefix + utt_id + file_suffix)
             torch.save(tok, path)
 
@@ -355,10 +364,8 @@ def trn_to_torch_token_data_dir(args=None):
                 if isinstance(x, str):
                     transcript.append(x)
                 elif options.alt_handler == 'error':
-                    print(
-                        'Cannot handle alternate in "{}"'.format(utt_id),
-                        file=sys.stderr)
-                    return 1
+                    raise ValueError(
+                        'Cannot handle alternate in "{}"'.format(utt_id))
                 else:  # first
                     x[0].extend(old_transcript)
                     old_transcript = x[0]
@@ -366,6 +373,7 @@ def trn_to_torch_token_data_dir(args=None):
     _save_transcripts_to_dir(
         error_handling_iter(), token2id, options.file_prefix,
         options.file_suffix, options.dir, unk=options.unk_symbol,
+        skip_frame_times=options.skip_frame_times,
         num_workers=options.num_workers, chunk_size=options.chunk_size)
     return 0
 
