@@ -96,7 +96,8 @@ A a (utt5)
         assert not command_line.trn_to_torch_token_data_dir(
             [
                 trn_path, tokens_path, ref_dir,
-                '--alt-handler=first', '--unk-symbol=c'] +
+                '--alt-handler=first', '--unk-symbol=c',
+                '--chunk-size=1'] +
             (['--swap'] if tokens == 'id2token' else [])
         )
     act_utt1 = torch.load(os.path.join(ref_dir, 'utt1.pt'))

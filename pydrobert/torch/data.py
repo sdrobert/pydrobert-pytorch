@@ -577,7 +577,7 @@ def _trn_line_to_transcript(x):
     return utt_id, transcript
 
 
-def read_trn_iter(trn, warn=True, processes=0, chunksize=1000):
+def read_trn_iter(trn, warn=True, processes=0, chunk_size=1000):
     '''Read a NIST sclite transcript file, yielding individual transcripts
 
     Identical to :func:`read_trn_iter`, but yields individual transcript
@@ -598,7 +598,7 @@ def read_trn_iter(trn, warn=True, processes=0, chunksize=1000):
             with torch.multiprocessing.Pool(processes) as pool:
                 transcripts = pool.imap(
                     _trn_line_to_transcript, ((line, warn) for line in trn),
-                    chunksize)
+                    chunk_size)
                 for x in transcripts:
                     yield x
                 pool.close()
@@ -608,7 +608,7 @@ def read_trn_iter(trn, warn=True, processes=0, chunksize=1000):
             try:
                 transcripts = pool.imap(
                     _trn_line_to_transcript, ((line, warn) for line in trn),
-                    chunksize)
+                    chunk_size)
                 for x in transcripts:
                     yield x
                 pool.close()
@@ -617,7 +617,7 @@ def read_trn_iter(trn, warn=True, processes=0, chunksize=1000):
                 pool.terminate()
 
 
-def read_trn(trn, warn=True, processes=0, chunksize=1000):
+def read_trn(trn, warn=True, processes=0, chunk_size=1000):
     '''Read a NIST sclite transcript file into a list of transcripts
 
     `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__
@@ -645,7 +645,7 @@ def read_trn(trn, warn=True, processes=0, chunksize=1000):
         The number of processes used to parse the lines of the trn file. If
         ``0``, will be performed on the main thread. Otherwise, the file will
         be read on the main thread and parsed using `processes` many processes
-    chunksize : int, optional
+    chunk_size : int, optional
         The number of lines to be processed by a worker process at a time.
         Applicable when ``processes > 0``
 
@@ -674,7 +674,7 @@ def read_trn(trn, warn=True, processes=0, chunksize=1000):
 
 
 def write_trn(transcripts, trn):
-    '''From a list of transcripts, write to a NIST "trn" file
+    '''From an iterable of transcripts, write to a NIST "trn" file
 
     This is largely the inverse operation of :func:`read_trn`. In general,
     elements of a transcript (`transcripts` contains pairs of ``utt_id,
@@ -685,7 +685,7 @@ def write_trn(transcripts, trn):
 
     Parameters
     ----------
-    transcripts : sequence
+    transcripts : iterable
     trn : file or str
     '''
     if isinstance(trn, basestring):

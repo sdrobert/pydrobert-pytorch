@@ -235,7 +235,7 @@ here is a simple example (a)
 nothing should go wrong (b)
 ''')
     trn.seek(0)
-    act = data.read_trn(trn, processes=processes)
+    act = data.read_trn(trn, processes=processes, chunk_size=1)
     assert act == [
         ('a', ['here', 'is', 'a', 'simple', 'example']),
         ('b', ['nothing', 'should', 'go', 'wrong']),

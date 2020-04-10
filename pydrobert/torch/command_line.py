@@ -21,6 +21,7 @@ import sys
 import argparse
 import math
 import warnings
+import itertools
 
 from collections import defaultdict, OrderedDict
 
@@ -229,6 +230,16 @@ def _trn_to_torch_token_data_dir_parse_args(args):
         '--unk-symbol', default=None,
         help='If set, will map out-of-vocabulary tokens to this symbol'
     )
+    parser.add_argument(
+        '--num-workers', type=int, default=torch.multiprocessing.cpu_count(),
+        help='The number of workers to spawn to process the data. 0 is serial.'
+        ' Defaults to the cpu count'
+    )
+    parser.add_argument(
+        '--chunk-size', type=int, default=1000,
+        help='The number of lines that a worker will process at once. Impacts '
+        'speed and memory consumption.'
+    )
     return parser.parse_args(args)
 
 
@@ -258,16 +269,46 @@ def _parse_token2id(file, swap, return_swap):
     return ret_swapped if return_swap else ret
 
 
+def _save_transcripts_to_dir_worker(
+        token2id, file_prefix, file_suffix, dir_, frame_shift_ms, unk,
+        queue):
+    transcripts = queue.get()
+    while transcripts is not None:
+        for utt_id, transcript in transcripts:
+            tok = data.transcript_to_token(
+                transcript, token2id, frame_shift_ms, unk)
+            path = os.path.join(dir_, file_prefix + utt_id + file_suffix)
+            torch.save(tok, path)
+        transcripts = queue.get()
+
+
 def _save_transcripts_to_dir(
         transcripts, token2id, file_prefix, file_suffix, dir_,
-        frame_shift_ms=None, unk=None):
+        frame_shift_ms=None, unk=None, num_workers=0, chunk_size=1000):
     if not os.path.isdir(dir_):
         os.makedirs(dir_)
-    for utt_id, transcript in transcripts:
-        tok = data.transcript_to_token(
-            transcript, token2id, frame_shift_ms, unk)
-        path = os.path.join(dir_, file_prefix + utt_id + file_suffix)
-        torch.save(tok, path)
+    if num_workers:
+        queue = torch.multiprocessing.Queue(num_workers)
+        with torch.multiprocessing.Pool(
+                num_workers, _save_transcripts_to_dir_worker,
+                (
+                    token2id, file_prefix, file_suffix, dir_, frame_shift_ms,
+                    unk, queue
+                )) as pool:
+            chunk = tuple(itertools.islice(transcripts, chunk_size))
+            while len(chunk):
+                queue.put(chunk)
+                chunk = tuple(itertools.islice(transcripts, chunk_size))
+            for _ in range(num_workers):
+                queue.put(None)
+            pool.close()
+            pool.join()
+    else:
+        for utt_id, transcript in transcripts:
+            tok = data.transcript_to_token(
+                transcript, token2id, frame_shift_ms, unk)
+            path = os.path.join(dir_, file_prefix + utt_id + file_suffix)
+            torch.save(tok, path)
 
 
 def trn_to_torch_token_data_dir(args=None):
@@ -299,29 +340,33 @@ def trn_to_torch_token_data_dir(args=None):
             'Unk symbol "{}" is not in token2id'.format(options.unk_symbol),
             file=sys.stderr)
         return 1
-    transcripts = data.read_trn(options.trn)
-    # we manually search for alternates in a first pass, as we don't know what
-    # filters users have on warnings
-    for utt_id, transcript in transcripts:
-        old_transcript = transcript[:]
-        transcript[:] = []
-        while len(old_transcript):
-            x = old_transcript.pop(0)
-            if len(x) == 3 and x[1] == -1:
-                x = x[0]
-            if isinstance(x, str):
-                transcript.append(x)
-            elif options.alt_handler == 'error':
-                print(
-                    'Cannot handle alternate in "{}"'.format(utt_id),
-                    file=sys.stderr)
-                return 1
-            else:  # first
-                x[0].extend(old_transcript)
-                old_transcript = x[0]
+    # we're going to do all the threading on the tensor creation part of
+    # things
+    transcripts = data.read_trn_iter(options.trn)
+
+    def error_handling_iter():
+        for utt_id, transcript in transcripts:
+            old_transcript = transcript[:]
+            transcript[:] = []
+            while len(old_transcript):
+                x = old_transcript.pop(0)
+                if len(x) == 3 and x[1] == -1:
+                    x = x[0]
+                if isinstance(x, str):
+                    transcript.append(x)
+                elif options.alt_handler == 'error':
+                    print(
+                        'Cannot handle alternate in "{}"'.format(utt_id),
+                        file=sys.stderr)
+                    return 1
+                else:  # first
+                    x[0].extend(old_transcript)
+                    old_transcript = x[0]
+            yield utt_id, transcript
     _save_transcripts_to_dir(
-        transcripts, token2id, options.file_prefix, options.file_suffix,
-        options.dir, unk=options.unk_symbol)
+        error_handling_iter(), token2id, options.file_prefix,
+        options.file_suffix, options.dir, unk=options.unk_symbol,
+        num_workers=options.num_workers, chunk_size=options.chunk_size)
     return 0
 
 
