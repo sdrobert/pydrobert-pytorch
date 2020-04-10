@@ -126,7 +126,8 @@ A a (utt5)
 
 @pytest.mark.cpu
 @pytest.mark.parametrize('tokens', ['token2id', 'id2token'])
-def test_torch_token_data_dir_to_trn(temp_dir, tokens):
+@pytest.mark.parametrize('include_frame_shift', [True, False])
+def test_torch_token_data_dir_to_trn(temp_dir, tokens, include_frame_shift):
     torch.manual_seed(1000)
     num_utts = 100
     max_tokens = 10
@@ -143,7 +144,10 @@ def test_torch_token_data_dir_to_trn(temp_dir, tokens):
         utt_id = utt_fmt.format(utt_idx)
         num_tokens = torch.randint(max_tokens + 1, (1,)).long().item()
         ids = torch.randint(26, (num_tokens,)).long()
-        tok = torch.stack([ids] + ([torch.full_like(ids, -1)] * 2), -1)
+        if include_frame_shift:
+            tok = torch.stack([ids] + ([torch.full_like(ids, -1)] * 2), -1)
+        else:
+            tok = ids
         torch.save(tok, os.path.join(ref_dir, utt_id + '.pt'))
         transcript = ' '.join([chr(x + ord('a')) for x in ids.tolist()])
         transcript += ' ({})'.format(utt_id)

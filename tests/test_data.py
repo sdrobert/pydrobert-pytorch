@@ -190,16 +190,24 @@ def test_spect_data_set_validity(temp_dir, eos):
     torch.manual_seed(1)
     feat_dir = os.path.join(temp_dir, 'feat')
     ali_dir = os.path.join(temp_dir, 'ali')
+    ref_dir = os.path.join(temp_dir, 'ref')
     feats_a_pt = os.path.join(feat_dir, 'a.pt')
     feats_b_pt = os.path.join(feat_dir, 'b.pt')
     ali_a_pt = os.path.join(ali_dir, 'a.pt')
     ali_b_pt = os.path.join(ali_dir, 'b.pt')
+    ref_a_pt = os.path.join(ref_dir, 'a.pt')
+    ref_b_pt = os.path.join(ref_dir, 'b.pt')
     os.makedirs(feat_dir)
     os.makedirs(ali_dir)
+    os.makedirs(ref_dir)
     torch.save(torch.rand(10, 4), feats_a_pt)
     torch.save(torch.rand(4, 4), feats_b_pt)
     torch.save(torch.randint(10, (10,)).long(), ali_a_pt)
     torch.save(torch.randint(10, (4,)).long(), ali_b_pt)
+    torch.save(torch.cat(
+        [torch.randint(10, (11, 1)), torch.full((11, 2), -1).long()], -1),
+        ref_a_pt)
+    torch.save(torch.tensor([[0, 3, 4], [1, 1, 2]]), ref_b_pt)
     data_set = data.SpectDataSet(temp_dir, eos=eos)
     data.validate_spect_data_set(data_set)
     torch.save(torch.rand(4, 4).long(), feats_b_pt)
@@ -223,6 +231,17 @@ def test_spect_data_set_validity(temp_dir, eos):
     with pytest.raises(ValueError, match='does not have the same first'):
         data.validate_spect_data_set(data_set)
     torch.save(torch.randint(10, (4,)).long(), ali_b_pt)
+    data.validate_spect_data_set(data_set)
+    torch.save(torch.tensor([[0, -1, 2], [1, 1, 2]]), ref_b_pt)
+    with pytest.raises(ValueError, match='invalid boundaries'):
+        data.validate_spect_data_set(data_set)
+    torch.save(torch.tensor([[0, 0, 1], [1, 5, 30]]), ref_b_pt)
+    with pytest.raises(ValueError, match='invalid boundaries'):
+        data.validate_spect_data_set(data_set)
+    torch.save(torch.tensor([1, 2, 3]), ref_b_pt)
+    with pytest.raises(ValueError, match='were 2D'):
+        data.validate_spect_data_set(data_set)
+    torch.save(torch.tensor([10, 4, 2, 5]), ref_a_pt)
     data.validate_spect_data_set(data_set)
 
 
@@ -485,9 +504,11 @@ def test_context_window_seq_to_batch(feat_sizes, include_ali):
 
 @pytest.mark.cpu
 @pytest.mark.parametrize('include_ali', [True, False])
-@pytest.mark.parametrize('include_ref', [True, False])
+@pytest.mark.parametrize('include_ref,include_frame_shift', [
+    (True, True), (True, False), (False, None)])
 @pytest.mark.parametrize('batch_first', [True, False])
-def test_spect_seq_to_batch(include_ali, include_ref, batch_first):
+def test_spect_seq_to_batch(
+        include_ali, include_ref, batch_first, include_frame_shift):
     torch.manual_seed(1)
     feat_sizes = tuple(
         torch.randint(1, 30, (1,)).long().item()
@@ -503,7 +524,11 @@ def test_spect_seq_to_batch(include_ali, include_ref, batch_first):
             torch.randint(1, 30, (1,)).long().item()
             for _ in range(len(feat_sizes))
         )
-        refs = tuple(torch.randint(100, (x, 3)).long() for x in ref_sizes)
+        extra_dim = (3,) if include_frame_shift else tuple()
+        refs = tuple(
+            torch.randint(100, (x,) + extra_dim).long()
+            for x in ref_sizes
+        )
     else:
         ref_sizes = repeat(None)
         refs = repeat(None)
@@ -547,11 +572,14 @@ def test_spect_seq_to_batch(include_ali, include_ref, batch_first):
 @pytest.mark.cpu
 @pytest.mark.parametrize('eos', [None, -1])
 @pytest.mark.parametrize('split_params', [True, False])
+@pytest.mark.parametrize('include_frame_shift', [True, False])
 def test_spect_training_data_loader(
-        temp_dir, populate_torch_dir, eos, split_params):
+        temp_dir, populate_torch_dir, eos, split_params, include_frame_shift):
     torch.manual_seed(40)
     num_utts, batch_size, num_filts = 20, 5, 11
-    populate_torch_dir(temp_dir, num_utts, num_filts=num_filts)
+    populate_torch_dir(
+        temp_dir, num_utts, num_filts=num_filts,
+        include_frame_shift=include_frame_shift)
     if split_params:
         params = data.DataSetParams(batch_size=batch_size)
         data_params = data.SpectDataParams(eos=eos)
@@ -590,6 +618,7 @@ def test_spect_training_data_loader(
             assert b_feats.shape[1] == b_feat_sizes[0]
             assert b_ali.shape[1] == b_feat_sizes[0]
             assert b_ref.shape[1] == R_star
+            assert b_ref.dim() == (3 if include_frame_shift else 2)
             ep_feats += tuple(b_feats)
             ep_ali += tuple(b_ali)
             ep_ref += tuple(b_ref)
@@ -603,9 +632,14 @@ def test_spect_training_data_loader(
             ep_ali[i] = torch.nn.functional.pad(
                 ep_ali[i], (0, max_T - ep_ali[i].shape[0]),
                 value=INDEX_PAD_VALUE)
-            ep_ref[i] = torch.nn.functional.pad(
-                ep_ref[i], (0, 0, 0, max_R - ep_ref[i].shape[0]),
-                value=INDEX_PAD_VALUE)
+            if include_frame_shift:
+                ep_ref[i] = torch.nn.functional.pad(
+                    ep_ref[i], (0, 0, 0, max_R - ep_ref[i].shape[0]),
+                    value=INDEX_PAD_VALUE)
+            else:
+                ep_ref[i] = torch.nn.functional.pad(
+                    ep_ref[i], (0, max_R - ep_ref[i].shape[0]),
+                    value=INDEX_PAD_VALUE)
         if sort:
             ep_feats, ep_ali, ep_ref, ep_feat_sizes, ep_ref_sizes = zip(
                 *sorted(
@@ -650,8 +684,9 @@ def test_spect_training_data_loader(
 @pytest.mark.cpu
 @pytest.mark.parametrize('eos', [None, -1])
 @pytest.mark.parametrize('split_params', [True, False])
+@pytest.mark.parametrize('include_frame_shift', [True, False])
 def test_spect_evaluation_data_loader(
-        temp_dir, populate_torch_dir, eos, split_params):
+        temp_dir, populate_torch_dir, eos, split_params, include_frame_shift):
     torch.manual_seed(41)
     feat_dir = os.path.join(temp_dir, 'feat')
     ali_dir = os.path.join(temp_dir, 'ali')
@@ -665,12 +700,15 @@ def test_spect_evaluation_data_loader(
         params = data.SpectDataSetParams(batch_size=batch_size, eos=eos)
         data_params = None
     feats, ali, ref, feat_sizes, ref_sizes, utt_ids = populate_torch_dir(
-        temp_dir, 20)
+        temp_dir, 20, include_frame_shift=include_frame_shift)
     if eos is not None:
-        eos_sym = torch.full((3,), -1).long()
-        eos_sym[0] = eos
-        eos_sym = eos_sym.unsqueeze(0)
-        ref = [torch.cat([x, eos_sym]) for x in ref]
+        if include_frame_shift:
+            eos_sym = torch.full((3,), -1).long()
+            eos_sym[0] = eos
+            eos_sym = eos_sym.unsqueeze(0)
+        else:
+            eos_sym = torch.full((1,), -1).long()
+        ref = [torch.cat([x, eos_sym], 0) for x in ref]
         ref_sizes = [x + 1 for x in ref_sizes]
     # check that ali and ref can be missing
     data_loader = data.SpectEvaluationDataLoader(
@@ -695,7 +733,10 @@ def test_spect_evaluation_data_loader(
             R_star = max(b_ref_sizes)
             assert tuple(b_feats.shape) == (5, b_feat_sizes[0], 5)
             assert tuple(b_ali.shape) == (5, b_feat_sizes[0])
-            assert tuple(b_ref.shape) == (5, R_star, 3)
+            if include_frame_shift:
+                assert tuple(b_ref.shape) == (5, R_star, 3)
+            else:
+                assert tuple(b_ref.shape) == (5, R_star)
             # sort the sub-section of the master list by feature size
             s_feats, s_ali, s_ref, s_feat_sizes, s_ref_sizes, s_utt_ids = (
                 zip(*sorted(

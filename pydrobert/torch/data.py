@@ -100,12 +100,17 @@ class SpectDataSet(torch.utils.data.Dataset):
     training of DNNs in hybrid DNN-HMM recognition, or any frame-wise loss.
     ``ali/`` is optional.
 
-    ``ref`` stores :class:`torch.LongTensor` of size ``(R,3)``, indicating
-    reference transcriptions. Letting ``r`` be such a tensor, ``r[..., 0]``
-    is the sequence of token ids for the utterance and ``r[..., 1:]`` are
-    the 0-indexed frames they start (inclusive) and end (exclusive) at,
+    ``ref`` stores :class:`torch.LongTensor` of size indicating reference
+    transcriptions. The tensors can have either shape ``(R, 3)`` or ``(R,)``,
+    depending on whether frame start/end times were included along with the
+    tokens. Letting ``r`` be such a tensor of size ``(R, 3)``, ``r[..., 0]`` is
+    the sequence of token ids for the utterance and ``r[..., 1:]`` are the
+    0-indexed frames they start (inclusive) and end (exclusive) at,
     respectively. Negative values can be used when the start and end frames are
-    unknown. ``ref`` is suitable for end-to-end training. ``ref/`` is optional.
+    unknown. If ``r`` is of shape ``(R,)``, ``r`` is only the sequence of token
+    ids. Only one version of ``r`` (with or without frame start/end times)
+    should be used across the entire folder. ``ref/`` is suitable for
+    end-to-end training. ``ref/`` is optional.
 
     Parameters
     ----------
@@ -321,9 +326,13 @@ class SpectDataSet(torch.utils.data.Dataset):
                     self.ref_subdir,
                     self.file_prefix + utt_id + self.file_suffix))
             if self.eos is not None:
-                eos_sym = torch.full_like(ref[0], -1)
-                eos_sym[0] = self.eos
-                ref = torch.cat([ref, eos_sym.unsqueeze(0)])
+                if ref.dim() == 2:
+                    eos_sym = torch.full_like(ref[0], -1)
+                    eos_sym[0] = self.eos
+                    ref = torch.cat([ref, eos_sym.unsqueeze(0)])
+                else:
+                    ref = torch.cat(
+                        [ref, torch.full_like(ref[:1], self.eos)], 0)
         else:
             ref = None
         return feat, ali, ref
@@ -376,8 +385,9 @@ class SpectDataSet(torch.utils.data.Dataset):
             `utt` is assumed to index an utterance id specified in
             ``self.utt_ids``
         hyp : torch.Tensor
-            The tensor to write. It will be converted to a
-            :class:`torch.LongTensor` using the command ``pdf.cpu().long()``
+            The tensor to write. Either of shape ``(R,)`` or ``(R, 3)``. It
+            will be converted to a :class:`torch.LongTensor` using the command
+            ``hyp.cpu().long()``
         hyp_dir : str or None, optional
             The directory pdfs are written to. If :obj:`None`, it will be set
             to ``self.data_dir + '/hyp'``
@@ -390,7 +400,10 @@ class SpectDataSet(torch.utils.data.Dataset):
             os.makedirs(hyp_dir)
         hyp = hyp.cpu().long()
         if self.eos is not None:
-            eos_idxs = hyp[:, 0].eq(self.eos).nonzero()
+            if hyp.dim() == 1:
+                eos_idxs = hyp.eq(self.eos).nonzero()
+            else:
+                eos_idxs = hyp[:, 0].eq(self.eos).nonzero()
             if eos_idxs.numel():
                 eos_idx = eos_idxs[0].item()
                 hyp = hyp[:eos_idx]
@@ -418,16 +431,20 @@ def validate_spect_data_set(data_set):
     5. If reference sequences are present
 
        1. All references are :class:`torch.LongTensor` instances
-       2. All alignments have two axes, the second of size 3
-       3. For the start and end points of a reference token, ``r[i, 1:]``,
-          either both of them are negative (indicating no alignment), or
-          ``0 <= r[i, 1] < r[i, 2] <= T``, where ``T`` is the number of
-          frames in the utterance. We do not enforce tokens be
-          non-overlapping
+       2. All alignments have the same number of dimensions: either 1 or 2
+       3. If 2-dimensional
+
+          1. The second dimension has length 3
+          2. For the start and end points of a reference token, ``r[i, 1:]``,
+             either both of them are negative (indicating no alignment), or
+             ``0 <= r[i, 1] < r[i, 2] <= T``, where ``T`` is the number of
+             frames in the utterance. We do not enforce tokens be
+             non-overlapping
 
     Raises a :class:`ValueError` if a condition is violated
     '''
     num_filts = None
+    ref_is_2d = None
     for idx in range(len(data_set.utt_ids)):
         feat, ali, ref = data_set.get_utterance_tuple(idx)
         if not isinstance(feat, torch.FloatTensor):
@@ -478,23 +495,49 @@ def validate_spect_data_set(data_set):
                     "'{}' (index {}) in '{}' is not a LongTensor".format(
                         data_set.utt_ids[idx] + data_set.file_suffix, idx,
                         os.path.join(data_set.data_dir, data_set.ref_subdir)))
-            if len(ref.shape) != 2 or ref.shape[1] != 3:
-                raise ValueError(
-                    "'{}' (index {}) in '{}' does not have shape (D, 3)"
-                    "".format(
-                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                        os.path.join(data_set.data_dir, data_set.ref_subdir)))
-            for idx2, r in enumerate(ref):
-                if not (r[1] < 0 and r[2] < 0) and not (
-                        0 <= r[1] < r[2] <= feat.shape[0]):
+            if len(ref.shape) == 2:
+                if ref_is_2d is False:
                     raise ValueError(
-                        "'{}' (index {}) in '{}', has a reference token "
-                        "(index {}) with invalid boundaries"
+                        "'{}' (index {}) in '{}' is 2D. Previous "
+                        "transcriptions were 1D".format(
+                            data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                            os.path.join(
+                                data_set.data_dir, data_set.ref_subdir)))
+                ref_is_2d = True
+                if ref.shape[1] != 3:
+                    raise ValueError(
+                        "'{}' (index {}) in '{}' does not have shape (D, 3)"
                         "".format(
                             data_set.utt_ids[idx] + data_set.file_suffix, idx,
                             os.path.join(
-                                data_set.data_dir, data_set.ref_subdir),
-                            idx2))
+                                data_set.data_dir, data_set.ref_subdir)))
+                for idx2, r in enumerate(ref):
+                    if not (r[1] < 0 and r[2] < 0) and not (
+                            0 <= r[1] < r[2] <= feat.shape[0]):
+                        raise ValueError(
+                            "'{}' (index {}) in '{}', has a reference token "
+                            "(index {}) with invalid boundaries"
+                            "".format(
+                                data_set.utt_ids[idx] + data_set.file_suffix,
+                                idx, os.path.join(
+                                    data_set.data_dir, data_set.ref_subdir),
+                                idx2))
+            elif len(ref.shape) == 1:
+                if ref_is_2d is True:
+                    raise ValueError(
+                        "'{}' (index {}) in '{}' is 1D. Previous "
+                        "transcriptions were 2D".format(
+                            data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                            os.path.join(
+                                data_set.data_dir, data_set.ref_subdir)))
+                ref_is_2d = False
+            else:
+                raise ValueError(
+                    "'{}' (index {}) in '{}' is not 1D nor 2D"
+                    "".format(
+                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                        os.path.join(
+                            data_set.data_dir, data_set.ref_subdir)))
 
 
 class _AltTree(object):
@@ -1239,15 +1282,16 @@ def spect_seq_to_batch(seq, batch_first=True):
     Assume `seq` is a finite length sequence of tuples ``feat, ali, ref``,
     where ``feat`` is of size ``(T, F)``, where ``T`` is some number of frames
     (which can vary across elements in the sequence), ``F`` is some number of
-    filters, ``ali`` is of size ``(T,)``, and ``ref`` is of size ``(R, 3)``,
+    filters, ``ali`` is of size ``(T,)``, and ``ref`` is of size ``(R[, 3])``,
     where ``R`` is some number of reference tokens (which can vary across
-    elements in the sequence). This method batches all the elements of the
+    elements in the sequence) and the ``3`` is a triple of id, start frame and
+    end frame (optional). This method batches all the elements of the
     sequence into a tuple of ``feats, alis, refs, feat_sizes, ref_sizes``.
     `feats` and `alis` will have dimensions ``(N, T*, F)``, and ``(N, T*)``,
     resp., where ``N`` is the batch size, and ``T*`` is the maximum number of
     frames in `seq` (or ``(T*, N, F)``, ``(T*, N)`` if `batch_first` is
-    :obj:`False`). Similarly, `refs` will have dimensions ``(N, R*, 3)`` (or
-    ``(R*, N, 3)``). `feat_sizes` and `ref_sizes` are
+    :obj:`False`). Similarly, `refs` will have dimensions ``(N, R*[, 3])`` (or
+    ``(R*, N[, 3])``). `feat_sizes` and `ref_sizes` are
     :class:`torch.LongTensor`  of shape ``(N,)`` containing the original ``T``
     and ``R`` values. The batch will be sorted by decreasing numbers of frames.
     `feats` is zero-padded while `alis` and `refs` are padded with module
@@ -1336,10 +1380,11 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         Of size ``(N, T*)`` (or ``(T*, N)`` if `batch_first` is :obj:`False`)
         if an ``ali/`` dir exists, otherwise :obj:`None`
     refs : torch.LongTensor or None
-        Of size ``(N, R*, 3)`` (or ``(R*, N, 3)`` if `batch_first` is
+        Of size ``(N, R*[, 3])`` (or ``(R*, N[, 3])`` if `batch_first` is
         :obj:`False`), where ``R*`` is the maximum number of reference tokens
-        in the batch. If the ``refs/`` directory does not exist, `refs` and
-        `ref_sizes` are :obj:`None`.
+        in the batch. The 3rd dimension will only exist if data were saved with
+        frame start/end indices. If the ``refs/`` directory does not exist,
+        `refs` and `ref_sizes` are :obj:`None`.
     feat_sizes : torch.LongTensor
         `feat_sizes` is a :class:`torch.LongTensor` of shape ``(N,)``
         specifying the lengths of utterances in the batch
@@ -1522,10 +1567,11 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         Of size ``(N, T*)`` (or ``(T*, N)`` if `batch_first` is :obj:`False`)
         if an ``ali/`` dir exists, otherwise :obj:`None`
     refs : torch.LongTensor or None
-        Of size ``(N, R*, 3)`` (or ``(R*, N, 3)`` if `batch_first` is
+        Of size ``(N, R*[, 3])`` (or ``(R*, N[, 3])`` if `batch_first` is
         :obj:`False`), where ``R*`` is the maximum number of reference tokens
-        in the batch. If the ``refs/`` directory does not exist, `refs` and
-        `ref_sizes` are :obj:`None`.
+        in the batch. The 3rd dimension will only exist if data were saved with
+        frame start/end indices. If the ``refs/`` directory does not exist,
+        `refs` and `ref_sizes` are :obj:`None`.
     feat_sizes : torch.LongTensor
         `feat_sizes` is a :class:`torch.LongTensor` of shape ``(N,)``
         specifying the lengths of utterances in the batch
