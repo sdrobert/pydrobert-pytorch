@@ -298,20 +298,39 @@ def _save_transcripts_to_dir(
         os.makedirs(dir_)
     if num_workers:
         queue = torch.multiprocessing.Queue(num_workers)
-        with torch.multiprocessing.Pool(
+        try:
+            with torch.multiprocessing.Pool(
+                    num_workers, _save_transcripts_to_dir_worker,
+                    (
+                        token2id, file_prefix, file_suffix, dir_,
+                        frame_shift_ms, unk, skip_frame_times, queue
+                    )) as pool:
+                chunk = tuple(itertools.islice(transcripts, chunk_size))
+                while len(chunk):
+                    queue.put(chunk)
+                    chunk = tuple(itertools.islice(transcripts, chunk_size))
+                for _ in range(num_workers):
+                    queue.put(None)
+                pool.close()
+                pool.join()
+        except AttributeError:  # 2.7
+            pool = torch.multiprocessing.Pool(
                 num_workers, _save_transcripts_to_dir_worker,
                 (
-                    token2id, file_prefix, file_suffix, dir_, frame_shift_ms,
-                    unk, skip_frame_times, queue
-                )) as pool:
-            chunk = tuple(itertools.islice(transcripts, chunk_size))
-            while len(chunk):
-                queue.put(chunk)
+                    token2id, file_prefix, file_suffix, dir_,
+                    frame_shift_ms, unk, skip_frame_times, queue
+                ))
+            try:
                 chunk = tuple(itertools.islice(transcripts, chunk_size))
-            for _ in range(num_workers):
-                queue.put(None)
-            pool.close()
-            pool.join()
+                while len(chunk):
+                    queue.put(chunk)
+                    chunk = tuple(itertools.islice(transcripts, chunk_size))
+                for _ in range(num_workers):
+                    queue.put(None)
+                pool.close()
+                pool.join()
+            finally:
+                pool.terminate()
     else:
         for utt_id, transcript in transcripts:
             tok = data.transcript_to_token(
