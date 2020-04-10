@@ -49,6 +49,7 @@ __all__ = [
     'EpochRandomSampler',
     'extract_window',
     'read_ctm',
+    'read_trn_iter',
     'read_trn',
     'spect_seq_to_batch',
     'SpectDataParams',
@@ -576,7 +577,47 @@ def _trn_line_to_transcript(x):
     return utt_id, transcript
 
 
-def read_trn(trn, warn=True, processes=0):
+def read_trn_iter(trn, warn=True, processes=0, chunksize=1000):
+    '''Read a NIST sclite transcript file, yielding individual transcripts
+
+    Identical to :func:`read_trn_iter`, but yields individual transcript
+    entries rather than a full list. Ideal for large transcript files.
+    '''
+    if isinstance(trn, basestring):
+        with open(trn) as trn:
+            for x in read_trn_iter(trn, warn, processes):
+                yield x  # plz yield from when I remove 2.7 support thank uuuuu
+        return
+    if processes == 0:
+        for line in trn:
+            x = _trn_line_to_transcript((line, warn))
+            if x is not None:
+                yield x
+    else:
+        try:
+            with torch.multiprocessing.Pool(processes) as pool:
+                transcripts = pool.imap(
+                    _trn_line_to_transcript, ((line, warn) for line in trn),
+                    chunksize)
+                for x in transcripts:
+                    yield x
+                pool.close()
+                pool.join()
+        except AttributeError:  # py2.7
+            pool = torch.multiprocessing.Pool(processes)
+            try:
+                transcripts = pool.imap(
+                    _trn_line_to_transcript, ((line, warn) for line in trn),
+                    chunksize)
+                for x in transcripts:
+                    yield x
+                pool.close()
+                pool.join()
+            finally:
+                pool.terminate()
+
+
+def read_trn(trn, warn=True, processes=0, chunksize=1000):
     '''Read a NIST sclite transcript file into a list of transcripts
 
     `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__
@@ -600,6 +641,13 @@ def read_trn(trn, warn=True, processes=0):
         [alt_2_word_1, alt_2_word_2, ...], ...], -1, -1)`` so that
         ``transcript_to_token`` will not attempt to process alterations as
         token start and end times
+    processes : int, optional
+        The number of processes used to parse the lines of the trn file. If
+        ``0``, will be performed on the main thread. Otherwise, the file will
+        be read on the main thread and parsed using `processes` many processes
+    chunksize : int, optional
+        The number of lines to be processed by a worker process at a time.
+        Applicable when ``processes > 0``
 
     Returns
     -------
@@ -622,29 +670,7 @@ def read_trn(trn, warn=True, processes=0):
     # - ...and internal parentheses are treated as words
     # - Spaces are treated as part of the utterance id
     # - Seg faults on empty alternates
-
-    if isinstance(trn, basestring):
-        with open(trn, 'r') as trn:
-            return read_trn(trn)
-    if processes == 0:
-        transcripts = []
-        for line in trn:
-            x = _trn_line_to_transcript((line, warn))
-            if x is not None:
-                transcripts.append(x)
-    else:
-        try:
-            with torch.multiprocessing.Pool(processes) as pool:
-                transcripts = pool.map(
-                    _trn_line_to_transcript, ((line, warn) for line in trn))
-        except AttributeError:  # py2.7
-            pool = torch.multiprocessing.Pool(processes)
-            try:
-                transcripts = pool.map(
-                    _trn_line_to_transcript, ((line, warn) for line in trn))
-            finally:
-                pool.close()
-    return transcripts
+    return list(read_trn_iter(trn, warn, processes))
 
 
 def write_trn(transcripts, trn):
