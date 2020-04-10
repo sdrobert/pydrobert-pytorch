@@ -485,9 +485,9 @@ def _load_transcripts_from_data_dir(
         strip_timing)
     dl = torch.utils.data.DataLoader(
         ds, batch_size=None, num_workers=num_workers)
-    transcripts = list(dl)
+    for x in dl:
+        yield x
     del dl, ds
-    return transcripts
 
 
 def torch_token_data_dir_to_trn(args=None):
@@ -904,12 +904,12 @@ def compute_torch_token_data_dir_error_rates(args=None):
                     'integers'.format(options.ignore.name))
     else:
         ignore = set()
-    ref_transcripts = _load_transcripts_from_data_dir(
+    ref_transcripts = list(_load_transcripts_from_data_dir(
         ref_dir, id2token, options.file_prefix, options.file_suffix,
-        strip_timing=True)
-    hyp_transcripts = _load_transcripts_from_data_dir(
+        strip_timing=True))
+    hyp_transcripts = list(_load_transcripts_from_data_dir(
         hyp_dir, id2token, options.file_prefix, options.file_suffix,
-        strip_timing=True)
+        strip_timing=True))
     idx = 0
     while idx < max(len(ref_transcripts), len(hyp_transcripts)):
         missing_ref = missing_hyp = False
