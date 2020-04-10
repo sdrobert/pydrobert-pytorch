@@ -587,8 +587,7 @@ def read_trn_iter(trn, warn=True, processes=0, chunk_size=1000):
         with open(trn) as trn:
             for x in read_trn_iter(trn, warn, processes):
                 yield x  # plz yield from when I remove 2.7 support thank uuuuu
-        return
-    if processes == 0:
+    elif processes == 0:
         for line in trn:
             x = _trn_line_to_transcript((line, warn))
             if x is not None:
