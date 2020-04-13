@@ -21,6 +21,7 @@ import sys
 import argparse
 import math
 import warnings
+import itertools
 
 from collections import defaultdict, OrderedDict
 
@@ -36,6 +37,7 @@ __all__ = [
     'compute_torch_token_data_dir_error_rates',
     'ctm_to_torch_token_data_dir',
     'get_torch_spect_data_dir_info',
+    'torch_token_data_dir_to_ctm',
     'torch_token_data_dir_to_trn',
     'trn_to_torch_token_data_dir',
 ]
@@ -229,6 +231,30 @@ def _trn_to_torch_token_data_dir_parse_args(args):
         '--unk-symbol', default=None,
         help='If set, will map out-of-vocabulary tokens to this symbol'
     )
+    parser.add_argument(
+        '--num-workers', type=int, default=torch.multiprocessing.cpu_count(),
+        help='The number of workers to spawn to process the data. 0 is serial.'
+        ' Defaults to the cpu count'
+    )
+    parser.add_argument(
+        '--chunk-size', type=int, default=1000,
+        help='The number of lines that a worker will process at once. Impacts '
+        'speed and memory consumption.'
+    )
+    size_group = parser.add_mutually_exclusive_group()
+    size_group.add_argument(
+        '--skip-frame-times', action='store_true', default=False,
+        help='If true, will store token tensors of shape (R,) instead of '
+        '(R, 3), foregoing segment start and end times (which trn does not '
+        'have).'
+    )
+    size_group.add_argument(
+        '--feat-sizing', action='store_true', default=False,
+        help='If true, will store token tensors of shape (R, 1) instead of '
+        '(R, 3), foregoing segment start and end times (which trn does not '
+        'have). The extra dimension will allow data in this directory to be '
+        'loaded as features in a SpectDataSet.'
+    )
     return parser.parse_args(args)
 
 
@@ -258,16 +284,74 @@ def _parse_token2id(file, swap, return_swap):
     return ret_swapped if return_swap else ret
 
 
+def _save_transcripts_to_dir_worker(
+        token2id, file_prefix, file_suffix, dir_, frame_shift_ms, unk,
+        skip_frame_times, feat_sizing, queue, first_timeout=30,
+        rest_timeout=10):
+    transcripts = queue.get(True, first_timeout)
+    while transcripts is not None:
+        for utt_id, transcript in transcripts:
+            tok = data.transcript_to_token(
+                transcript, token2id, frame_shift_ms, unk,
+                skip_frame_times or feat_sizing)
+            if feat_sizing:
+                tok = tok.unsqueeze(-1)
+            path = os.path.join(dir_, file_prefix + utt_id + file_suffix)
+            torch.save(tok, path)
+        transcripts = queue.get(True, rest_timeout)
+
+
 def _save_transcripts_to_dir(
         transcripts, token2id, file_prefix, file_suffix, dir_,
-        frame_shift_ms=None, unk=None):
+        frame_shift_ms=None, unk=None, skip_frame_times=False,
+        feat_sizing=False, num_workers=0, chunk_size=1000):
     if not os.path.isdir(dir_):
         os.makedirs(dir_)
-    for utt_id, transcript in transcripts:
-        tok = data.transcript_to_token(
-            transcript, token2id, frame_shift_ms, unk)
-        path = os.path.join(dir_, file_prefix + utt_id + file_suffix)
-        torch.save(tok, path)
+    if num_workers:
+        queue = torch.multiprocessing.Queue(num_workers)
+        try:
+            with torch.multiprocessing.Pool(
+                    num_workers, _save_transcripts_to_dir_worker,
+                    (
+                        token2id, file_prefix, file_suffix, dir_,
+                        frame_shift_ms, unk, skip_frame_times, feat_sizing,
+                        queue
+                    )) as pool:
+                chunk = tuple(itertools.islice(transcripts, chunk_size))
+                while len(chunk):
+                    queue.put(chunk)
+                    chunk = tuple(itertools.islice(transcripts, chunk_size))
+                for _ in range(num_workers):
+                    queue.put(None)
+                pool.close()
+                pool.join()
+        except AttributeError:  # 2.7
+            pool = torch.multiprocessing.Pool(
+                num_workers, _save_transcripts_to_dir_worker,
+                (
+                    token2id, file_prefix, file_suffix, dir_,
+                    frame_shift_ms, unk, skip_frame_times, queue
+                ))
+            try:
+                chunk = tuple(itertools.islice(transcripts, chunk_size))
+                while len(chunk):
+                    queue.put(chunk)
+                    chunk = tuple(itertools.islice(transcripts, chunk_size))
+                for _ in range(num_workers):
+                    queue.put(None)
+                pool.close()
+                pool.join()
+            finally:
+                pool.terminate()
+    else:
+        for utt_id, transcript in transcripts:
+            tok = data.transcript_to_token(
+                transcript, token2id, frame_shift_ms, unk,
+                skip_frame_times or feat_sizing)
+            if feat_sizing:
+                tok = tok.unsqueeze(-1)
+            path = os.path.join(dir_, file_prefix + utt_id + file_suffix)
+            torch.save(tok, path)
 
 
 def trn_to_torch_token_data_dir(args=None):
@@ -299,29 +383,33 @@ def trn_to_torch_token_data_dir(args=None):
             'Unk symbol "{}" is not in token2id'.format(options.unk_symbol),
             file=sys.stderr)
         return 1
-    transcripts = data.read_trn(options.trn)
-    # we manually search for alternates in a first pass, as we don't know what
-    # filters users have on warnings
-    for utt_id, transcript in transcripts:
-        old_transcript = transcript[:]
-        transcript[:] = []
-        while len(old_transcript):
-            x = old_transcript.pop(0)
-            if len(x) == 3 and x[1] == -1:
-                x = x[0]
-            if isinstance(x, str):
-                transcript.append(x)
-            elif options.alt_handler == 'error':
-                print(
-                    'Cannot handle alternate in "{}"'.format(utt_id),
-                    file=sys.stderr)
-                return 1
-            else:  # first
-                x[0].extend(old_transcript)
-                old_transcript = x[0]
+    # we're going to do all the threading on the tensor creation part of
+    # things
+    transcripts = data.read_trn_iter(options.trn)
+
+    def error_handling_iter():
+        for utt_id, transcript in transcripts:
+            old_transcript = transcript[:]
+            transcript[:] = []
+            while len(old_transcript):
+                x = old_transcript.pop(0)
+                if len(x) == 3 and x[1] == -1:
+                    x = x[0]
+                if isinstance(x, str):
+                    transcript.append(x)
+                elif options.alt_handler == 'error':
+                    raise ValueError(
+                        'Cannot handle alternate in "{}"'.format(utt_id))
+                else:  # first
+                    x[0].extend(old_transcript)
+                    old_transcript = x[0]
+            yield utt_id, transcript
     _save_transcripts_to_dir(
-        transcripts, token2id, options.file_prefix, options.file_suffix,
-        options.dir, unk=options.unk_symbol)
+        error_handling_iter(), token2id, options.file_prefix,
+        options.file_suffix, options.dir, unk=options.unk_symbol,
+        skip_frame_times=options.skip_frame_times,
+        feat_sizing=options.feat_sizing,
+        num_workers=options.num_workers, chunk_size=options.chunk_size)
     return 0
 
 
@@ -353,38 +441,69 @@ def _torch_token_data_dir_to_trn_parse_args(args=None):
         '--swap', action='store_true', default=False,
         help='If set, swaps the order of key and value in `id2token`'
     )
+    parser.add_argument(
+        '--num-workers', type=int, default=torch.multiprocessing.cpu_count(),
+        help='The number of workers to spawn to process the data. 0 is serial.'
+        ' Defaults to the cpu count'
+    )
     return parser.parse_args(args)
 
 
-def _load_transcripts_from_data_dir(
-        dir_, id2token, file_prefix, file_suffix, frame_shift_ms=None,
-        strip_timing=False):
-    fpl = len(file_prefix)
-    neg_fsl = -len(file_suffix)
-    utt_ids = sorted(
-        x[fpl:neg_fsl]
-        for x in os.listdir(dir_)
-        if x.startswith(file_prefix) and
-        x.endswith(file_suffix)
-    )
-    transcripts = []
-    for utt_id in utt_ids:
+class _TranscriptDataSet(torch.utils.data.Dataset):
+
+    def __init__(
+            self, dir_, id2token, file_prefix, file_suffix,
+            frame_shift_ms, strip_timing):
+        super(_TranscriptDataSet, self).__init__()
+        fpl = len(file_prefix)
+        neg_fsl = -len(file_suffix)
+        self.utt_ids = sorted(
+            x[fpl:neg_fsl]
+            for x in os.listdir(dir_)
+            if x.startswith(file_prefix) and
+            x.endswith(file_suffix)
+        )
+        self.dir_ = dir_
+        self.file_prefix = file_prefix
+        self.file_suffix = file_suffix
+        self.id2token = id2token
+        self.frame_shift_ms = frame_shift_ms
+        self.strip_timing = strip_timing
+
+    def __getitem__(self, index):
+        utt_id = self.utt_ids[index]
         tok = torch.load(os.path.join(
-            dir_, file_prefix + utt_id + file_suffix))
-        transcript = data.token_to_transcript(tok, id2token, frame_shift_ms)
+            self.dir_, self.file_prefix + utt_id + self.file_suffix))
+        transcript = data.token_to_transcript(
+            tok, self.id2token, self.frame_shift_ms)
         for idx in range(len(transcript)):
             token = transcript[idx]
             if isinstance(token, tuple):
                 token = token[0]
-                if strip_timing:
+                if self.strip_timing:
                     transcript[idx] = token
-            if isinstance(token, int) and id2token is not None:
-                assert token not in id2token
+            if isinstance(token, int) and self.id2token is not None:
+                assert token not in self.id2token
                 raise ValueError(
                     'Utterance "{}": ID "{}" could not be found in id2token'
                     ''.format(utt_id, token))
-        transcripts.append((utt_id, transcript))
-    return transcripts
+        return utt_id, transcript
+
+    def __len__(self):
+        return len(self.utt_ids)
+
+
+def _load_transcripts_from_data_dir(
+        dir_, id2token, file_prefix, file_suffix, frame_shift_ms=None,
+        strip_timing=False, num_workers=0):
+    ds = _TranscriptDataSet(
+        dir_, id2token, file_prefix, file_suffix, frame_shift_ms,
+        strip_timing)
+    dl = torch.utils.data.DataLoader(
+        ds, batch_size=None, num_workers=num_workers)
+    for x in dl:
+        yield x
+    del dl, ds
 
 
 def torch_token_data_dir_to_trn(args=None):
@@ -399,11 +518,11 @@ def torch_token_data_dir_to_trn(args=None):
         here is another (utterance_b)
 
     This command scans the contents of a directory like ``ref/`` in a
-    :class:`pydrobert.torch.data.SpectDataSet` and converts each such file into
-    a transcription. Each such transcription is then written to a "trn" file.
-    See the command :func:`get_torch_spect_data_dir_info` (command line
+    :class:`pydrobert.torch.data.SpectDataSet` and converts each such file
+    into a transcription. Each such transcription is then written to a "trn"
+    file. See the command :func:`get_torch_spect_data_dir_info` (command line
     "get-torch-spect-data-dir-info") for more information on a
-    :class:`pydrobert.torch.data.SpectDataSet`
+    :class:`pydrobert.torch.data.SpectDataSet`.
     '''
     try:
         options = _torch_token_data_dir_to_trn_parse_args(args)
@@ -415,7 +534,8 @@ def torch_token_data_dir_to_trn(args=None):
     id2token = _parse_token2id(
         options.id2token, not options.swap, options.swap)
     transcripts = _load_transcripts_from_data_dir(
-        options.dir, id2token, options.file_prefix, options.file_suffix)
+        options.dir, id2token, options.file_prefix, options.file_suffix,
+        strip_timing=True, num_workers=options.num_workers)
     data.write_trn(transcripts, options.trn)
     return 0
 
@@ -799,12 +919,12 @@ def compute_torch_token_data_dir_error_rates(args=None):
                     'integers'.format(options.ignore.name))
     else:
         ignore = set()
-    ref_transcripts = _load_transcripts_from_data_dir(
+    ref_transcripts = list(_load_transcripts_from_data_dir(
         ref_dir, id2token, options.file_prefix, options.file_suffix,
-        strip_timing=True)
-    hyp_transcripts = _load_transcripts_from_data_dir(
+        strip_timing=True))
+    hyp_transcripts = list(_load_transcripts_from_data_dir(
         hyp_dir, id2token, options.file_prefix, options.file_suffix,
-        strip_timing=True)
+        strip_timing=True))
     idx = 0
     while idx < max(len(ref_transcripts), len(hyp_transcripts)):
         missing_ref = missing_hyp = False

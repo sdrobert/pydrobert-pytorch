@@ -49,6 +49,7 @@ __all__ = [
     'EpochRandomSampler',
     'extract_window',
     'read_ctm',
+    'read_trn_iter',
     'read_trn',
     'spect_seq_to_batch',
     'SpectDataParams',
@@ -89,22 +90,27 @@ class SpectDataSet(torch.utils.data.Dataset):
                 ...
             ]
 
-    The ``feat`` dir stores filter bank data in the form of
-    :class:`torch.FloatTensor` of size ``(T, F)``, where ``T`` is the time
-    dimension and ``F`` is the filter/log-frequency dimension. ``feat`` is
-    the only required directory.
+    The ``feat`` dir stores filter bank data in the form of a
+    :class:`torch.Tensor` of size ``(T, F)``, where ``T`` is the time dimension
+    and ``F`` is the filter/log-frequency dimension. ``feat`` is the only
+    required directory.
 
     ``ali`` stores :class:`torch.LongTensor` of size ``(T,)``, indicating the
     pdf-id of the most likely target. ``ali`` is suitable for discriminative
     training of DNNs in hybrid DNN-HMM recognition, or any frame-wise loss.
     ``ali/`` is optional.
 
-    ``ref`` stores :class:`torch.LongTensor` of size ``(R,3)``, indicating
-    reference transcriptions. Letting ``r`` be such a tensor, ``r[..., 0]``
-    is the sequence of token ids for the utterance and ``r[..., 1:]`` are
-    the 0-indexed frames they start (inclusive) and end (exclusive) at,
+    ``ref`` stores :class:`torch.LongTensor` of size indicating reference
+    transcriptions. The tensors can have either shape ``(R, 3)`` or ``(R,)``,
+    depending on whether frame start/end times were included along with the
+    tokens. Letting ``r`` be such a tensor of size ``(R, 3)``, ``r[..., 0]`` is
+    the sequence of token ids for the utterance and ``r[..., 1:]`` are the
+    0-indexed frames they start (inclusive) and end (exclusive) at,
     respectively. Negative values can be used when the start and end frames are
-    unknown. ``ref`` is suitable for end-to-end training. ``ref/`` is optional.
+    unknown. If ``r`` is of shape ``(R,)``, ``r`` is only the sequence of token
+    ids. Only one version of ``r`` (with or without frame start/end times)
+    should be used across the entire folder. ``ref/`` is suitable for
+    end-to-end training. ``ref/`` is optional.
 
     Parameters
     ----------
@@ -121,12 +127,16 @@ class SpectDataSet(torch.utils.data.Dataset):
     subset_ids : set, optional
         If set, only utterances with ids listed in this set will count towards
         the data set. The rest will be ignored
+    sos : int, optional
+        `sos` is a special token used to delimit the start of a reference or
+        hypothesis sequence. If specified, an extra `sos` token without
+        positional information will be inserted at the front of each reference
+        transcript. It will also have ramifications for :func:`write_hyp`
     eos : int, optional
         `eos` is a special token used to delimit the end of a reference
         or hypothesis sequence. If specified, an extra `eos` token without
         positional information will be appended to the end of each reference
-        tanscript. It will also have ramifications for the method
-        ``write_hyp()``
+        transcript. It will also have ramifications for :func:`write_hyp`
     feat_subdir : str, optional
     ali_subdir : str, optional
     ref_subdir : str, optional
@@ -147,11 +157,12 @@ class SpectDataSet(torch.utils.data.Dataset):
         :func:`__getitem__`. If the ``ali/`` or ``ref/`` directories exist,
         `utt_ids` contains only the utterances in the intersection of each
         directory (and `subset_ids`, if it was specified)
+    sos : int or None
     eos : int or None
 
     Yields
     ------
-    feat : torch.FloatTensor
+    feat : torch.Tensor
     ali : torch.LongTensor or None
     ref : torch.LongTensor or None
 
@@ -209,7 +220,7 @@ class SpectDataSet(torch.utils.data.Dataset):
 
     def __init__(
             self, data_dir, file_prefix='', file_suffix='.pt',
-            warn_on_missing=True, subset_ids=None, eos=None,
+            warn_on_missing=True, subset_ids=None, sos=None, eos=None,
             feat_subdir='feat', ali_subdir='ali', ref_subdir='ref'):
         super(SpectDataSet, self).__init__()
         self.data_dir = data_dir
@@ -218,6 +229,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         self.ref_subdir = ref_subdir
         self.file_prefix = file_prefix
         self.file_suffix = file_suffix
+        self.sos = sos
         self.eos = eos
         if ali_subdir:
             self.has_ali = os.path.isdir(os.path.join(data_dir, ali_subdir))
@@ -319,10 +331,22 @@ class SpectDataSet(torch.utils.data.Dataset):
                     self.data_dir,
                     self.ref_subdir,
                     self.file_prefix + utt_id + self.file_suffix))
+            if self.sos is not None:
+                if ref.dim() == 2:
+                    sos_sym = torch.full_like(ref[0], -1)
+                    sos_sym[0] = self.sos
+                    ref = torch.cat([sos_sym.unsqueeze(0), ref], 0)
+                else:
+                    ref = torch.cat(
+                        [torch.full_like(ref[:1], self.sos), ref], 0)
             if self.eos is not None:
-                eos_sym = torch.full_like(ref[0], -1)
-                eos_sym[0] = self.eos
-                ref = torch.cat([ref, eos_sym.unsqueeze(0)])
+                if ref.dim() == 2:
+                    eos_sym = torch.full_like(ref[0], -1)
+                    eos_sym[0] = self.eos
+                    ref = torch.cat([ref, eos_sym.unsqueeze(0)], 0)
+                else:
+                    ref = torch.cat(
+                        [ref, torch.full_like(ref[:1], self.eos)], 0)
         else:
             ref = None
         return feat, ali, ref
@@ -363,6 +387,11 @@ class SpectDataSet(torch.utils.data.Dataset):
         This method writes a sequence of hypothesis tokens to the directory
         `hyp_dir` with the name ``<file_prefix><utt><file_suffix>``
 
+        If the ``sos`` attribute of this instance is not :obj:`None`, any
+        tokens in `hyp` matching it will be considered the start of the
+        sequence, so every symbol including and before the last instance will
+        be removed from the utterance before saving
+
         If the ``eos`` attribute of this instance is not :obj:`None`, any
         tokens in `hyp` matching it will be considered the end of the sequence,
         so every symbol including and after the first instance will be removed
@@ -375,8 +404,9 @@ class SpectDataSet(torch.utils.data.Dataset):
             `utt` is assumed to index an utterance id specified in
             ``self.utt_ids``
         hyp : torch.Tensor
-            The tensor to write. It will be converted to a
-            :class:`torch.LongTensor` using the command ``pdf.cpu().long()``
+            The tensor to write. Either of shape ``(R,)`` or ``(R, 3)``. It
+            will be converted to a :class:`torch.LongTensor` using the command
+            ``hyp.cpu().long()``
         hyp_dir : str or None, optional
             The directory pdfs are written to. If :obj:`None`, it will be set
             to ``self.data_dir + '/hyp'``
@@ -388,8 +418,19 @@ class SpectDataSet(torch.utils.data.Dataset):
         if not os.path.isdir(hyp_dir):
             os.makedirs(hyp_dir)
         hyp = hyp.cpu().long()
+        if self.sos is not None:
+            if hyp.dim() == 1:
+                sos_idxs = hyp.eq(self.sos).nonzero()
+            else:
+                sos_idxs = hyp[:, 0].eq(self.sos).nonzero()
+            if sos_idxs.numel():
+                sos_idx = sos_idxs[-1].item()
+                hyp = hyp[sos_idx + 1:]
         if self.eos is not None:
-            eos_idxs = hyp[:, 0].eq(self.eos).nonzero()
+            if hyp.dim() == 1:
+                eos_idxs = hyp.eq(self.eos).nonzero()
+            else:
+                eos_idxs = hyp[:, 0].eq(self.eos).nonzero()
             if eos_idxs.numel():
                 eos_idx = eos_idxs[0].item()
                 hyp = hyp[:eos_idx]
@@ -404,7 +445,7 @@ def validate_spect_data_set(data_set):
 
     The data directory is valid if the following conditions are observed
 
-    1. All features are :class:`torch.FloatTensor` instances
+    1. All features are :class:`torch.Tensor` instances of the same dtype
     2. All features have two axes
     3. All features have the same size second axis
     4. If alignments are present
@@ -417,23 +458,32 @@ def validate_spect_data_set(data_set):
     5. If reference sequences are present
 
        1. All references are :class:`torch.LongTensor` instances
-       2. All alignments have two axes, the second of size 3
-       3. For the start and end points of a reference token, ``r[i, 1:]``,
-          either both of them are negative (indicating no alignment), or
-          ``0 <= r[i, 1] < r[i, 2] <= T``, where ``T`` is the number of
-          frames in the utterance. We do not enforce tokens be
-          non-overlapping
+       2. All alignments have the same number of dimensions: either 1 or 2
+       3. If 2-dimensional
+
+          1. The second dimension has length 3
+          2. For the start and end points of a reference token, ``r[i, 1:]``,
+             either both of them are negative (indicating no alignment), or
+             ``0 <= r[i, 1] < r[i, 2] <= T``, where ``T`` is the number of
+             frames in the utterance. We do not enforce tokens be
+             non-overlapping
 
     Raises a :class:`ValueError` if a condition is violated
     '''
     num_filts = None
+    ref_is_2d = None
+    feat_dtype = None
     for idx in range(len(data_set.utt_ids)):
         feat, ali, ref = data_set.get_utterance_tuple(idx)
-        if not isinstance(feat, torch.FloatTensor):
+        if (
+                not isinstance(feat, torch.Tensor) or
+                feat_dtype not in {None, feat.dtype}):
             raise ValueError(
-                "'{}' (index {}) in '{}' is not a FloatTensor".format(
+                "'{}' (index {}) in '{}' is not a tensor or not the same "
+                "tensor type as previous features".format(
                     data_set.utt_ids[idx] + data_set.file_suffix, idx,
                     os.path.join(data_set.data_dir, data_set.feat_subdir)))
+        feat_dtype = feat.dtype
         if len(feat.size()) != 2:
             raise ValueError(
                 "'{}' (index {}) in '{}' does not have two axes".format(
@@ -477,26 +527,171 @@ def validate_spect_data_set(data_set):
                     "'{}' (index {}) in '{}' is not a LongTensor".format(
                         data_set.utt_ids[idx] + data_set.file_suffix, idx,
                         os.path.join(data_set.data_dir, data_set.ref_subdir)))
-            if len(ref.shape) != 2 or ref.shape[1] != 3:
-                raise ValueError(
-                    "'{}' (index {}) in '{}' does not have shape (D, 3)"
-                    "".format(
-                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                        os.path.join(data_set.data_dir, data_set.ref_subdir)))
-            for idx2, r in enumerate(ref):
-                if not (r[1] < 0 and r[2] < 0) and not (
-                        0 <= r[1] < r[2] <= feat.shape[0]):
+            if len(ref.shape) == 2:
+                if ref_is_2d is False:
                     raise ValueError(
-                        "'{}' (index {}) in '{}', has a reference token "
-                        "(index {}) with invalid boundaries"
+                        "'{}' (index {}) in '{}' is 2D. Previous "
+                        "transcriptions were 1D".format(
+                            data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                            os.path.join(
+                                data_set.data_dir, data_set.ref_subdir)))
+                ref_is_2d = True
+                if ref.shape[1] != 3:
+                    raise ValueError(
+                        "'{}' (index {}) in '{}' does not have shape (D, 3)"
                         "".format(
                             data_set.utt_ids[idx] + data_set.file_suffix, idx,
                             os.path.join(
-                                data_set.data_dir, data_set.ref_subdir),
-                            idx2))
+                                data_set.data_dir, data_set.ref_subdir)))
+                for idx2, r in enumerate(ref):
+                    if not (r[1] < 0 and r[2] < 0) and not (
+                            0 <= r[1] < r[2] <= feat.shape[0]):
+                        raise ValueError(
+                            "'{}' (index {}) in '{}', has a reference token "
+                            "(index {}) with invalid boundaries"
+                            "".format(
+                                data_set.utt_ids[idx] + data_set.file_suffix,
+                                idx, os.path.join(
+                                    data_set.data_dir, data_set.ref_subdir),
+                                idx2))
+            elif len(ref.shape) == 1:
+                if ref_is_2d is True:
+                    raise ValueError(
+                        "'{}' (index {}) in '{}' is 1D. Previous "
+                        "transcriptions were 2D".format(
+                            data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                            os.path.join(
+                                data_set.data_dir, data_set.ref_subdir)))
+                ref_is_2d = False
+            else:
+                raise ValueError(
+                    "'{}' (index {}) in '{}' is not 1D nor 2D"
+                    "".format(
+                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                        os.path.join(
+                            data_set.data_dir, data_set.ref_subdir)))
 
 
-def read_trn(trn, warn=True):
+class _AltTree(object):
+    def __init__(self, parent=None):
+        self.parent = parent
+        self.tokens = []
+        if parent is not None:
+            parent.tokens.append([self.tokens])
+
+    def new_branch(self):
+        assert self.parent
+        self.tokens = []
+        self.parent.tokens[-1].append(self.tokens)
+
+
+def _trn_line_to_transcript(x):
+    line, warn = x
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        last_open = line.rindex('(')
+        last_close = line.rindex(')')
+        if last_open > last_close:
+            raise ValueError()
+    except ValueError:
+        raise IOError('Line does not end in utterance id')
+    utt_id = line[last_open + 1:last_close]
+    line = line[:last_open].strip()
+    transcript = []
+    token = ''
+    alt_tree = _AltTree()
+    found_alt = False
+    while len(line):
+        c = line[0]
+        line = line[1:]
+        if c == '{':
+            found_alt = True
+            if token:
+                if alt_tree.parent is None:
+                    transcript.append(token)
+                else:
+                    alt_tree.tokens.append(token)
+                token = ''
+            alt_tree = _AltTree(alt_tree)
+        elif c == '/' and alt_tree.parent is not None:
+            if token:
+                alt_tree.tokens.append(token)
+                token = ''
+            alt_tree.new_branch()
+        elif c == '}' and alt_tree.parent is not None:
+            if token:
+                alt_tree.tokens.append(token)
+                token = ''
+            if not alt_tree.tokens:
+                raise IOError('Empty alternate found ("{ }")')
+            alt_tree = alt_tree.parent
+            if alt_tree.parent is None:
+                assert len(alt_tree.tokens) == 1
+                transcript.append((alt_tree.tokens[0], -1, -1))
+                alt_tree.tokens = []
+        elif c == ' ':
+            if token:
+                if alt_tree.parent is None:
+                    transcript.append(token)
+                else:
+                    alt_tree.tokens.append(token)
+                token = ''
+        else:
+            token += c
+    if token and alt_tree.parent is None:
+        transcript.append(token)
+    if found_alt and warn:
+        warnings.warn(
+            'Found an alternate in transcription for utt="{}". '
+            'Transcript will contain an array of alternates at that '
+            'point, and will not be compatible with transcript_to_token '
+            'until resolved. To suppress this warning, set warn=False'
+            ''.format(utt_id))
+    return utt_id, transcript
+
+
+def read_trn_iter(trn, warn=True, processes=0, chunk_size=1000):
+    '''Read a NIST sclite transcript file, yielding individual transcripts
+
+    Identical to :func:`read_trn_iter`, but yields individual transcript
+    entries rather than a full list. Ideal for large transcript files.
+    '''
+    if isinstance(trn, basestring):
+        with open(trn) as trn:
+            for x in read_trn_iter(trn, warn, processes):
+                yield x  # plz yield from when I remove 2.7 support thank uuuuu
+    elif processes == 0:
+        for line in trn:
+            x = _trn_line_to_transcript((line, warn))
+            if x is not None:
+                yield x
+    else:
+        try:
+            with torch.multiprocessing.Pool(processes) as pool:
+                transcripts = pool.imap(
+                    _trn_line_to_transcript, ((line, warn) for line in trn),
+                    chunk_size)
+                for x in transcripts:
+                    yield x
+                pool.close()
+                pool.join()
+        except AttributeError:  # py2.7
+            pool = torch.multiprocessing.Pool(processes)
+            try:
+                transcripts = pool.imap(
+                    _trn_line_to_transcript, ((line, warn) for line in trn),
+                    chunk_size)
+                for x in transcripts:
+                    yield x
+                pool.close()
+                pool.join()
+            finally:
+                pool.terminate()
+
+
+def read_trn(trn, warn=True, processes=0, chunk_size=1000):
     '''Read a NIST sclite transcript file into a list of transcripts
 
     `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__
@@ -518,8 +713,15 @@ def read_trn(trn, warn=True):
         time an alteration appears in the "trn" file. Alterations appear in
         `transcripts` as elements of ``([[alt_1_word_1, alt_1_word_2, ...],
         [alt_2_word_1, alt_2_word_2, ...], ...], -1, -1)`` so that
-        ``transcript_to_token`` will not attempt to process alterations as
+        :func:`transcript_to_token` will not attempt to process alterations as
         token start and end times
+    processes : int, optional
+        The number of processes used to parse the lines of the trn file. If
+        ``0``, will be performed on the main thread. Otherwise, the file will
+        be read on the main thread and parsed using `processes` many processes
+    chunk_size : int, optional
+        The number of lines to be processed by a worker process at a time.
+        Applicable when ``processes > 0``
 
     Returns
     -------
@@ -542,90 +744,11 @@ def read_trn(trn, warn=True):
     # - ...and internal parentheses are treated as words
     # - Spaces are treated as part of the utterance id
     # - Seg faults on empty alternates
-    class AltTree(object):
-        def __init__(self, parent=None):
-            self.parent = parent
-            self.tokens = []
-            if parent is not None:
-                parent.tokens.append([self.tokens])
-
-        def new_branch(self):
-            assert self.parent
-            self.tokens = []
-            self.parent.tokens[-1].append(self.tokens)
-    if isinstance(trn, basestring):
-        with open(trn, 'r') as trn:
-            return read_trn(trn)
-    transcripts = []
-    for line in trn:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            last_open = line.rindex('(')
-            last_close = line.rindex(')')
-            if last_open > last_close:
-                raise ValueError()
-        except ValueError:
-            raise IOError('Line does not end in utterance id')
-        utt_id = line[last_open + 1:last_close]
-        line = line[:last_open].strip()
-        transcript = []
-        token = ''
-        alt_tree = AltTree()
-        found_alt = False
-        while len(line):
-            c = line[0]
-            line = line[1:]
-            if c == '{':
-                found_alt = True
-                if token:
-                    if alt_tree.parent is None:
-                        transcript.append(token)
-                    else:
-                        alt_tree.tokens.append(token)
-                    token = ''
-                alt_tree = AltTree(alt_tree)
-            elif c == '/' and alt_tree.parent is not None:
-                if token:
-                    alt_tree.tokens.append(token)
-                    token = ''
-                alt_tree.new_branch()
-            elif c == '}' and alt_tree.parent is not None:
-                if token:
-                    alt_tree.tokens.append(token)
-                    token = ''
-                if not alt_tree.tokens:
-                    raise IOError('Empty alternate found ("{ }")')
-                alt_tree = alt_tree.parent
-                if alt_tree.parent is None:
-                    assert len(alt_tree.tokens) == 1
-                    transcript.append((alt_tree.tokens[0], -1, -1))
-                    alt_tree.tokens = []
-            elif c == ' ':
-                if token:
-                    if alt_tree.parent is None:
-                        transcript.append(token)
-                    else:
-                        alt_tree.tokens.append(token)
-                    token = ''
-            else:
-                token += c
-        if token and alt_tree.parent is None:
-            transcript.append(token)
-        if found_alt and warn:
-            warnings.warn(
-                'Found an alternate in transcription for utt="{}". '
-                'Transcript will contain an array of alternates at that '
-                'point, and will not be compatible with transcript_to_token '
-                'until resolved. To suppress this warning, set warn=False'
-                ''.format(utt_id))
-        transcripts.append((utt_id, transcript))
-    return transcripts
+    return list(read_trn_iter(trn, warn, processes))
 
 
 def write_trn(transcripts, trn):
-    '''From a list of transcripts, write to a NIST "trn" file
+    '''From an iterable of transcripts, write to a NIST "trn" file
 
     This is largely the inverse operation of :func:`read_trn`. In general,
     elements of a transcript (`transcripts` contains pairs of ``utt_id,
@@ -636,7 +759,7 @@ def write_trn(transcripts, trn):
 
     Parameters
     ----------
-    transcripts : sequence
+    transcripts : iterable
     trn : file or str
     '''
     if isinstance(trn, basestring):
@@ -800,8 +923,9 @@ def write_ctm(transcripts, ctm, utt2wc='A'):
 
 
 def transcript_to_token(
-        transcript, token2id=None, frame_shift_ms=None, unk=None):
-    '''Convert a transcript to a SpectDataSet token sequence
+        transcript, token2id=None, frame_shift_ms=None, unk=None,
+        skip_frame_times=False):
+    '''Convert a transcript to a token sequence
 
     This method converts `transcript` of length ``R`` to a
     :class:`torch.LongTensor` `tok` of shape ``(R, 3)``, the latter suitable as
@@ -830,6 +954,9 @@ def transcript_to_token(
         out-of-vocabulary identifier. If ``token2id[unk]`` does not exist,
         `unk` will be assumed to be the identifier already. If `token2id`
         is :obj:`None`, `unk` has no effect.
+    skip_frame_times : bool, optional
+        If :obj:`True`, `tok` will be of shape ``(R,)`` and contain only
+        the token ids. Suitable for :class:`BitextDataSet`
 
     Returns
     -------
@@ -837,7 +964,10 @@ def transcript_to_token(
     '''
     if token2id is not None and unk in token2id:
         unk = token2id[unk]
-    tok = torch.empty((len(transcript), 3), dtype=torch.long)
+    tok_size = (len(transcript),)
+    if not skip_frame_times:
+        tok_size = tok_size + (3,)
+    tok = torch.empty(tok_size, dtype=torch.long)
     for i, token in enumerate(transcript):
         start = end = -1
         try:
@@ -853,20 +983,25 @@ def transcript_to_token(
             id_ = token
         else:
             id_ = token2id.get(token, token if unk is None else unk)
-        tok[i, 0] = id_
-        tok[i, 1] = start
-        tok[i, 2] = end
+        if skip_frame_times:
+            tok[i] = id_
+        else:
+            tok[i, 0] = id_
+            tok[i, 1] = start
+            tok[i, 2] = end
     return tok
 
 
 def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
-    '''Convert a SpectDataSet token sequence to a transcript
+    '''Convert a token sequence to a transcript
 
-    The inverse operation of :func:`transcript_to_token`
+    The inverse operation of :func:`transcript_to_token`.
 
     Parameters
     ----------
     tok : torch.LongTensor
+        Either of shape ``(R, 3)`` for :class:`SpectDataSet` sequences or
+        ``(R,)`` for :class:`BitextDataSet` sequences.
     id2token : dict, optional
     frame_shift_ms : int, optional
 
@@ -876,8 +1011,12 @@ def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
     '''
     transcript = []
     for tup in tok:
-        id, start, end = tup.tolist()
-        token = id2token.get(id, id) if id2token is not None else id
+        x = tup.tolist()
+        try:
+            id_, start, end = x  # (R, 3)
+        except TypeError:
+            id_, start, end = x, -1, -1
+        token = id2token.get(id_, id_) if id2token is not None else id_
         if start == -1 or end == -1:
             transcript.append(token)
         else:
@@ -971,7 +1110,7 @@ class ContextWindowDataSet(SpectDataSet):
 
     Yields
     ------
-    window : torch.FloatTensor
+    window : torch.Tensor
     ali : torch.LongTensor
 
     Examples
@@ -1154,6 +1293,11 @@ class DataSetParams(param.Parameterized):
 
 class SpectDataParams(param.Parameterized):
     '''Parameters for spectral data'''
+    sos = param.Integer(
+        None, doc='A special symbol used to indicate the start of a sequence '
+        'in reference and hypothesis transcriptions. If set, `sos` will be '
+        'prepended to every reference transcription on read'
+    )
     eos = param.Integer(
         None, doc='A special symbol used to indicate the end of a sequence in '
         'reference and hypothesis transcriptions. If set, `eos` will be '
@@ -1175,15 +1319,16 @@ def spect_seq_to_batch(seq, batch_first=True):
     Assume `seq` is a finite length sequence of tuples ``feat, ali, ref``,
     where ``feat`` is of size ``(T, F)``, where ``T`` is some number of frames
     (which can vary across elements in the sequence), ``F`` is some number of
-    filters, ``ali`` is of size ``(T,)``, and ``ref`` is of size ``(R, 3)``,
+    filters, ``ali`` is of size ``(T,)``, and ``ref`` is of size ``(R[, 3])``,
     where ``R`` is some number of reference tokens (which can vary across
-    elements in the sequence). This method batches all the elements of the
+    elements in the sequence) and the ``3`` is a triple of id, start frame and
+    end frame (optional). This method batches all the elements of the
     sequence into a tuple of ``feats, alis, refs, feat_sizes, ref_sizes``.
     `feats` and `alis` will have dimensions ``(N, T*, F)``, and ``(N, T*)``,
     resp., where ``N`` is the batch size, and ``T*`` is the maximum number of
     frames in `seq` (or ``(T*, N, F)``, ``(T*, N)`` if `batch_first` is
-    :obj:`False`). Similarly, `refs` will have dimensions ``(N, R*, 3)`` (or
-    ``(R*, N, 3)``). `feat_sizes` and `ref_sizes` are
+    :obj:`False`). Similarly, `refs` will have dimensions ``(N, R*[, 3])`` (or
+    ``(R*, N[, 3])``). `feat_sizes` and `ref_sizes` are
     :class:`torch.LongTensor`  of shape ``(N,)`` containing the original ``T``
     and ``R`` values. The batch will be sorted by decreasing numbers of frames.
     `feats` is zero-padded while `alis` and `refs` are padded with module
@@ -1198,7 +1343,7 @@ def spect_seq_to_batch(seq, batch_first=True):
 
     Returns
     -------
-    feats : torch.FloatTensor
+    feats : torch.Tensor
     alis : torch.LongTensor or None
     refs : torch.LongTensor or None
     feat_sizes : torch.LongTensor
@@ -1210,7 +1355,7 @@ def spect_seq_to_batch(seq, batch_first=True):
     has_ref = all(x is not None for x in refs)
     feat_sizes = torch.tensor([len(x) for x in feats])
     feats = torch.nn.utils.rnn.pad_sequence(
-        feats, padding_value=0., batch_first=batch_first)
+        feats, padding_value=0, batch_first=batch_first)
     if has_ali:
         alis = torch.nn.utils.rnn.pad_sequence(
             alis, padding_value=pydrobert.torch.INDEX_PAD_VALUE,
@@ -1263,7 +1408,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    feats : torch.FloatTensor
+    feats : torch.Tensor
         Of shape ``(N, T*, F)`` (or ``(T*, N, F)`` if `batch_first` is
         :obj:`False`), where ``N`` is ``params.batch_size``, ``T*`` is the
         maximum number of frames in an utterance in the batch, and ``F`` is the
@@ -1272,10 +1417,11 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         Of size ``(N, T*)`` (or ``(T*, N)`` if `batch_first` is :obj:`False`)
         if an ``ali/`` dir exists, otherwise :obj:`None`
     refs : torch.LongTensor or None
-        Of size ``(N, R*, 3)`` (or ``(R*, N, 3)`` if `batch_first` is
+        Of size ``(N, R*[, 3])`` (or ``(R*, N[, 3])`` if `batch_first` is
         :obj:`False`), where ``R*`` is the maximum number of reference tokens
-        in the batch. If the ``refs/`` directory does not exist, `refs` and
-        `ref_sizes` are :obj:`None`.
+        in the batch. The 3rd dimension will only exist if data were saved with
+        frame start/end indices. If the ``refs/`` directory does not exist,
+        `refs` and `ref_sizes` are :obj:`None`.
     feat_sizes : torch.LongTensor
         `feat_sizes` is a :class:`torch.LongTensor` of shape ``(N,)``
         specifying the lengths of utterances in the batch
@@ -1381,6 +1527,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
+            sos=self.data_params.sos,
             eos=self.data_params.eos,
             feat_subdir=feat_subdir, ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
@@ -1449,7 +1596,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    feats : torch.FloatTensor
+    feats : torch.Tensor
         Of shape ``(N, T*, F)`` (or ``(T*, N, F)`` if `batch_first` is
         :obj:`False`), where ``N`` is ``params.batch_size``, ``T*`` is the
         maximum number of frames in an utterance in the batch, and ``F`` is the
@@ -1458,10 +1605,11 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         Of size ``(N, T*)`` (or ``(T*, N)`` if `batch_first` is :obj:`False`)
         if an ``ali/`` dir exists, otherwise :obj:`None`
     refs : torch.LongTensor or None
-        Of size ``(N, R*, 3)`` (or ``(R*, N, 3)`` if `batch_first` is
+        Of size ``(N, R*[, 3])`` (or ``(R*, N[, 3])`` if `batch_first` is
         :obj:`False`), where ``R*`` is the maximum number of reference tokens
-        in the batch. If the ``refs/`` directory does not exist, `refs` and
-        `ref_sizes` are :obj:`None`.
+        in the batch. The 3rd dimension will only exist if data were saved with
+        frame start/end indices. If the ``refs/`` directory does not exist,
+        `refs` and `ref_sizes` are :obj:`None`.
     feat_sizes : torch.LongTensor
         `feat_sizes` is a :class:`torch.LongTensor` of shape ``(N,)``
         specifying the lengths of utterances in the batch
@@ -1566,6 +1714,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
+            sos=self.data_params.sos,
             eos=self.data_params.eos,
             feat_subdir=feat_subdir, ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
@@ -1730,7 +1879,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    windows : torch.FloatTensor
+    windows : torch.Tensor
         Of size ``(N, C, F)``, where ``N`` is the total number of context
         windows over all utterances in the batch, ``C`` is the context window
         size, and ``F`` is the number of filters per frame
@@ -1848,7 +1997,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    windows : torch.FloatTensor
+    windows : torch.Tensor
         Of size ``(N, C, F)``, where ``N`` is the number of context windows,
         ``C`` is the context window size, and ``F`` is the number of filters
         per frame

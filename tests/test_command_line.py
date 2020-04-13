@@ -78,7 +78,12 @@ def _write_token2id(path, swap, collapse_vowels=False):
 
 @pytest.mark.cpu
 @pytest.mark.parametrize('tokens', ['token2id', 'id2token'])
-def test_trn_to_torch_token_data_dir(temp_dir, tokens):
+@pytest.mark.parametrize('skip_frame_times,feat_sizing', [
+    (True, False),
+    (False, True),
+    (False, False)])
+def test_trn_to_torch_token_data_dir(
+        temp_dir, tokens, skip_frame_times, feat_sizing):
     trn_path = os.path.join(temp_dir, 'ref.trn')
     tokens_path = os.path.join(temp_dir, 'token2id')
     ref_dir = os.path.join(temp_dir, 'ref')
@@ -96,27 +101,47 @@ A a (utt5)
         assert not command_line.trn_to_torch_token_data_dir(
             [
                 trn_path, tokens_path, ref_dir,
-                '--alt-handler=first', '--unk-symbol=c'] +
-            (['--swap'] if tokens == 'id2token' else [])
+                '--alt-handler=first', '--unk-symbol=c',
+                '--chunk-size=1'] +
+            (['--swap'] if tokens == 'id2token' else []) +
+            (['--skip-frame-times'] if skip_frame_times else []) +
+            (['--feat-sizing'] if feat_sizing else [])
         )
+    exp_utt1 = torch.tensor([0, 1, 1, 2])
+    exp_utt3 = torch.tensor([3, 4, 6])
+    exp_utt4 = torch.tensor([7])
+    exp_utt5 = torch.tensor([2, 0])
+    if feat_sizing:
+        exp_utt1 = exp_utt1.unsqueeze(-1)
+        exp_utt3 = exp_utt3.unsqueeze(-1)
+        exp_utt4 = exp_utt4.unsqueeze(-1)
+        exp_utt5 = exp_utt5.unsqueeze(-1)
+    elif not skip_frame_times:
+        neg1_tensor = torch.tensor([[-1, -1]] * 10)
+        exp_utt1 = torch.cat([exp_utt1.unsqueeze(-1), neg1_tensor[:4]], -1)
+        exp_utt3 = torch.cat([exp_utt3.unsqueeze(-1), neg1_tensor[:3]], -1)
+        exp_utt4 = torch.cat([exp_utt4.unsqueeze(-1), neg1_tensor[:1]], -1)
+        exp_utt5 = torch.cat([exp_utt5.unsqueeze(-1), neg1_tensor[:2]], -1)
     act_utt1 = torch.load(os.path.join(ref_dir, 'utt1.pt'))
-    assert torch.all(act_utt1 == torch.tensor([
-        [0, -1, -1], [1, -1, -1], [1, -1, -1], [2, -1, -1]]))
+    assert exp_utt1.shape == act_utt1.shape
+    assert torch.all(act_utt1 == exp_utt1)
     act_utt2 = torch.load(os.path.join(ref_dir, 'utt2.pt'))
     assert not act_utt2.numel()
     act_utt3 = torch.load(os.path.join(ref_dir, 'utt3.pt'))
-    assert torch.all(act_utt3 == torch.tensor([
-        [3, -1, -1], [4, -1, -1], [6, -1, -1]]))
+    assert exp_utt3.shape == act_utt3.shape
+    assert torch.all(act_utt3 == exp_utt3)
     act_utt4 = torch.load(os.path.join(ref_dir, 'utt4.pt'))
-    assert torch.all(act_utt4 == torch.tensor([[7, -1, -1]]))
+    assert exp_utt4.shape == act_utt4.shape
+    assert torch.all(act_utt4 == exp_utt4)
     act_utt5 = torch.load(os.path.join(ref_dir, 'utt5.pt'))
-    assert torch.all(act_utt5 == torch.tensor([
-        [2, -1, -1], [0, -1, -1]]))
+    assert exp_utt5.shape == act_utt5.shape
+    assert torch.all(act_utt5 == exp_utt5)
 
 
 @pytest.mark.cpu
 @pytest.mark.parametrize('tokens', ['token2id', 'id2token'])
-def test_torch_token_data_dir_to_trn(temp_dir, tokens):
+@pytest.mark.parametrize('include_frame_shift', [True, False])
+def test_torch_token_data_dir_to_trn(temp_dir, tokens, include_frame_shift):
     torch.manual_seed(1000)
     num_utts = 100
     max_tokens = 10
@@ -133,7 +158,10 @@ def test_torch_token_data_dir_to_trn(temp_dir, tokens):
         utt_id = utt_fmt.format(utt_idx)
         num_tokens = torch.randint(max_tokens + 1, (1,)).long().item()
         ids = torch.randint(26, (num_tokens,)).long()
-        tok = torch.stack([ids] + ([torch.full_like(ids, -1)] * 2), -1)
+        if include_frame_shift:
+            tok = torch.stack([ids] + ([torch.full_like(ids, -1)] * 2), -1)
+        else:
+            tok = ids
         torch.save(tok, os.path.join(ref_dir, utt_id + '.pt'))
         transcript = ' '.join([chr(x + ord('a')) for x in ids.tolist()])
         transcript += ' ({})'.format(utt_id)
