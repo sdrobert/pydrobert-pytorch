@@ -42,7 +42,8 @@ def populate_torch_dir():
             dr, num_utts, min_width=1, max_width=10, num_filts=5,
             max_class=10,
             include_ali=True, include_ref=True, file_prefix='',
-            file_suffix='.pt', seed=1, include_frame_shift=True):
+            file_suffix='.pt', seed=1, include_frame_shift=True,
+            feat_dtype=torch.float):
         torch.manual_seed(seed)
         feat_dir = os.path.join(dr, 'feat')
         ali_dir = os.path.join(dr, 'ali')
@@ -61,7 +62,8 @@ def populate_torch_dir():
             utt_id = utt_id_fmt_str.format(utt_idx)
             feat_size = torch.randint(min_width, max_width + 1, (1,)).long()
             feat_size = feat_size.item()
-            feat = torch.rand(feat_size, num_filts)
+            feat = (torch.rand(feat_size, num_filts) * 1000).to(
+                dtype=feat_dtype)
             torch.save(feat, os.path.join(
                 feat_dir, file_prefix + utt_id + file_suffix))
             feats.append(feat)

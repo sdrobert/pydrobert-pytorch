@@ -29,25 +29,22 @@ __copyright__ = "Copyright 2018 Sean Robertson"
 @pytest.mark.parametrize("right", [0, 1, 100])
 @pytest.mark.parametrize("T", [1, 5, 10])
 def test_extract_window(left, right, T):
-    # FIXME(sdrobert): the float conversion is due to a bug in torch.allclose.
-    # Fix when fixed
-    signal = torch.arange(T).float().view(-1, 1).expand(-1, 10)
+    signal = torch.arange(T).view(-1, 1).expand(-1, 10)
     for frame_idx in range(T):
         window = data.extract_window(signal, frame_idx, left, right)
         left_pad = max(left - frame_idx, 0)
         right_pad = max(frame_idx + right + 1 - T, 0)
         assert tuple(window.shape) == (1 + left + right, 10)
         if left_pad:
-            assert torch.allclose(window[:left_pad], torch.tensor([0]).float())
+            assert torch.all(window[:left_pad] == torch.tensor([0]))
         if right_pad:
-            assert torch.allclose(
-                window[-right_pad:], torch.tensor([T - 1]).float())
-        assert torch.allclose(
-            window[left_pad:1 + left + right - right_pad],
+            assert torch.all(window[-right_pad:] == torch.tensor([T - 1]))
+        assert torch.all(
+            window[left_pad:1 + left + right - right_pad] ==
             torch.arange(
                 frame_idx - left + left_pad,
                 frame_idx + right - right_pad + 1
-            ).float().view(-1, 1).expand(-1, 10)
+            ).view(-1, 1).expand(-1, 10)
         )
 
 
@@ -56,18 +53,21 @@ def test_extract_window(left, right, T):
 @pytest.mark.parametrize('file_prefix', ['prefix_', ''])
 @pytest.mark.parametrize('eos', [1000, None])
 @pytest.mark.parametrize('sos', [2000, None])
+@pytest.mark.parametrize('feat_dtype', [torch.float, torch.int])
 def test_valid_spect_data_set(
-        temp_dir, num_utts, file_prefix, populate_torch_dir, sos, eos):
+        temp_dir, num_utts, file_prefix, populate_torch_dir, sos, eos,
+        feat_dtype):
     feats, _, _, _, _, utt_ids = populate_torch_dir(
         temp_dir, num_utts, file_prefix=file_prefix,
-        include_ali=False, include_ref=False)
+        include_ali=False, include_ref=False, feat_dtype=feat_dtype)
     # note that this'll just resave the same features if there's no file
     # prefix. If there is, these ought to be ignored by the data set
     populate_torch_dir(
-        temp_dir, num_utts, include_ali=False, include_ref=False)
+        temp_dir, num_utts, include_ali=False, include_ref=False,
+        feat_dtype=feat_dtype)
     if not os.path.isdir(os.path.join(temp_dir, 'feat', 'fake')):
         os.makedirs(os.path.join(temp_dir, 'feat', 'fake'))
-    torch.save(torch.rand(10, 5), os.path.join(
+    torch.save(torch.randint(100, (10, 5), dtype=feat_dtype), os.path.join(
         temp_dir, 'feat', 'fake', file_prefix + 'fake.pt'))
     data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix, eos=eos)
     assert not data_set.has_ali and not data_set.has_ref
@@ -79,7 +79,7 @@ def test_valid_spect_data_set(
         for (feat_a, (feat_b, ali_b, ref_b)) in zip(feats, data_set)
     )
     feats, alis, refs, _, _, utt_ids = populate_torch_dir(
-        temp_dir, num_utts, file_prefix=file_prefix)
+        temp_dir, num_utts, file_prefix=file_prefix, feat_dtype=feat_dtype)
     if sos is not None:
         sos_sym = torch.full((3,), -1).long()
         sos_sym[0] = sos
@@ -99,6 +99,7 @@ def test_valid_spect_data_set(
     assert all(
         torch.all(ali_a == ali_b) and
         torch.all(ref_a == ref_b) and
+        feat_a.dtype == feat_b.dtype and
         torch.allclose(feat_a, feat_b)
         for ((feat_a, ali_a, ref_a), (feat_b, ali_b, ref_b))
         in zip(zip(feats, alis, refs), data_set)
@@ -220,7 +221,7 @@ def test_spect_data_set_validity(temp_dir, eos):
     data_set = data.SpectDataSet(temp_dir, eos=eos)
     data.validate_spect_data_set(data_set)
     torch.save(torch.rand(4, 4).long(), feats_b_pt)
-    with pytest.raises(ValueError, match='is not a FloatTensor'):
+    with pytest.raises(ValueError, match='not the same tensor type'):
         data.validate_spect_data_set(data_set)
     torch.save(torch.rand(4,), feats_b_pt)
     with pytest.raises(ValueError, match='does not have two axes'):
@@ -583,14 +584,15 @@ def test_spect_seq_to_batch(
 @pytest.mark.parametrize('sos', [None, -2])
 @pytest.mark.parametrize('split_params', [True, False])
 @pytest.mark.parametrize('include_frame_shift', [True, False])
+@pytest.mark.parametrize('feat_dtype', [torch.float, torch.int])
 def test_spect_training_data_loader(
         temp_dir, populate_torch_dir, sos, eos, split_params,
-        include_frame_shift):
+        include_frame_shift, feat_dtype):
     torch.manual_seed(40)
     num_utts, batch_size, num_filts = 20, 5, 11
     populate_torch_dir(
         temp_dir, num_utts, num_filts=num_filts,
-        include_frame_shift=include_frame_shift)
+        include_frame_shift=include_frame_shift, feat_dtype=feat_dtype)
     if split_params:
         params = data.DataSetParams(batch_size=batch_size)
         data_params = data.SpectDataParams(sos=sos, eos=eos)
@@ -698,9 +700,10 @@ def test_spect_training_data_loader(
 @pytest.mark.parametrize('sos', [None, -2])
 @pytest.mark.parametrize('split_params', [True, False])
 @pytest.mark.parametrize('include_frame_shift', [True, False])
+@pytest.mark.parametrize('feat_dtype', [torch.float, torch.int])
 def test_spect_evaluation_data_loader(
         temp_dir, populate_torch_dir, sos, eos, split_params,
-        include_frame_shift):
+        include_frame_shift, feat_dtype):
     torch.manual_seed(41)
     feat_dir = os.path.join(temp_dir, 'feat')
     ali_dir = os.path.join(temp_dir, 'ali')
@@ -715,7 +718,8 @@ def test_spect_evaluation_data_loader(
             batch_size=batch_size, sos=sos, eos=eos)
         data_params = None
     feats, ali, ref, feat_sizes, ref_sizes, utt_ids = populate_torch_dir(
-        temp_dir, 20, include_frame_shift=include_frame_shift)
+        temp_dir, 20, include_frame_shift=include_frame_shift,
+        feat_dtype=feat_dtype)
     if sos is not None:
         if include_frame_shift:
             sos_sym = torch.full((3,), -1).long()
@@ -777,7 +781,8 @@ def test_spect_evaluation_data_loader(
             assert tuple(b_ref_sizes) == s_ref_sizes
             for a, b in zip(b_feats, s_feats):
                 assert torch.allclose(a[:b.shape[0]], b)
-                assert torch.allclose(a[b.shape[0]:], torch.tensor([0.]))
+                assert torch.allclose(
+                    a[b.shape[0]:], torch.tensor([0], dtype=feat_dtype))
             for a, b in zip(b_ali, s_ali):
                 assert torch.all(a[:b.shape[0]] == b)
                 assert torch.all(a[b.shape[0]:] == torch.tensor(

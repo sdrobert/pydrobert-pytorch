@@ -90,10 +90,10 @@ class SpectDataSet(torch.utils.data.Dataset):
                 ...
             ]
 
-    The ``feat`` dir stores filter bank data in the form of
-    :class:`torch.FloatTensor` of size ``(T, F)``, where ``T`` is the time
-    dimension and ``F`` is the filter/log-frequency dimension. ``feat`` is
-    the only required directory.
+    The ``feat`` dir stores filter bank data in the form of a
+    :class:`torch.Tensor` of size ``(T, F)``, where ``T`` is the time dimension
+    and ``F`` is the filter/log-frequency dimension. ``feat`` is the only
+    required directory.
 
     ``ali`` stores :class:`torch.LongTensor` of size ``(T,)``, indicating the
     pdf-id of the most likely target. ``ali`` is suitable for discriminative
@@ -162,7 +162,7 @@ class SpectDataSet(torch.utils.data.Dataset):
 
     Yields
     ------
-    feat : torch.FloatTensor
+    feat : torch.Tensor
     ali : torch.LongTensor or None
     ref : torch.LongTensor or None
 
@@ -445,7 +445,7 @@ def validate_spect_data_set(data_set):
 
     The data directory is valid if the following conditions are observed
 
-    1. All features are :class:`torch.FloatTensor` instances
+    1. All features are :class:`torch.Tensor` instances of the same dtype
     2. All features have two axes
     3. All features have the same size second axis
     4. If alignments are present
@@ -472,13 +472,18 @@ def validate_spect_data_set(data_set):
     '''
     num_filts = None
     ref_is_2d = None
+    feat_dtype = None
     for idx in range(len(data_set.utt_ids)):
         feat, ali, ref = data_set.get_utterance_tuple(idx)
-        if not isinstance(feat, torch.FloatTensor):
+        if (
+                not isinstance(feat, torch.Tensor) or
+                feat_dtype not in {None, feat.dtype}):
             raise ValueError(
-                "'{}' (index {}) in '{}' is not a FloatTensor".format(
+                "'{}' (index {}) in '{}' is not a tensor or not the same "
+                "tensor type as previous features".format(
                     data_set.utt_ids[idx] + data_set.file_suffix, idx,
                     os.path.join(data_set.data_dir, data_set.feat_subdir)))
+        feat_dtype = feat.dtype
         if len(feat.size()) != 2:
             raise ValueError(
                 "'{}' (index {}) in '{}' does not have two axes".format(
@@ -1105,7 +1110,7 @@ class ContextWindowDataSet(SpectDataSet):
 
     Yields
     ------
-    window : torch.FloatTensor
+    window : torch.Tensor
     ali : torch.LongTensor
 
     Examples
@@ -1338,7 +1343,7 @@ def spect_seq_to_batch(seq, batch_first=True):
 
     Returns
     -------
-    feats : torch.FloatTensor
+    feats : torch.Tensor
     alis : torch.LongTensor or None
     refs : torch.LongTensor or None
     feat_sizes : torch.LongTensor
@@ -1350,7 +1355,7 @@ def spect_seq_to_batch(seq, batch_first=True):
     has_ref = all(x is not None for x in refs)
     feat_sizes = torch.tensor([len(x) for x in feats])
     feats = torch.nn.utils.rnn.pad_sequence(
-        feats, padding_value=0., batch_first=batch_first)
+        feats, padding_value=0, batch_first=batch_first)
     if has_ali:
         alis = torch.nn.utils.rnn.pad_sequence(
             alis, padding_value=pydrobert.torch.INDEX_PAD_VALUE,
@@ -1403,7 +1408,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    feats : torch.FloatTensor
+    feats : torch.Tensor
         Of shape ``(N, T*, F)`` (or ``(T*, N, F)`` if `batch_first` is
         :obj:`False`), where ``N`` is ``params.batch_size``, ``T*`` is the
         maximum number of frames in an utterance in the batch, and ``F`` is the
@@ -1591,7 +1596,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    feats : torch.FloatTensor
+    feats : torch.Tensor
         Of shape ``(N, T*, F)`` (or ``(T*, N, F)`` if `batch_first` is
         :obj:`False`), where ``N`` is ``params.batch_size``, ``T*`` is the
         maximum number of frames in an utterance in the batch, and ``F`` is the
@@ -1874,7 +1879,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    windows : torch.FloatTensor
+    windows : torch.Tensor
         Of size ``(N, C, F)``, where ``N`` is the total number of context
         windows over all utterances in the batch, ``C`` is the context window
         size, and ``F`` is the number of filters per frame
@@ -1992,7 +1997,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    windows : torch.FloatTensor
+    windows : torch.Tensor
         Of size ``(N, C, F)``, where ``N`` is the number of context windows,
         ``C`` is the context window size, and ``F`` is the number of filters
         per frame

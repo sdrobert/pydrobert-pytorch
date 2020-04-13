@@ -37,6 +37,7 @@ __all__ = [
     'compute_torch_token_data_dir_error_rates',
     'ctm_to_torch_token_data_dir',
     'get_torch_spect_data_dir_info',
+    'torch_token_data_dir_to_ctm',
     'torch_token_data_dir_to_trn',
     'trn_to_torch_token_data_dir',
 ]
@@ -244,8 +245,7 @@ def _trn_to_torch_token_data_dir_parse_args(args):
         '--skip-frame-times', action='store_true', default=False,
         help='If true, will store token tensors of shape (R,) instead of '
         '(R, 3), foregoing segment start and end times (which trn does not '
-        'have). Useful for BitextDatasets, but cannot be used with '
-        'SpectDatasets'
+        'have).'
     )
     return parser.parse_args(args)
 
@@ -502,8 +502,7 @@ def torch_token_data_dir_to_trn(args=None):
         here is another (utterance_b)
 
     This command scans the contents of a directory like ``ref/`` in a
-    :class:`pydrobert.torch.data.SpectDataSet` or ``src/`` or ``tgt/`` in a
-    :class:`pydrobert.torch.data.BitextDataSet` and converts each such file
+    :class:`pydrobert.torch.data.SpectDataSet` and converts each such file
     into a transcription. Each such transcription is then written to a "trn"
     file. See the command :func:`get_torch_spect_data_dir_info` (command line
     "get-torch-spect-data-dir-info") for more information on a
