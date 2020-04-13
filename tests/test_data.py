@@ -580,10 +580,12 @@ def test_spect_seq_to_batch(
 
 @pytest.mark.cpu
 @pytest.mark.parametrize('eos', [None, -1])
+@pytest.mark.parametrize('sos', [None, -2])
 @pytest.mark.parametrize('split_params', [True, False])
 @pytest.mark.parametrize('include_frame_shift', [True, False])
 def test_spect_training_data_loader(
-        temp_dir, populate_torch_dir, eos, split_params, include_frame_shift):
+        temp_dir, populate_torch_dir, sos, eos, split_params,
+        include_frame_shift):
     torch.manual_seed(40)
     num_utts, batch_size, num_filts = 20, 5, 11
     populate_torch_dir(
@@ -591,9 +593,10 @@ def test_spect_training_data_loader(
         include_frame_shift=include_frame_shift)
     if split_params:
         params = data.DataSetParams(batch_size=batch_size)
-        data_params = data.SpectDataParams(eos=eos)
+        data_params = data.SpectDataParams(sos=sos, eos=eos)
     else:
-        params = data.SpectDataSetParams(batch_size=batch_size, eos=eos)
+        params = data.SpectDataSetParams(
+            batch_size=batch_size, sos=sos, eos=eos)
         data_params = None
     # check missing either ali or ref gives None in batches
     data_loader = data.SpectTrainingDataLoader(
@@ -692,10 +695,12 @@ def test_spect_training_data_loader(
 
 @pytest.mark.cpu
 @pytest.mark.parametrize('eos', [None, -1])
+@pytest.mark.parametrize('sos', [None, -2])
 @pytest.mark.parametrize('split_params', [True, False])
 @pytest.mark.parametrize('include_frame_shift', [True, False])
 def test_spect_evaluation_data_loader(
-        temp_dir, populate_torch_dir, eos, split_params, include_frame_shift):
+        temp_dir, populate_torch_dir, sos, eos, split_params,
+        include_frame_shift):
     torch.manual_seed(41)
     feat_dir = os.path.join(temp_dir, 'feat')
     ali_dir = os.path.join(temp_dir, 'ali')
@@ -704,19 +709,29 @@ def test_spect_evaluation_data_loader(
     batch_size = 5
     if split_params:
         params = data.DataSetParams(batch_size=batch_size)
-        data_params = data.SpectDataParams(eos=eos)
+        data_params = data.SpectDataParams(sos=sos, eos=eos)
     else:
-        params = data.SpectDataSetParams(batch_size=batch_size, eos=eos)
+        params = data.SpectDataSetParams(
+            batch_size=batch_size, sos=sos, eos=eos)
         data_params = None
     feats, ali, ref, feat_sizes, ref_sizes, utt_ids = populate_torch_dir(
         temp_dir, 20, include_frame_shift=include_frame_shift)
+    if sos is not None:
+        if include_frame_shift:
+            sos_sym = torch.full((3,), -1).long()
+            sos_sym[0] = sos
+            sos_sym = sos_sym.unsqueeze(0)
+        else:
+            sos_sym = torch.full((1,), sos).long()
+        ref = [torch.cat([sos_sym, x], 0) for x in ref]
+        ref_sizes = [x + 1 for x in ref_sizes]
     if eos is not None:
         if include_frame_shift:
-            eos_sym = torch.full((3,), -1).long()
+            eos_sym = torch.full((3,), eos).long()
             eos_sym[0] = eos
             eos_sym = eos_sym.unsqueeze(0)
         else:
-            eos_sym = torch.full((1,), -1).long()
+            eos_sym = torch.full((1,), eos).long()
         ref = [torch.cat([x, eos_sym], 0) for x in ref]
         ref_sizes = [x + 1 for x in ref_sizes]
     # check that ali and ref can be missing

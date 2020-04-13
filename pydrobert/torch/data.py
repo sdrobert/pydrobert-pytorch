@@ -1288,6 +1288,11 @@ class DataSetParams(param.Parameterized):
 
 class SpectDataParams(param.Parameterized):
     '''Parameters for spectral data'''
+    sos = param.Integer(
+        None, doc='A special symbol used to indicate the start of a sequence '
+        'in reference and hypothesis transcriptions. If set, `sos` will be '
+        'prepended to every reference transcription on read'
+    )
     eos = param.Integer(
         None, doc='A special symbol used to indicate the end of a sequence in '
         'reference and hypothesis transcriptions. If set, `eos` will be '
@@ -1517,6 +1522,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
+            sos=self.data_params.sos,
             eos=self.data_params.eos,
             feat_subdir=feat_subdir, ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
@@ -1703,6 +1709,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
             file_prefix=file_prefix, file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
+            sos=self.data_params.sos,
             eos=self.data_params.eos,
             feat_subdir=feat_subdir, ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
