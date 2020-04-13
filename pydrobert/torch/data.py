@@ -127,12 +127,16 @@ class SpectDataSet(torch.utils.data.Dataset):
     subset_ids : set, optional
         If set, only utterances with ids listed in this set will count towards
         the data set. The rest will be ignored
+    sos : int, optional
+        `sos` is a special token used to delimit the start of a reference or
+        hypothesis sequence. If specified, an extra `sos` token without
+        positional information will be inserted at the front of each reference
+        transcript. It will also have ramifications for :func:`write_hyp`
     eos : int, optional
         `eos` is a special token used to delimit the end of a reference
         or hypothesis sequence. If specified, an extra `eos` token without
         positional information will be appended to the end of each reference
-        tanscript. It will also have ramifications for the method
-        ``write_hyp()``
+        transcript. It will also have ramifications for :func:`write_hyp`
     feat_subdir : str, optional
     ali_subdir : str, optional
     ref_subdir : str, optional
@@ -153,6 +157,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         :func:`__getitem__`. If the ``ali/`` or ``ref/`` directories exist,
         `utt_ids` contains only the utterances in the intersection of each
         directory (and `subset_ids`, if it was specified)
+    sos : int or None
     eos : int or None
 
     Yields
@@ -215,7 +220,7 @@ class SpectDataSet(torch.utils.data.Dataset):
 
     def __init__(
             self, data_dir, file_prefix='', file_suffix='.pt',
-            warn_on_missing=True, subset_ids=None, eos=None,
+            warn_on_missing=True, subset_ids=None, sos=None, eos=None,
             feat_subdir='feat', ali_subdir='ali', ref_subdir='ref'):
         super(SpectDataSet, self).__init__()
         self.data_dir = data_dir
@@ -224,6 +229,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         self.ref_subdir = ref_subdir
         self.file_prefix = file_prefix
         self.file_suffix = file_suffix
+        self.sos = sos
         self.eos = eos
         if ali_subdir:
             self.has_ali = os.path.isdir(os.path.join(data_dir, ali_subdir))
@@ -325,11 +331,19 @@ class SpectDataSet(torch.utils.data.Dataset):
                     self.data_dir,
                     self.ref_subdir,
                     self.file_prefix + utt_id + self.file_suffix))
+            if self.sos is not None:
+                if ref.dim() == 2:
+                    sos_sym = torch.full_like(ref[0], -1)
+                    sos_sym[0] = self.sos
+                    ref = torch.cat([sos_sym.unsqueeze(0), ref], 0)
+                else:
+                    ref = torch.cat(
+                        [torch.full_like(ref[:1], self.sos), ref], 0)
             if self.eos is not None:
                 if ref.dim() == 2:
                     eos_sym = torch.full_like(ref[0], -1)
                     eos_sym[0] = self.eos
-                    ref = torch.cat([ref, eos_sym.unsqueeze(0)])
+                    ref = torch.cat([ref, eos_sym.unsqueeze(0)], 0)
                 else:
                     ref = torch.cat(
                         [ref, torch.full_like(ref[:1], self.eos)], 0)
@@ -373,6 +387,11 @@ class SpectDataSet(torch.utils.data.Dataset):
         This method writes a sequence of hypothesis tokens to the directory
         `hyp_dir` with the name ``<file_prefix><utt><file_suffix>``
 
+        If the ``sos`` attribute of this instance is not :obj:`None`, any
+        tokens in `hyp` matching it will be considered the start of the
+        sequence, so every symbol including and before the last instance will
+        be removed from the utterance before saving
+
         If the ``eos`` attribute of this instance is not :obj:`None`, any
         tokens in `hyp` matching it will be considered the end of the sequence,
         so every symbol including and after the first instance will be removed
@@ -399,6 +418,14 @@ class SpectDataSet(torch.utils.data.Dataset):
         if not os.path.isdir(hyp_dir):
             os.makedirs(hyp_dir)
         hyp = hyp.cpu().long()
+        if self.sos is not None:
+            if hyp.dim() == 1:
+                sos_idxs = hyp.eq(self.sos).nonzero()
+            else:
+                sos_idxs = hyp[:, 0].eq(self.sos).nonzero()
+            if sos_idxs.numel():
+                sos_idx = sos_idxs[-1].item()
+                hyp = hyp[sos_idx + 1:]
         if self.eos is not None:
             if hyp.dim() == 1:
                 eos_idxs = hyp.eq(self.eos).nonzero()

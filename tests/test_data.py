@@ -55,8 +55,9 @@ def test_extract_window(left, right, T):
 @pytest.mark.parametrize('num_utts', [1, 2, 10])
 @pytest.mark.parametrize('file_prefix', ['prefix_', ''])
 @pytest.mark.parametrize('eos', [1000, None])
+@pytest.mark.parametrize('sos', [2000, None])
 def test_valid_spect_data_set(
-        temp_dir, num_utts, file_prefix, populate_torch_dir, eos):
+        temp_dir, num_utts, file_prefix, populate_torch_dir, sos, eos):
     feats, _, _, _, _, utt_ids = populate_torch_dir(
         temp_dir, num_utts, file_prefix=file_prefix,
         include_ali=False, include_ref=False)
@@ -79,12 +80,18 @@ def test_valid_spect_data_set(
     )
     feats, alis, refs, _, _, utt_ids = populate_torch_dir(
         temp_dir, num_utts, file_prefix=file_prefix)
+    if sos is not None:
+        sos_sym = torch.full((3,), -1).long()
+        sos_sym[0] = sos
+        sos_sym = sos_sym.unsqueeze(0)
+        refs = [torch.cat([sos_sym, x]) for x in refs]
     if eos is not None:
         eos_sym = torch.full((3,), -1).long()
         eos_sym[0] = eos
         eos_sym = eos_sym.unsqueeze(0)
         refs = [torch.cat([x, eos_sym]) for x in refs]
-    data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix, eos=eos)
+    data_set = data.SpectDataSet(
+        temp_dir, file_prefix=file_prefix, sos=sos, eos=eos)
     assert data_set.has_ali and data_set.has_ref
     assert len(utt_ids) == len(data_set.utt_ids)
     assert all(
@@ -99,7 +106,7 @@ def test_valid_spect_data_set(
     subset_ids = data_set.utt_ids[:num_utts // 2]
     data_set = data.SpectDataSet(
         temp_dir, file_prefix=file_prefix, subset_ids=set(subset_ids),
-        eos=eos)
+        sos=sos, eos=eos)
     assert all(
         utt_a == utt_b for (utt_a, utt_b) in zip(subset_ids, data_set.utt_ids))
     assert all(
@@ -160,17 +167,19 @@ def test_spect_data_write_pdf(temp_dir, device):
 
 
 @pytest.mark.parametrize('eos', [None, -1])
-def test_spect_data_write_hyp(temp_dir, device, eos):
+@pytest.mark.parametrize('sos', [None, -2])
+def test_spect_data_write_hyp(temp_dir, device, sos, eos):
     torch.manual_seed(1)
     feat_dir = os.path.join(temp_dir, 'feat')
     os.makedirs(feat_dir)
     torch.save(torch.rand(3, 3), os.path.join(feat_dir, 'a.pt'))
-    data_set = data.SpectDataSet(temp_dir, eos=eos)
-    z = torch.randint(10, (4, 3))
+    data_set = data.SpectDataSet(temp_dir, sos=sos, eos=eos)
+    z = torch.randint(10, (4, 3), dtype=float)
+    zz = z
+    if sos:
+        zz = torch.cat([torch.full_like(zz, sos), zz])
     if eos:
-        zz = torch.cat([z, torch.full_like(z, eos)])
-    else:
-        zz = z
+        zz = torch.cat([zz, torch.full_like(z, eos)])
     if device == 'cuda':
         data_set.write_hyp('b', zz.cuda())
     else:
