@@ -500,9 +500,9 @@ def _load_transcripts_from_data_dir(
         dir_, id2token, file_prefix, file_suffix, frame_shift_ms,
         strip_timing)
     dl = torch.utils.data.DataLoader(
-        ds, batch_size=None, num_workers=num_workers)
-    for x in dl:
-        yield x
+        ds, batch_size=1, num_workers=num_workers)
+    for utt_ids, transcripts in dl:
+        yield utt_ids[0], transcripts[0]
     del dl, ds
 
 
