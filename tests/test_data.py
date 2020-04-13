@@ -436,6 +436,7 @@ def test_transcript_to_token(transcript, token2id, unk, skip_frame_times, exp):
         [('a', 3, 4), (3, 4, 5), 'b'],
     ),
     (torch.tensor(range(10)), None, list(range(10))),
+    (torch.tensor(range(5)).unsqueeze(-1), None, list(range(5))),
 ])
 def test_token_to_transcript(tok, id2token, exp):
     act = data.token_to_transcript(tok, id2token)
