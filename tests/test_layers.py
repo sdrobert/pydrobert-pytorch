@@ -191,7 +191,7 @@ def test_lookup_language_model_sos_context(device):
     # P(2|0, 0) = P(2|0) = 0.02
     # P(3|0, 0) = P(3) = 0.3
     exp = torch.tensor([[[-99., 0.001, 0.02, 0.3]]], device=device)
-    act = lm(torch.empty((0, 1), device=device, dtype=int))
+    act = lm(torch.empty((0, 1), device=device, dtype=torch.long))
     assert torch.allclose(exp, act, atol=1e-5)
     lm.pad_sos_to_n = False
     # with pad_sos_to_n = False
@@ -200,7 +200,7 @@ def test_lookup_language_model_sos_context(device):
     # P(2|0) = 0.02
     # P(3|0) = P(3) = 0.3
     exp[..., 1] = 0.01
-    act = lm(torch.empty((0, 1), device=device, dtype=int))
+    act = lm(torch.empty((0, 1), device=device, dtype=torch.long))
     assert torch.allclose(exp, act, atol=1e-5)
 
 

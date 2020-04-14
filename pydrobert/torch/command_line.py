@@ -493,6 +493,10 @@ class _TranscriptDataSet(torch.utils.data.Dataset):
         return len(self.utt_ids)
 
 
+def _noop_collate(x):
+    return x[0]
+
+
 def _load_transcripts_from_data_dir(
         dir_, id2token, file_prefix, file_suffix, frame_shift_ms=None,
         strip_timing=False, num_workers=0):
@@ -500,9 +504,9 @@ def _load_transcripts_from_data_dir(
         dir_, id2token, file_prefix, file_suffix, frame_shift_ms,
         strip_timing)
     dl = torch.utils.data.DataLoader(
-        ds, batch_size=1, num_workers=num_workers)
+        ds, batch_size=1, num_workers=num_workers, collate_fn=_noop_collate)
     for utt_ids, transcripts in dl:
-        yield utt_ids[0], transcripts[0]
+        yield utt_ids, transcripts
     del dl, ds
 
 
