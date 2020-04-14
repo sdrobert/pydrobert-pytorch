@@ -1000,8 +1000,8 @@ def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
     Parameters
     ----------
     tok : torch.LongTensor
-        Either of shape ``(R, 3)`` for :class:`SpectDataSet` sequences or
-        ``(R,)`` for :class:`BitextDataSet` sequences.
+        Either of shape ``(R, 3)`` with segmentation info or ``(R, 1)`` or
+        ``(R,)`` without
     id2token : dict, optional
     frame_shift_ms : int, optional
 
@@ -1014,8 +1014,10 @@ def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
         x = tup.tolist()
         try:
             id_, start, end = x  # (R, 3)
+        except ValueError:
+            id_, start, end = x[0], -1, -1  # (R, 1)
         except TypeError:
-            id_, start, end = x, -1, -1
+            id_, start, end = x, -1, -1  # (R,)
         token = id2token.get(id_, id_) if id2token is not None else id_
         if start == -1 or end == -1:
             transcript.append(token)

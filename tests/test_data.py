@@ -175,7 +175,7 @@ def test_spect_data_write_hyp(temp_dir, device, sos, eos):
     os.makedirs(feat_dir)
     torch.save(torch.rand(3, 3), os.path.join(feat_dir, 'a.pt'))
     data_set = data.SpectDataSet(temp_dir, sos=sos, eos=eos)
-    z = torch.randint(10, (4, 3), dtype=float)
+    z = torch.randint(10, (4, 3), dtype=torch.float)
     zz = z
     if sos:
         zz = torch.cat([torch.full_like(zz, sos), zz])
@@ -436,6 +436,7 @@ def test_transcript_to_token(transcript, token2id, unk, skip_frame_times, exp):
         [('a', 3, 4), (3, 4, 5), 'b'],
     ),
     (torch.tensor(range(10)), None, list(range(10))),
+    (torch.tensor(range(5)).unsqueeze(-1), None, list(range(5))),
 ])
 def test_token_to_transcript(tok, id2token, exp):
     act = data.token_to_transcript(tok, id2token)
