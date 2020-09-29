@@ -987,7 +987,7 @@ def transcript_to_token(
     ----------
     transcript : sequence
     token2id : dict, optional
-    frame_shift_ms : int, optional
+    frame_shift_ms : float, optional
     unk : str or int, optional
         If not :obj:`None`, specifies the out-of-vocabulary token. If `unk`
         exists in `token2id`, the ``token2id[unk]`` will be used as the
@@ -1001,6 +1001,12 @@ def transcript_to_token(
     Returns
     -------
     tok : torch.LongTensor
+
+    Notes
+    -----
+    If you are dealing with raw audio, each "frame" is just a sample. The appropriate
+    value for `frame_shift_ms` is ``1000 / sample_rate_hz`` (since there are
+    ``sample_rate_hz / 1000`` samples per millisecond).
     """
     if token2id is not None and unk in token2id:
         unk = token2id[unk]
@@ -1043,7 +1049,7 @@ def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
         Either of shape ``(R, 3)`` with segmentation info or ``(R, 1)`` or
         ``(R,)`` without
     id2token : dict, optional
-    frame_shift_ms : int, optional
+    frame_shift_ms : float, optional
 
     Returns
     -------

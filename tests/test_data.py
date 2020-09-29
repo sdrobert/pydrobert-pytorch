@@ -482,6 +482,23 @@ def test_transcript_to_token(transcript, token2id, unk, skip_frame_times, exp):
 
 
 @pytest.mark.cpu
+def test_transcript_to_token_frame_shift():
+    trans = [(12, 0.5, 0.81), 420, (1, 2.1, 2.2)]
+    # normal case: frame shift 10ms. Frame happens every hundredth of a second,
+    # so multiply by 100
+    tok = data.transcript_to_token(trans, frame_shift_ms=10)
+    assert torch.allclose(
+        tok, torch.LongTensor([[12, 50, 81], [420, -1, -1], [1, 210, 220]])
+    )
+    # raw case @ 8000Hz sample rate. "Frame" is every sample. frames/msec =
+    # 1000 / sample_rate_hz = 1 / 8.
+    tok = data.transcript_to_token(trans, frame_shift_ms=1 / 8)
+    assert torch.allclose(
+        tok, torch.LongTensor([[12, 4000, 6480], [420, -1, -1], [1, 16800, 17600]])
+    )
+
+
+@pytest.mark.cpu
 @pytest.mark.parametrize(
     "tok,id2token,exp",
     [
@@ -503,6 +520,22 @@ def test_transcript_to_token(transcript, token2id, unk, skip_frame_times, exp):
 def test_token_to_transcript(tok, id2token, exp):
     act = data.token_to_transcript(tok, id2token)
     assert exp == act
+
+
+@pytest.mark.cpu
+def test_token_to_transcript_frame_shift():
+    tok = torch.LongTensor([[1, -1, 10], [2, 1000, 2000], [3, 12345, 678910]])
+    # standard case: 10ms frame shift
+    # 10ms per frame means divide frame number by 100
+    trans = data.token_to_transcript(tok, frame_shift_ms=10)
+    assert trans == [1, (2, 10.0, 20.0), (3, 123.45, 6789.10)]
+    # raw case: 8000 samples / sec = 8 samples / msec so frame shift is 1 / 8
+    trans = data.token_to_transcript(tok, frame_shift_ms=1 / 8)
+    assert trans == [
+        1,
+        (2, 1000 / 8000, 2000 / 8000),
+        (3, 12345 / 8000, 678910 / 8000),
+    ]
 
 
 @pytest.mark.cpu
