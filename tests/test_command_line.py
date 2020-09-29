@@ -299,7 +299,7 @@ def test_torch_token_data_dir_to_ctm(temp_dir, tokens, channels, frame_shift_ms)
 @pytest.mark.parametrize("per_utt", [True, False])
 @pytest.mark.parametrize(
     "tokens,collapse_vowels",
-    [("token2id", False), ("id2token", True), ("id2token", False), (None, False),],
+    [("token2id", False), ("id2token", True), ("id2token", False), (None, False)],
 )
 @pytest.mark.parametrize("norm", [False])
 def test_compute_torch_token_data_dir_error_rates(
