@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-'''Classes and functions related to storing/retrieving speech data'''
+"""Classes and functions related to storing/retrieving speech data"""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -39,34 +39,34 @@ __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
-    'context_window_seq_to_batch',
-    'ContextWindowDataParams',
-    'ContextWindowDataSet',
-    'ContextWindowDataSetParams',
-    'ContextWindowEvaluationDataLoader',
-    'ContextWindowTrainingDataLoader',
-    'DataSetParams',
-    'EpochRandomSampler',
-    'extract_window',
-    'read_ctm',
-    'read_trn_iter',
-    'read_trn',
-    'spect_seq_to_batch',
-    'SpectDataParams',
-    'SpectDataSet',
-    'SpectDataSetParams',
-    'SpectEvaluationDataLoader',
-    'SpectTrainingDataLoader',
-    'token_to_transcript',
-    'transcript_to_token',
-    'validate_spect_data_set',
-    'write_ctm',
-    'write_trn',
+    "context_window_seq_to_batch",
+    "ContextWindowDataParams",
+    "ContextWindowDataSet",
+    "ContextWindowDataSetParams",
+    "ContextWindowEvaluationDataLoader",
+    "ContextWindowTrainingDataLoader",
+    "DataSetParams",
+    "EpochRandomSampler",
+    "extract_window",
+    "read_ctm",
+    "read_trn_iter",
+    "read_trn",
+    "spect_seq_to_batch",
+    "SpectDataParams",
+    "SpectDataSet",
+    "SpectDataSetParams",
+    "SpectEvaluationDataLoader",
+    "SpectTrainingDataLoader",
+    "token_to_transcript",
+    "transcript_to_token",
+    "validate_spect_data_set",
+    "write_ctm",
+    "write_trn",
 ]
 
 
 class SpectDataSet(torch.utils.data.Dataset):
-    '''Accesses spectrographic filter data stored in a data directory
+    """Accesses spectrographic filter data stored in a data directory
 
     :class:`SpectDataSet` assumes that `data_dir` is structured as
 
@@ -216,12 +216,21 @@ class SpectDataSet(torch.utils.data.Dataset):
     >>> hyp = torch.full((num_tokens, 3), INDEX_PAD_VALUE).long()
     >>> hyp[..., 0] = torch.randint(num_ref_classes, (num_tokens,))
     >>> data.write_hyp('special', hyp)  # custom name
-    '''
+    """
 
     def __init__(
-            self, data_dir, file_prefix='', file_suffix='.pt',
-            warn_on_missing=True, subset_ids=None, sos=None, eos=None,
-            feat_subdir='feat', ali_subdir='ali', ref_subdir='ref'):
+        self,
+        data_dir,
+        file_prefix="",
+        file_suffix=".pt",
+        warn_on_missing=True,
+        subset_ids=None,
+        sos=None,
+        eos=None,
+        feat_subdir="feat",
+        ali_subdir="ali",
+        ref_subdir="ref",
+    ):
         super(SpectDataSet, self).__init__()
         self.data_dir = data_dir
         self.feat_subdir = feat_subdir
@@ -249,8 +258,9 @@ class SpectDataSet(torch.utils.data.Dataset):
                 x.startswith(file_prefix) and x.endswith(file_suffix)
                 for x in os.listdir(os.path.join(data_dir, ref_subdir))
             )
-        self.utt_ids = tuple(sorted(
-            self.find_utt_ids(warn_on_missing, subset_ids=subset_ids)))
+        self.utt_ids = tuple(
+            sorted(self.find_utt_ids(warn_on_missing, subset_ids=subset_ids))
+        )
 
     def __len__(self):
         return len(self.utt_ids)
@@ -259,7 +269,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         return self.get_utterance_tuple(idx)
 
     def find_utt_ids(self, warn_on_missing, subset_ids=None):
-        '''Returns a set of all utterance ids from data_dir'''
+        """Returns a set of all utterance ids from data_dir"""
         neg_fsl = -len(self.file_suffix)
         if not neg_fsl:
             neg_fsl = None
@@ -274,10 +284,8 @@ class SpectDataSet(torch.utils.data.Dataset):
         if self.has_ali:
             ali_utt_ids = set(
                 x[fpl:neg_fsl]
-                for x in os.listdir(
-                    os.path.join(self.data_dir, self.ali_subdir))
-                if x.startswith(self.file_prefix) and
-                x.endswith(self.file_suffix)
+                for x in os.listdir(os.path.join(self.data_dir, self.ali_subdir))
+                if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
             )
             if subset_ids is not None:
                 ali_utt_ids &= subset_ids
@@ -285,15 +293,12 @@ class SpectDataSet(torch.utils.data.Dataset):
                 for utt_id in utt_ids.difference(ali_utt_ids):
                     warnings.warn("Missing ali for uttid: '{}'".format(utt_id))
                 for utt_id in ali_utt_ids.difference(utt_ids):
-                    warnings.warn(
-                        "Missing feat for uttid: '{}'".format(utt_id))
+                    warnings.warn("Missing feat for uttid: '{}'".format(utt_id))
         if self.has_ref:
             ref_utt_ids = set(
                 x[fpl:neg_fsl]
-                for x in os.listdir(
-                    os.path.join(self.data_dir, self.ref_subdir))
-                if x.startswith(self.file_prefix) and
-                x.endswith(self.file_suffix)
+                for x in os.listdir(os.path.join(self.data_dir, self.ref_subdir))
+                if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
             )
             if subset_ids is not None:
                 ref_utt_ids &= subset_ids
@@ -301,8 +306,7 @@ class SpectDataSet(torch.utils.data.Dataset):
                 for utt_id in utt_ids.difference(ref_utt_ids):
                     warnings.warn("Missing ref for uttid: '{}'".format(utt_id))
                 for utt_id in ref_utt_ids.difference(utt_ids):
-                    warnings.warn(
-                        "Missing feat for uttid: '{}'".format(utt_id))
+                    warnings.warn("Missing feat for uttid: '{}'".format(utt_id))
         if self.has_ali:
             utt_ids &= ali_utt_ids
         if self.has_ref:
@@ -310,19 +314,23 @@ class SpectDataSet(torch.utils.data.Dataset):
         return utt_ids
 
     def get_utterance_tuple(self, idx):
-        '''Get a tuple of features, alignments, and references'''
+        """Get a tuple of features, alignments, and references"""
         utt_id = self.utt_ids[idx]
         feat = torch.load(
             os.path.join(
                 self.data_dir,
                 self.feat_subdir,
-                self.file_prefix + utt_id + self.file_suffix))
+                self.file_prefix + utt_id + self.file_suffix,
+            )
+        )
         if self.has_ali:
             ali = torch.load(
                 os.path.join(
                     self.data_dir,
                     self.ali_subdir,
-                    self.file_prefix + utt_id + self.file_suffix))
+                    self.file_prefix + utt_id + self.file_suffix,
+                )
+            )
         else:
             ali = None
         if self.has_ref:
@@ -330,29 +338,29 @@ class SpectDataSet(torch.utils.data.Dataset):
                 os.path.join(
                     self.data_dir,
                     self.ref_subdir,
-                    self.file_prefix + utt_id + self.file_suffix))
+                    self.file_prefix + utt_id + self.file_suffix,
+                )
+            )
             if self.sos is not None:
                 if ref.dim() == 2:
                     sos_sym = torch.full_like(ref[0], -1)
                     sos_sym[0] = self.sos
                     ref = torch.cat([sos_sym.unsqueeze(0), ref], 0)
                 else:
-                    ref = torch.cat(
-                        [torch.full_like(ref[:1], self.sos), ref], 0)
+                    ref = torch.cat([torch.full_like(ref[:1], self.sos), ref], 0)
             if self.eos is not None:
                 if ref.dim() == 2:
                     eos_sym = torch.full_like(ref[0], -1)
                     eos_sym[0] = self.eos
                     ref = torch.cat([ref, eos_sym.unsqueeze(0)], 0)
                 else:
-                    ref = torch.cat(
-                        [ref, torch.full_like(ref[:1], self.eos)], 0)
+                    ref = torch.cat([ref, torch.full_like(ref[:1], self.eos)], 0)
         else:
             ref = None
         return feat, ali, ref
 
     def write_pdf(self, utt, pdf, pdfs_dir=None):
-        '''Write a pdf FloatTensor to the data directory
+        """Write a pdf FloatTensor to the data directory
 
         This method writes a pdf matrix to the directory `pdfs_dir`
         with the name ``<file_prefix><utt><file_suffix>``
@@ -369,20 +377,20 @@ class SpectDataSet(torch.utils.data.Dataset):
         pdfs_dir : str or None, optional
             The directory pdfs are written to. If :obj:`None`, it will be set
             to ``self.data_dir + '/pdfs'``
-        '''
+        """
         if isinstance(utt, int):
             utt = self.utt_ids[utt]
         if pdfs_dir is None:
-            pdfs_dir = os.path.join(self.data_dir, 'pdfs')
+            pdfs_dir = os.path.join(self.data_dir, "pdfs")
         if not os.path.isdir(pdfs_dir):
             os.makedirs(pdfs_dir)
         torch.save(
             pdf.cpu().float(),
-            os.path.join(pdfs_dir, self.file_prefix + utt + self.file_suffix)
+            os.path.join(pdfs_dir, self.file_prefix + utt + self.file_suffix),
         )
 
     def write_hyp(self, utt, hyp, hyp_dir=None):
-        '''Write hypothesis LongTensor to the data directory
+        """Write hypothesis LongTensor to the data directory
 
         This method writes a sequence of hypothesis tokens to the directory
         `hyp_dir` with the name ``<file_prefix><utt><file_suffix>``
@@ -410,38 +418,38 @@ class SpectDataSet(torch.utils.data.Dataset):
         hyp_dir : str or None, optional
             The directory pdfs are written to. If :obj:`None`, it will be set
             to ``self.data_dir + '/hyp'``
-        '''
+        """
         if isinstance(utt, int):
             utt = self.utt_ids[utt]
         if hyp_dir is None:
-            hyp_dir = os.path.join(self.data_dir, 'hyp')
+            hyp_dir = os.path.join(self.data_dir, "hyp")
         if not os.path.isdir(hyp_dir):
             os.makedirs(hyp_dir)
         hyp = hyp.cpu().long()
         if self.sos is not None:
             if hyp.dim() == 1:
-                sos_idxs = hyp.eq(self.sos).nonzero()
+                sos_idxs = torch.nonzero(hyp.eq(self.sos), as_tuple=False)
             else:
-                sos_idxs = hyp[:, 0].eq(self.sos).nonzero()
+                sos_idxs = torch.nonzero(hyp[:, 0].eq(self.sos), as_tuple=False)
             if sos_idxs.numel():
                 sos_idx = sos_idxs[-1].item()
-                hyp = hyp[sos_idx + 1:]
+                hyp = hyp[sos_idx + 1 :]
         if self.eos is not None:
             if hyp.dim() == 1:
-                eos_idxs = hyp.eq(self.eos).nonzero()
+                eos_idxs = torch.nonzero(hyp.eq(self.eos), as_tuple=False)
             else:
-                eos_idxs = hyp[:, 0].eq(self.eos).nonzero()
+                eos_idxs = torch.nonzero(hyp[:, 0].eq(self.eos), as_tuple=False)
             if eos_idxs.numel():
                 eos_idx = eos_idxs[0].item()
                 hyp = hyp[:eos_idx]
         torch.save(
             hyp.cpu().long(),
-            os.path.join(hyp_dir, self.file_prefix + utt + self.file_suffix)
+            os.path.join(hyp_dir, self.file_prefix + utt + self.file_suffix),
         )
 
 
 def validate_spect_data_set(data_set):
-    '''Validate SpectDataSet data directory
+    """Validate SpectDataSet data directory
 
     The data directory is valid if the following conditions are observed
 
@@ -469,107 +477,136 @@ def validate_spect_data_set(data_set):
              non-overlapping
 
     Raises a :class:`ValueError` if a condition is violated
-    '''
+    """
     num_filts = None
     ref_is_2d = None
     feat_dtype = None
     for idx in range(len(data_set.utt_ids)):
         feat, ali, ref = data_set.get_utterance_tuple(idx)
-        if (
-                not isinstance(feat, torch.Tensor) or
-                feat_dtype not in {None, feat.dtype}):
+        if not isinstance(feat, torch.Tensor) or feat_dtype not in {None, feat.dtype}:
             raise ValueError(
                 "'{}' (index {}) in '{}' is not a tensor or not the same "
                 "tensor type as previous features".format(
-                    data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                    os.path.join(data_set.data_dir, data_set.feat_subdir)))
+                    data_set.utt_ids[idx] + data_set.file_suffix,
+                    idx,
+                    os.path.join(data_set.data_dir, data_set.feat_subdir),
+                )
+            )
         feat_dtype = feat.dtype
         if len(feat.size()) != 2:
             raise ValueError(
                 "'{}' (index {}) in '{}' does not have two axes".format(
-                    data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                    os.path.join(data_set.data_dir, data_set.feat_subdir)
-                ))
+                    data_set.utt_ids[idx] + data_set.file_suffix,
+                    idx,
+                    os.path.join(data_set.data_dir, data_set.feat_subdir),
+                )
+            )
         if num_filts is None:
             num_filts = feat.shape[1]
         elif feat.shape[1] != num_filts:
             raise ValueError(
                 "'{}' (index {}) in '{}' has second axis size {}, which "
                 "does not match prior utterance ('{}') size of {}".format(
-                    data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                    data_set.utt_ids[idx] + data_set.file_suffix,
+                    idx,
                     os.path.join(data_set.data_dir, data_set.feat_subdir),
                     feat.shape[1],
                     data_set.utt_ids[idx - 1] + data_set.file_suffix,
-                    num_filts))
+                    num_filts,
+                )
+            )
         if ali is not None:
             if not isinstance(ali, torch.LongTensor):
                 raise ValueError(
                     "'{}' (index {}) in '{}' is not a LongTensor".format(
-                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                        os.path.join(data_set.data_dir, data_set.ali_subdir)))
+                        data_set.utt_ids[idx] + data_set.file_suffix,
+                        idx,
+                        os.path.join(data_set.data_dir, data_set.ali_subdir),
+                    )
+                )
             if len(ali.shape) != 1:
                 raise ValueError(
                     "'{}' (index {}) in '{}' does not have one axis".format(
-                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                        os.path.join(data_set.data_dir, data_set.ali_subdir)))
+                        data_set.utt_ids[idx] + data_set.file_suffix,
+                        idx,
+                        os.path.join(data_set.data_dir, data_set.ali_subdir),
+                    )
+                )
             if ali.shape[0] != feat.shape[0]:
                 raise ValueError(
                     "'{}' (index {}) in '{}' does not have the same first axis"
                     " size ({}) as it's companion in '{}' ({})".format(
-                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
+                        data_set.utt_ids[idx] + data_set.file_suffix,
+                        idx,
                         os.path.join(data_set.data_dir, data_set.feat_subdir),
                         feat.shape[0],
                         os.path.join(data_set.data_dir, data_set.ali_subdir),
-                        ali.shape[0]))
+                        ali.shape[0],
+                    )
+                )
         if ref is not None:
             if not isinstance(ref, torch.LongTensor):
                 raise ValueError(
                     "'{}' (index {}) in '{}' is not a LongTensor".format(
-                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                        os.path.join(data_set.data_dir, data_set.ref_subdir)))
+                        data_set.utt_ids[idx] + data_set.file_suffix,
+                        idx,
+                        os.path.join(data_set.data_dir, data_set.ref_subdir),
+                    )
+                )
             if len(ref.shape) == 2:
                 if ref_is_2d is False:
                     raise ValueError(
                         "'{}' (index {}) in '{}' is 2D. Previous "
                         "transcriptions were 1D".format(
-                            data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                            os.path.join(
-                                data_set.data_dir, data_set.ref_subdir)))
+                            data_set.utt_ids[idx] + data_set.file_suffix,
+                            idx,
+                            os.path.join(data_set.data_dir, data_set.ref_subdir),
+                        )
+                    )
                 ref_is_2d = True
                 if ref.shape[1] != 3:
                     raise ValueError(
                         "'{}' (index {}) in '{}' does not have shape (D, 3)"
                         "".format(
-                            data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                            os.path.join(
-                                data_set.data_dir, data_set.ref_subdir)))
+                            data_set.utt_ids[idx] + data_set.file_suffix,
+                            idx,
+                            os.path.join(data_set.data_dir, data_set.ref_subdir),
+                        )
+                    )
                 for idx2, r in enumerate(ref):
                     if not (r[1] < 0 and r[2] < 0) and not (
-                            0 <= r[1] < r[2] <= feat.shape[0]):
+                        0 <= r[1] < r[2] <= feat.shape[0]
+                    ):
                         raise ValueError(
                             "'{}' (index {}) in '{}', has a reference token "
                             "(index {}) with invalid boundaries"
                             "".format(
                                 data_set.utt_ids[idx] + data_set.file_suffix,
-                                idx, os.path.join(
-                                    data_set.data_dir, data_set.ref_subdir),
-                                idx2))
+                                idx,
+                                os.path.join(data_set.data_dir, data_set.ref_subdir),
+                                idx2,
+                            )
+                        )
             elif len(ref.shape) == 1:
                 if ref_is_2d is True:
                     raise ValueError(
                         "'{}' (index {}) in '{}' is 1D. Previous "
                         "transcriptions were 2D".format(
-                            data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                            os.path.join(
-                                data_set.data_dir, data_set.ref_subdir)))
+                            data_set.utt_ids[idx] + data_set.file_suffix,
+                            idx,
+                            os.path.join(data_set.data_dir, data_set.ref_subdir),
+                        )
+                    )
                 ref_is_2d = False
             else:
                 raise ValueError(
                     "'{}' (index {}) in '{}' is not 1D nor 2D"
                     "".format(
-                        data_set.utt_ids[idx] + data_set.file_suffix, idx,
-                        os.path.join(
-                            data_set.data_dir, data_set.ref_subdir)))
+                        data_set.utt_ids[idx] + data_set.file_suffix,
+                        idx,
+                        os.path.join(data_set.data_dir, data_set.ref_subdir),
+                    )
+                )
 
 
 class _AltTree(object):
@@ -591,39 +628,39 @@ def _trn_line_to_transcript(x):
     if not line:
         return None
     try:
-        last_open = line.rindex('(')
-        last_close = line.rindex(')')
+        last_open = line.rindex("(")
+        last_close = line.rindex(")")
         if last_open > last_close:
             raise ValueError()
     except ValueError:
-        raise IOError('Line does not end in utterance id')
-    utt_id = line[last_open + 1:last_close]
+        raise IOError("Line does not end in utterance id")
+    utt_id = line[last_open + 1 : last_close]
     line = line[:last_open].strip()
     transcript = []
-    token = ''
+    token = ""
     alt_tree = _AltTree()
     found_alt = False
     while len(line):
         c = line[0]
         line = line[1:]
-        if c == '{':
+        if c == "{":
             found_alt = True
             if token:
                 if alt_tree.parent is None:
                     transcript.append(token)
                 else:
                     alt_tree.tokens.append(token)
-                token = ''
+                token = ""
             alt_tree = _AltTree(alt_tree)
-        elif c == '/' and alt_tree.parent is not None:
+        elif c == "/" and alt_tree.parent is not None:
             if token:
                 alt_tree.tokens.append(token)
-                token = ''
+                token = ""
             alt_tree.new_branch()
-        elif c == '}' and alt_tree.parent is not None:
+        elif c == "}" and alt_tree.parent is not None:
             if token:
                 alt_tree.tokens.append(token)
-                token = ''
+                token = ""
             if not alt_tree.tokens:
                 raise IOError('Empty alternate found ("{ }")')
             alt_tree = alt_tree.parent
@@ -631,13 +668,13 @@ def _trn_line_to_transcript(x):
                 assert len(alt_tree.tokens) == 1
                 transcript.append((alt_tree.tokens[0], -1, -1))
                 alt_tree.tokens = []
-        elif c == ' ':
+        elif c == " ":
             if token:
                 if alt_tree.parent is None:
                     transcript.append(token)
                 else:
                     alt_tree.tokens.append(token)
-                token = ''
+                token = ""
         else:
             token += c
     if token and alt_tree.parent is None:
@@ -645,19 +682,20 @@ def _trn_line_to_transcript(x):
     if found_alt and warn:
         warnings.warn(
             'Found an alternate in transcription for utt="{}". '
-            'Transcript will contain an array of alternates at that '
-            'point, and will not be compatible with transcript_to_token '
-            'until resolved. To suppress this warning, set warn=False'
-            ''.format(utt_id))
+            "Transcript will contain an array of alternates at that "
+            "point, and will not be compatible with transcript_to_token "
+            "until resolved. To suppress this warning, set warn=False"
+            "".format(utt_id)
+        )
     return utt_id, transcript
 
 
 def read_trn_iter(trn, warn=True, processes=0, chunk_size=1000):
-    '''Read a NIST sclite transcript file, yielding individual transcripts
+    """Read a NIST sclite transcript file, yielding individual transcripts
 
     Identical to :func:`read_trn_iter`, but yields individual transcript
     entries rather than a full list. Ideal for large transcript files.
-    '''
+    """
     if isinstance(trn, basestring):
         with open(trn) as trn:
             for x in read_trn_iter(trn, warn, processes):
@@ -671,8 +709,8 @@ def read_trn_iter(trn, warn=True, processes=0, chunk_size=1000):
         try:
             with torch.multiprocessing.Pool(processes) as pool:
                 transcripts = pool.imap(
-                    _trn_line_to_transcript, ((line, warn) for line in trn),
-                    chunk_size)
+                    _trn_line_to_transcript, ((line, warn) for line in trn), chunk_size
+                )
                 for x in transcripts:
                     yield x
                 pool.close()
@@ -681,8 +719,8 @@ def read_trn_iter(trn, warn=True, processes=0, chunk_size=1000):
             pool = torch.multiprocessing.Pool(processes)
             try:
                 transcripts = pool.imap(
-                    _trn_line_to_transcript, ((line, warn) for line in trn),
-                    chunk_size)
+                    _trn_line_to_transcript, ((line, warn) for line in trn), chunk_size
+                )
                 for x in transcripts:
                     yield x
                 pool.close()
@@ -692,7 +730,7 @@ def read_trn_iter(trn, warn=True, processes=0, chunk_size=1000):
 
 
 def read_trn(trn, warn=True, processes=0, chunk_size=1000):
-    '''Read a NIST sclite transcript file into a list of transcripts
+    """Read a NIST sclite transcript file into a list of transcripts
 
     `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__
     is a commonly used scoring tool for ASR.
@@ -730,7 +768,7 @@ def read_trn(trn, warn=True, processes=0, chunk_size=1000):
     Notes
     -----
     Any null words (``@``) in the "trn" file are encoded verbatim.
-    '''
+    """
     # implementation note: there's a lot of weirdness here. I'm trying to
     # match sclite's behaviour. A few things
     # - the last parentheses are always the utterance. Everything else is
@@ -748,7 +786,7 @@ def read_trn(trn, warn=True, processes=0, chunk_size=1000):
 
 
 def write_trn(transcripts, trn):
-    '''From an iterable of transcripts, write to a NIST "trn" file
+    """From an iterable of transcripts, write to a NIST "trn" file
 
     This is largely the inverse operation of :func:`read_trn`. In general,
     elements of a transcript (`transcripts` contains pairs of ``utt_id,
@@ -761,46 +799,45 @@ def write_trn(transcripts, trn):
     ----------
     transcripts : iterable
     trn : file or str
-    '''
+    """
     if isinstance(trn, basestring):
-        with open(trn, 'w') as trn:
+        with open(trn, "w") as trn:
             return write_trn(transcripts, trn)
 
     def _handle_x(x):
         if isinstance(x, basestring):
-            return x + ' '  # x was a token
+            return x + " "  # x was a token
         # x is a list of alternates
         ret = []
         for alts in x:
-            elem = ''
+            elem = ""
             for xx in alts:
                 elem += _handle_x(xx)
             ret.append(elem)
-        ret = '{ ' + '/ '.join(ret) + '} '
+        ret = "{ " + "/ ".join(ret) + "} "
         return ret
+
     for utt_id, transcript in transcripts:
-        line = ''
+        line = ""
         for x in transcript:
             # first get rid of starts and ends, if possible. This is not
             # ambiguous with numerical alternates, since alternates should
             # always be strings and, more importantly, always have placeholder
             # start and end values
             try:
-                if (
-                        len(x) == 3 and np.isreal(x[1]) and
-                        np.isreal(x[2])):
+                if len(x) == 3 and np.isreal(x[1]) and np.isreal(x[2]):
                     x = x[0]
             except TypeError:
                 pass
             line += _handle_x(x)
         trn.write(line)
-        trn.write('(')
+        trn.write("(")
         trn.write(utt_id)
-        trn.write(')\n')
+        trn.write(")\n")
 
 
 def read_ctm(ctm, wc2utt=None):
-    '''Read a NIST sclite "ctm" file into a list of transcriptions
+    """Read a NIST sclite "ctm" file into a list of transcriptions
 
     `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__
     is a commonly used scoring tool for ASR.
@@ -836,13 +873,13 @@ def read_ctm(ctm, wc2utt=None):
     documentation recommends to sort a ctm, ``sort +0 -1 +1 -2 +2nb -3``, which
     does not maintain proper ordering for alternate delimiters. Thus,
     :func:`read_ctm` will error if it comes across those delimiters
-    '''
+    """
     if isinstance(ctm, str):
-        with open(ctm, 'r') as ctm:
+        with open(ctm, "r") as ctm:
             return read_ctm(ctm, wc2utt)
     transcripts = OrderedDict()
     for line_no, line in enumerate(ctm):
-        line = line.split(';;')[0].strip()
+        line = line.split(";;")[0].strip()
         if not line:
             continue
         line = line.split()
@@ -856,24 +893,25 @@ def read_ctm(ctm, wc2utt=None):
                 utt_id = wc2utt[(wfn, chan)]
             start = float(start)
             end = start + float(dur)
-            if start < 0. or start > end:
+            if start < 0.0 or start > end:
                 raise ValueError()
             transcripts.setdefault(utt_id, []).append((token, start, end))
         except ValueError:
-            raise ValueError(
-                'Could not parse line {} of ctm'.format(line_no + 1))
+            raise ValueError("Could not parse line {} of ctm".format(line_no + 1))
         except KeyError:
             raise KeyError(
-                'ctm line {}: ({}, {}) was not found in wc2utt'.format(
-                    line_no, wfn, chan))
+                "ctm line {}: ({}, {}) was not found in wc2utt".format(
+                    line_no, wfn, chan
+                )
+            )
     return [
         (utt_id, sorted(transcript, key=lambda x: x[1]))
         for utt_id, transcript in transcripts.items()
     ]
 
 
-def write_ctm(transcripts, ctm, utt2wc='A'):
-    '''From a list of transcripts, write to a NIST "ctm" file
+def write_ctm(transcripts, ctm, utt2wc="A"):
+    """From a list of transcripts, write to a NIST "ctm" file
 
     This is the inverse operation of :func:`read_ctm`. For each element of
     ``transcript`` within the ``utt_id, transcript`` pairs of elements in
@@ -890,9 +928,9 @@ def write_ctm(transcripts, ctm, utt2wc='A'):
         wavefile name and channels as values ``wfn, chan`` (e.g.
         ``'940328', 'A'``). If `utt2wc` is a string, each utterance IDs will
         be mapped to ``wfn`` and `utt2wc` as the channel
-    '''
+    """
     if isinstance(ctm, str):
-        with open(ctm, 'w') as ctm:
+        with open(ctm, "w") as ctm:
             return write_ctm(transcripts, ctm, utt2wc)
     is_dict = not isinstance(utt2wc, basestring)
     segments = []
@@ -903,29 +941,31 @@ def write_ctm(transcripts, ctm, utt2wc='A'):
             raise KeyError('Utt "{}" has no value in utt2wc'.format(utt_id))
         for tup in transcript:
             if (
-                    isinstance(tup, basestring) or
-                    len(tup) != 3 or
-                    tup[1] < 0. or
-                    tup[2] < 0.):
+                isinstance(tup, basestring)
+                or len(tup) != 3
+                or tup[1] < 0.0
+                or tup[2] < 0.0
+            ):
                 raise ValueError(
                     'Utt "{}" contains token "{}" with no timing info'
-                    ''.format(utt_id, tup))
+                    "".format(utt_id, tup)
+                )
             token, start, end = tup
             duration = end - start
-            if duration < 0.:
+            if duration < 0.0:
                 raise ValueError(
-                    'Utt "{}" contains token with negative duration'
-                    ''.format(utt_id))
+                    'Utt "{}" contains token with negative duration' "".format(utt_id)
+                )
             segments.append((wfn, chan, start, duration, token))
     segments = sorted(segments)
     for segment in segments:
-        ctm.write('{} {} {} {} {}\n'.format(*segment))
+        ctm.write("{} {} {} {} {}\n".format(*segment))
 
 
 def transcript_to_token(
-        transcript, token2id=None, frame_shift_ms=None, unk=None,
-        skip_frame_times=False):
-    '''Convert a transcript to a token sequence
+    transcript, token2id=None, frame_shift_ms=None, unk=None, skip_frame_times=False
+):
+    """Convert a transcript to a token sequence
 
     This method converts `transcript` of length ``R`` to a
     :class:`torch.LongTensor` `tok` of shape ``(R, 3)``, the latter suitable as
@@ -961,7 +1001,7 @@ def transcript_to_token(
     Returns
     -------
     tok : torch.LongTensor
-    '''
+    """
     if token2id is not None and unk in token2id:
         unk = token2id[unk]
     tok_size = (len(transcript),)
@@ -993,7 +1033,7 @@ def transcript_to_token(
 
 
 def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
-    '''Convert a token sequence to a transcript
+    """Convert a token sequence to a transcript
 
     The inverse operation of :func:`transcript_to_token`.
 
@@ -1008,7 +1048,7 @@ def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
     Returns
     -------
     token : list
-    '''
+    """
     transcript = []
     for tup in tok:
         x = tup.tolist()
@@ -1030,7 +1070,7 @@ def token_to_transcript(tok, id2token=None, frame_shift_ms=None):
 
 
 def extract_window(feat, frame_idx, left, right, reverse=False):
-    '''Slice the feature matrix to extract a context window
+    """Slice the feature matrix to extract a context window
 
     Parameters
     ----------
@@ -1052,28 +1092,29 @@ def extract_window(feat, frame_idx, left, right, reverse=False):
     -------
     window : torch.Tensor
         Of shape ``(1 + left + right, F)``
-    '''
+    """
     T, F = feat.shape
     if frame_idx - left < 0 or frame_idx + right + 1 > T:
         win_size = 1 + left + right
         window = feat.new(win_size, F)
         left_pad = max(left - frame_idx, 0)
         right_pad = max(frame_idx + right + 1 - T, 0)
-        window[left_pad:win_size - right_pad] = feat[
-            max(0, frame_idx - left):frame_idx + right + 1]
+        window[left_pad : win_size - right_pad] = feat[
+            max(0, frame_idx - left) : frame_idx + right + 1
+        ]
         if left_pad:
             window[:left_pad] = feat[0]
         if right_pad:
             window[-right_pad:] = feat[-1]
     else:
-        window = feat[frame_idx - left:frame_idx + right + 1]
+        window = feat[frame_idx - left : frame_idx + right + 1]
     if reverse:
         window = torch.flip(window, [0])
     return window
 
 
 class ContextWindowDataSet(SpectDataSet):
-    '''SpectDataSet, extracting fixed-width windows over the utterance
+    """SpectDataSet, extracting fixed-width windows over the utterance
 
     Like a :class:`SpectDataSet`, :class:`ContextWindowDataSet` indexes tuples
     of features and alignments. Instead of returning features of shape ``(T,
@@ -1124,35 +1165,48 @@ class ContextWindowDataSet(SpectDataSet):
     >>> for window, ali in data:
     >>>     pass  # so does the iterator
     >>> data.get_utterance_tuple(3)  # gets the original (feat, ali) pair
-    '''
+    """
 
     def __init__(
-            self, data_dir, left, right, file_prefix='',
-            file_suffix='.pt', warn_on_missing=True, subset_ids=None,
-            feat_subdir='feat', ali_subdir='ali', reverse=False):
+        self,
+        data_dir,
+        left,
+        right,
+        file_prefix="",
+        file_suffix=".pt",
+        warn_on_missing=True,
+        subset_ids=None,
+        feat_subdir="feat",
+        ali_subdir="ali",
+        reverse=False,
+    ):
         super(ContextWindowDataSet, self).__init__(
-            data_dir, file_prefix=file_prefix, file_suffix=file_suffix,
-            warn_on_missing=warn_on_missing, subset_ids=subset_ids,
-            feat_subdir=feat_subdir, ali_subdir=ali_subdir,
-            ref_subdir=None)
+            data_dir,
+            file_prefix=file_prefix,
+            file_suffix=file_suffix,
+            warn_on_missing=warn_on_missing,
+            subset_ids=subset_ids,
+            feat_subdir=feat_subdir,
+            ali_subdir=ali_subdir,
+            ref_subdir=None,
+        )
         self.left = left
         self.right = right
         self.reverse = reverse
 
     def get_utterance_tuple(self, idx):
-        '''Get a tuple of features and alignments'''
+        """Get a tuple of features and alignments"""
         return super(ContextWindowDataSet, self).get_utterance_tuple(idx)[:2]
 
     def get_windowed_utterance(self, idx):
-        '''Get pair of features (w/ context windows) and alignments'''
+        """Get pair of features (w/ context windows) and alignments"""
         feat, ali = self.get_utterance_tuple(idx)
         num_frames, num_filts = feat.shape
-        window = torch.empty(
-            num_frames, 1 + self.left + self.right, num_filts)
+        window = torch.empty(num_frames, 1 + self.left + self.right, num_filts)
         for center_frame in range(num_frames):
             window[center_frame] = extract_window(
-                feat, center_frame, self.left, self.right,
-                reverse=self.reverse)
+                feat, center_frame, self.left, self.right, reverse=self.reverse
+            )
         return window, ali
 
     def __getitem__(self, idx):
@@ -1160,7 +1214,7 @@ class ContextWindowDataSet(SpectDataSet):
 
 
 class EpochRandomSampler(torch.utils.data.Sampler):
-    '''Return random samples that are the same for a fixed epoch
+    """Return random samples that are the same for a fixed epoch
 
     Parameters
     ----------
@@ -1189,7 +1243,7 @@ class EpochRandomSampler(torch.utils.data.Sampler):
     >>> samples_ep1 = tuple(sampler)  # random, probably not same as first
     >>> assert tuple(sampler.get_samples_for_epoch(0)) == samples_ep0
     >>> assert tuple(sampler.get_samples_for_epoch(1)) == samples_ep1
-    '''
+    """
 
     def __init__(self, data_source, init_epoch=0, base_seed=None):
         super(EpochRandomSampler, self).__init__(data_source)
@@ -1200,15 +1254,14 @@ class EpochRandomSampler(torch.utils.data.Sampler):
             # torch's RandomState, but we acquire the initial random seed from
             # torch so that we'll be deterministic with a prior call to
             # torch.manual_seed(...)
-            base_seed = torch.randint(
-                np.iinfo(np.int32).max, (1,)).long().item()
+            base_seed = torch.randint(np.iinfo(np.int32).max, (1,)).long().item()
         self.base_seed = base_seed
 
     def __len__(self):
         return len(self.data_source)
 
     def get_samples_for_epoch(self, epoch):
-        '''tuple : samples for a specific epoch'''
+        """tuple : samples for a specific epoch"""
         rs = np.random.RandomState(self.base_seed + epoch)
         return rs.permutation(range(len(self.data_source)))
 
@@ -1219,7 +1272,7 @@ class EpochRandomSampler(torch.utils.data.Sampler):
 
 
 class DataSetParams(param.Parameterized):
-    '''General parameters for a single partition of data
+    """General parameters for a single partition of data
 
     This implements the :class:`pydrobert.param.optuna.TunableParameterized`
     interface
@@ -1259,64 +1312,71 @@ class DataSetParams(param.Parameterized):
     >>>         return params
 
     The class method is only necessary if you plan on optimizing with Optuna.
-    '''
+    """
+
     batch_size = param.Integer(
-        10, bounds=(1, None), softbounds=(5, 10),
-        doc='Number of elements in a batch, which equals the number of '
-        'utterances in the batch'
+        10,
+        bounds=(1, None),
+        softbounds=(5, 10),
+        doc="Number of elements in a batch, which equals the number of "
+        "utterances in the batch",
     )
     drop_last = param.Boolean(
-        False,
-        doc='Whether to drop the last batch if it does reach batch_size'
+        False, doc="Whether to drop the last batch if it does reach batch_size"
     )
     subset_ids = param.List(
-        [], class_=str, bounds=None,
-        doc='A list of utterance ids. If non-empty, the data set will be '
-        'restricted to these utterances'
+        [],
+        class_=str,
+        bounds=None,
+        doc="A list of utterance ids. If non-empty, the data set will be "
+        "restricted to these utterances",
     )
 
     @classmethod
     def get_tunable(cls):
-        '''Returns a set of tunable parameters'''
-        return {'batch_size'}
+        """Returns a set of tunable parameters"""
+        return {"batch_size"}
 
     @classmethod
-    def suggest_params(cls, trial, base=None, only=None, prefix=''):
-        '''Populate a parameterized instance with values from trial'''
+    def suggest_params(cls, trial, base=None, only=None, prefix=""):
+        """Populate a parameterized instance with values from trial"""
         params = cls() if base is None else base
         if only is None:
             only = cls.get_tunable()
-        if 'batch_size' in only:
-            bounds = params.param.params()['batch_size'].get_soft_bounds()
-            val = trial.suggest_int(prefix + 'batch_size', *bounds)
+        if "batch_size" in only:
+            bounds = params.param.params()["batch_size"].get_soft_bounds()
+            val = trial.suggest_int(prefix + "batch_size", *bounds)
             params.batch_size = val
         return params
 
 
 class SpectDataParams(param.Parameterized):
-    '''Parameters for spectral data'''
+    """Parameters for spectral data"""
+
     sos = param.Integer(
-        None, doc='A special symbol used to indicate the start of a sequence '
-        'in reference and hypothesis transcriptions. If set, `sos` will be '
-        'prepended to every reference transcription on read'
+        None,
+        doc="A special symbol used to indicate the start of a sequence "
+        "in reference and hypothesis transcriptions. If set, `sos` will be "
+        "prepended to every reference transcription on read",
     )
     eos = param.Integer(
-        None, doc='A special symbol used to indicate the end of a sequence in '
-        'reference and hypothesis transcriptions. If set, `eos` will be '
-        'appended to every reference transcription on read'
+        None,
+        doc="A special symbol used to indicate the end of a sequence in "
+        "reference and hypothesis transcriptions. If set, `eos` will be "
+        "appended to every reference transcription on read",
     )
 
 
 class SpectDataSetParams(SpectDataParams, DataSetParams):
-    '''Data set parameters for a specific partition of spectral data
+    """Data set parameters for a specific partition of spectral data
 
     This implements the :class:`pydrobert.param.optuna.TunableParameterized`
     interface
-    '''
+    """
 
 
 def spect_seq_to_batch(seq, batch_first=True):
-    r'''Convert a sequence of spectral data to a batch
+    r"""Convert a sequence of spectral data to a batch
 
     Assume `seq` is a finite length sequence of tuples ``feat, ali, ref``,
     where ``feat`` is of size ``(T, F)``, where ``T`` is some number of frames
@@ -1350,23 +1410,24 @@ def spect_seq_to_batch(seq, batch_first=True):
     refs : torch.LongTensor or None
     feat_sizes : torch.LongTensor
     ref_sizes : torch.LongTensor or None
-    '''
+    """
     seq = sorted(seq, key=lambda x: -x[0].shape[0])
     feats, alis, refs = zip(*seq)
     has_ali = all(x is not None for x in alis)
     has_ref = all(x is not None for x in refs)
     feat_sizes = torch.tensor([len(x) for x in feats])
     feats = torch.nn.utils.rnn.pad_sequence(
-        feats, padding_value=0, batch_first=batch_first)
+        feats, padding_value=0, batch_first=batch_first
+    )
     if has_ali:
         alis = torch.nn.utils.rnn.pad_sequence(
-            alis, padding_value=pydrobert.torch.INDEX_PAD_VALUE,
-            batch_first=batch_first)
+            alis, padding_value=pydrobert.torch.INDEX_PAD_VALUE, batch_first=batch_first
+        )
     if has_ref:
         ref_sizes = torch.tensor([len(x) for x in refs])
         refs = torch.nn.utils.rnn.pad_sequence(
-            refs, padding_value=pydrobert.torch.INDEX_PAD_VALUE,
-            batch_first=batch_first)
+            refs, padding_value=pydrobert.torch.INDEX_PAD_VALUE, batch_first=batch_first
+        )
     return (
         feats,
         alis if has_ali else None,
@@ -1377,7 +1438,7 @@ def spect_seq_to_batch(seq, batch_first=True):
 
 
 class SpectTrainingDataLoader(torch.utils.data.DataLoader):
-    '''Serves batches of spectral data over random orders of utterances
+    """Serves batches of spectral data over random orders of utterances
 
     Parameters
     ----------
@@ -1500,24 +1561,40 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     ...         log_prob.transpose(0, 1),
     ...         refs[..., 0], feat_sizes, ref_sizes).backward()
     >>>     optim.step()
-    '''
+    """
 
     def __init__(
-            self, data_dir, params, init_epoch=0, file_prefix='',
-            file_suffix='.pt', warn_on_missing=True,
-            feat_subdir='feat', ali_subdir='ali',
-            ref_subdir='ref', batch_first=True, data_params=None,
-            seed=None, **kwargs):
+        self,
+        data_dir,
+        params,
+        init_epoch=0,
+        file_prefix="",
+        file_suffix=".pt",
+        warn_on_missing=True,
+        feat_subdir="feat",
+        ali_subdir="ali",
+        ref_subdir="ref",
+        batch_first=True,
+        data_params=None,
+        seed=None,
+        **kwargs
+    ):
         for bad_kwarg in (
-                'batch_size', 'sampler', 'batch_sampler', 'shuffle',
-                'collate_fn'):
+            "batch_size",
+            "sampler",
+            "batch_sampler",
+            "shuffle",
+            "collate_fn",
+        ):
             if bad_kwarg in kwargs:
                 raise TypeError(
                     'keyword argument "{}" invalid for {} types'.format(
-                        bad_kwarg, type(self)))
+                        bad_kwarg, type(self)
+                    )
+                )
         self.data_dir = data_dir
         self.params = params
-        if seed is None and hasattr(params, 'seed'):
+        if seed is None and hasattr(params, "seed"):
             seed = params.seed
         if data_params is None:
             self.data_params = params
@@ -1526,22 +1603,27 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         self.batch_first = batch_first
         self.data_source = SpectDataSet(
             data_dir,
-            file_prefix=file_prefix, file_suffix=file_suffix,
+            file_prefix=file_prefix,
+            file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
             sos=self.data_params.sos,
             eos=self.data_params.eos,
-            feat_subdir=feat_subdir, ali_subdir=ali_subdir,
+            feat_subdir=feat_subdir,
+            ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
         )
         if not self.data_source.has_ali and not self.data_source.has_ref:
             raise ValueError(
                 "'{}' must have either alignments or reference tokens for "
-                "training".format(data_dir))
+                "training".format(data_dir)
+            )
         epoch_sampler = EpochRandomSampler(
-            self.data_source, init_epoch=init_epoch, base_seed=seed)
+            self.data_source, init_epoch=init_epoch, base_seed=seed
+        )
         batch_sampler = torch.utils.data.BatchSampler(
-            epoch_sampler, params.batch_size, drop_last=params.drop_last)
+            epoch_sampler, params.batch_size, drop_last=params.drop_last
+        )
         super(SpectTrainingDataLoader, self).__init__(
             self.data_source,
             batch_sampler=batch_sampler,
@@ -1562,7 +1644,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
 
 
 class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
-    '''Serves batches of spectral data over a fixed order of utterances
+    """Serves batches of spectral data over a fixed order of utterances
 
     Parameters
     ----------
@@ -1670,40 +1752,58 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     >>>         hyp = torch.stack(
     ...             [path] + [torch.full_like(path, INDEX_PAD_VALUE)] * 2)
     >>>         loader.data_source.write_hyp(utt_id, hyp)
-    '''
+    """
+
     class SEvalDataSet(SpectDataSet):
-        '''Append utt_id to each sample's tuple'''
+        """Append utt_id to each sample's tuple"""
 
         def __getitem__(self, idx):
             feat, ali, ref = super(
-                SpectEvaluationDataLoader.SEvalDataSet, self).__getitem__(idx)
+                SpectEvaluationDataLoader.SEvalDataSet, self
+            ).__getitem__(idx)
             utt_id = self.utt_ids[idx]
             return feat, ali, ref, utt_id
 
     def eval_collate_fn(self, seq):
-        '''Update context_window_seq_to_batch to handle feat_sizes, utt_ids'''
+        """Update context_window_seq_to_batch to handle feat_sizes, utt_ids"""
         feats, alis, refs, utt_ids = zip(*seq)
         # spect_seq_to_batch sorts by descending number of frames, so we
         # sort utt_ids here
         utt_ids = tuple(
-            x[1]
-            for x in sorted(zip(feats, utt_ids), key=lambda x: -x[0].shape[0])
+            x[1] for x in sorted(zip(feats, utt_ids), key=lambda x: -x[0].shape[0])
         )
         feats, alis, refs, feat_sizes, ref_sizes = spect_seq_to_batch(
-            zip(feats, alis, refs), batch_first=self.batch_first)
+            zip(feats, alis, refs), batch_first=self.batch_first
+        )
         return feats, alis, refs, feat_sizes, ref_sizes, utt_ids
 
     def __init__(
-            self, data_dir, params, file_prefix='', file_suffix='.pt',
-            warn_on_missing=True, feat_subdir='feat', ali_subdir='ali',
-            ref_subdir='ref', batch_first=True, data_params=None, **kwargs):
+        self,
+        data_dir,
+        params,
+        file_prefix="",
+        file_suffix=".pt",
+        warn_on_missing=True,
+        feat_subdir="feat",
+        ali_subdir="ali",
+        ref_subdir="ref",
+        batch_first=True,
+        data_params=None,
+        **kwargs
+    ):
         for bad_kwarg in (
-                'batch_size', 'sampler', 'batch_sampler', 'shuffle',
-                'collate_fn'):
+            "batch_size",
+            "sampler",
+            "batch_sampler",
+            "shuffle",
+            "collate_fn",
+        ):
             if bad_kwarg in kwargs:
                 raise TypeError(
                     'keyword argument "{}" invalid for {} types'.format(
-                        bad_kwarg, type(self)))
+                        bad_kwarg, type(self)
+                    )
+                )
         self.data_dir = data_dir
         self.params = params
         if data_params is None:
@@ -1713,12 +1813,14 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         self.batch_first = batch_first
         self.data_source = self.SEvalDataSet(
             data_dir,
-            file_prefix=file_prefix, file_suffix=file_suffix,
+            file_prefix=file_prefix,
+            file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
             sos=self.data_params.sos,
             eos=self.data_params.eos,
-            feat_subdir=feat_subdir, ali_subdir=ali_subdir,
+            feat_subdir=feat_subdir,
+            ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
         )
         super(SpectEvaluationDataLoader, self).__init__(
@@ -1731,7 +1833,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
 
 
 def context_window_seq_to_batch(seq):
-    r'''Convert a sequence of context window elements to a batch
+    r"""Convert a sequence of context window elements to a batch
 
     Assume `seq` is a finite length sequence of pairs of ``window, ali``, where
     ``window`` is of size ``(T, C, F)``, where ``T`` is some number of windows
@@ -1752,7 +1854,7 @@ def context_window_seq_to_batch(seq):
     -------
     windows : list
     alis : list
-    '''
+    """
     windows = []
     batch_ali = []
     for window, ali in seq:
@@ -1769,79 +1871,83 @@ def context_window_seq_to_batch(seq):
 
 
 class ContextWindowDataParams(SpectDataParams):
-    '''Parameters for spectral data split into overlapping context windows
+    """Parameters for spectral data split into overlapping context windows
 
     This implements the :class:`pydrobert.param.optuna.TunableParameterized`
     interface
-    '''
+    """
+
     # context windows are more model parameters than data parameters, but
     # we're going to extract them as part of the data loading process, which
     # is easily parallelized by the DataLoader
     context_left = param.Integer(
-        4, bounds=(0, None), softbounds=(3, 8),
-        doc='How many frames to the left of (before) the current frame are '
-        'included when determining the class of the current frame'
+        4,
+        bounds=(0, None),
+        softbounds=(3, 8),
+        doc="How many frames to the left of (before) the current frame are "
+        "included when determining the class of the current frame",
     )
     context_right = param.Integer(
-        4, bounds=(0, None), softbounds=(3, 8),
-        doc='How many frames to the right of (after) the current frame are '
-        'included when determining the class of the current frame'
+        4,
+        bounds=(0, None),
+        softbounds=(3, 8),
+        doc="How many frames to the right of (after) the current frame are "
+        "included when determining the class of the current frame",
     )
     reverse = param.Boolean(
         False,
-        doc='Whether to reverse each context window along the time/frame '
-        'dimension'
+        doc="Whether to reverse each context window along the time/frame " "dimension",
     )
 
     @classmethod
     def get_tunable(cls):
-        '''Returns a set of tunable parameters'''
-        return {'context_left', 'context_right', 'reverse'}
+        """Returns a set of tunable parameters"""
+        return {"context_left", "context_right", "reverse"}
 
     @classmethod
-    def suggest_params(cls, trial, base=None, only=None, prefix=''):
-        '''Populate a parameterized instance with values from trial'''
+    def suggest_params(cls, trial, base=None, only=None, prefix=""):
+        """Populate a parameterized instance with values from trial"""
         params = cls() if base is None else base
         if only is None:
             only = cls._tunable
         pdict = params.param.params()
-        for name in ('context_left', 'context_right'):
+        for name in ("context_left", "context_right"):
             if name in only:
                 softbounds = pdict[name].get_soft_bounds()
-                setattr(params, name, trial.suggest_int(
-                    prefix + name, *softbounds))
-        if 'reverse' in only:
+                setattr(params, name, trial.suggest_int(prefix + name, *softbounds))
+        if "reverse" in only:
             params.reverse = trial.suggest_categorical(
-                prefix + 'reverse', [True, False])
+                prefix + "reverse", [True, False]
+            )
         return params
 
 
 class ContextWindowDataSetParams(ContextWindowDataParams, DataSetParams):
-    '''Data set parameters for specific partition of windowed spectral data
+    """Data set parameters for specific partition of windowed spectral data
 
     This implements the :class:`pydrobert.param.optuna.TunableParameterized`
     interface
-    '''
+    """
 
     @classmethod
     def get_tunable(cls):
-        '''Returns a set of tunable parameters'''
-        return (
-            DataSetParams.get_tunable() |
-            ContextWindowDataParams.get_tunable())
+        """Returns a set of tunable parameters"""
+        return DataSetParams.get_tunable() | ContextWindowDataParams.get_tunable()
 
     @classmethod
-    def suggest_params(cls, trial, base=None, only=None, prefix=''):
-        '''Populate a parameterized instance with values from trial'''
+    def suggest_params(cls, trial, base=None, only=None, prefix=""):
+        """Populate a parameterized instance with values from trial"""
         params = DataSetParams.suggest_params(
-            trial, base=base, only=only, prefix=prefix)
+            trial, base=base, only=only, prefix=prefix
+        )
         params = ContextWindowDataParams.suggest_params(
-            trial, base=params, only=only, prefix=prefix)
+            trial, base=params, only=only, prefix=prefix
+        )
         return params
 
 
 class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
-    '''Serve batches of context windows over a random order of utterances
+    """Serve batches of context windows over a random order of utterances
 
     Parameters
     ----------
@@ -1908,45 +2014,65 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     >>>     logits = model(windows)
     >>>     loss(logits, alis).backward()
     >>>     optim.step()
-    '''
+    """
 
     def __init__(
-            self, data_dir, params, init_epoch=0, file_prefix='',
-            file_suffix='.pt', warn_on_missing=True,
-            feat_subdir='feat', ali_subdir='ali', data_params=None,
-            seed=None, **kwargs):
+        self,
+        data_dir,
+        params,
+        init_epoch=0,
+        file_prefix="",
+        file_suffix=".pt",
+        warn_on_missing=True,
+        feat_subdir="feat",
+        ali_subdir="ali",
+        data_params=None,
+        seed=None,
+        **kwargs
+    ):
         for bad_kwarg in (
-                'batch_size', 'sampler', 'batch_sampler', 'shuffle',
-                'collate_fn'):
+            "batch_size",
+            "sampler",
+            "batch_sampler",
+            "shuffle",
+            "collate_fn",
+        ):
             if bad_kwarg in kwargs:
                 raise TypeError(
                     'keyword argument "{}" invalid for {} types'.format(
-                        bad_kwarg, type(self)))
+                        bad_kwarg, type(self)
+                    )
+                )
         self.data_dir = data_dir
         self.params = params
-        if seed is None and hasattr(params, 'seed'):
+        if seed is None and hasattr(params, "seed"):
             seed = params.seed
         if data_params is None:
             self.data_params = params
         else:
             self.data_params = data_params
         self.data_source = ContextWindowDataSet(
-            data_dir, self.data_params.context_left,
+            data_dir,
+            self.data_params.context_left,
             self.data_params.context_right,
             reverse=self.data_params.reverse,
-            file_prefix=file_prefix, file_suffix=file_suffix,
+            file_prefix=file_prefix,
+            file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
-            feat_subdir=feat_subdir, ali_subdir=ali_subdir,
+            feat_subdir=feat_subdir,
+            ali_subdir=ali_subdir,
         )
         if not self.data_source.has_ali:
             raise ValueError(
-                "'{}' must have alignment info for training".format(
-                    data_dir))
+                "'{}' must have alignment info for training".format(data_dir)
+            )
         epoch_sampler = EpochRandomSampler(
-            self.data_source, init_epoch=init_epoch, base_seed=seed)
+            self.data_source, init_epoch=init_epoch, base_seed=seed
+        )
         batch_sampler = torch.utils.data.BatchSampler(
-            epoch_sampler, params.batch_size, drop_last=params.drop_last)
+            epoch_sampler, params.batch_size, drop_last=params.drop_last
+        )
         super(ContextWindowTrainingDataLoader, self).__init__(
             self.data_source,
             batch_sampler=batch_sampler,
@@ -1964,7 +2090,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
 
 
 class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
-    '''Serves batches of context windows over sequential utterances
+    """Serves batches of context windows over sequential utterances
 
     Parameters
     ----------
@@ -2035,9 +2161,10 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     >>>         assert log_probs[:win_size].shape[0] == win_size
     >>>         loader.data_source.write_pdf(utt_id, log_probs[:win_size])
     >>>         log_probs = log_probs[win_size:]
-    '''
+    """
+
     class CWEvalDataSet(ContextWindowDataSet):
-        '''Append feat_size and utt_id to each sample's tuple'''
+        """Append feat_size and utt_id to each sample's tuple"""
 
         def __getitem__(self, idx):
             window, ali = super(
@@ -2049,22 +2176,36 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
 
     @staticmethod
     def eval_collate_fn(seq):
-        '''Update context_window_seq_to_batch to handle feat_sizes, utt_ids'''
+        """Update context_window_seq_to_batch to handle feat_sizes, utt_ids"""
         windows, alis, feat_sizes, utt_ids = zip(*seq)
         windows, alis = context_window_seq_to_batch(zip(windows, alis))
         return (windows, alis, torch.tensor(feat_sizes), tuple(utt_ids))
 
     def __init__(
-            self, data_dir, params, file_prefix='', file_suffix='.pt',
-            warn_on_missing=True, feat_subdir='feat', ali_subdir='ali',
-            data_params=None, **kwargs):
+        self,
+        data_dir,
+        params,
+        file_prefix="",
+        file_suffix=".pt",
+        warn_on_missing=True,
+        feat_subdir="feat",
+        ali_subdir="ali",
+        data_params=None,
+        **kwargs
+    ):
         for bad_kwarg in (
-                'batch_size', 'sampler', 'batch_sampler', 'shuffle',
-                'collate_fn'):
+            "batch_size",
+            "sampler",
+            "batch_sampler",
+            "shuffle",
+            "collate_fn",
+        ):
             if bad_kwarg in kwargs:
                 raise TypeError(
                     'keyword argument "{}" invalid for {} types'.format(
-                        bad_kwarg, type(self)))
+                        bad_kwarg, type(self)
+                    )
+                )
         self.data_dir = data_dir
         self.params = params
         if data_params is None:
@@ -2072,13 +2213,16 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
         else:
             self.data_params = data_params
         self.data_source = self.CWEvalDataSet(
-            data_dir, self.data_params.context_left,
+            data_dir,
+            self.data_params.context_left,
             self.data_params.context_right,
             reverse=self.data_params.reverse,
-            file_prefix=file_prefix, file_suffix=file_suffix,
+            file_prefix=file_prefix,
+            file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
-            feat_subdir=feat_subdir, ali_subdir=ali_subdir,
+            feat_subdir=feat_subdir,
+            ali_subdir=ali_subdir,
         )
         super(ContextWindowEvaluationDataLoader, self).__init__(
             self.data_source,
