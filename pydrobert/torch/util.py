@@ -38,10 +38,10 @@ __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
     "beam_search_advance",
+    "dense_image_warp",
     "error_rate",
     "optimal_completion",
     "parse_arpa_lm",
-    "polyharmonic_spline",
     "polyharmonic_spline",
     "prefix_error_rates",
     "random_walk_advance",
@@ -1156,6 +1156,94 @@ def polyharmonic_spline(
     )
 
     return _apply_interpolation(w, v, train_points, query_points, order)
+
+
+def dense_image_warp(
+    image, flow, indexing="hw", mode="bilinear", padding_mode="border"
+):
+    """Warp an input image with per-pixel flow vectors
+
+    Given an `image` and a `flow` field, generates a new image `warped` such that
+
+    ::
+        warped[n, c, h, w] = image[n, c, h - flow[n, h, w, 0], w - flow[n, h, w, 1]]
+
+    If the reference indices ``h - ...`` and ``w - ...`` are not integers, the value is
+    interpolated from the neighboring pixel values.
+
+    This reproduces the functionality of Tensorflow's `dense_image_warp
+    <https://www.tensorflow.org/addons/api_docs/python/tfa/image/dense_image_warp>`__,
+    except `image` is in ``NCHW`` order instead of ``NHWC`` order. It wraps
+    `torch.nn.functional.grid_sample`.
+
+    Warning
+    -------
+    `flow` is not an optical flow. Please consult the TF documentation for more details.
+
+    Parameters
+    ----------
+    image : torch.FloatTensor
+        A float tensor of shape ``(N, C, H, W)``, where ``N`` is the batch dimension,
+        ``C`` is the channel dimension, ``H`` is the height dimension, and ``W`` is the
+        width dimension.
+    flow : torch.FloatTensor
+        A float tensor of shape ``(N, H, W, 2)``.
+    indexing : {'hw', 'wh'}, optional
+        If `indexing` is ``"hw"``, ``flow[..., 0] = h``, the height index, and
+        ``flow[..., 1] = w`` is the width index. If ``"wh"``, ``flow[..., 0] = w``
+        and ``flow[..., 1] = h``. The default in TF is ``"hw"``, whereas torch's
+        `grid_sample` is ``"wh"``
+    mode : {'bilinear', 'nearest'}
+        The method of interpolation. Either use bilinear interpolation or the nearest
+        pixel value. The TF default is ``"bilinear"``
+    padding_mode : {"border", "zeros", "reflection"}
+        Controls how points outside of the image boundaries are interpreted.
+        ``"border"``: copy points at around the border of the image. ``"zero"``:
+        use zero-valued pixels. ``"reflection"``: reflect pixels into the image starting
+        from the boundaries.
+
+    Returns
+    -------
+    warped : torch.FloatTensor
+        The warped image of shape ``(N, C, H, W)``.
+    """
+
+    # from tfa.image.dense_image_warp
+    # output[n, c, h, w] = image[n, c, h - flow[n, h, w, 0], w - flow[n, h, w, 1]]
+    # outside of image uses border
+
+    # from torch.nn.functional.grid_sample
+    # output[n, c, h, w] = image[n, c, h, f(grid[n, h, w, 1], H),
+    # f(grid[n, h, w, 0], W)]
+    # where
+    # f(x, X) = ((x + 1) * X - 1) / 2
+    # therefore
+    # output[n, c, h, w] = image[n, c, ((grid[n, h, w, 1] + 1) * H - 1) / 2,
+    #                                  ((grid[n, h, w, 0] + 1) * W - 1) / 2]
+    #
+    # ((grid[n, h, w, 1] + 1) * H - 1) / 2 = h - flow[n, h, w, 0]
+    # grid[n, h, w, 1] = (2 * h - 2 * flow[n, h, w, 0] + 1) / H - 1
+    # likewise
+    # grid[n, h, w, 0] = (2 * w - 2 * flow[n, h, w, 1] + 1) / W - 1
+
+    N, C, H, W = image.shape
+    h = torch.arange(H, dtype=image.dtype, device=image.device)  # (H,)
+    w = torch.arange(W, dtype=image.dtype, device=image.device)  # (W,)
+    h, w = torch.meshgrid(h, w)  # (H, W), (H, W)
+    if indexing == "hw":
+        # grid_sample uses wh sampling, so we flip both the flow and hw along final axis
+        hw = torch.stack((w, h), 2).unsqueeze(0)  # (1, H, W, 2)
+        flow = flow.flip(-1)
+    elif indexing == "wh":
+        hw = torch.stack((w, h), 2).unsqueeze(0)  # (1, H, W, 2)
+    else:
+        raise ValueError("Invalid indexing! must be one of 'wh' or 'hw'")
+    HW = torch.tensor([[[[W, H]]]], dtype=image.dtype, device=image.device)  # (1,1,1,2)
+    grid = (2 * hw - 2 * flow + 1.0) / HW - 1.0
+
+    return torch.nn.functional.grid_sample(
+        image, grid, mode=mode, padding_mode=padding_mode, align_corners=False
+    )
 
 
 def _solve_interpolation(c, f, k, reg, full):
