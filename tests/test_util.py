@@ -553,7 +553,7 @@ def test_time_distributed_return(device, batch_first, gamma):
     assert torch.allclose(exp, act, atol=1e-5)
 
 
-def test_harmonic_interpolation_linear(device):
+def test_polyharmonic_interpolation_linear(device):
     # when the order is 1, this should simply be linear interpolation
     x = torch.arange(3, device=device).unsqueeze(0).unsqueeze(-1).float()
     y = torch.tensor([[[0.0], [1.0], [0.0]]], device=device)
@@ -567,7 +567,7 @@ def test_harmonic_interpolation_linear(device):
 
 
 @pytest.mark.parametrize("order", [1, 2, 3])
-def test_harmonic_interpolation_equal_on_knots(order, device):
+def test_polyharmonic_interpolation_equal_on_knots(order, device):
     torch.manual_seed(3487210)
     N, T, in_, out = 10, 11, 12, 13
     x = torch.rand(N, T, in_, device=device) * 2
@@ -579,7 +579,7 @@ def test_harmonic_interpolation_equal_on_knots(order, device):
 
 
 @pytest.mark.parametrize("order", [1, 2, 3])
-def test_harmonic_interpolation_matches_tensorflow(order, device):
+def test_polyharmonic_interpolation_matches_tensorflow(order, device):
     dir_ = os.path.join(os.path.dirname(__file__), "polyharmonic_spline")
     x = torch.tensor(np.load(os.path.join(dir_, "x.npy")), device=device)
     y = torch.tensor(np.load(os.path.join(dir_, "y.npy")), device=device)
@@ -637,3 +637,59 @@ def test_dense_image_warp_matches_tensorflow(device, indexing):
     exp = torch.tensor(np.load(os.path.join(dir_, "warped.npy")), device=device)
     act = util.dense_image_warp(img, flow, indexing=indexing)
     assert torch.allclose(exp, act), (exp - act).abs().max()
+
+
+@pytest.mark.parametrize("pinned_boundary_points", [0, 1, 2])
+def test_sparse_image_warp_identity(device, pinned_boundary_points):
+    torch.manual_seed(34207)
+    N, C, H, W = 50, 12, 8, 3
+    img = exp = torch.rand(N, C, H, W, device=device) * 255
+    # we add 3 random control pointrs under the identity mapping to ensure a
+    # non-degenerate interpolate
+    src = dst = torch.rand(N, 3, 2, device=device) * min(H, W)
+    act, flow = util.sparse_image_warp(
+        img,
+        src,
+        dst,
+        pinned_boundary_points=pinned_boundary_points,
+        dense_interpolation_mode="nearest",
+    )
+    assert torch.allclose(flow, torch.tensor(0.0, device=device))
+    assert torch.allclose(exp, act), (exp - act).abs().max()
+
+
+@pytest.mark.parametrize("include_flow", [True, False])
+@pytest.mark.parametrize("pinned_boundary_points", [0, 2])
+def test_sparse_image_warp_matches_tensorflow(
+    device, include_flow, pinned_boundary_points
+):
+    dir_ = os.path.join(os.path.dirname(__file__), "sparse_image_warp")
+    img = torch.tensor(np.load(os.path.join(dir_, "img.npy")), device=device)
+    src = torch.tensor(np.load(os.path.join(dir_, "src.npy")), device=device)
+    dst = torch.tensor(np.load(os.path.join(dir_, "dst.npy")), device=device)
+    exp_warped = torch.tensor(
+        np.load(os.path.join(dir_, "warped_{}.npy".format(pinned_boundary_points))),
+        device=device,
+    )
+    if include_flow:
+        exp_flow = torch.tensor(
+            np.load(os.path.join(dir_, "flow_{}.npy".format(pinned_boundary_points))),
+            device=device,
+        )
+        act_warped, act_flow = util.sparse_image_warp(
+            img, src, dst, pinned_boundary_points=pinned_boundary_points
+        )
+        assert torch.allclose(exp_flow, act_flow, atol=1e-3), (
+            (exp_flow - act_flow).abs().max()
+        )
+    else:
+        act_warped = util.sparse_image_warp(
+            img,
+            src,
+            dst,
+            pinned_boundary_points=pinned_boundary_points,
+            include_flow=False,
+        )
+    assert torch.allclose(exp_warped, act_warped, atol=1e-3), (
+        (exp_warped - act_warped).abs().max()
+    )
