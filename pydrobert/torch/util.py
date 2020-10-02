@@ -1268,7 +1268,6 @@ def sparse_image_warp(
     field_regularization_weight=0.0,
     field_full_matrix=True,
     pinned_boundary_points=0,
-    image_boundary_points=None,
     dense_interpolation_mode="bilinear",
     dense_padding_mode="border",
     include_flow=True,
@@ -1320,16 +1319,6 @@ def sparse_image_warp(
         When :obj:`1`, four points are added, one in each corner of the image. When
         ``k > 2``, one point in each corner of the image is added, then ``k - 1``
         equidistant points along each of the four edges, totaling ``4 * k`` points.
-    image_boundary_points : torch.Tensor or :obj:`None`, optional
-        Can be used in conjunction with `pinned_boundary_points` in the case where
-        batched images are not all of the same size. A tensor of shape ``(N, 2)``, where
-        ``image_boundary_points[n]`` gives the dimensions of ``image[n]``. Coordinates
-        should respect the same indexing as `source_points` and `dest_points`. The
-        width of each image should be between :math:`W_n \in [1, W]` and each height
-        between :math`H_n \in [1, H]`. Batched images should be right-padded such that
-        pixel height index :math:`h_n \in [0, H_n)` and  width index
-        :math:`w_n \in [0, W_n)`. If `image_boundary_points` is unset, all batched
-        images will be assumed to have width ``W`` and height ``H``.
     dense_interpolation_mode : {'bilinear', 'nearest'}, optional
         The method with which partial indices in the derived mapping are interpolated.
         See :func:`dense_image_warp` for more info.
@@ -1355,27 +1344,19 @@ def sparse_image_warp(
     if indexing == "hw":
         source_points = source_points.flip(-1)
         dest_points = dest_points.flip(-1)
-        if image_boundary_points is not None:
-            image_boundary_points = image_boundary_points.flip(-1)
 
     source_points = source_points.float()
     dest_points = dest_points.float()
 
     N, C, H, W = image.shape
-    if image_boundary_points is None:
-        image_boundary_points = torch.tensor(
-            [[W, H]] * N, dtype=torch.float, device=image.device
-        )
-    image_boundary_points = image_boundary_points.float()
+    WH = torch.tensor([[W, H]] * N, dtype=image.dtype, device=image.device)
 
     M = source_points.shape[1]
     if not M:
         return image
 
     if pinned_boundary_points > 0:
-        pinned_points = _deterimine_pinned_points(
-            pinned_boundary_points, image_boundary_points
-        )
+        pinned_points = _deterimine_pinned_points(pinned_boundary_points, WH)
         source_points = torch.cat([source_points, pinned_points], 1)  # (N,M',2)
         dest_points = torch.cat([dest_points, pinned_points], 1)  # (N,M+4k=M',2)
         # now just pretend M' was M all along
@@ -1418,9 +1399,7 @@ def sparse_image_warp(
         # coord = ((grid + 1) * size - 1) / 2
         # grid = (2 coord + 1) / size - 1
         train_points = dest_points  # (N, M, 2)
-        train_values = (2.0 * source_points + 1.0) / image_boundary_points.unsqueeze(
-            1
-        ) - 1.0  # (N, M, 2)
+        train_values = (2.0 * source_points + 1.0) / WH.unsqueeze(1) - 1.0  # (N, M, 2)
 
         grid = polyharmonic_spline(
             train_points,
