@@ -33,3 +33,7 @@ pip install pydrobert-pytorch
 
 Please see the [pydrobert page](https://github.com/sdrobert/pydrobert) for more
 details.
+
+Implementations of :func:`pydrobert.torch.util.polyharmonic_spline` and
+:func:`pydrobert.torch.util.sparse_image_warp` are based off Tensorflow's
+codebase, which is Apache 2.0 licensed.
