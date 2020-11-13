@@ -47,3 +47,6 @@ References
 .. [park2019] D. S. Park et al., "SpecAugment: A simple data augmentation
    method for automatic speech recognition," in Proc. Interspeech, 2019, pp.
    2613–2617, doi: 10.21437/Interspeech.2019-2680.
+.. [park2020] D. S. Park et al., "Specaugment on large scale datasets," May
+   2020, pp. 6879–6883, doi: 10.1109/ICASSP40776.2020.9053205.
+

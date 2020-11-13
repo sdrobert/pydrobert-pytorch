@@ -1633,9 +1633,9 @@ class MultiHeadedAttention(GlobalSoftAttention):
 class SpecAugment(torch.nn.Module):
     r"""Perform warping/masking of time/frequency dimensions of filter bank features
 
-    SpecAugment [park2019]_ is a series of data transformations for training data
-    augmentation of time-frequency features such as Mel-scaled triangular filter bank
-    coefficients.
+    SpecAugment [park2019]_ (and later [park2020]_) is a series of data transformations
+    for training data augmentation of time-frequency features such as Mel-scaled
+    triangular filter bank coefficients.
 
     An instance `spec_augment` of `SpecAugment` is called as
 
@@ -1649,9 +1649,9 @@ class SpecAugment(torch.nn.Module):
     of the same size as `feats` with some or all of the following operations performed
     in order independently per batch index:
 
-    1. Choose a random frame along the time dimension. Linearly warp `feats` such
-       that ``feats[n, 0]`` and feats[n, lengths[n] - 1]`` are fixed, but that random
-       frame gets mapped to a random new location a few frames to the left or right.
+    1. Choose a random frame along the time dimension. Warp `feats` such that ``feats[n,
+       0]`` and feats[n, lengths[n] - 1]`` are fixed, but that random frame gets mapped
+       to a random new location a few frames to the left or right.
     2. Do the same for the frequency dimension.
     3. Mask out (zero) one or more random-width ranges of frames in a random location
        along the time dimension.
@@ -1659,6 +1659,8 @@ class SpecAugment(torch.nn.Module):
 
     The original SpecAugment implementation only performs steps 1, 3, and 4; step 2 is
     a trivial extension.
+
+    Default parameter values are from [park2020]_.
 
     The `spec_augment` instance must be in training mode in order to apply any
     transformations; `spec_augment` always returns `feats` as-is in evaluation mode.
@@ -1677,8 +1679,8 @@ class SpecAugment(torch.nn.Module):
         A non-negative integer specifying an absolute upper bound on the number of
         sequential frames in time that can be masked out by a single mask. The minimum
         of this upper bound and that from `max_time_mask_proportion` specifies the
-        actual maximum. Setting this, `max_time_mask_proportion`, or `num_time_mask`
-        to :obj:`0` disables step 3.
+        actual maximum. Setting this, `max_time_mask_proportion`, `num_time_mask`,
+        or `num_time_mask_proportion` to :obj:`0` disables step 3.
     max_freq_mask : int, optional
         A non-negative integer specifying the maximum number of sequential coefficients
         in frequency that can be masked out by a single mask. Setting this or
@@ -1688,16 +1690,29 @@ class SpecAugment(torch.nn.Module):
         number of squential frames in time that can be masked out by a single mask. For
         batch element ``n``, the upper bound is ``int(max_time_mask_poportion *
         length[n])``. The minimum of this upper bound and that from `max_time_mask`
-        specifies thew actual maximum. Setting this, `max_time_mask`, or `num_time_mask`
-        to :obj:`0` disables step 4.
+        specifies the actual maximum. Setting this, `max_time_mask`, `num_time_mask`,
+        or `num_time_mask_proportion` to :obj:`0` disables step 4.
     num_time_mask : int, optional
-        The total number of random masks in time per batch element to create. Setting
-        this, `max_time_mask`, or `max_time_mask_proportion` to :obj:`0` disables step
-        3. Drawn i.i.d. and may overlap.
+        A non-negative integer specifying an absolute upper bound number of random masks
+        in time per batch element to create. Setting this, `num_time_mask_proportion`,
+        `max_time_mask`, or `max_time_mask_proportion` to :obj:`0` disables step 3.
+        Drawn i.i.d. and may overlap.
+    num_time_mask_proportion : float, optional
+        A value in the range :math:`[0, 1]` specifying a relative upper bound on the
+        number of time masks per element in the batch to create. For batch element
+        ``n``, the upper bound is ``int(num_time_mask_proportion * length[n])``. The
+        minimum of this upper bound and that from `num_time_mask` specifies the
+        actual maximum. Setting this, `num_time_mask`, `max_time_mask`, or
+        `max_time_mask_proportion` to :obj:`0` disables step 3. Drawn i.i.d. and may
+        overlap.
     num_freq_mask : int, optional
         The total number of random masks in frequency per batch element to create.
         Setting this or `max_freq_mask` to :obj:`0` disables step 4. Drawn i.i.d. and
         may overlap.
+    interpolation_order : int, optional
+        Controls order of interpolation of warping. 1 = linear (default for
+        [park2020]_). 2 = thin plate (default for [park2019]_). Higher orders are
+        possible at increased computational cost.
 
     Attributes
     ----------
@@ -1708,6 +1723,7 @@ class SpecAugment(torch.nn.Module):
     max_time_mask_proportion : float
     num_time_mask : int
     num_freq_mask : int
+    interpolation_order : int
 
     Notes
     -----
@@ -1734,14 +1750,9 @@ class SpecAugment(torch.nn.Module):
 
     Finally, time warping is implemented by determining the transformation in one
     dimension (time) and broadcasting it across the other (frequency), rather than
-    determining the transformation in 2 dimensions via :func:`sparse_image_warp`, as was
-    the case in the paper. While both methods result in zero frequency warping, only the
-    former method is uniform in time across frequencies. That is, letting ``n`` be a
-    batch index, ``t`` a time index, ``f`` a frequency index, and the warp as
-    ``new_feats[n, t, f] = eats[n, t - flow[n, t, f], f]``, only the broadcasted 1D
-    transform ensures that ``flow[n, t, f] == flow[n, t, f']`` for ``f != f``. I don't
-    know of a good reason why the transform *shouldn't* be uniform, though I will update
-    this layer if I find one.
+    performing a two-dimensional warp. This is not in line with [park2019]_, but is
+    with [park2020]_. I have confirmed with the first author that the slight warping
+    of frequency that occurred due to the 2D warp was unintentional.
     """
 
     def __init__(
@@ -1750,9 +1761,11 @@ class SpecAugment(torch.nn.Module):
         max_freq_warp=0.0,
         max_time_mask=100,
         max_freq_mask=27,
-        max_time_mask_proportion=1.0,
-        num_time_mask=2,
+        max_time_mask_proportion=0.04,
+        num_time_mask=20,
+        num_time_mask_proportion=0.04,
         num_freq_mask=2,
+        interpolation_order=1,
     ):
         super(SpecAugment, self).__init__()
         self.max_time_warp = max_time_warp
@@ -1761,7 +1774,9 @@ class SpecAugment(torch.nn.Module):
         self.max_freq_mask = max_freq_mask
         self.max_time_mask_proportion = max_time_mask_proportion
         self.num_time_mask = num_time_mask
+        self.num_time_mask_proportion = num_time_mask_proportion
         self.num_freq_mask = num_freq_mask
+        self.interpolation_order = interpolation_order
 
     def extra_repr(self):
         s = "warp_t={},max_f={},num_f={},max_t={},max_t_p={:.2f},num_t={}".format(
@@ -1868,14 +1883,41 @@ class SpecAugment(torch.nn.Module):
             v = torch.rand([N], device=device) * (2 * max_) - max_
         else:
             v_0 = v = None
-        if self.max_time_mask and self.max_time_mask_proportion and self.num_time_mask:
-            max_ = torch.clamp(
-                lengths * self.max_time_mask_proportion, max=self.max_time_mask
-            ).floor()
+        if (
+            self.max_time_mask
+            and self.max_time_mask_proportion
+            and self.num_time_mask
+            and self.num_time_mask_proportion
+        ):
+            lengths = lengths.float()
+            max_ = (
+                torch.clamp(
+                    lengths * self.max_time_mask_proportion, max=self.max_time_mask,
+                )
+                .floor()
+                .to(device)
+            )
+            nums_ = (
+                torch.clamp(
+                    lengths * self.num_time_mask_proportion, max=self.num_time_mask,
+                )
+                .floor()
+                .to(device)
+            )
             t = (
-                torch.rand([N, self.num_time_mask], device=device)
-                * (max_ + omeps).unsqueeze(1)
-            ).long()
+                (
+                    torch.rand([N, self.num_time_mask], device=device)
+                    * (max_ + omeps).unsqueeze(1)
+                )
+                .long()
+                .masked_fill(
+                    nums_.unsqueeze(1)
+                    <= torch.arange(
+                        self.num_time_mask, dtype=lengths.dtype, device=device
+                    ),
+                    0,
+                )
+            )
             t_0 = (
                 torch.rand([N, self.num_time_mask], device=device)
                 * (lengths.unsqueeze(1) - t + omeps)
@@ -1895,7 +1937,7 @@ class SpecAugment(torch.nn.Module):
         return w_0, w, v_0, v, t_0, t, f_0, f
 
     @staticmethod
-    def warp_1d_grid(src, flow, lengths, max_length):
+    def warp_1d_grid(src, flow, lengths, max_length, interpolation_order):
         """Interpolate grid values for 1d of a grid_sample
 
         Called as part of this layer's :func:`__call__` method.
@@ -1914,6 +1956,8 @@ class SpecAugment(torch.nn.Module):
             the dimension in question.
         max_length : int
             An integer s.t. ``max_length >= lengths[n]`` for all ``n``
+        interpolation order : int
+            Degree of warp.
 
         Returns
         -------
@@ -1940,7 +1984,7 @@ class SpecAugment(torch.nn.Module):
             (src + flow).unsqueeze(-1),  # dst (N, 3, 1)
             sparse_grid.unsqueeze(-1),  # (N, 3, 1)
             t.unsqueeze(0).expand(N, max_length).unsqueeze(-1),  # (N, T, 1)
-            2,
+            interpolation_order,
         ).squeeze(
             -1
         )  # (N, T)
@@ -1979,11 +2023,15 @@ class SpecAugment(torch.nn.Module):
         time_grid = freq_grid = None
         do_warp = False
         if w_0 is not None and w is not None:
-            time_grid = self.warp_1d_grid(w_0, w, lengths, T)
+            time_grid = self.warp_1d_grid(w_0, w, lengths, T, self.interpolation_order)
             do_warp = True
         if v_0 is not None and v is not None:
             freq_grid = self.warp_1d_grid(
-                v_0, v, torch.tensor([F] * N, device=device), F
+                v_0,
+                v,
+                torch.tensor([F] * N, device=device),
+                F,
+                self.interpolation_order,
             )
             do_warp = True
         if do_warp:

@@ -739,10 +739,8 @@ def test_spec_augment_compare_1d_warp_to_2d_warp(device):
     # frequency dimension (as seen if you uncomment the final line in this test). It
     # appears that while the interpolated flow is zero along the frequency dimension,
     # there are some strange oscillations in the flow's time dimension in the 2D case.
-    #
-    # The very fact that the flow is non-uniform in the time dimension means that the
-    # frequency coordinates are playing a part in the learned interpolation. However,
-    # the fact that the learned weights can effectively cancel out the
+    # I've verified with Daniel Park that this was not intended. In any event, it makes
+    # this test flawed
     torch.manual_seed(21302)
     N, T, F, W = 12, 30, 20, 5
     feats = torch.rand(N, T, F, device=device)
@@ -850,13 +848,23 @@ def test_spec_augment_masking(device):
         max_freq_mask=max_freq_mask,
         max_time_mask_proportion=1.0,
         num_time_mask=nT,
+        num_time_mask_proportion=1 / (100 * T),
         num_freq_mask=nF,
+        interpolation_order=2,
     )
 
     assert nT == nF == 2  # logic below only works when 2
 
+    # current setting shouldn't draw any time masks
+    params = spec_augment.draw_parameters(feats)
+    t = params[5]
+    assert not (t > 0).any()
+
+    spec_augment.num_time_mask_proportion = 1.0
+
     params = spec_augment.draw_parameters(feats)
     t_0, t, f_0, f = params[4:]
+    assert (t > 0).any()  # some t could coincidentally land on zero
     t_1, f_1 = t_0 + t, f_0 + f  # (N, nT), (N, nF)
 
     max_t0s = torch.max(t_0.unsqueeze(1), t_0.unsqueeze(2))  # (N, nT, nT)
