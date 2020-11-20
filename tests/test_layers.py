@@ -8,11 +8,12 @@ import itertools
 import pytest
 import torch
 import pydrobert.torch.layers as layers
+import pydrobert.torch.util as util
 
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
-__copyright__ = "Copyright 2019 Sean Robertson"
+__copyright__ = "Copyright 2020 Sean Robertson"
 
 INF = float("inf")
 NAN = float("nan")
@@ -731,3 +732,184 @@ def test_learnable_soft_attention(device, dim, bias, layer):
     attention.reset_parameters()
     out3 = attention(query, key, key)
     assert torch.allclose(out1, out3, atol=1e-5)
+
+
+def test_spec_augment_compare_1d_warp_to_2d_warp(device):
+    # it turns out that the 2D warp isn't fully agnostic to the control points in the
+    # frequency dimension (as seen if you uncomment the final line in this test). It
+    # appears that while the interpolated flow is zero along the frequency dimension,
+    # there are some strange oscillations in the flow's time dimension in the 2D case.
+    # I've verified with Daniel Park that this was not intended. In any event, it makes
+    # this test flawed
+    torch.manual_seed(21302)
+    N, T, F, W = 12, 30, 20, 5
+    feats = torch.rand(N, T, F, device=device)
+    spec_augment = layers.SpecAugment(
+        max_time_warp=W, max_freq_warp=0, max_time_mask=0, max_freq_mask=0
+    )  # no masking
+    params = spec_augment.draw_parameters(feats)
+    w_0, w = params[:2]
+
+    # the 2D transform outlined in the paper features 6 zero-flow boundary points -
+    # one in each corner and two at the mid-points of the left and right edges -
+    # and a single point w_0 along the midpoint line being shifted to w_0 + w.
+    # the corner boundary points are handled by pinned_boundary_points=1
+    # note: for coordinates, it's (freq, time), not (time, freq), despite the order in
+    # feats
+    midF = F // 2
+    zeros = torch.zeros_like(w_0)  # (N,)
+    shift_src = torch.stack([zeros + midF, w_0], 1)  # (N, 2)
+    shift_dst = torch.stack([zeros + midF, w_0 + w], 1)  # (N, 2)
+    left_src = left_dst = torch.stack([zeros + midF, zeros], 1)  # (N, 2)
+    right_src = right_dst = torch.stack([zeros + midF, zeros + T - 1], 1)  # (N, 2)
+    src = torch.stack([left_src, shift_src, right_src], 1)  # (N, 3, 2)
+    dst = torch.stack([left_dst, shift_dst, right_dst], 1)  # (N, 3, 2)
+    exp, flow = util.sparse_image_warp(
+        feats.unsqueeze(1),
+        src,
+        dst,
+        indexing="wh",
+        pinned_boundary_points=1,
+        include_flow=True,
+    )
+    exp = exp.squeeze(1)
+    assert torch.allclose(flow[..., 0], torch.tensor(0.0, device=device))
+
+    # act = spec_augment.apply_parameters(feats, params)
+    # assert torch.allclose(exp, act), (exp - act).abs().max()  # will fail!
+
+
+def test_spec_augment_batch(device):
+    torch.manual_seed(83740212)
+    N, T, F, W = 10, 30, 5, 5
+    feats = torch.rand(N, T, F, device=device)
+    lengths = torch.randint(1, T + 1, (N,), device=device)
+    lengths[0] = T
+    spec_augment = layers.SpecAugment(
+        max_time_warp=W, max_freq_warp=0, max_time_mask=0, max_freq_mask=0
+    )
+    params = spec_augment.draw_parameters(feats, lengths)
+    w_0, w = params[:2]
+    feats.requires_grad = True
+    act_feats = spec_augment.apply_parameters(feats, params, lengths)
+    ones = (
+        (lengths.unsqueeze(-1) > torch.arange(T, device=device))
+        .float()
+        .unsqueeze(-1)
+        .expand(N, T, F)
+    )
+    (act_g,) = torch.autograd.grad([act_feats], [feats], ones)
+    for n in range(N):
+        feats_n = feats[n : n + 1, : lengths[n]]
+        w_0_n, w_n = w_0[n : n + 1], w[n : n + 1]
+        params_n = (w_0_n, w_n) + params[2:]
+        exp_feats_n = spec_augment.apply_parameters(feats_n, params_n)
+        act_feats_n = act_feats[n : n + 1, : lengths[n]]
+        assert torch.allclose(exp_feats_n, act_feats_n, atol=1e-5), (
+            (exp_feats_n - act_feats_n).abs().max()
+        )
+        (exp_g_n,) = torch.autograd.grad(
+            [exp_feats_n], [feats_n], torch.ones_like(feats_n)
+        )
+        act_g_n = act_g[n : n + 1, : lengths[n]]
+        assert torch.allclose(exp_g_n, act_g_n, atol=1e-5), (
+            (exp_g_n - act_g_n).abs().max()
+        )
+
+
+def test_spec_augment_zero_params_is_identity(device):
+    torch.manual_seed(6123810)
+    N, T, F = 50, 200, 80
+    feats = exp = torch.rand(N, T, F, device=device)
+    spec_augment = layers.SpecAugment(
+        max_time_warp=1000, max_freq_warp=1000, max_time_mask=1000, max_freq_mask=1000
+    )
+    params = spec_augment.draw_parameters(feats)
+    # w_0 and v_0 must remain nonzero b/c otherwise interpolation would include the
+    # border twice
+    params[1].zero_()  # w
+    params[3].zero_()  # v
+    params[5].zero_()  # t
+    params[7].zero_()  # f
+    act = feats = spec_augment.apply_parameters(feats, params)
+    assert torch.allclose(exp, act, atol=1e-4), (exp - act).abs().max()
+
+
+def test_spec_augment_masking(device):
+    torch.manual_seed(10927392)
+    N, T, F = 500, 200, 80
+    max_time_mask = max_freq_mask = 20
+    nT = nF = 2
+    feats = torch.ones(N, T, F, device=device)
+    spec_augment = layers.SpecAugment(
+        max_time_warp=0,
+        max_freq_warp=0,
+        max_time_mask=max_time_mask,
+        max_freq_mask=max_freq_mask,
+        max_time_mask_proportion=1.0,
+        num_time_mask=nT,
+        num_time_mask_proportion=1 / (100 * T),
+        num_freq_mask=nF,
+        interpolation_order=2,
+    )
+
+    assert nT == nF == 2  # logic below only works when 2
+
+    # current setting shouldn't draw any time masks
+    params = spec_augment.draw_parameters(feats)
+    t = params[5]
+    assert not (t > 0).any()
+
+    spec_augment.num_time_mask_proportion = 1.0
+
+    params = spec_augment.draw_parameters(feats)
+    t_0, t, f_0, f = params[4:]
+    assert (t > 0).any()  # some t could coincidentally land on zero
+    t_1, f_1 = t_0 + t, f_0 + f  # (N, nT), (N, nF)
+
+    max_t0s = torch.max(t_0.unsqueeze(1), t_0.unsqueeze(2))  # (N, nT, nT)
+    min_t1s = torch.min(t_1.unsqueeze(1), t_1.unsqueeze(2))  # (N, nT, nT)
+    diff_t = torch.clamp(min_t1s - max_t0s, min=0).tril()  # (N, nT, nT)
+    diff_t = diff_t * torch.eye(nT, device=device, dtype=torch.long) - diff_t * (
+        1 - torch.eye(nT, device=device, dtype=torch.long)
+    )
+    exp_masked_t = diff_t.sum(2).sum(1)  # (N,)
+    assert torch.all(exp_masked_t <= t.sum(1))
+
+    max_f0s = torch.max(f_0.unsqueeze(1), f_0.unsqueeze(2))  # (N, nF, nF)
+    min_f1s = torch.min(f_1.unsqueeze(1), f_1.unsqueeze(2))  # (N, nF, nF)
+    diff_f = torch.clamp(min_f1s - max_f0s, min=0).tril()  # (N, nF, nF)
+    diff_f = diff_f * torch.eye(nF, device=device, dtype=torch.long) - diff_f * (
+        1 - torch.eye(nF, device=device, dtype=torch.long)
+    )
+    exp_masked_f = diff_f.sum(2).sum(1)  # (N,)
+    assert torch.all(exp_masked_f <= f.sum(1))
+
+    act_feats = spec_augment.apply_parameters(feats, params)
+    eq_0 = (act_feats == 0.0).long()
+    act_masked_t = eq_0.prod(2).sum(1)
+    act_masked_f = eq_0.prod(1).sum(1)
+
+    assert torch.all(act_masked_t == exp_masked_t)
+    assert torch.all(act_masked_f == exp_masked_f)
+
+
+def test_spec_augment_call(device):
+    torch.manual_seed(6493263)
+    N, T, F = 30, 2048, 80
+    max_time_warp, max_freq_warp = 15, 20
+    max_time_mask, max_freq_mask = 30, 7
+    num_time_mask, num_freq_mask = 2, 3
+    max_time_mask_proportion = 0.2
+    lengths = torch.randint(1, T + 1, (N,), device=device)
+    feats = torch.rand(N, T, F, device=device)
+    spec_augment = layers.SpecAugment(
+        max_time_warp=max_time_warp,
+        max_freq_warp=max_freq_warp,
+        max_time_mask=max_time_mask,
+        max_freq_mask=max_freq_mask,
+        max_time_mask_proportion=max_time_mask_proportion,
+        num_time_mask=num_time_mask,
+        num_freq_mask=num_freq_mask,
+    )
+    spec_augment(feats, lengths)
