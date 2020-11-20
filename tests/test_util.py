@@ -518,8 +518,8 @@ def test_sequence_log_probs(device, dim):
     padding_mask = (len_mask > hyp_lens) | rand_mask
     logits = logits.masked_fill(padding_mask.unsqueeze(-1), -float("inf"))
     if dim is None:
-        hyp = torch.nn.utils.rnn.pack_padded_sequence(hyp, hyp_lens)
-        logits = torch.nn.utils.rnn.pack_padded_sequence(logits, hyp_lens)
+        hyp = torch.nn.utils.rnn.pack_padded_sequence(hyp, hyp_lens.cpu())
+        logits = torch.nn.utils.rnn.pack_padded_sequence(logits, hyp_lens.cpu())
     elif dim:
         hyp_dim = (dim + 5) % 5
         hyp = hyp.transpose(0, hyp_dim).contiguous()

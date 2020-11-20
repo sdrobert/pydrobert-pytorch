@@ -1861,6 +1861,7 @@ class SpecAugment(torch.nn.Module):
         omeps = 1 - eps
         if lengths is None:
             lengths = torch.tensor([T] * N, device=device)
+        lengths = lengths.to(device)
         # note that order matters slightly in whether we draw widths or positions first.
         # The paper specifies that position is drawn first for warps, whereas widths
         # are drawn first for masks

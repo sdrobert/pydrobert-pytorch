@@ -902,7 +902,7 @@ def test_spec_augment_call(device):
     num_time_mask, num_freq_mask = 2, 3
     max_time_mask_proportion = 0.2
     lengths = torch.randint(1, T + 1, (N,), device=device)
-    feats = torch.rand(N, T, F)
+    feats = torch.rand(N, T, F, device=device)
     spec_augment = layers.SpecAugment(
         max_time_warp=max_time_warp,
         max_freq_warp=max_freq_warp,
