@@ -15,7 +15,7 @@ install:
   - pip install optuna || echo "No optuna (py 2.7?)"
 
 script:
-  - python setup.py test --addopts="-m cpu -x"
+  - python setup.py test
 
 branches:
   except:

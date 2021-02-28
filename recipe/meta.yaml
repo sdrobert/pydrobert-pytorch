@@ -50,6 +50,7 @@ test:
     - pytest.ini
   requires:
     - pytest
+    - cudatoolkit
   imports:
     - pydrobert
     - pydrobert.torch
