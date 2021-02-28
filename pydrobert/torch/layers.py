@@ -1869,7 +1869,7 @@ class SpecAugment(torch.nn.Module):
             # we want the range (W, length - W) exclusive to be where w_0 can come
             # from. If W >= length / 2, this is impossible. Rather than giving up,
             # we limit the maximum length to W < length / 2
-            max_ = torch.clamp(lengths / 2 - eps, max=self.max_time_warp)
+            max_ = torch.clamp(lengths.float() / 2 - eps, max=self.max_time_warp)
             w_0 = (
                 torch.rand([N], device=device) * (lengths - 2 * (max_ + eps))
                 + max_
