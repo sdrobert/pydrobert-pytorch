@@ -1,4 +1,4 @@
-# Copyright 2019 Sean Robertson
+# Copyright 2021 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,19 +15,25 @@
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
-__copyright__ = "Copyright 2019 Sean Robertson"
+__copyright__ = "Copyright 2021 Sean Robertson"
+
+try:
+    from .version import version as __version__  # type: ignore
+except ImportError:
+    __version__ = "inplace"
+
 __all__ = [
-    'command_line',
-    'data',
-    'estimators',
-    'INDEX_PAD_VALUE',
-    'layers',
-    'training',
-    'util',
+    "command_line",
+    "data",
+    "estimators",
+    "INDEX_PAD_VALUE",
+    "layers",
+    "training",
+    "util",
 ]
 
 
-'''The value to pad index-based tensors with
+"""The value to pad index-based tensors with
 
 Batched operations often involve variable-width input. This value is used to
 right-pad indexed-based tensors with to indicate that this element should be
@@ -35,5 +41,5 @@ ignored.
 
 The default value (-100) was chosen to coincide with the PyTorch 1.0 default
 for ``ignore_index`` in the likelihood losses
-'''
+"""
 INDEX_PAD_VALUE = -100

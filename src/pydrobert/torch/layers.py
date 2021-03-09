@@ -1,4 +1,4 @@
-# Copyright 2020 Sean Robertson
+# Copyright 2021 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,25 +17,16 @@
 Notes
 -----
 The loss functions :class:`HardOptimalCompletionDistillationLoss` and
-:class:`MinimumErrorRateLoss` have been moved here from
-:mod:`pydrobert.torch.training`
+:class:`MinimumErrorRateLoss` have been moved here from :mod:`pydrobert.torch.training`
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import abc
+from typing import NoReturn, Optional, Sequence, Tuple
 
 import torch
 
 from pydrobert.torch.util import error_rate, optimal_completion, polyharmonic_spline
-from future.utils import with_metaclass
 
-__author__ = "Sean Robertson"
-__email__ = "sdrobert@cs.toronto.edu"
-__license__ = "Apache 2.0"
-__copyright__ = "Copyright 2020 Sean Robertson"
 __all__ = [
     "ConcatSoftAttention",
     "DotProductSoftAttention",
@@ -53,39 +44,38 @@ __all__ = [
 # read-only attributes using private members, so neither do we
 
 
-class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
+class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     r"""A language model whose sequence probability is built sequentially
 
     A language model provides the (log-)probability of a sequence of tokens. A
-    sequential language model assumes that the probability distribution can be
-    factored into a product of probabilities of the current token given the
-    prior sequence, i.e. for token sequence :math:`\{w_s\}`
+    sequential language model assumes that the probability distribution can be factored
+    into a product of probabilities of the current token given the prior sequence, i.e.
+    for token sequence :math:`\{w_s\}`
 
     .. math::
 
         P(w) = \prod_{s=1}^S P(w_s | w_{s - 1}, w_{s - 2}, \ldots w_1)
 
-    This definition includes statistical language models, such as n-grams,
-    where the probability of the current token is based only on a fixed-length
-    history, as well as recurrent neural language models [mikolov2010]_.
+    This definition includes statistical language models, such as n-grams, where the
+    probability of the current token is based only on a fixed-length history, as well as
+    recurrent neural language models [mikolov2010]_.
 
     Subclasses have the following signature:
 
         lm(hist, full=False)
 
-    Where `hist` is a :class:`torch.LongTensor` of shape ``(s - 1, *)``
-    corresponding to the sequence up to but excluding the current step ``s``,
-    where ``s >= 1``. Letting ``i`` be a multi-index of all but the first
-    dimension of `hist`, ``hist[:, i]`` is the i-th sequence :math:`(w^{(i)}_1,
-    w^{(i)}_2, \ldots, w^{(i)}_{s - 1})`.
+    Where `hist` is a long tensor of shape ``(s - 1, *)`` corresponding to the sequence
+    up to but excluding the current step ``s``, where ``s >= 1``. Letting ``i`` be a
+    multi-index of all but the first dimension of `hist`, ``hist[:, i]`` is the i-th
+    sequence :math:`(w^{(i)}_1, w^{(i)}_2, \ldots, w^{(i)}_{s - 1})`.
 
-    When `full` is :obj:`False`, it outputs a :class:`torch.FloatTensor`
-    `log_probs` of shape ``(*, vocab_size)``, where ``log_probs[i, v]`` equals
-    :math:`\log P(w^{(i)}_s = v | w^{(i)}_{s-1}, \ldots)`
+    When `full` is :obj:`False`, it outputs a float tensor `log_probs` of shape ``(*,
+    vocab_size)``, where ``log_probs[i, v]`` equals :math:`\log P(w^{(i)}_s = v |
+    w^{(i)}_{s-1}, \ldots)`
 
-    When `full` is :obj:`True`, `log_probs` is of shape ``(s, *, vocab_size)``
-    where each ``log_probs[s', i, v]`` equals :math:`\log P(w^{(i)}_{s'} = v |
-    w^{(i)}_{s' - 1}, \ldots)`
+    When `full` is :obj:`True`, `log_probs` is of shape ``(s, *, vocab_size)`` where
+    each ``log_probs[s', i, v]`` equals :math:`\log P(w^{(i)}_{s'} = v | w^{(i)}_{s' -
+    1}, \ldots)`
 
     Parameters
     ----------
@@ -115,7 +105,13 @@ class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
     oov : int or :obj:`None`
     """
 
-    def __init__(self, vocab_size, sos=None, eos=None, oov=None):
+    def __init__(
+        self,
+        vocab_size: int,
+        sos: Optional[int] = None,
+        eos: Optional[int] = None,
+        oov: Optional[int] = None,
+    ):
         super(SequentialLanguageModel, self).__init__()
         self.vocab_size = vocab_size
         self.sos = sos
@@ -128,7 +124,7 @@ class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         if self.oov is not None and (self.oov < 0 or self.oov >= vocab_size):
             raise ValueError("oov must be within [0, vocab_size)")
 
-    def extra_repr(self):
+    def extra_repr(self) -> str:
         s = "vocab_size={}".format(self.vocab_size)
         if self.sos is not None:
             s += ", sos={}".format(self.sos)
@@ -162,34 +158,36 @@ class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
                 )
 
     @abc.abstractmethod
-    def calc_last_log_probs(self, hist, eos_mask):
+    def calc_last_log_probs(
+        self, hist: torch.Tensor, eos_mask: Optional[torch.Tensor]
+    ) -> torch.Tensor:
         """Calculate log probabilities conditioned on history
 
         Do not call this directly; instead, call the instance.
 
-        Subclasses implement this method. `hist` is of shape ``(s, N)``, where
-        ``s`` is the sequence dimension and ``N`` is the batch dimension. ``s``
-        can be zero, indicating no history is available. All out-of-vocabulary
-        elements (except eos) have been replaced with the oov token (if `oov`
-        is not :obj:`None`). If eos is not :obj:`None`, `eos_mask` is also not
-        :obj:`None` and of size ``(s, N)``. ``hist[s', n] == eos`` iff
-        ``eos_mask[s', n].ne(0)``. `hist` has been right-filled with eos s.t.
-        if ``hist[s', n] == eos`` and ``s' < s - 1`` then
-        ``hist[s' + 1, n] == eos``. If sos has been set, `hist` has been
-        prepended with a vector of ``(N,)`` filled with the symbol, which may
-        or may not be in-vocabulary
+        Subclasses implement this method. `hist` is of shape ``(s, N)``, where ``s`` is
+        the sequence dimension and ``N`` is the batch dimension. ``s`` can be zero,
+        indicating no history is available. All out-of-vocabulary elements (except eos)
+        have been replaced with the oov token (if `oov` is not :obj:`None`). If eos is
+        not :obj:`None`, `eos_mask` is also not :obj:`None` and of size ``(s, N)``.
+        ``hist[s', n] == eos`` iff ``eos_mask[s', n].ne(0)``. `hist` has been
+        right-filled with eos s.t. if ``hist[s', n] == eos`` and ``s' < s - 1`` then
+        ``hist[s' + 1, n] == eos``. If sos has been set, `hist` has been prepended with
+        a vector of ``(N,)`` filled with the symbol, which may or may not be
+        in-vocabulary
         """
         raise NotImplementedError()
 
-    def calc_full_log_probs(self, hist, eos_mask):
+    def calc_full_log_probs(
+        self, hist: torch.Tensor, eos_mask: Optional[torch.Tensor]
+    ) -> torch.Tensor:
         """Calculate log probabilities at each step of history and next
 
-        Do not call this directly; instead, call the instance with the keyword
-        argument `full` set to :obj:`True`.
+        Do not call this directly; instead, call the instance with the keyword argument
+        `full` set to :obj:`True`.
 
-        Subclasses may implement this method to avoid repeated computation.
-        It should produce an output identical to the following
-        default implementation
+        Subclasses may implement this method to avoid repeated computation. It should
+        produce an output identical to the following default implementation
 
         >>> out = torch.stack([
         >>>     self.calc_last_log_probs(
@@ -211,7 +209,7 @@ class SequentialLanguageModel(with_metaclass(abc.ABCMeta, torch.nn.Module)):
             dim=0,
         )
 
-    def forward(self, hist, full=False):
+    def forward(self, hist: torch.Tensor, full: bool = False) -> torch.Tensor:
         if self.sos is not None:
             if hist.dim() < 2:
                 raise RuntimeError("hist must be at least 2-D")
@@ -294,10 +292,10 @@ class LookupLanguageModel(SequentialLanguageModel):
     Parameters
     ----------
     vocab_size : int
-    sos : int, optional
-    eos : int, optional
-    oov : int, optional
-    prob_list : sequence, optional
+    sos : int or None, optional
+    eos : int or None, optional
+    oov : int or None, optional
+    prob_list : sequence or None, optional
         A list of dictionaries whose entry at index ``i`` corresponds to a
         table of ``i+1``-gram probabilities. Keys must all be ids, not strings.
         Unigram keys are just ids; for n > 1 keys are tuples of ids with the
@@ -350,12 +348,12 @@ class LookupLanguageModel(SequentialLanguageModel):
 
     def __init__(
         self,
-        vocab_size,
-        sos=None,
-        eos=None,
-        oov=None,
-        prob_list=None,
-        pad_sos_to_n=True,
+        vocab_size: int,
+        sos: Optional[int] = None,
+        eos: Optional[int] = None,
+        oov: Optional[int] = None,
+        prob_list: Optional[Sequence[dict]] = None,
+        pad_sos_to_n: bool = True,
     ):
         super(LookupLanguageModel, self).__init__(vocab_size, sos=sos, eos=eos, oov=oov)
         self.pad_sos_to_n = pad_sos_to_n
@@ -380,14 +378,16 @@ class LookupLanguageModel(SequentialLanguageModel):
         self.register_buffer("ids", ids)
         self.register_buffer("pointers", pointers)
 
-    def extra_repr(self):
+    def extra_repr(self) -> str:
         s = super(LookupLanguageModel, self).extra_repr()
         s += ", max_ngram={}".format(self.max_ngram)
         if not self.pad_sos_to_n:
             s += ", pad_sos_to_n=False"
         return s
 
-    def calc_last_log_probs(self, hist, eos_mask):
+    def calc_last_log_probs(
+        self, hist: torch.Tensor, eos_mask: Optional[torch.Tensor]
+    ) -> torch.Tensor:
         # we produce two tries with the same node ids: one for logp and one for
         # logb. Let N be the maximal n-gram. The children of the root are
         # 1-grams, their children are 2-grams, etc. Thus, x-gram is synonymous
@@ -527,7 +527,7 @@ class LookupLanguageModel(SequentialLanguageModel):
             hist = hist[1:]
         return out.view(B, V)
 
-    def load_state_dict(self, state_dict, **kwargs):
+    def load_state_dict(self, state_dict: dict, **kwargs) -> None:
         error_prefix = "Error(s) in loading state_dict for {}:\n".format(
             self.__class__.__name__
         )
@@ -632,12 +632,12 @@ class LookupLanguageModel(SequentialLanguageModel):
         if self.shift:
             prob_list[0] = dict(
                 (0, v) if k == self.sos else (k + 1, v)
-                for (k, v) in prob_list[0].items()
+                for (k, v) in list(prob_list[0].items())
             )
             for n in range(1, self.max_ngram):
                 prob_list[n] = dict(
                     (tuple(0 if t == self.eos else t + 1 for t in k), v)
-                    for (k, v) in prob_list[n].items()
+                    for (k, v) in list(prob_list[n].items())
                 )
         N, G, V = self.max_ngram, self.max_ngram_nodes, self.vocab_size
         U, X = V + self.shift + (1 % N), total_entries - G + (N - 1)
@@ -732,42 +732,39 @@ class LookupLanguageModel(SequentialLanguageModel):
 class HardOptimalCompletionDistillationLoss(torch.nn.Module):
     r"""A categorical loss function over optimal next tokens
 
-    Optimal Completion Distillation (OCD) [sabour2018]_ tries to minimize the
-    train/test discrepancy in transcriptions by allowing seq2seq models to
-    generate whatever sequences they want, then assigns a per-step loss
-    according to whatever next token would set the model on a path that
-    minimizes the edit distance in the future.
+    Optimal Completion Distillation (OCD) [sabour2018]_ tries to minimize the train/test
+    discrepancy in transcriptions by allowing seq2seq models to generate whatever
+    sequences they want, then assigns a per-step loss according to whatever next token
+    would set the model on a path that minimizes the edit distance in the future.
 
-    In its "hard" version, the version used in the paper, the OCD loss function
-    is simply a categorical cross-entropy loss of each hypothesis token's
-    distribution versus those optimal next tokens, averaged over the number of
-    optimal next tokens:
+    In its "hard" version, the version used in the paper, the OCD loss function is
+    simply a categorical cross-entropy loss of each hypothesis token's distribution
+    versus those optimal next tokens, averaged over the number of optimal next tokens:
 
     .. math::
 
         loss(logits_t) = \frac{-\log Pr(s_t|logits_t)}{|S_t|}
 
-    Where :math:`s_t \in S_t` are tokens from the set of optimal next tokens
-    given :math:`hyp_{\leq t}` and `ref`. The loss is decoupled from an exact
-    prefix of `ref`, meaning that `hyp` can be longer or shorter than `ref`.
+    Where :math:`s_t \in S_t` are tokens from the set of optimal next tokens given
+    :math:`hyp_{\leq t}` and `ref`. The loss is decoupled from an exact prefix of `ref`,
+    meaning that `hyp` can be longer or shorter than `ref`.
 
     When called, this loss function has the signature::
 
         loss(logits, ref, hyp)
 
-    `hyp` is a long tensor of shape ``(max_hyp_steps, batch_size)`` if
-    `batch_first` is :obj:`False`, otherwise ``(batch_size, max_hyp_steps)``
-    that provides the hypothesis transcriptions. Likewise, `ref` of shape
-    ``(max_ref_steps, batch_size)`` or ``(batch_size, max_ref_steps)``
-    providing reference transcriptions. `logits` is a 4-dimensional tensor of
-    shape ``(max_hyp_steps, batch_size, num_classes)`` if `batch_first` is
-    :obj:`False`, ``(batch_size, max_hyp_steps, num_classes)`` otherwise. A
-    softmax over the step dimension defines the per-step distribution over
+    `hyp` is a long tensor of shape ``(max_hyp_steps, batch_size)`` if `batch_first` is
+    :obj:`False`, otherwise ``(batch_size, max_hyp_steps)`` that provides the hypothesis
+    transcriptions. Likewise, `ref` of shape ``(max_ref_steps, batch_size)`` or
+    ``(batch_size, max_ref_steps)`` providing reference transcriptions. `logits` is a
+    4-dimensional tensor of shape ``(max_hyp_steps, batch_size, num_classes)`` if
+    `batch_first` is :obj:`False`, ``(batch_size, max_hyp_steps, num_classes)``
+    otherwise. A softmax over the step dimension defines the per-step distribution over
     class labels.
 
     Parameters
     ----------
-    eos : int, optional
+    eos : int or None, optional
         A special token in `ref` and `hyp` whose first occurrence in each
         batch indicates the end of a transcript
     include_eos : bool, optional
@@ -782,8 +779,8 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         The cost of missing a token from `ref`
     sub_cost : float, optional
         The cost of swapping a token from `ref` with one from `hyp`
-    weight : torch.FloatTensor, optional
-        A manual rescaling weight given to each class
+    weight : torch.Tensor or None, optional
+        A float tensor of manual rescaling weight given to each class
     reduction : {'mean', 'none', 'sum'}, optional
         Specifies the reduction to be applied to the output. 'none': no
         reduction will be applied. 'sum': the output will be summed. 'mean':
@@ -795,7 +792,7 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
     include_eos, batch_first : bool
     ins_cost, del_cost, sub_cost : float
     reduction : {'mean', 'none', 'sum'}
-    weight : torch.FloatTensor or None
+    weight : torch.Tensor or None
 
     See Also
     --------
@@ -809,14 +806,14 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
 
     def __init__(
         self,
-        eos=None,
-        include_eos=True,
-        batch_first=False,
-        ins_cost=1.0,
-        del_cost=1.0,
-        sub_cost=1.0,
-        weight=None,
-        reduction="mean",
+        eos: Optional[int] = None,
+        include_eos: bool = True,
+        batch_first: bool = False,
+        ins_cost: float = 1.0,
+        del_cost: float = 1.0,
+        sub_cost: float = 1.0,
+        weight: Optional[torch.Tensor] = None,
+        reduction: str = "mean",
     ):
         super(HardOptimalCompletionDistillationLoss, self).__init__()
         self.eos = eos
@@ -829,14 +826,14 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         self._cross_ent = torch.nn.CrossEntropyLoss(weight=weight, reduction="none")
 
     @property
-    def weight(self):
+    def weight(self) -> Optional[torch.Tensor]:
         return self._cross_ent.weight
 
     @weight.setter
-    def weight(self, value):
+    def weight(self, value: Optional[torch.Tensor]):
         self._cross_ent.weight = value
 
-    def check_input(self, logits, ref, hyp):
+    def check_input(self, logits: torch.Tensor, ref: torch.Tensor, hyp: torch.Tensor):
         """Check if input formatted correctly, otherwise RuntimeError"""
         if logits.dim() != 3:
             raise RuntimeError("logits must be 3 dimensional")
@@ -855,7 +852,13 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
                 '"{}" is not a valid value for reduction' "".format(self.reduction)
             )
 
-    def forward(self, logits, ref, hyp, warn=True):
+    def forward(
+        self,
+        logits: torch.Tensor,
+        ref: torch.Tensor,
+        hyp: torch.Tensor,
+        warn: bool = True,
+    ) -> torch.Tensor:
         self.check_input(logits, ref, hyp)
         # the padding we use will never be exposed to the user, so we merely
         # ensure we're not trampling the eos
@@ -916,14 +919,14 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
         loss(log_probs, ref, hyp)
 
-    `log_probs` is a tensor of shape ``(batch_size, samples)`` providing the
-    log joint probabilities of every path. `hyp` is a long tensor of shape
-    ``(max_hyp_steps, batch_size, samples)`` if `batch_first` is :obj:`False`
-    otherwise ``(batch_size, samples, max_hyp_steps)`` that provides the
-    hypothesis transcriptions. `ref` is a 2- or 3-dimensional tensor. If 2D, it
-    is of shape ``(max_ref_steps, batch_size)`` (or ``(batch_size,
-    max_ref_steps)``). Alternatively, `ref` can be of shape ``(max_ref_steps,
-    batch_size, samples)`` or ``(batch_size, samples, max_ref_steps)``.
+    `log_probs` is a tensor of shape ``(batch_size, samples)`` providing the log joint
+    probabilities of every path. `hyp` is a long tensor of shape ``(max_hyp_steps,
+    batch_size, samples)`` if `batch_first` is :obj:`False` otherwise ``(batch_size,
+    samples, max_hyp_steps)`` that provides the hypothesis transcriptions. `ref` is a 2-
+    or 3-dimensional tensor. If 2D, it is of shape ``(max_ref_steps, batch_size)`` (or
+    ``(batch_size, max_ref_steps)``). Alternatively, `ref` can be of shape
+    ``(max_ref_steps, batch_size, samples)`` or ``(batch_size, samples,
+    max_ref_steps)``.
 
     If `ref` is 2D, the loss is calculated as
 
@@ -931,10 +934,10 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
         loss_{MER} = SoftMax(log\_probs)[ER(hyp_i, ref) - \mu_i]
 
-    where :math:`\mu_i` is the average error rate along paths in the batch
-    element :math:`i`. :math:`mu_i` can be removed by setting `sub_avg` to
-    :obj:`False`. Note that each hypothesis is compared against the same
-    reference as long as the batch element remains the same
+    where :math:`\mu_i` is the average error rate along paths in the batch element
+    :math:`i`. :math:`mu_i` can be removed by setting `sub_avg` to :obj:`False`. Note
+    that each hypothesis is compared against the same reference as long as the batch
+    element remains the same
 
     If `ref` is 3D, the loss is calculated as
 
@@ -980,20 +983,18 @@ class MinimumErrorRateLoss(torch.nn.Module):
     Notes
     -----
 
-    A previous version of this module incorporated a Maximum Likelihood
-    Estimate (MLE) into the loss as in [prabhavalkar2018]_, which required
-    `logits` instead of `log_probs`. This was overly complicated, given the
-    user can easily incorporate the additional loss term herself by using
-    :class:`torch.nn.CrossEntropyLoss`. Take a look at the example below for
-    how to recreate this
+    A previous version of this module incorporated a Maximum Likelihood Estimate (MLE)
+    into the loss as in [prabhavalkar2018]_, which required `logits` instead of
+    `log_probs`. This was overly complicated, given the user can easily incorporate the
+    additional loss term herself by using :class:`torch.nn.CrossEntropyLoss`. Take a
+    look at the example below for how to recreate this
 
     Examples
     --------
 
-    Assume here that `logits` is the output of some neural network, and that
-    `hyp` has somehow been produced from that (e.g. a beam search or random
-    walk). We combine this loss function with a cross-entropy/MLE term to
-    sort-of recreate [prabhavalkar2018]_.
+    Assume here that `logits` is the output of some neural network, and that `hyp` has
+    somehow been produced from that (e.g. a beam search or random walk). We combine this
+    loss function with a cross-entropy/MLE term to sort-of recreate [prabhavalkar2018]_.
 
     >>> from pydrobert.torch.util import sequence_log_probs
     >>> steps, batch_size, num_classes, eos, padding = 30, 20, 10, 0, -1
@@ -1028,15 +1029,15 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
     def __init__(
         self,
-        eos=None,
-        include_eos=True,
-        sub_avg=True,
-        batch_first=False,
-        norm=True,
-        ins_cost=1.0,
-        del_cost=1.0,
-        sub_cost=1.0,
-        reduction="mean",
+        eos: Optional[int] = None,
+        include_eos: bool = True,
+        sub_avg: bool = True,
+        batch_first: bool = False,
+        norm: bool = True,
+        ins_cost: float = 1.0,
+        del_cost: float = 1.0,
+        sub_cost: float = 1.0,
+        reduction: str = "mean",
     ):
         super(MinimumErrorRateLoss, self).__init__()
         self.eos = eos
@@ -1049,7 +1050,9 @@ class MinimumErrorRateLoss(torch.nn.Module):
         self.sub_cost = sub_cost
         self.reduction = reduction
 
-    def check_input(self, log_probs, ref, hyp):
+    def check_input(
+        self, log_probs: torch.Tensor, ref: torch.Tensor, hyp: torch.Tensor
+    ):
         """Check if the input is formatted correctly, otherwise RuntimeError"""
         if log_probs.dim() != 2:
             raise RuntimeError("log_probs must be 2 dimensional")
@@ -1086,7 +1089,13 @@ class MinimumErrorRateLoss(torch.nn.Module):
                 '"{}" is not a valid value for reduction' "".format(self.reduction)
             )
 
-    def forward(self, log_probs, ref, hyp, warn=True):
+    def forward(
+        self,
+        log_probs: torch.Tensor,
+        ref: torch.Tensor,
+        hyp: torch.Tensor,
+        warn: bool = True,
+    ) -> torch.Tensor:
         self.check_input(log_probs, ref, hyp)
         if self.batch_first:
             batch_size, samples, max_hyp_steps = hyp.shape
@@ -1124,7 +1133,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
         return loss
 
 
-class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
+class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
     r"""Parent class for soft attention mechanisms on an entire input sequence
 
     Global soft attention mechansims [bahdanau2015]_ are a way of getting rid
@@ -1222,14 +1231,14 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         broadcasting semantics
     """
 
-    def __init__(self, query_size, key_size, dim=0):
+    def __init__(self, query_size: int, key_size: int, dim: int = 0):
         super(GlobalSoftAttention, self).__init__()
         self.query_size = query_size
         self.key_size = key_size
         self.dim = dim
 
     @abc.abstractmethod
-    def score(self, query, key):
+    def score(self, query: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
         """Calculate the score function over the entire input
 
         This is implemented by subclasses of :class:`GlobalSoftAttention`
@@ -1240,17 +1249,23 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
 
         Parameters
         ----------
-        query : torch.FloatTensor
-        key : torch.FloatTensor
+        query : torch.Tensor
+        key : torch.Tensor
 
         Returns
         -------
-        e : torch.FloatTensor
+        e : torch.Tensor
             Of the same shape as the above broadcasted tensor
         """
         raise NotImplementedError()
 
-    def check_input(self, query, key, value, mask=None):
+    def check_input(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> None:
         """Check if input is properly formatted, RuntimeError otherwise
 
         Warnings
@@ -1280,7 +1295,13 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         if mask is not None and mask.dim() != key_dim - 1:
             raise RuntimeError("mask must have one fewer dimension than key")
 
-    def forward(self, query, key, value, mask=None):
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         self.check_input(query, key, value, mask)
         e = self.score(query, key)
         if mask is not None:
@@ -1289,7 +1310,7 @@ class GlobalSoftAttention(with_metaclass(abc.ABCMeta, torch.nn.Module)):
         c = (a.unsqueeze(-1) * value).sum(self.dim)
         return c
 
-    def extra_repr(self):
+    def extra_repr(self) -> str:
         return "query_size={}, key_size={}, dim={}".format(
             self.query_size, self.key_size, self.dim
         )
@@ -1330,15 +1351,15 @@ class DotProductSoftAttention(GlobalSoftAttention):
         For a description of how to call this module, how it works, etc.
     """
 
-    def __init__(self, size, dim=0, scale_factor=1.0):
+    def __init__(self, size: int, dim: int = 0, scale_factor: float = 1.0):
         super(DotProductSoftAttention, self).__init__(size, size, dim)
         self.scale_factor = scale_factor
 
-    def score(self, query, key):
+    def score(self, query: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
         query = query.unsqueeze(self.dim)
         return (query * key).sum(-1) * self.scale_factor
 
-    def extra_repr(self):
+    def extra_repr(self) -> str:
         return "size={}, dim={}".format(self.query_size, self.dim)
 
 
@@ -1352,8 +1373,8 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
 
         e = \sum_q query_q \sum_k W_{qk} key_k
 
-    For some learned matrix :math:`W`. :math:`q` indexes the last dimension
-    of `query` and :math:`k` the last dimension of `key`
+    For some learned matrix :math:`W`. :math:`q` indexes the last dimension of `query`
+    and :math:`k` the last dimension of `key`
 
     Parameters
     ----------
@@ -1375,36 +1396,37 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
         For a description of how to call this module, how it works, etc.
     """
 
-    def __init__(self, query_size, key_size, dim=0, bias=False):
+    def __init__(
+        self, query_size: int, key_size: int, dim: int = 0, bias: bool = False
+    ):
         super(GeneralizedDotProductSoftAttention, self).__init__(
             query_size, key_size, dim
         )
         self.W = torch.nn.Linear(key_size, query_size, bias=bias)
 
-    def score(self, query, key):
+    def score(self, query: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
         Wkey = self.W(key)
         query = query.unsqueeze(self.dim)
         return (query * Wkey).sum(-1)
 
-    def reset_parameters(self):
+    def reset_parameters(self) -> None:
         self.W.reset_parameters()
 
 
 class ConcatSoftAttention(GlobalSoftAttention):
     r"""Attention where query and key are concatenated, then fed into an MLP
 
-    Proposed in [luong2015]_, though quite similar to that proposed in
-    [bahdanau2015]_, the score function for this layer is:
+    Proposed in [luong2015]_, though quite similar to that proposed in [bahdanau2015]_,
+    the score function for this layer is:
 
     .. math::
 
         e = \sum_i v_i \tanh(\sum_c W_{ic} [query, key]_c)
 
-    For some learned matrix :math:`W` and vector :math:`v`, where
-    :math:`[query, key]` indicates concatenation along the last axis. `query`
-    and `key` will be expanded to fit their broadcast dimensions. :math:`W`
-    has shape ``(inter_size, key_size)`` and :math:`v` has shape
-    ``(hidden_size,)``
+    For some learned matrix :math:`W` and vector :math:`v`, where :math:`[query, key]`
+    indicates concatenation along the last axis. `query` and `key` will be expanded to
+    fit their broadcast dimensions. :math:`W` has shape ``(inter_size, key_size)`` and
+    :math:`v` has shape ``(hidden_size,)``
 
     Parameters
     ----------
@@ -1429,7 +1451,14 @@ class ConcatSoftAttention(GlobalSoftAttention):
         For a description of how to call this module, how it works, etc.
     """
 
-    def __init__(self, query_size, key_size, dim=0, bias=False, hidden_size=1000):
+    def __init__(
+        self,
+        query_size: int,
+        key_size: int,
+        dim: int = 0,
+        bias: bool = False,
+        hidden_size: int = 1000,
+    ):
         super(ConcatSoftAttention, self).__init__(query_size, key_size, dim)
         self.hidden_size = hidden_size
         self.W = torch.nn.Linear(query_size + key_size, hidden_size, bias=bias)
@@ -1437,7 +1466,7 @@ class ConcatSoftAttention(GlobalSoftAttention):
         # softmax later. You could add a bias after the tanh layer, though...
         self.v = torch.nn.Linear(hidden_size, 1, bias=False)
 
-    def score(self, query, key):
+    def score(self, query: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
         query = query.unsqueeze(self.dim)
         query_wo_last, key_wo_last = torch.broadcast_tensors(query[..., 0], key[..., 0])
         query, _ = torch.broadcast_tensors(query, query_wo_last.unsqueeze(-1))
@@ -1446,11 +1475,11 @@ class ConcatSoftAttention(GlobalSoftAttention):
         Wcat = self.W(cat)
         return self.v(Wcat).squeeze(-1)
 
-    def reset_parameters(self):
+    def reset_parameters(self) -> None:
         self.W.reset_parameters()
         self.v.reset_parameters()
 
-    def extra_repr(self):
+    def extra_repr(self) -> str:
         s = super(ConcatSoftAttention, self).extra_repr()
         s += ", hidden_size={}".format(self.hidden_size)
         return s
@@ -1459,11 +1488,11 @@ class ConcatSoftAttention(GlobalSoftAttention):
 class MultiHeadedAttention(GlobalSoftAttention):
     r"""Perform attention over a number of heads, concatenate, and project
 
-    Multi-headed attention was proposed in [vaswani2017]_. It can be considered
-    a wrapper around standard :class:`GlobalSoftAttention` that also performs
-    :class:`GlobalSoftAttention`, but with more parameters. The idea is to
-    replicate transformed versions of the `query`, `key`, and `value`
-    `num_heads` times. Letting :math:`h` index the head:
+    Multi-headed attention was proposed in [vaswani2017]_. It can be considered a
+    wrapper around standard :class:`GlobalSoftAttention` that also performs
+    :class:`GlobalSoftAttention`, but with more parameters. The idea is to replicate
+    transformed versions of the `query`, `key`, and `value` `num_heads` times. Letting
+    :math:`h` index the head:
 
     .. math::
 
@@ -1471,15 +1500,14 @@ class MultiHeadedAttention(GlobalSoftAttention):
         key_h = W^K_h key \\
         value_h = W^V_h value
 
-    If `query` is of shape ``(..., query_size)``, :math:`W^Q_h` is a learned
-    matrix of shape ``(query_size, d_q)`` that acts on the final dimension of
-    `query`. Likewise, :math:`W^K_h` is of shape ``(key_size, d_k)`` and
-    :math:`W^V_h` is of shape ``(value_size, d_v)``. Note here that the last
-    dimension of `value` must also be provided in `value_size`, unlike in
-    other attention layers.
+    If `query` is of shape ``(..., query_size)``, :math:`W^Q_h` is a learned matrix of
+    shape ``(query_size, d_q)`` that acts on the final dimension of `query`. Likewise,
+    :math:`W^K_h` is of shape ``(key_size, d_k)`` and :math:`W^V_h` is of shape
+    ``(value_size, d_v)``. Note here that the last dimension of `value` must also be
+    provided in `value_size`, unlike in other attention layers.
 
-    Each head is then determined via a wrapped :class:`GlobalSoftAttention`
-    instance, `single_head_attention`:
+    Each head is then determined via a wrapped :class:`GlobalSoftAttention` instance,
+    `single_head_attention`:
 
     .. math::
 
@@ -1487,16 +1515,16 @@ class MultiHeadedAttention(GlobalSoftAttention):
 
     Where `mask` is repeated over all :math:`h`.
 
-    Since each :math:`head_h` has the same shape, they can be concatenated
-    along the last dimension to get the tensor :math:`cat` of shape
-    ``(..., d_v * num_heads)``, which is linearly transformed into the output
+    Since each :math:`head_h` has the same shape, they can be concatenated along the
+    last dimension to get the tensor :math:`cat` of shape ``(..., d_v * num_heads)``,
+    which is linearly transformed into the output
 
     .. math::
 
         out = W^C cat
 
-    With a learnable matrix :math:`W^C` of shape ``(d_v * num_heads,
-    out_size)``. `out` has a shape ``(..., out_size)``
+    With a learnable matrix :math:`W^C` of shape ``(d_v * num_heads, out_size)``. `out`
+    has a shape ``(..., out_size)``
 
     This module has the following signature when called
 
@@ -1505,29 +1533,28 @@ class MultiHeadedAttention(GlobalSoftAttention):
     Parameters
     ----------
     query_size : int
-        The size of the last dimension of the `query` being passed to this
-        module (not the size of a head's query)
+        The size of the last dimension of the `query` being passed to this module (not
+        the size of a head's query).
     key_size : int
-        The size of the last dimension of the `key` being passed to this
-        module (not the size of a head's key)
+        The size of the last dimension of the `key` being passed to this module (not the
+        size of a head's key).
     value_size : int
-        The size of the last dimension of the `value` being passed to this
-        module (not the size of a head's value)
+        The size of the last dimension of the `value` being passed to this module (not
+        the size of a head's value).
     num_heads : int
-        The number of heads to spawn
+        The number of heads to spawn.
     single_head_attention : GlobalSoftAttention
-        An instance of a subclass of :class:`GlobalSoftAttention` responsible
-        for processing a head. `single_head_attention` attention will be used
-        to derive the sequence dimension (``dim``) of `key` via
-        ``single_head_attention.dim``, the size of a head's query ``d_k`` via
-        ``single_head_attention.query_size``, and the size of a head's key via
-        ``single_head_attention.key_size``
+        An instance of a subclass of :class:`GlobalSoftAttention` responsible for
+        processing a head. `single_head_attention` attention will be used to derive the
+        sequence dimension (``dim``) of `key` via ``single_head_attention.dim``, the
+        size of a head's query ``d_k`` via ``single_head_attention.query_size``, and the
+        size of a head's key via ``single_head_attention.key_size``
     out_size : int, optional
-        The size of the last dimension of `out`. If unset, the default is to
-        match `value_size`
+        The size of the last dimension of `out`. If unset, the default is to match
+        `value_size`
     d_v : int, optional
-        The size of the last dimension of a head's value. If unset, will
-        default to ``max(1, value_size // num_heads)``
+        The size of the last dimension of a head's value. If unset, will default to
+        ``max(1, value_size // num_heads)``
     bias_WQ : bool, optional
         Whether to add a bias term to :math:`W^Q`
     bias_WK : bool, optional
@@ -1548,17 +1575,17 @@ class MultiHeadedAttention(GlobalSoftAttention):
 
     def __init__(
         self,
-        query_size,
-        key_size,
-        value_size,
-        num_heads,
-        single_head_attention,
-        out_size=None,
-        d_v=None,
-        bias_WQ=False,
-        bias_WK=False,
-        bias_WV=False,
-        bias_WC=False,
+        query_size: int,
+        key_size: int,
+        value_size: int,
+        num_heads: int,
+        single_head_attention: GlobalSoftAttention,
+        out_size: Optional[int] = None,
+        d_v: Optional[int] = None,
+        bias_WQ: bool = False,
+        bias_WK: bool = False,
+        bias_WV: bool = False,
+        bias_WC: bool = False,
     ):
         super(MultiHeadedAttention, self).__init__(
             query_size, key_size, dim=single_head_attention.dim
@@ -1578,18 +1605,30 @@ class MultiHeadedAttention(GlobalSoftAttention):
         self.WC = torch.nn.Linear(self.d_v * num_heads, self.out_size, bias=bias_WC)
         single_head_attention.reset_parameters()
 
-    def check_input(self, query, key, value, mask=None):
+    def check_input(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ):
         """Check that input is formatted correctly, RuntimeError otherwise"""
         super(MultiHeadedAttention, self).check_input(query, key, value, mask)
         if value.shape[-1] != self.value_size:
             raise RuntimeError("Last dimension of value must match value_size")
 
-    def score(self, query, key):
+    def score(self, query: torch.Tensor, key: torch.Tensor) -> NoReturn:
         raise NotImplementedError(
             "In MultiHeadedAttention, score() is handled by " "single_head_attention"
         )
 
-    def forward(self, query, key, value, mask=None):
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         self.check_input(query, key, value, mask)
         query_shape = tuple(query.shape)
         key_shape = tuple(key.shape)
@@ -1614,14 +1653,14 @@ class MultiHeadedAttention(GlobalSoftAttention):
         cat = cat.view(*(tuple(cat.shape[:-2]) + (self.num_heads * self.d_v,)))
         return self.WC(cat)
 
-    def reset_parameters(self):
+    def reset_parameters(self) -> None:
         self.WQ.reset_parameters()
         self.WK.reset_parameters()
         self.WV.reset_parameters()
         self.WC.reset_parameters()
         self.single_head_attention.reset_parameters()
 
-    def extra_repr(self):
+    def extra_repr(self) -> str:
         s = super(MultiHeadedAttention, self).extra_repr()
         # rest of info in single_head_attention submodule
         s += ", value_size={}, out_size={}, num_heads={}".format(
@@ -1657,8 +1696,8 @@ class SpecAugment(torch.nn.Module):
        along the time dimension.
     4. Do the same for the frequency dimension.
 
-    The original SpecAugment implementation only performs steps 1, 3, and 4; step 2 is
-    a trivial extension.
+    The original SpecAugment implementation only performs steps 1, 3, and 4; step 2 is a
+    trivial extension.
 
     Default parameter values are from [park2020]_.
 
@@ -1757,15 +1796,15 @@ class SpecAugment(torch.nn.Module):
 
     def __init__(
         self,
-        max_time_warp=80.0,
-        max_freq_warp=0.0,
-        max_time_mask=100,
-        max_freq_mask=27,
-        max_time_mask_proportion=0.04,
-        num_time_mask=20,
-        num_time_mask_proportion=0.04,
-        num_freq_mask=2,
-        interpolation_order=1,
+        max_time_warp: float = 80.0,
+        max_freq_warp: float = 0.0,
+        max_time_mask: int = 100,
+        max_freq_mask: int = 27,
+        max_time_mask_proportion: float = 0.04,
+        num_time_mask: int = 20,
+        num_time_mask_proportion: float = 0.04,
+        num_freq_mask: int = 2,
+        interpolation_order: int = 1,
     ):
         super(SpecAugment, self).__init__()
         self.max_time_warp = max_time_warp
@@ -1778,7 +1817,7 @@ class SpecAugment(torch.nn.Module):
         self.num_freq_mask = num_freq_mask
         self.interpolation_order = interpolation_order
 
-    def extra_repr(self):
+    def extra_repr(self) -> str:
         s = "warp_t={},max_f={},num_f={},max_t={},max_t_p={:.2f},num_t={}".format(
             self.max_time_warp,
             self.max_freq_mask,
@@ -1791,7 +1830,9 @@ class SpecAugment(torch.nn.Module):
             s += ",warp_f={}".format(self.max_freq_warp)
         return s
 
-    def check_input(self, feats, lengths=None):
+    def check_input(
+        self, feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
+    ) -> None:
         if feats.dim() != 3:
             raise RuntimeError(
                 "Expected feats to have three dimensions, got {}".format(feats.dim())
@@ -1813,47 +1854,61 @@ class SpecAugment(torch.nn.Module):
                     "values of lengths must be between (1, {})".format(T)
                 )
 
-    def draw_parameters(self, feats, lengths=None):
+    def draw_parameters(
+        self, feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
+    ) -> Tuple[
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+    ]:
         """Randomly draw parameterizations of augmentations
 
         Called as part of this layer's :func:`__call__` method.
 
         Parameters
         ----------
-        feats : torch.FloatTensor
+        feats : torch.Tensor
             Time-frequency features of shape ``(N, T, F)``.
-        lengths : torch.LongTensor, optional
-            Tensor of shape ``(N,)`` containing the number of frames before padding.
+        lengths : torch.Tensor or None, optional
+            Long tensor of shape ``(N,)`` containing the number of frames before
+            padding.
 
         Returns
         -------
-        w_0 : torch.FloatTensor or :obj:`None`
+        w_0 : torch.Tensor or :obj:`None`
             If step 1 is enabled, of shape ``(N,)`` containing the source points in the
-            time warp.
-        w : torch.FloatTensor or :obj:`None`
+            time warp (floatint-point).
+        w : torch.Tensor or :obj:`None`
             If step 1 is enabled, of shape ``(N,)`` containing the number of frames to
             shift the source point by (positive or negative) in the destination in time.
             Positive values indicate a right shift.
-        v_0 : torch.FloatTensor or :obj:`None`
+        v_0 : torch.Tensor or :obj:`None`
             If step 2 is enabled, of shape ``(N,)`` containing the source points in the
-            frequency warp.
-        v : torch.FloatTensor or :obj:`None`
+            frequency warp (floating point)
+        v : torch.Tensor or :obj:`None`
             If step 2 is enabled, of shape ``(N,)`` containing the number of
             coefficients to shift the source point by (positive or negative) in the
             destination in time. Positive values indicate a right shift.
-        t_0 : torch.LongTensor or :obj:`None`
+            Floating-point
+        t_0 : torch.Tensor or :obj:`None`
             If step 3 is enabled, of shape ``(N, M_T)`` where ``M_T`` is the number of
             time masks specifying the lower index (inclusive) of the time masks.
-        t : torch.LongTensor or :obj:`None`
+            Integer.
+        t : torch.Tensor or :obj:`None`
             If step 3 is enabled, of shape ``(N, M_T)`` specifying the number of frames
-            per time mask.
-        f_0 : torch.LongTensor or :obj:`None`
+            per time mask. Integer
+        f_0 : torch.Tensor or :obj:`None`
             If step 4 is enabled, of shape ``(N, M_F)`` where ``M_F`` is the number of
             frequency masks specifying the lower index (inclusive) of the frequency
-            masks.
-        f : torch.LongTensor or :obj:`None`
+            masks. Integer.
+        f : torch.Tensor or :obj:`None`
             If step 4 is enabled, of shape ``(N, M_F)`` specifying the number of
-            frequency coefficients per frequency mask.
+            frequency coefficients per frequency mask. Integer
         """
         N, T, F = feats.shape
         device = feats.device
@@ -1938,32 +1993,38 @@ class SpecAugment(torch.nn.Module):
         return w_0, w, v_0, v, t_0, t, f_0, f
 
     @staticmethod
-    def warp_1d_grid(src, flow, lengths, max_length, interpolation_order):
+    def warp_1d_grid(
+        src: torch.Tensor,
+        flow: torch.Tensor,
+        lengths: torch.Tensor,
+        max_length: int,
+        interpolation_order: int,
+    ) -> torch.Tensor:
         """Interpolate grid values for 1d of a grid_sample
 
         Called as part of this layer's :func:`__call__` method.
 
         Parameters
         ----------
-        src : torch.LongTensor
-            A tensor of shape ``(N,)`` containing random source points
-        flow : torch.LongTensor
-            A tensor of shape ``(N,)`` containing corresponding flow fields for
+        src : torch.Tensor
+            A long tensor of shape ``(N,)`` containing random source points.
+        flow : torch.Tensor
+            A long tensor of shape ``(N,)`` containing corresponding flow fields for
             ``src`` such that ``new_feats[n, * dst[n] *] =
             feats[n, * src[n] - flow[n] *]`` (for whichever dimension we're talking
-            about)
-        lengths : torch.LongTensor
-            A tensor of shape ``(N,)`` specifying the number of valid indices along
+            about).
+        lengths : torch.Tensor
+            A long tensor of shape ``(N,)`` specifying the number of valid indices along
             the dimension in question.
         max_length : int
-            An integer s.t. ``max_length >= lengths[n]`` for all ``n``
+            An integer s.t. ``max_length >= lengths[n]`` for all ``n``.
         interpolation order : int
             Degree of warp.
 
         Returns
         -------
-        grid : torch.FloatTensor
-            A tensor of shape ``(N, max_length)`` providing coordinates for one
+        grid : torch.Tensor
+            A float tensor of shape ``(N, max_length)`` providing coordinates for one
             dimension of :func:`torch.nn.functional.grid_sample` that will be used to
             warp the features
         """
@@ -1995,23 +2056,37 @@ class SpecAugment(torch.nn.Module):
         grid = torch.min(grid, boundary.unsqueeze(-1))
         return grid
 
-    def apply_parameters(self, feats, params, lengths=None):
+    def apply_parameters(
+        self,
+        feats: torch.Tensor,
+        params: Tuple[
+            Optional[torch.Tensor],
+            Optional[torch.Tensor],
+            Optional[torch.Tensor],
+            Optional[torch.Tensor],
+            Optional[torch.Tensor],
+            Optional[torch.Tensor],
+            Optional[torch.Tensor],
+            Optional[torch.Tensor],
+        ],
+        lengths: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """Use drawn parameters to apply augmentations
 
         Called as part of this layer's :func:`__call__` method.
 
         Parameters
         ----------
-        feats : torch.FloatTensor
+        feats : torch.Tensor
             Time-frequency features of shape ``(N, T, F)``.
-        params : tuple of torch.LongTensor
+        params : sequence of torch.Tensor
             All parameter tensors returned by :func:`draw_parameters`.
-        lengths : torch.LongTensor, optional
+        lengths : torch.Tensor, optional
             Tensor of shape ``(N,)`` containing the number of frames before padding.
 
         Returns
         -------
-        new_feats : torch.FloatTensor
+        new_feats : torch.Tensor
             Augmented time-frequency features of same shape as `feats`.
         """
         N, T, F = feats.shape
@@ -2070,11 +2145,13 @@ class SpecAugment(torch.nn.Module):
             new_feats = new_feats.masked_fill(fmask, 0.0)
         return new_feats
 
-    def forward(self, feats, lengths=None):
+    def forward(
+        self, feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         self.check_input(feats, lengths)
         if not self.training:
             return feats
-        N, T, F = feats.shape
+        N, T, _ = feats.shape
         if lengths is None:
             lengths = torch.tensor([T] * N, device=feats.device)
         params = self.draw_parameters(feats, lengths)

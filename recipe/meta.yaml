@@ -19,18 +19,22 @@ source:
 
 requirements:
   build:
-    - python
     - setuptools
     - setuptools_scm
   run:
-    - python
+    - python >=3.6
     - numpy
     - pytorch>= 1.0.1
-    - future
     - param
+  run_constrained:
+    - pydrobert-param >0.2.0
+    - pydrobert-kaldi >0.5.3
+    - pydrobert-pytorch >0.2.1
+
 
 build:
   noarch: python
+  skip: True  # [py < 36 or py == 39]
   number: {{ build_num }}
   entry_points:
     - compute-torch-token-data-dir-error-rates = pydrobert.torch.command_line:compute_torch_token_data_dir_error_rates

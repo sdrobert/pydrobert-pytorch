@@ -1,4 +1,4 @@
-# Copyright 2019 Sean Robertson
+# Copyright 2021 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,14 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 import sys
 import argparse
 import math
+from typing import Optional, Sequence
 import warnings
 import itertools
 
@@ -82,7 +79,7 @@ def _get_torch_spect_data_dir_info_parse_args(args):
     return parser.parse_args(args)
 
 
-def get_torch_spect_data_dir_info(args=None):
+def get_torch_spect_data_dir_info(args: Optional[Sequence[str]] = None) -> None:
     """Write info about the specified SpectDataSet data dir
 
     A torch :class:`pydrobert.torch.data.SpectDataSet` data dir is of the
@@ -104,15 +101,14 @@ def get_torch_spect_data_dir_info(args=None):
                 ...
             ]
 
-    Where ``feat`` contains :class:`torch.FloatTensor` of shape ``(N, F)``,
-    where ``N`` is the number of frames (variable) and ``F`` is the number of
-    filters (fixed), ``ali``, if there, contains :class:`torch.LongTensor` of
-    shape ``(N,)`` indicating the appropriate class labels (likely pdf-ids for
-    discriminative training in an DNN-HMM), and ``ref``, if there, contains
-    :class:`torch.LongTensor` of shape ``(R, 3)`` indicating a sequence of
-    reference tokens where element indexed by ``[i, 0]`` is a token id, ``[i,
-    1]`` is the inclusive start frame of the token (or a negative value if
-    unknown), and ``[i, 2]`` is the exclusive end frame of the token.
+    Where ``feat`` contains float :class:`torch.Tensor`s of shape ``(N, F)``, where
+    ``N`` is the number of frames (variable) and ``F`` is the number of filters (fixed),
+    ``ali``, if there, contains long :class:`torch.Tensor`s of shape ``(N,)`` indicating
+    the appropriate class labels (likely pdf-ids for discriminative training in an
+    DNN-HMM), and ``ref``, if there, contains  long :class:`torch.Tensor`s of shape
+    ``(R, 3)`` indicating a sequence of reference tokens where element indexed by ``[i,
+    0]`` is a token id, ``[i, 1]`` is the inclusive start frame of the token (or a
+    negative value if unknown), and ``[i, 2]`` is the exclusive end frame of the token.
 
     This command writes the following space-delimited key-value pairs to an
     output file in sorted order:
@@ -124,14 +120,14 @@ def get_torch_spect_data_dir_info(args=None):
     3. "num_utterances", the total number of listed utterances
     4. "num_filts", ``F``
     5. "total_frames", ``sum(N)`` over the data dir
-    6. "count_<i>", the number of instances of the class "<i>" that appear
-       in ``ali`` (if available). If "count_<i>" is a valid key, then so
-       are "count_<0 to i>". "count_<i>" is left-padded with zeros to ensure
-       that the keys remain in the same order in the table as the class
-       indices.  The maximum ``i`` will be equal to ``maximum_ali_class``
+    6. "count_<i>", the number of instances of the class "<i>" that appear in ``ali``
+       (if available). If "count_<i>" is a valid key, then so are "count_<0 to i>".
+       "count_<i>" is left-padded with zeros to ensure that the keys remain in the same
+       order in the table as the class indices.  The maximum ``i`` will be equal to
+       ``maximum_ali_class``
 
-    Note that the output can be parsed as a `Kaldi <http://kaldi-asr.org/>`__
-    text table of integers.
+    Note that the output can be parsed as a `Kaldi <http://kaldi-asr.org/>`__ text table
+    of integers.
     """
     try:
         options = _get_torch_spect_data_dir_info_parse_args(args)
@@ -409,23 +405,21 @@ def _save_transcripts_to_dir(
             torch.save(tok, path)
 
 
-def trn_to_torch_token_data_dir(args=None):
+def trn_to_torch_token_data_dir(args: Optional[Sequence[str]] = None) -> None:
     """Convert a NIST "trn" file to the specified SpectDataSet data dir
 
-    A "trn" file is the standard transcription file without alignment
-    information used in the `sclite
-    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__ toolkit.
-    It has the format::
+    A "trn" file is the standard transcription file without alignment information used
+    in the `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__
+    toolkit. It has the format::
 
         here is a transcription (utterance_a)
         here is another (utterance_b)
 
-    This command reads in a "trn" file and writes its contents as token
-    sequences compatible with the ``ref/`` directory of a
+    This command reads in a "trn" file and writes its contents as token sequences
+    compatible with the ``ref/`` directory of a
     :class:`pydrobert.torch.data.SpectDataSet`. See the command
-    :func:`get_torch_spect_data_dir_info` (command line
-    "get-torch-spect-data-dir-info") for more information on a
-    :class:`pydrobert.torch.data.SpectDataSet`
+    :func:`get_torch_spect_data_dir_info` (command line "get-torch-spect-data-dir-info")
+    for more information on a :class:`pydrobert.torch.data.SpectDataSet`
     """
     try:
         options = _trn_to_torch_token_data_dir_parse_args(args)
@@ -474,7 +468,7 @@ def trn_to_torch_token_data_dir(args=None):
     return 0
 
 
-def _torch_token_data_dir_to_trn_parse_args(args=None):
+def _torch_token_data_dir_to_trn_parse_args(args):
     parser = argparse.ArgumentParser(description=torch_token_data_dir_to_trn.__doc__)
     parser.add_argument("dir", help="The directory to read token sequences from")
     parser.add_argument(
@@ -581,21 +575,20 @@ def _load_transcripts_from_data_dir(
     del dl, ds
 
 
-def torch_token_data_dir_to_trn(args=None):
+def torch_token_data_dir_to_trn(args: Optional[Sequence[str]] = None) -> None:
     """Convert a SpectDataSet token data dir to a NIST trn file
 
-    A "trn" file is the standard transcription file without alignment
-    information used in the `sclite
-    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_
+    A "trn" file is the standard transcription file without alignment information used
+    in the `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_
     toolkit. It has the format::
 
         here is a transcription (utterance_a)
         here is another (utterance_b)
 
     This command scans the contents of a directory like ``ref/`` in a
-    :class:`pydrobert.torch.data.SpectDataSet` and converts each such file
-    into a transcription. Each such transcription is then written to a "trn"
-    file. See the command :func:`get_torch_spect_data_dir_info` (command line
+    :class:`pydrobert.torch.data.SpectDataSet` and converts each such file into a
+    transcription. Each such transcription is then written to a "trn" file. See the
+    command :func:`get_torch_spect_data_dir_info` (command line
     "get-torch-spect-data-dir-info") for more information on a
     :class:`pydrobert.torch.data.SpectDataSet`.
     """
@@ -719,28 +712,27 @@ def _parse_wc2utt(file, swap, return_swap):
     return ret_swapped if return_swap else ret
 
 
-def ctm_to_torch_token_data_dir(args=None):
+def ctm_to_torch_token_data_dir(args: Optional[Sequence[str]] = None) -> None:
     """Convert a NIST "ctm" file to a SpectDataSet token data dir
 
-    A "ctm" file is a transcription file with token alignments (a.k.a. a
-    time-marked conversation file) used in the `sclite
-    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_ toolkit.
-    Here is the format::
+    A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
+    conversation file) used in the `sclite
+    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_ toolkit. Here is
+    the format::
 
         utt_1 A 0.2 0.1 hi
         utt_1 A 0.3 1.0 there  ;; comment
         utt_2 A 0.0 1.0 next
         utt_3 A 0.1 0.4 utterance
 
-    Where the first number specifies the token start time (in seconds) and the
-    second the duration.
+    Where the first number specifies the token start time (in seconds) and the second
+    the duration.
 
-    This command reads in a "ctm" file and writes its contents as token
-    sequences compatible with the ``ref/`` directory of a
+    This command reads in a "ctm" file and writes its contents as token sequences
+    compatible with the ``ref/`` directory of a
     :class:`pydrobert.torch.data.SpectDataSet`. See the command
-    :func:`get_torch_spect_data_dir_info` (command line
-    "get-torch-spect-data-dir-info") for more information on a
-    :class:`pydrobert.torch.data.SpectDataSet`
+    :func:`get_torch_spect_data_dir_info` (command line "get-torch-spect-data-dir-info")
+    for more information on a :class:`pydrobert.torch.data.SpectDataSet`
     """
     try:
         options = _ctm_to_torch_token_data_dir_parse_args(args)
@@ -837,29 +829,28 @@ def _torch_token_data_dir_to_ctm_parse_args(args):
     return parser.parse_args(args)
 
 
-def torch_token_data_dir_to_ctm(args=None):
+def torch_token_data_dir_to_ctm(args: Optional[Sequence[str]] = None) -> None:
     """Convert a SpectDataSet token data directory to a NIST "ctm" file
 
-    A "ctm" file is a transcription file with token alignments (a.k.a. a
-    time-marked conversation file) used in the `sclite
-    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__ toolkit.
-    Here is the format::
+    A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
+    conversation file) used in the `sclite
+    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__ toolkit. Here is
+    the format::
 
         utt_1 A 0.2 0.1 hi
         utt_1 A 0.3 1.0 there  ;; comment
         utt_2 A 0.0 1.0 next
         utt_3 A 0.1 0.4 utterance
 
-    Where the first number specifies the token start time (in seconds) and the
-    second the duration.
+    Where the first number specifies the token start time (in seconds) and the second
+    the duration.
 
     This command scans the contents of a directory like ``ref/`` in a
-    :class:`pydrobert.torch.data.SpectDataSet` and converts each such file into
-    a transcription. Every token in a given transcription must have information
-    about its duration. Each such transcription is then written to the "ctm"
-    file. See the command :func:`get_torch_spect_data_dir_info` (command line
-    "get-torch-spect-data-dir-info") for more information on a
-    :class:`pydrobert.torch.data.SpectDataSet`
+    :class:`pydrobert.torch.data.SpectDataSet` and converts each such file into a
+    transcription. Every token in a given transcription must have information about its
+    duration. Each such transcription is then written to the "ctm" file. See the command
+    :func:`get_torch_spect_data_dir_info` (command line "get-torch-spect-data-dir-info")
+    for more information on a :class:`pydrobert.torch.data.SpectDataSet`
     """
     try:
         options = _torch_token_data_dir_to_ctm_parse_args(args)
@@ -998,23 +989,24 @@ def _compute_torch_token_data_dir_parse_args(args):
     return parser.parse_args(args)
 
 
-def compute_torch_token_data_dir_error_rates(args=None):
+def compute_torch_token_data_dir_error_rates(
+    args: Optional[Sequence[str]] = None,
+) -> None:
     """Compute error rates between reference and hypothesis token data dirs
 
-    This is a very simple script that computes and prints the error rates
-    between the ``ref/`` (reference/gold standard) token sequences and ``hyp/``
+    This is a very simple script that computes and prints the error rates between the
+    ``ref/`` (reference/gold standard) token sequences and ``hyp/``
     (hypothesis/generated) token sequences in a
-    :class:`pydrobert.torch.data.SpectDataSet` directory. An error rate is
-    merely a `Levenshtein Distance
-    <https://en.wikipedia.org/wiki/Levenshtein_distance>`__ normalized to the
-    reference sequence length.
+    :class:`pydrobert.torch.data.SpectDataSet` directory. An error rate is merely a
+    `Levenshtein Distance <https://en.wikipedia.org/wiki/Levenshtein_distance>`__
+    normalized to the reference sequence length.
 
-    While convenient and accurate, this script has very few features. Consider
-    pairing the command ``torch-token-data-dir-to-trn`` with `sclite
+    While convenient and accurate, this script has very few features. Consider pairing
+    the command ``torch-token-data-dir-to-trn`` with `sclite
     <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__ instead.
 
-    Many tasks will ignore some tokens (e.g. silences) or collapse others (e.g.
-    phones). Please consult a standard recipe (such as those in `Kaldi
+    Many tasks will ignore some tokens (e.g. silences) or collapse others (e.g. phones).
+    Please consult a standard recipe (such as those in `Kaldi
     <http://kaldi-asr.org/>`__) before performing these computations
     """
     try:
@@ -1163,7 +1155,7 @@ def compute_torch_token_data_dir_error_rates(args=None):
         for (utt_id, _), er in zip(batch_ref_transcripts, ers):
             error_rates[utt_id] = er.item()
     if options.per_utt:
-        for utt_id, er in error_rates.items():
+        for utt_id, er in list(error_rates.items()):
             options.out.write("{} {}\n".format(utt_id, er))
     else:
         options.out.write("{}\n".format(sum(error_rates.values()) / len(error_rates)))

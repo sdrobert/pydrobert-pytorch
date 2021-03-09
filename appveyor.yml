@@ -1,0 +1,28 @@
+version: build.{build}.branch.{branch}
+image: Visual Studio 2019
+
+environment:
+  matrix:
+    - TOXENV: py36
+      PYTHON: "C:\\Python36-x64"
+    - TOXENV: py37
+      PYTHON: "C:\\Python37-x64"
+    - TOXENV: py38
+      PYTHON: "C:\\Python38-x64"
+    - TOXENV: py39
+      PYTHON: "C:\\Python39-x64"
+
+build: off
+
+init:
+  - cmd: set PATH=%PYTHON%;%PYTHON%\Scripts;%PATH%
+
+install:
+  - python -m pip install -U pip tox wheel
+
+test_script:
+  - python -m tox
+
+branches:
+  except:
+    - /docs/
