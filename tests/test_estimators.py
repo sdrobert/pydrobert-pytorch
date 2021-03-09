@@ -1,11 +1,16 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-__author__ = "Sean Robertson"
-__email__ = "sdrobert@cs.toronto.edu"
-__license__ = "Apache 2.0"
-__copyright__ = "Copyright 2019 Sean Robertson"
+# Copyright 2021 Sean Robertson
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 from itertools import product
 
@@ -25,24 +30,23 @@ def _expectation(f, logits, dist):
         pop = (
             torch.FloatTensor(b).to(logits.device).view(logits.shape[:-1])
             for b in product(
-                range(logits.shape[-1]),
-                repeat=logits.nelement() // logits.shape[-1])
+                range(logits.shape[-1]), repeat=logits.nelement() // logits.shape[-1]
+            )
         )
         d = torch.distributions.Categorical(logits=logits)
     else:
         pop = (
             torch.zeros_like(logits).scatter_(
-                -1, torch.LongTensor(b).to(logits.device).view(
-                    logits.shape[:-1] + (1,)), 1.)
+                -1,
+                torch.LongTensor(b).to(logits.device).view(logits.shape[:-1] + (1,)),
+                1.0,
+            )
             for b in product(
-                range(logits.shape[-1]),
-                repeat=logits.nelement() // logits.shape[-1])
+                range(logits.shape[-1]), repeat=logits.nelement() // logits.shape[-1]
+            )
         )
         d = torch.distributions.OneHotCategorical(logits=logits)
-    return sum(
-        f(b) * d.log_prob(b).sum().exp()
-        for b in pop
-    )
+    return sum(f(b) * d.log_prob(b).sum().exp() for b in pop)
 
 
 @pytest.mark.parametrize("dist", ["bern", "cat", "onehot"])
@@ -60,7 +64,6 @@ def test_z(dist, seed, device):
 
 
 class ControlVariate(torch.nn.Module):
-
     def __init__(self, dist):
         super(ControlVariate, self).__init__()
         self.dist = dist
@@ -68,7 +71,7 @@ class ControlVariate(torch.nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        self.weight.data.uniform_(-1., 1.)
+        self.weight.data.uniform_(-1.0, 1.0)
 
     def forward(self, inp, y=None):
         outp = inp * self.weight
@@ -83,13 +86,11 @@ class ControlVariate(torch.nn.Module):
 @pytest.mark.parametrize("seed", [4, 5, 6])
 @pytest.mark.parametrize("dist", ["bern", "cat", "onehot"])
 @pytest.mark.parametrize("est", ["reinforce", "relax"])
-@pytest.mark.parametrize("objective", [
-    lambda b: b ** 2,
-    lambda b: torch.exp(b),
-], ids=[
-    "squared error",
-    "exponent"
-])
+@pytest.mark.parametrize(
+    "objective",
+    [lambda b: b ** 2, lambda b: torch.exp(b)],
+    ids=["squared error", "exponent"],
+)
 def test_bias(seed, dist, est, objective, device):
     torch.manual_seed(seed)
     logits = torch.randn(2, 4, requires_grad=True).to(device)
@@ -99,9 +100,9 @@ def test_bias(seed, dist, est, objective, device):
             return objective(b)[..., 0]
         else:
             return objective(b)
+
     exp = _expectation(objective2, logits, dist)
-    exp, = torch.autograd.grad(
-        [exp], [logits], grad_outputs=torch.ones_like(exp))
+    (exp,) = torch.autograd.grad([exp], [logits], grad_outputs=torch.ones_like(exp))
     # if these tests fail, the number of markov samples might be too low. If
     # you keep raising this but it appears unable to meet the tolerance,
     # it's probably bias
@@ -109,11 +110,10 @@ def test_bias(seed, dist, est, objective, device):
     z = estimators.to_z(logits, dist)
     b = estimators.to_b(z, dist)
     fb = estimators.to_fb(objective2, b)
-    if est == 'reinforce':
+    if est == "reinforce":
         g = estimators.reinforce(fb, b, logits, dist)
     elif est == "relax":
-        g = estimators.relax(
-            fb, b, logits, z, ControlVariate(dist).to(logits), dist)
+        g = estimators.relax(fb, b, logits, z, ControlVariate(dist).to(logits), dist)
     g = g.mean(0)
     assert exp.shape == g.shape
     assert torch.allclose(exp, g, atol=1e-1)
@@ -132,6 +132,7 @@ def test_model_backprop(dist, device, est):
             return x[..., -1] + y
         else:
             return x + y
+
     if est == "rebar":
         c = estimators.REBARControlVariate(f, dist).to(device)
     else:
@@ -143,7 +144,8 @@ def test_model_backprop(dist, device, est):
     b = estimators.to_b(z, dist)
     fb = f(b, y=1)
     diff, dlog_pb, dc_z, dc_z_tilde = estimators.relax(
-        fb, b, logits, z, c, dist, components=True, y=1)
+        fb, b, logits, z, c, dist, components=True, y=1
+    )
     g = diff * dlog_pb + dc_z - dc_z_tilde
     (g ** 2).sum().backward()
     if est == "rebar":
@@ -152,15 +154,12 @@ def test_model_backprop(dist, device, est):
         assert c.weight.grad
     assert model.weight.grad is None
     logits.backward(g)
-    assert model.weight.grad.ne(0.).any()
+    assert model.weight.grad.ne(0.0).any()
 
 
 @pytest.mark.parametrize("markov", [10, 1000])
 @pytest.mark.parametrize("num_latents", [2])
-@pytest.mark.parametrize("dist,num_cat", [
-    ("bern", 2),
-    ("onehot", 3),
-])
+@pytest.mark.parametrize("dist,num_cat", [("bern", 2), ("onehot", 3)])
 @pytest.mark.parametrize("est", ["reinforce", "rebar", "relax"])
 def test_convergence(markov, num_latents, device, dist, num_cat, est):
     torch.manual_seed(7)
@@ -172,9 +171,7 @@ def test_convergence(markov, num_latents, device, dist, num_cat, est):
     if dist == "bern":
         latents = torch.rand(num_latents).to(device)
         mult_mask = torch.where(
-            latents.gt(.5),
-            torch.ones(1).to(device),
-            -torch.ones(1).to(device)
+            latents.gt(0.5), torch.ones(1).to(device), -torch.ones(1).to(device)
         )
         logits = torch.randn(num_latents, requires_grad=True, device=device)
 
@@ -182,30 +179,33 @@ def test_convergence(markov, num_latents, device, dist, num_cat, est):
             return (b - latents) ** 2
 
         def convergence():
-            return torch.all((mult_mask * logits.detach()).gt(1.))
+            return torch.all((mult_mask * logits.detach()).gt(1.0))
+
     else:
         latents = torch.rand(num_latents, num_cat).to(device)
         latents /= latents.sum(-1, keepdim=True)
-        mask = torch.zeros_like(latents).scatter_(
-            -1, latents.argmax(-1, keepdim=True), 1.).eq(1)
-        logits = torch.randn(
-            num_latents, num_cat, requires_grad=True, device=device)
+        mask = (
+            torch.zeros_like(latents)
+            .scatter_(-1, latents.argmax(-1, keepdim=True), 1.0)
+            .eq(1)
+        )
+        logits = torch.randn(num_latents, num_cat, requires_grad=True, device=device)
 
         def f(b):
             return ((b - latents) ** 2).sum(-1)
 
         def convergence():
-            return torch.all(torch.log_softmax(
-                logits.detach(), -1).masked_select(mask).gt(-.05))
+            return torch.all(
+                torch.log_softmax(logits.detach(), -1).masked_select(mask).gt(-0.05)
+            )
+
     logit_optimizer = torch.optim.Adam([logits])
     if est == "rebar":
         c = estimators.REBARControlVariate(f, dist).to(device)
         tune_optimizer = torch.optim.Adam(c.parameters())
     elif est == "relax":
         c = torch.nn.Sequential(
-            torch.nn.Linear(num_cat, 1),
-            torch.nn.ReLU(),
-            ControlVariate(dist)
+            torch.nn.Linear(num_cat, 1), torch.nn.ReLU(), ControlVariate(dist)
         ).to(device)
         tune_optimizer = torch.optim.Adam(c.parameters())
     else:
@@ -218,7 +218,7 @@ def test_convergence(markov, num_latents, device, dist, num_cat, est):
         z = estimators.to_z(markov_logits, dist)
         b = estimators.to_b(z, dist)
         fb = f(b)
-        if est == 'reinforce':
+        if est == "reinforce":
             g = estimators.reinforce(fb, b, markov_logits, dist)
         else:
             g = estimators.relax(fb, b, markov_logits, z, c, dist)

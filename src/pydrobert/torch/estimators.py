@@ -1,4 +1,4 @@
-# Copyright 2019 Sean Robertson
+# Copyright 2021 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-r'''Gradient estimators
+r"""Gradient estimators
 
 Much of this code has been adapted from `David Duvenaud's repo
 <https://github.com/duvenaud/relax>`_.
@@ -21,12 +21,9 @@ See Also
 --------
 :ref:`Gradient Estimators`
     A description of how to use this module, as well as an example
-'''
+"""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+from typing import Callable
 import warnings
 
 import torch
@@ -35,11 +32,6 @@ try:
     torch_bool = torch.bool
 except AttributeError:
     torch_bool = torch.uint8
-
-__author__ = "Sean Robertson"
-__email__ = "sdrobert@cs.toronto.edu"
-__license__ = "Apache 2.0"
-__copyright__ = "Copyright 2019 Sean Robertson"
 
 __all__ = [
     "to_z",
@@ -69,12 +61,12 @@ ONEHOT_SYNONYMS = {"onehot", "OneHotCategorical"}
 # numerically stable (though unbiased) than just taking the softmax beforehand
 
 
-def to_z(logits, dist, warn=True):
-    '''Samples a continuous relaxation of `dist` parameterized by `logits`
+def to_z(logits: torch.Tensor, dist: str, warn: bool = True) -> torch.Tensor:
+    """Samples a continuous relaxation of `dist` parameterized by `logits`
 
     Parameters
     ----------
-    logits : torch.FloatTensor
+    logits : torch.Tensor
     dist : {"bern", "cat", "onehot"}
     warn : bool, optional
         Estimators that require `z` as an argument will likely need to
@@ -85,7 +77,7 @@ def to_z(logits, dist, warn=True):
     Returns
     -------
     z : torch.FloatTensor
-    '''
+    """
     if warn and not logits.requires_grad:
         warnings.warn(
             "logits.requires_grad is False. This will likely cause an error "
@@ -104,37 +96,38 @@ def to_z(logits, dist, warn=True):
     return z
 
 
-def to_b(z, dist):
-    '''Converts z to a discrete sample using a deterministic mapping
+def to_b(z: torch.Tensor, dist: str) -> torch.Tensor:
+    """Converts z to a discrete sample using a deterministic mapping
 
     Parameters
     ----------
-    z : torch.FloatTensor
+    z : torch.Tensor
     dist : {"bern", "cat", "onehot"}
 
     Returns
     -------
-    b : torch.FloatTensor
-    '''
+    b : torch.Tensor
+    """
     if dist in BERNOULLI_SYNONYMS:
-        b = z.gt(0.).to(z)
+        b = z.gt(0.0).to(z)
     elif dist in CATEGORICAL_SYNONYMS:
         b = z.argmax(dim=-1).to(z)
     elif dist in ONEHOT_SYNONYMS:
-        b = torch.zeros_like(z).scatter_(
-            -1, z.argmax(dim=-1, keepdim=True), 1.)
+        b = torch.zeros_like(z).scatter_(-1, z.argmax(dim=-1, keepdim=True), 1.0)
     else:
         raise RuntimeError("Unknown distribution {}".format(dist))
     return b
 
 
-def to_fb(f, b, **kwargs):
-    '''Simply call f(b)'''
-    return f(b)
+def to_fb(f: Callable[..., torch.Tensor], b: torch.Tensor, **kwargs) -> torch.Tensor:
+    """Simply call f(b)"""
+    return f(b, **kwargs)
 
 
-def reinforce(fb, b, logits, dist):
-    r'''Perform REINFORCE gradient estimation
+def reinforce(
+    fb: torch.Tensor, b: torch.Tensor, logits: torch.Tensor, dist: str
+) -> torch.Tensor:
+    r"""Perform REINFORCE gradient estimation
 
     REINFORCE [williams1992]_, or the score function, has a single-sample
     implementation as
@@ -174,25 +167,37 @@ def reinforce(fb, b, logits, dist):
     passing it to this method. If :math:`c` is the output of a neural network,
     a common (but sub-optimal) loss function is the mean-squared error between
     `fb` and :math:`c`
-    '''
+    """
     if dist in BERNOULLI_SYNONYMS:
         log_pb = torch.distributions.Bernoulli(logits=logits).log_prob(b)
     elif dist in CATEGORICAL_SYNONYMS:
         log_pb = torch.distributions.Categorical(logits=logits).log_prob(b)
         fb = fb.unsqueeze(-1)
     elif dist in ONEHOT_SYNONYMS:
-        log_pb = torch.distributions.OneHotCategorical(
-            logits=logits).log_prob(b)
+        log_pb = torch.distributions.OneHotCategorical(logits=logits).log_prob(b)
         fb = fb.unsqueeze(-1)
     else:
         raise RuntimeError("Unknown distribution {}".format(dist))
-    g = fb * torch.autograd.grad(
-        [log_pb], [logits], grad_outputs=torch.ones_like(log_pb))[0]
+    g = (
+        fb
+        * torch.autograd.grad([log_pb], [logits], grad_outputs=torch.ones_like(log_pb))[
+            0
+        ]
+    )
     return g
 
 
-def relax(fb, b, logits, z, c, dist, components=False, **kwargs):
-    r'''Perform RELAX gradient estimation
+def relax(
+    fb: torch.Tensor,
+    b: torch.Tensor,
+    logits: torch.Tensor,
+    z: torch.Tensor,
+    c: Callable[..., torch.Tensor],
+    dist: str,
+    components: bool = False,
+    **kwargs
+) -> torch.Tensor:
+    r"""Perform RELAX gradient estimation
 
     RELAX [grathwohl2017]_ has a single-sample implementation as
 
@@ -244,7 +249,7 @@ def relax(fb, b, logits, z, c, dist, components=False, **kwargs):
     RELAX is a generalized version of REBAR [tucker2017]_. For the REBAR
     estimator, use an instance of :class:`REBARControlVariate` for `c`. See the
     class for more details.
-    '''
+    """
     # in all computations (including those made by the user later), we don't
     # want to backpropagate past "logits" into the model. We make a detached
     # copy of logits and rebuild the graph from the detached copy to z
@@ -257,25 +262,32 @@ def relax(fb, b, logits, z, c, dist, components=False, **kwargs):
     if dist in BERNOULLI_SYNONYMS:
         log_pb = torch.distributions.Bernoulli(logits=logits).log_prob(b)
     elif dist in CATEGORICAL_SYNONYMS:
-        log_pb = torch.distributions.Categorical(
-            logits=logits).log_prob(b)
+        log_pb = torch.distributions.Categorical(logits=logits).log_prob(b)
         diff = diff[..., None]
     elif dist in ONEHOT_SYNONYMS:
-        log_pb = torch.distributions.OneHotCategorical(
-            logits=logits).log_prob(b)
+        log_pb = torch.distributions.OneHotCategorical(logits=logits).log_prob(b)
         diff = diff[..., None]
     else:
         raise RuntimeError("Unknown distribution {}".format(dist))
-    dlog_pb, = torch.autograd.grad(
-        [log_pb], [logits], grad_outputs=torch.ones_like(log_pb))
+    (dlog_pb,) = torch.autograd.grad(
+        [log_pb], [logits], grad_outputs=torch.ones_like(log_pb)
+    )
     # we need `create_graph` to be true here or backpropagation through the
     # control variate will not include the graphs of the derivative terms
-    dc_z, = torch.autograd.grad(
-        [c_z], [logits], create_graph=True, retain_graph=True,
-        grad_outputs=torch.ones_like(c_z))
-    dc_z_tilde, = torch.autograd.grad(
-        [c_z_tilde], [logits], create_graph=True, retain_graph=True,
-        grad_outputs=torch.ones_like(c_z_tilde))
+    (dc_z,) = torch.autograd.grad(
+        [c_z],
+        [logits],
+        create_graph=True,
+        retain_graph=True,
+        grad_outputs=torch.ones_like(c_z),
+    )
+    (dc_z_tilde,) = torch.autograd.grad(
+        [c_z_tilde],
+        [logits],
+        create_graph=True,
+        retain_graph=True,
+        grad_outputs=torch.ones_like(c_z_tilde),
+    )
     if components:
         return (diff, dlog_pb, dc_z, dc_z_tilde)
     else:
@@ -283,7 +295,7 @@ def relax(fb, b, logits, z, c, dist, components=False, **kwargs):
 
 
 class REBARControlVariate(torch.nn.Module):
-    r'''The REBAR control variate, for use in RELAX
+    r"""The REBAR control variate, for use in RELAX
 
     REBAR [tucker2017]_ has a single sample implementation as:
 
@@ -328,10 +340,17 @@ class REBARControlVariate(torch.nn.Module):
     ----------
     f : callable
     dist : {"bern", "cat", "onehot"}
-    '''
+    """
 
-    def __init__(self, f, dist, start_temp=0.1, start_eta=1.0, warn=True):
-        if start_temp <= 0.:
+    def __init__(
+        self,
+        f: Callable[..., torch.Tensor],
+        dist: str,
+        start_temp: float = 0.1,
+        start_eta: float = 1.0,
+        warn: bool = True,
+    ):
+        if start_temp <= 0.0:
             raise ValueError("start_temp must be positive")
         super(REBARControlVariate, self).__init__()
         self.dist = dist
@@ -342,26 +361,29 @@ class REBARControlVariate(torch.nn.Module):
                 "this instance will call 'f' with continuous relaxations "
                 "of one-hot samples. It is likely that you want dist to "
                 "be 'onehot' instead. To suppress this warning, set "
-                "warn=False".format(dist))
+                "warn=False".format(dist)
+            )
         self.start_temp = start_temp
         self.start_eta = start_eta
         self.log_temp = torch.nn.Parameter(torch.Tensor(1))
         self.eta = torch.nn.Parameter(torch.Tensor(1))
         self.reset_parameters()
 
-    def reset_parameters(self):
-        if self.start_temp <= 0.:
+    def reset_parameters(self) -> None:
+        if self.start_temp <= 0.0:
             raise RuntimeError("start_temp must be positive")
         self.log_temp.data.fill_(self.start_temp).log_()
         self.eta.data.fill_(self.start_eta)
 
-    def check_input(self, z):
+    def check_input(self, z: torch.Tensor) -> None:
         if self.dist not in (
-                CATEGORICAL_SYNONYMS | BERNOULLI_SYNONYMS | ONEHOT_SYNONYMS):
+            CATEGORICAL_SYNONYMS | BERNOULLI_SYNONYMS | ONEHOT_SYNONYMS
+        ):
             raise RuntimeError(
-                'dist "{}" is not a valid distribution name'.format(self.dist))
+                'dist "{}" is not a valid distribution name'.format(self.dist)
+            )
 
-    def forward(self, z, **kwargs):
+    def forward(self, z: torch.Tensor, **kwargs) -> torch.Tensor:
         self.check_input(z)
         z_temp = z / torch.exp(self.log_temp)
         if self.dist in BERNOULLI_SYNONYMS:
@@ -389,13 +411,13 @@ def _to_z_tilde(logits, b, dist):
     # see REBAR paper for more details
     if dist in BERNOULLI_SYNONYMS:
         om_theta = torch.sigmoid(-logits)  # 1 - \theta
-        v_prime = b * (v * (1 - om_theta) + om_theta) + (1. - b) * v * om_theta
+        v_prime = b * (v * (1 - om_theta) + om_theta) + (1.0 - b) * v * om_theta
         z_tilde = logits + torch.log(v_prime) - torch.log1p(-v_prime)
     elif dist in CATEGORICAL_SYNONYMS:
         b = b.long()
         theta = torch.softmax(logits, dim=-1)
         mask = torch.arange(logits.shape[-1], device=b.device)
-        mask = (b.unsqueeze(-1) == mask)
+        mask = b.unsqueeze(-1) == mask
         log_v = v.log()
         z_tilde = torch.where(
             mask,
@@ -409,8 +431,7 @@ def _to_z_tilde(logits, b, dist):
         z_tilde = torch.where(
             b,
             -torch.log(-log_v),
-            -torch.log(
-                -log_v / theta - log_v.gather(-1, b.argmax(-1, keepdim=True))),
+            -torch.log(-log_v / theta - log_v.gather(-1, b.argmax(-1, keepdim=True))),
         )
     else:
         raise RuntimeError("Unknown distribution {}".format(dist))

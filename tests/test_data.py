@@ -1,16 +1,22 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+# Copyright 2021 Sean Robertson
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import os
 
 from itertools import repeat
+from io import StringIO
 
-try:
-    # we want to write string literals in 2.7, not unicode
-    from StringIO import StringIO
-except ImportError:
-    from io import StringIO
 
 import pytest
 import torch
@@ -18,11 +24,6 @@ import torch.utils.data
 import pydrobert.torch.data as data
 
 from pydrobert.torch import INDEX_PAD_VALUE
-
-__author__ = "Sean Robertson"
-__email__ = "sdrobert@cs.toronto.edu"
-__license__ = "Apache 2.0"
-__copyright__ = "Copyright 2018 Sean Robertson"
 
 
 @pytest.mark.cpu
@@ -241,7 +242,7 @@ def test_spect_data_set_validity(temp_dir, eos):
     torch.save(torch.rand(4, 4), feats_b_pt)
     data.validate_spect_data_set(data_set)
     torch.save(torch.randint(10, (4,)).int(), ali_b_pt)
-    with pytest.raises(ValueError, match="is not a LongTensor"):
+    with pytest.raises(ValueError, match="is not a long tensor"):
         data.validate_spect_data_set(data_set)
     torch.save(torch.randint(10, (4, 1), dtype=torch.long), ali_b_pt)
     with pytest.raises(ValueError, match="does not have one axis"):

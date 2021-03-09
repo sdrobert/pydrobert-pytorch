@@ -1,4 +1,4 @@
-# Copyright 2020 Sean Robertson
+# Copyright 2021 Sean Robertson
 #
 # Code for polyharmonic_spline is converted from tensorflow code
 # https://github.com/tensorflow/addons/blob/v0.11.2/tensorflow_addons/image/interpolate_spline.py
@@ -24,20 +24,13 @@
 
 """Utility functions"""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import re
+from typing import Optional, TextIO, Tuple, Union
 import warnings
 
 import torch
 import pydrobert.torch
 
-__author__ = "Sean Robertson"
-__email__ = "sdrobert@cs.toronto.edu"
-__license__ = "Apache 2.0"
-__copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
     "beam_search_advance",
     "dense_image_warp",
@@ -53,7 +46,7 @@ __all__ = [
 ]
 
 
-def parse_arpa_lm(file_, token2id=None):
+def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) -> list:
     r"""Parse an ARPA statistical language model
 
     An `ARPA language model <https://cmusphinx.github.io/wiki/arpaformat/>`__
@@ -178,9 +171,9 @@ def parse_arpa_lm(file_, token2id=None):
 
 
 def beam_search_advance(
-    logits_t,
-    width,
-    log_prior=None,
+    logits_t: torch.Tensor,
+    width: int,
+    log_prior: Optional[torch.Tensor] = None,
     y_prev=None,
     eos=pydrobert.torch.INDEX_PAD_VALUE,
     lens=None,
@@ -189,91 +182,86 @@ def beam_search_advance(
 ):
     r"""Advance a beam search
 
-    Suppose a model outputs a un-normalized log-probability distribution over
-    the next element of a sequence in `logits_t` s.t.
+    Suppose a model outputs a un-normalized log-probability distribution over the next
+    element of a sequence in `logits_t` s.t.
 
     .. math::
 
         Pr(y_t = c ; log\_prior) = exp(logits_{t,c}) / \sum_k exp(logits_{t,k})
 
-    We assume :math:`logits_t` is a function of what comes before
-    :math:`logits_t = f(logits_{<t}, y_{<t})`. Alternatively, letting
-    :math:`s_t = (logits_t, y_t)`, :math:`s` is a Markov Chain. A model is
-    auto-regressive if :math:`f` depends on :math:`y_{<t}`, and is not
-    auto-regressive if :math:`logits_t = f(logits_{<t})`.
+    We assume :math:`logits_t` is a function of what comes before :math:`logits_t =
+    f(logits_{<t}, y_{<t})`. Alternatively, letting :math:`s_t = (logits_t, y_t)`,
+    :math:`s` is a Markov Chain. A model is auto-regressive if :math:`f` depends on
+    :math:`y_{<t}`, and is not auto-regressive if :math:`logits_t = f(logits_{<t})`.
 
-    Beam search is a heuristic mechanism for determining a best path, i.e.
-    :math:`\arg \max_y Pr(y)` that maximizes the probability of the best path
-    by keeping track of `width` high probability paths called "beams" (the
-    aggregate of which for a given batch element is named, unfortunately, "the
-    beam"). If the model is auto-regressive, beam search is only approximate.
-    However, if the model is not auto-regressive, beam search gives an exact
-    n-best list.
+    Beam search is a heuristic mechanism for determining a best path, i.e. :math:`\arg
+    \max_y Pr(y)` that maximizes the probability of the best path by keeping track of
+    `width` high probability paths called "beams" (the aggregate of which for a given
+    batch element is named, unfortunately, "the beam"). If the model is auto-regressive,
+    beam search is only approximate. However, if the model is not auto-regressive, beam
+    search gives an exact n-best list.
 
-    This function is called at every time step. It updates old beam
-    log-probabilities (`log_prior`) with new ones (`score`) from the
-    conditional derived from `logits_t`, and updates us the class indices
-    emitted between them (`y`). See the examples section for how this might
-    work.
+    This function is called at every time step. It updates old beam log-probabilities
+    (`log_prior`) with new ones (`score`) from the conditional derived from `logits_t`,
+    and updates us the class indices emitted between them (`y`). See the examples
+    section for how this might work.
 
     Parameters
     ----------
-    logits_t : torch.FloatTensor
-        The conditional probabilities over class labels for the current time
-        step. Either of shape ``(batch_size, old_width, num_classes)``,
-        where ``old_width`` is the number of beams in the previous time step,
-        or ``(batch_size, num_classes)``, where it is assumed that
-        ``old_width == 1``
+    logits_t : torch.Tensor
+        A float tensor of conditional probabilities over class labels for the current
+        time step. Either of shape ``(batch_size, old_width, num_classes)``, where
+        ``old_width`` is the number of beams in the previous time step, or
+        ``(batch_size, num_classes)``, where it is assumed that ``old_width == 1``
     width : int
-        The number of beams in the beam to produce for the current time step.
-        ``width <= num_classes``
-    log_prior : torch.FloatTensor, optional
-        A tensor of (or proportional to) log prior probabilities of beams up
+        The number of beams in the beam to produce for the current time step. ``width
+        <= num_classes``
+    log_prior : torch.Tensor, optional
+        A float tensor of (or proportional to) log prior probabilities of beams up
         to the previous time step. Either of shape ``(batch_size, old_width)``
         or ``(batch_size,)``. If unspecified, a uniform log prior will be used
-    y_prev : torch.LongTensor, optional
-        A tensor of shape ``(t - 1, batch_size, old_width)`` or
-        ``(t - 1, batch_size)`` specifying :math:`y_{<t}`. If unspecified,
-        it is assumed that ``t == 1``
+    y_prev : torch.Tensor, optional
+        A long tensor of shape ``(t - 1, batch_size, old_width)`` or ``(t - 1,
+        batch_size)`` specifying :math:`y_{<t}`. If unspecified, it is assumed that ``t
+        == 1``
     eos : int, optional
-        A special end-of-sequence symbol indicating that the beam has ended.
-        Can be a class index. If this value occurs in in ``y_prev[-1, bt, bm]``
-        for some batch ``bt`` and beam ``bm``, that beam will be padded with
-        an `eos` token and the score for that beam won't change
-    lens : torch.LongTensor, optional
-        A tensor of shape ``(batch_size,)``. If ``t > lens[bt]`` for some
-        batch ``bt``, all beams for ``bt`` will be considered finished. All
-        scores will be fixed and `eos` will be appended to `y_prev`
+        A special end-of-sequence symbol indicating that the beam has ended. Can be a
+        class index. If this value occurs in in ``y_prev[-1, bt, bm]`` for some batch
+        ``bt`` and beam ``bm``, that beam will be padded with an `eos` token and the
+        score for that beam won't change
+    lens : torch.Tensor, optional
+        A long tensor of shape ``(batch_size,)``. If ``t > lens[bt]`` for some batch
+        ``bt``, all beams for ``bt`` will be considered finished. All scores will be
+        fixed and `eos` will be appended to `y_prev`
     prevent_eos : bool, optional
-        Setting this flag to :obj:`True` will keep `eos` targets from entering
-        a beam unless it has finished (either with a prior `eos` or through
-        `lens`). Note that this will only have an effect when ``0 <= eos <=
-        num_classes``
+        Setting this flag to :obj:`True` will keep `eos` targets from entering a beam
+        unless it has finished (either with a prior `eos` or through `lens`). Note that
+        this will only have an effect when ``0 <= eos <= num_classes``
     distribution : bool, optional
-        If :obj:`False`, a log-softmax will not be applied to `logits_t` prior
-        to calculating the beams. Disabling `distribution` should be avoided
-        when the beam search is being performed directly on model output.
-        Setting `distribution` to :obj:`False` is useful when bootstrapping
-        a language model probability distribution to the search
+        If :obj:`False`, a log-softmax will not be applied to `logits_t` prior to
+        calculating the beams. Disabling `distribution` should be avoided when the beam
+        search is being performed directly on model output. Setting `distribution` to
+        :obj:`False` is useful when bootstrapping a language model probability
+        distribution to the search
 
     Returns
     -------
-    score : torch.FloatTensor
-        Of shape ``(batch_size, width)`` of the log-joint probabilities of the
-        new beams in the beam
-    y : torch.LongTensor
-        Of shape ``(t, batch_size, width)`` of indices of the class labels
-        generated up to this point
-    s : torch.LongTensor
-        Of shape ``(batch_size, width)`` of indices of beams in the old beam
-        which prefix the new beam. Note that beams in the new beam are sorted
-        by descending probability
+    score : torch.Tensor
+        A float tensor of shape ``(batch_size, width)`` of the log-joint probabilitie
+         of the new beams in the beam
+    y : torch.Tensor
+        A long tensor of shape ``(t, batch_size, width)`` of indices of the class
+        labels generated up to this point
+    s : torch.Tensor
+        A long tensor shape ``(batch_size, width)`` of indices of beams in the old beam
+        which prefix the new beam. Note that beams in the new beam are sorted by
+        descending probability
 
     Examples
     --------
 
-    Auto-regressive decoding with beam search. We assume that all input have
-    the same number of steps
+    Auto-regressive decoding with beam search. We assume that all input have the same
+    number of steps
 
     >>> N, I, C, T, W, H, eos, start = 5, 5, 10, 100, 5, 10, 0, -1
     >>> cell = torch.nn.RNNCell(I + 1, H)
@@ -313,9 +301,9 @@ def beam_search_advance(
 
     Note that `score` would no longer reflect a log-joint probability.
 
-    The following produces a ``W``-best list for non-auto-regressive model. We
-    don't emit an `eos`, instead completing the sequence when we've hit the
-    target length via `lens`
+    The following produces a ``W``-best list for non-auto-regressive model. We don't
+    emit an `eos`, instead completing the sequence when we've hit the target length via
+    `lens`
 
     >>> N, I, C, T, W, H = 5, 5, 10, 100, 5, 10
     >>> rnn = torch.nn.RNN(I, H)
@@ -448,13 +436,15 @@ def beam_search_advance(
     return score, y, s
 
 
-def time_distributed_return(r, gamma, batch_first=False):
+def time_distributed_return(
+    r: torch.Tensor, gamma: float, batch_first: bool = False
+) -> torch.Tensor:
     r"""Accumulate future local rewards at every time step
 
     In `reinforcement learning
-    <https://en.wikipedia.org/wiki/Reinforcement_learning>`__, the return is
-    defined as the sum of discounted future rewards. This function calculates
-    the return for a given time step :math:`t` as
+    <https://en.wikipedia.org/wiki/Reinforcement_learning>`__, the return is defined as
+    the sum of discounted future rewards. This function calculates the return for a
+    given time step :math:`t` as
 
     .. math::
 
@@ -466,17 +456,17 @@ def time_distributed_return(r, gamma, batch_first=False):
 
     Parameters
     ----------
-    r : torch.FloatTensor
-        A two-dimensional tensor of shape ``(steps, batch_size)`` (or
-        ``(batch_size, steps)`` if `batch_first` is :obj:`True`) of local
-        rewards. The :math:`t` dimension is the step dimension
+    r : torch.Tensor
+        A two-dimensional float tensor of shape ``(steps, batch_size)`` (or
+        ``(batch_size, steps)`` if `batch_first` is :obj:`True`) of local rewards. The
+        :math:`t` dimension is the step dimension
     gamma : float
         The discount factor
     batch_first : bool, optional
 
     Returns
     -------
-    `R` : torch.FloatTensor
+    `R` : torch.Tensor
         Of the same shape as `r`
 
     See Also
@@ -502,17 +492,17 @@ def time_distributed_return(r, gamma, batch_first=False):
 
 
 def error_rate(
-    ref,
-    hyp,
-    eos=None,
-    include_eos=False,
-    norm=True,
-    batch_first=False,
-    ins_cost=1.0,
-    del_cost=1.0,
-    sub_cost=1.0,
-    warn=True,
-):
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = False,
+    norm: bool = True,
+    batch_first: bool = False,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    warn: bool = True,
+) -> torch.Tensor:
     """Calculate error rates over a batch
 
     An error rate is merely a `Levenshtein (edit) distance
@@ -520,29 +510,27 @@ def error_rate(
     reference sequence lengths.
 
     Given a reference (gold-standard) transcript long tensor `ref` of size
-    ``(max_ref_steps, batch_size)`` if `batch_first` is :obj:`False` or
-    ``(batch_size, max_ref_steps)`` otherwise, and a long tensor `hyp` of shape
-    ``(max_hyp_steps, batch_size)`` or ``(batch_size, max_hyp_steps)``, this
-    function produces a tensor `er` of shape ``(batch_size,)`` storing the
-    associated error rates.
+    ``(max_ref_steps, batch_size)`` if `batch_first` is :obj:`False` or ``(batch_size,
+    max_ref_steps)`` otherwise, and a long tensor `hyp` of shape ``(max_hyp_steps,
+    batch_size)`` or ``(batch_size, max_hyp_steps)``, this function produces a tensor
+    `er` of shape ``(batch_size,)`` storing the associated error rates.
 
     `er` will not have a gradient, and is thus not directly suited to being a
     loss function
 
     Parameters
     ----------
-    ref : torch.LongTensor
-    hyp : torch.LongTensor
-    eos : int, optional
-        A special token in `ref` and `hyp` whose first occurrence in each
-        batch indicates the end of a transcript. This allows for
-        variable-length transcripts in the batch
+    ref : torch.Tensor
+    hyp : torch.Tensor
+    eos : int or None, optional
+        A special token in `ref` and `hyp` whose first occurrence in each batch
+        indicates the end of a transcript. This allows for variable-length transcripts
+        in the batch
     include_eos : bool, optional
-        Whether to include the first instance of `eos` found in both `ref` and
-        `hyp` as valid tokens to be computed as part of the distance. This is
-        useful when gauging if a model is learning to emit the `eos` properly,
-        but is not usually included in an evaluation. Only the first `eos` per
-        transcript is included
+        Whether to include the first instance of `eos` found in both `ref` and `hyp` as
+        valid tokens to be computed as part of the distance. This is useful when gauging
+        if a model is learning to emit the `eos` properly, but is not usually included
+        in an evaluation. Only the first `eos` per transcript is included
     norm : bool, optional
         If :obj:`False`, will return edit distances instead of error rates
     batch_first : bool, optional
@@ -553,17 +541,19 @@ def error_rate(
     sub_cost : float, optional
         The cost of swapping a token from `ref` with one from `hyp`
     warn : bool, optional
-        Whether to display warnings on irregularities. Currently, this can
-        happen in two ways:
+        Whether to display warnings on irregularities. Currently, this can happen in two
+        ways:
 
         1. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
            transcription has zero length
-        2. If `eos` is set and `include_eos` is :obj:`True`, will warn when a
-           transcript does not include an `eos` symbol
+        2. If `eos` is set and `include_eos` is :obj:`True`, will warn when a transcript
+           does not include an `eos` symbol
 
     Returns
     -------
-    er : torch.FloatTensor
+    er : torch.Tensor
+        The error rates in `er` will always be floating-point, regardless of whether
+        they are normalized or not
     """
     er = _levenshtein(
         ref,
@@ -581,18 +571,18 @@ def error_rate(
 
 
 def optimal_completion(
-    ref,
-    hyp,
-    eos=None,
-    include_eos=True,
-    batch_first=False,
-    ins_cost=1.0,
-    del_cost=1.0,
-    sub_cost=1.0,
-    padding=pydrobert.torch.INDEX_PAD_VALUE,
-    exclude_last=False,
-    warn=True,
-):
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    batch_first: bool = False,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    padding: int = pydrobert.torch.INDEX_PAD_VALUE,
+    exclude_last: bool = False,
+    warn: bool = True,
+) -> torch.Tensor:
     r"""Return a mask of next tokens of a minimum edit distance prefix
 
     Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)``
@@ -608,9 +598,9 @@ def optimal_completion(
 
     Parameters
     ----------
-    ref : torch.LongTensor
-    hyp : torch.LongTensor
-    eos : int, optional
+    ref : torch.Tensor
+    hyp : torch.Tensor
+    eos : int or None, optional
         A special token in `ref` and `hyp` whose first occurrence in each
         batch indicates the end of a transcript. This allows for
         variable-length transcripts in the batch
@@ -638,13 +628,13 @@ def optimal_completion(
 
     Returns
     -------
-    optimals : torch.LongTensor
+    optimals : torch.Tensor
 
     Examples
     --------
 
-    Consider the reference text "foot" and the hypothesis text "bot". The below
-    shows the matrix used to calculate edit distances between them::
+    Consider the reference text "foot" and the hypothesis text "bot". The below shows
+    the matrix used to calculate edit distances between them::
 
         \ _ f o o t
         _ 0 1 2 3 4
@@ -652,19 +642,18 @@ def optimal_completion(
         o 2 2 1 2 3
         t 3 3 2 2 2
 
-    If ``prefix_len == 0``, then the prefix is "", and "f" (from the suffix
-    "foot") is the only subsequent token that would not increase the edit
-    distance from that of the prefix (0). If ``prefix_len == 1``, then the
-    prefix is "b". To arrive at the minimum edit distance for "b", one either
-    treats "b" as an insertion or a substitution for "f", yielding suffixes
-    "foot" and "oot". Thus, the subsequent token could be "f" or "o". For the
-    prefix "bo", the minimum edit distance is achieved by first substituting
-    "f" for "b", then substituting "o" for "o", resulting in the suffix "ot"
-    and the next optimal character "o". Finally, for ``prefix_len == 3`` and
-    prefix "bot", there are many operations that can produce the minimum edit
-    distance of 2, resulting in one of the suffixes "ot", "t", and "". The
-    latter suffix requires no more tokens and so any operation would increase
-    the edit distance. Thus the optimal next tokens could be "o" or "t".
+    If ``prefix_len == 0``, then the prefix is "", and "f" (from the suffix "foot") is
+    the only subsequent token that would not increase the edit distance from that of the
+    prefix (0). If ``prefix_len == 1``, then the prefix is "b". To arrive at the minimum
+    edit distance for "b", one either treats "b" as an insertion or a substitution for
+    "f", yielding suffixes "foot" and "oot". Thus, the subsequent token could be "f" or
+    "o". For the prefix "bo", the minimum edit distance is achieved by first
+    substituting "f" for "b", then substituting "o" for "o", resulting in the suffix
+    "ot" and the next optimal character "o". Finally, for ``prefix_len == 3`` and prefix
+    "bot", there are many operations that can produce the minimum edit distance of 2,
+    resulting in one of the suffixes "ot", "t", and "". The latter suffix requires no
+    more tokens and so any operation would increase the edit distance. Thus the optimal
+    next tokens could be "o" or "t".
 
     Plugging "foot" and "bot" into this function, we get the prefixes:
 
@@ -720,41 +709,41 @@ def optimal_completion(
 
 
 def prefix_error_rates(
-    ref,
-    hyp,
-    eos=None,
-    include_eos=True,
-    norm=True,
-    batch_first=False,
-    ins_cost=1.0,
-    del_cost=1.0,
-    sub_cost=1.0,
-    padding=pydrobert.torch.INDEX_PAD_VALUE,
-    exclude_last=False,
-    warn=True,
-):
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    norm: bool = True,
+    batch_first: bool = False,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    padding: int = pydrobert.torch.INDEX_PAD_VALUE,
+    exclude_last: bool = False,
+    warn: bool = True,
+) -> torch.Tensor:
     """Compute the error rate between ref and each prefix of hyp
 
-    Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)``
-    (or ``(batch_size, max_ref_steps)`` if `batch_first` is :obj:`True`) and a
-    hypothesis transcript `hyp` of shape ``(max_hyp_steps, batch_size)`` (or
-    ``(batch_size, max_hyp_steps)``), this function produces a tensor
-    `prefix_ers` of shape ``(max_hyp_steps + 1, batch_size)`` (or
-    ``(batch_size, max_hyp_steps + 1))`` which contains the error rates for
-    each prefix of each hypothesis, starting from the empty prefix
+    Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)`` (or
+    ``(batch_size, max_ref_steps)`` if `batch_first` is :obj:`True`) and a hypothesis
+    transcript `hyp` of shape ``(max_hyp_steps, batch_size)`` (or ``(batch_size,
+    max_hyp_steps)``), this function produces a tensor `prefix_ers` of shape
+    ``(max_hyp_steps + 1, batch_size)`` (or ``(batch_size, max_hyp_steps + 1))`` which
+    contains the error rates for each prefix of each hypothesis, starting from the empty
+    prefix
 
     Parameters
     ----------
-    ref : torch.LongTensor
-    hyp : torch.LongTensor
-    eos : int, optional
-        A special token in `ref` and `hyp` whose first occurrence in each
-        batch indicates the end of a transcript. This allows for
-        variable-length transcripts in the batch
+    ref : torch.Tensor
+    hyp : torch.Tensor
+    eos : int or None, optional
+        A special token in `ref` and `hyp` whose first occurrence in each batch
+        indicates the end of a transcript. This allows for variable-length transcripts
+        in the batch
     include_eos : bool, optional
-        Whether to include the first instance of `eos` found in both `ref` and
-        `hyp` as valid tokens to be computed as part of the distance.
-        Only the first `eos` per transcript is included
+        Whether to include the first instance of `eos` found in both `ref` and `hyp` as
+        valid tokens to be computed as part of the distance. Only the first `eos` per
+        transcript is included
     norm : bool, optional
         If :obj:`False`, will return edit distances instead of error rates
     batch_first : bool, optional
@@ -765,20 +754,20 @@ def prefix_error_rates(
     sub_cost : float, optional
         The cost of swapping a token from `ref` with one from `hyp`
     padding : int, optional
-        The value to right-pad the error rates of unequal-length sequences with
-        in `prefix_ers`
+        The value to right-pad the error rates of unequal-length sequences with in
+        `prefix_ers`
     exclude_last : bool, optional
-        If true, will exclude the final prefix, consisting of the entire
-        transcript, from the returned `dists`. `dists` will be of shape
-        ``(max_hyp_steps, batch_size, max_unique_next)``
+        If true, will exclude the final prefix, consisting of the entire transcript,
+        from the returned `dists`. `dists` will be of shape ``(max_hyp_steps,
+        batch_size, max_unique_next)``
     warn : bool, optional
-        Whether to display warnings on irregularities. Currently, this only
-        occurs when `eos` is set, `include_eos` is :obj:`True`, and a
-        transcript does not contain the `eos` symbol
+        Whether to display warnings on irregularities. Currently, this only occurs when
+        `eos` is set, `include_eos` is :obj:`True`, and a transcript does not contain
+        the `eos` symbol
 
     Returns
     -------
-    prefix_ers : torch.tensor
+    prefix_ers : torch.Tensor
 
     See Also
     --------
@@ -805,84 +794,77 @@ def prefix_error_rates(
 
 
 def random_walk_advance(
-    logits_t,
-    num_samp,
-    y_prev=None,
-    eos=pydrobert.torch.INDEX_PAD_VALUE,
-    lens=None,
-    prevent_eos=False,
-    include_relaxation=False,
-):
+    logits_t: torch.Tensor,
+    num_samp: int,
+    y_prev: Optional[torch.Tensor] = None,
+    eos: int = pydrobert.torch.INDEX_PAD_VALUE,
+    lens: Optional[torch.Tensor] = None,
+    prevent_eos: bool = False,
+    include_relaxation: bool = False,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     r"""Advance a random walk of sequences
 
-    Suppose a model outputs a un-normalized log-probability distribution over
-    the next element of a sequence in `logits_t` s.t.
+    Suppose a model outputs a un-normalized log-probability distribution over the next
+    element of a sequence in `logits_t` s.t.
 
     .. math::
 
         Pr(y_t = c) = exp(logits_{t,c}) / \sum_k exp(logits_k)
 
-    We assume :math:`logits_t` is a function of what comes before
-    :math:`logits_t = f(logits_{<t}, y_{<t})`. Alternatively, letting
-    :math:`s_t = (logits_t, y_t)`, :math:`s` is a Markov Chain. A model is
-    auto-regressive if :math:`f` depends on :math:`y_{<t}`, and is not
-    auto-regressive if :math:`logits_t = f(logits_{<t})`.
+    We assume :math:`logits_t` is a function of what comes before :math:`logits_t =
+    f(logits_{<t}, y_{<t})`. Alternatively, letting :math:`s_t = (logits_t, y_t)`,
+    :math:`s` is a Markov Chain. A model is auto-regressive if :math:`f` depends on
+    :math:`y_{<t}`, and is not auto-regressive if :math:`logits_t = f(logits_{<t})`.
 
     A random walk can be performed over a Markov Chain by sampling the elements
-    :math:`y_t` of the greater sequence `y` one at a time, according to
-    :math:`Pr(y_t = c)`. This allows us to sample the distribution
-    :math:`Pr(Y)`.
+    :math:`y_t` of the greater sequence `y` one at a time, according to :math:`Pr(y_t =
+    c)`. This allows us to sample the distribution :math:`Pr(Y)`.
 
-    This function is called at every time step. It updates the sequences
-    being built (`y_prev`) with one additional token and returns `y`. This
-    function is intended to be coupled with an auto-regressive model, where
-    `logits_t` is not known until :math:`y_t` is known. If the model is
-    not auto-regressive, it is much more efficient to gather all `logits_t`
-    into one :math:`logits` and sample all at once. See the examples section
-    below for both behaviours
+    This function is called at every time step. It updates the sequences being built
+    (`y_prev`) with one additional token and returns `y`. This function is intended to
+    be coupled with an auto-regressive model, where `logits_t` is not known until
+    :math:`y_t` is known. If the model is not auto-regressive, it is much more efficient
+    to gather all `logits_t` into one :math:`logits` and sample all at once. See the
+    examples section below for both behaviours
 
     Parameters
     ----------
-    logits_t : torch.FloatTensor
-        The conditional probabilities over class labels for the current time
-        step. Either of shape ``(batch_size, old_samp, num_classes)``,
-        where ``old_samp`` is the number of samples in the previous time
-        step, or ``(batch_size, num_classes)``, where it is assumed that
-        ``old_samp == 1``
+    logits_t : torch.Tensor
+        The conditional probabilities over class labels for the current time step.
+        Either of shape ``(batch_size, old_samp, num_classes)``, where ``old_samp`` is
+        the number of samples in the previous time step, or ``(batch_size,
+        num_classes)``, where it is assumed that ``old_samp == 1``
     num_samp : int
-        The number of samples to be drawn. Either ``old_samp == 1`` and/or
-        ``num_samp <= old_samp`` must be :obj:`True`. That is, either all
-        samples will share the same prefix, or we are building off a subset of
-        the samples from ``y_prev`` (in this case, always the first `num_samp`)
-    y_prev : torch.LongTensor, optional
-        A tensor of shape ``(t - 1, batch_size, old_samp)`` or
-        ``(t - 1, batch_size)`` specifying :math:`y_{<t}`. If unspecified,
-        it is assumed that ``t == 1``
+        The number of samples to be drawn. Either ``old_samp == 1`` and/or ``num_samp <=
+        old_samp`` must be :obj:`True`. That is, either all samples will share the same
+        prefix, or we are building off a subset of the samples from ``y_prev`` (in this
+        case, always the first `num_samp`)
+    y_prev : torch.Tensor, optional
+        A long tensor of shape ``(t - 1, batch_size, old_samp)`` or ``(t - 1,
+        batch_size)`` specifying :math:`y_{<t}`. If unspecified, it is assumed that
+        ``t == 1``
     eos : int, optional
-        A special end-of-sequence symbol indicating that the beam has ended.
-        Can be a class index. If this value occurs in in
-        ``y_prev[-1, bt, smp]`` for some batch ``bt`` and sample ``smp``,
-        `eos` will be appended to ``y_prev[:, bt, smp]``
-    lens : torch.LongTensor, optional
-        A tensor of shape ``(batch_size,)``. If ``t > lens[bt]`` for some
-        batch ``bt``, all samples for ``bt`` will be considered finished. `eos`
-        will be appended to `y_prev`
+        A special end-of-sequence symbol indicating that the beam has ended. Can be a
+        class index. If this value occurs in in ``y_prev[-1, bt, smp]`` for some batch
+        ``bt`` and sample ``smp``, `eos` will be appended to ``y_prev[:, bt, smp]``
+    lens : torch.Tensor, optional
+        A long tensor of shape ``(batch_size,)``. If ``t > lens[bt]`` for some batch
+        ``bt``, all samples for ``bt`` will be considered finished. `eos` will be
+        appended to `y_prev`
     prevent_eos : bool, optional
-        Setting this flag to :obj:`True` will keep `eos` targets from being
-        drawn unless a sample has finished (either with a prior `eos` or
-        through `lens`). Note that this will only have an effect when ``0 <=
-        eos <= num_classes``
+        Setting this flag to :obj:`True` will keep `eos` targets from being drawn unless
+        a sample has finished (either with a prior `eos` or through `lens`). Note that
+        this will only have an effect when ``0 <= eos <= num_classes``
     include_relaxation : bool, optional
-        If :obj:`True`, a tuple will be returned whose second element is `z`,
-        see below
+        If :obj:`True`, a tuple will be returned whose second element is `z`, see below
 
     Returns
     -------
-    y : torch.LongTensor
+    y : torch.Tensor
         A long tensor of shape ``(t, batch_size, num_samp)`` of the sampled
         sequences so far. Note that, since :math:`y_t` are drawn `i.i.d.`,
         there is no guarantee of the uniqueness of each `num_samp` samples
-    z : torch.FloatTensor
+    z : torch.Tensor
         Only included if `include_relaxation` is :obj:`True`. `z` is a sample
         of a continuous relaxation of the categorical distribution of `logits`
         of shape ``(batch_size, num_samp, num_classes). Assuming ``y_prev[-1,
@@ -945,9 +927,8 @@ def random_walk_advance(
     Notes
     -----
 
-    Unlike in the beam search, `logits_t` must be transformed into a
-    probability distribution. Otherwise, we would not be able to sample the
-    next step
+    Unlike in the beam search, `logits_t` must be transformed into a probability
+    distribution. Otherwise, we would not be able to sample the next step
 
     See Also
     --------
@@ -1007,26 +988,26 @@ def random_walk_advance(
         return y
 
 
-def sequence_log_probs(logits, hyp, dim=0, eos=None):
+def sequence_log_probs(
+    logits: torch.Tensor, hyp: torch.Tensor, dim: int = 0, eos: Optional[int] = None
+) -> torch.Tensor:
     r"""Calculate joint log probability of sequences
 
-    `logits` is a tensor of shape ``(..., steps, ..., num_classes)`` where
-    ``steps`` enumerates the time/step `dim` -th dimension. `hyp` is a long
-    tensor of shape ``(..., steps, ...)`` matching the shape of `logits` minus
-    the last dimension. Letting :math:`t` index the step dimension and
-    :math:`b` index all other shared dimensions of `logits` and `hyp`, this
-    function outputs a tensor `log_probs` of the log-joint probability of
-    sequences in the batch:
+    `logits` is a tensor of shape ``(..., steps, ..., num_classes)`` where ``steps``
+    enumerates the time/step `dim` -th dimension. `hyp` is a long tensor of shape
+    ``(..., steps, ...)`` matching the shape of `logits` minus the last dimension.
+    Letting :math:`t` index the step dimension and :math:`b` index all other shared
+    dimensions of `logits` and `hyp`, this function outputs a tensor `log_probs` of the
+    log-joint probability of sequences in the batch:
 
     .. math::
 
         \log Pr(samp_b = hyp_b) = \log \left(
             \prod_t Pr(samp_{b,t} == hyp_{b,t}; logits_{b,t})\right)
 
-    :math:`logits_{b,t}` (with the last dimension free) characterizes a
-    categorical distribution over ``num_classes`` tokens via a softmax
-    function. We assume :math:`samp_{b,t}` is independent of
-    :math:`samp_{b',t'}` given :math:`logits_t`.
+    :math:`logits_{b,t}` (with the last dimension free) characterizes a categorical
+    distribution over ``num_classes`` tokens via a softmax function. We assume
+    :math:`samp_{b,t}` is independent of :math:`samp_{b',t'}` given :math:`logits_t`.
 
     The resulting tensor `log_probs` is matches the shape of `logits` or
     `hyp` without the ``step`` and ``num_classes`` dimensions.
@@ -1045,14 +1026,14 @@ def sequence_log_probs(logits, hyp, dim=0, eos=None):
 
     Parameters
     ----------
-    logits : torch.FloatTensor or torch.nn.utils.rnn.PackedSequence
-    hyp : torch.LongTensor or torch.nn.utils.rnn.PackedSequence
+    logits : torch.Tensor or torch.nn.utils.rnn.PackedSequence
+    hyp : torch.Tensor or torch.nn.utils.rnn.PackedSequence
     dim : int, optional
     eos : int or :obj:`None`, optional
 
     Returns
     -------
-    log_prob : torch.FloatTensor
+    log_prob : torch.Tensor
 
     Notes
     -----
@@ -1103,13 +1084,13 @@ def sequence_log_probs(logits, hyp, dim=0, eos=None):
 
 
 def polyharmonic_spline(
-    train_points,
-    train_values,
-    query_points,
-    order,
-    regularization_weight=0.0,
-    full_matrix=True,
-):
+    train_points: torch.Tensor,
+    train_values: torch.Tensor,
+    query_points: torch.Tensor,
+    order: int,
+    regularization_weight: float = 0.0,
+    full_matrix: bool = True,
+) -> torch.Tensor:
     """Guess values at query points using a learned polyharmonic spline
 
     A spline estimates a function ``f : points -> values`` from a fixed number of
@@ -1129,13 +1110,14 @@ def polyharmonic_spline(
     train_points : torch.Tensor
         A tensor of shape ``(N, T, I)`` representing the training points/knots for
         ``N`` different functions. ``N`` is the batch dimension, ``T`` is the number
-        of training points, and ``I`` is the size of the vector input to ``f``.
-    train_values : torch.FloatTensor
+        of training points, and ``I`` is the size of the vector input to ``f``. Cast to
+        float
+    train_values : torch.Tensor
         A float tensor of shape ``(N, T, O)`` of ``f`` evaluated on `train_points`.
         ``O`` is the size of the output vector of ``f``.
     query_points : torch.Tensor
         A tensor of shape ``(N, Q, I)`` representing the points you wish to have
-        estimates for. ``Q`` is the number of such points
+        estimates for. ``Q`` is the number of such points. Cast to float
     order : int
         Order of the spline (> 0). 1 = linear. 2 = thin plate spline.
     regularization_weight : float, optional
@@ -1155,7 +1137,7 @@ def polyharmonic_spline(
 
     Returns
     -------
-    query_values : torch.FloatTensor
+    query_values : torch.Tensor
         A tensor of shape ``(N, Q, O)`` of the values estimated by the spline
     """
     train_points = train_points.float()
@@ -1170,8 +1152,12 @@ def polyharmonic_spline(
 
 
 def dense_image_warp(
-    image, flow, indexing="hw", mode="bilinear", padding_mode="border"
-):
+    image: torch.Tensor,
+    flow: torch.Tensor,
+    indexing: str = "hw",
+    mode: str = "bilinear",
+    padding_mode: str = "border",
+) -> torch.Tensor:
     """Warp an input image with per-pixel flow vectors
 
     Given an `image` and a `flow` field, generates a new image `warped` such that
@@ -1193,12 +1179,12 @@ def dense_image_warp(
 
     Parameters
     ----------
-    image : torch.FloatTensor
+    image : torch.Tensor
         A float tensor of shape ``(N, C, H, W)``, where ``N`` is the batch dimension,
         ``C`` is the channel dimension, ``H`` is the height dimension, and ``W`` is the
         width dimension.
     flow : torch.Tensor
-        A tensor of shape ``(N, H, W, 2)``.
+        A float tensor of shape ``(N, H, W, 2)``.
     indexing : {'hw', 'wh'}, optional
         If `indexing` is ``"hw"``, ``flow[..., 0] = h``, the height index, and
         ``flow[..., 1] = w`` is the width index. If ``"wh"``, ``flow[..., 0] = w``
@@ -1260,18 +1246,18 @@ def dense_image_warp(
 
 
 def sparse_image_warp(
-    image,
-    source_points,
-    dest_points,
-    indexing="hw",
-    field_interpolation_order=2,
-    field_regularization_weight=0.0,
-    field_full_matrix=True,
-    pinned_boundary_points=0,
-    dense_interpolation_mode="bilinear",
-    dense_padding_mode="border",
-    include_flow=True,
-):
+    image: torch.Tensor,
+    source_points: torch.Tensor,
+    dest_points: torch.Tensor,
+    indexing: str = "hw",
+    field_interpolation_order: int = 2,
+    field_regularization_weight: float = 0.0,
+    field_full_matrix: bool = True,
+    pinned_boundary_points: int = 0,
+    dense_interpolation_mode: str = "bilinear",
+    dense_padding_mode: str = "border",
+    include_flow: bool = True,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     r"""Warp an image by specifying mappings between few control points
 
     Given a source image `image`, a few source coordinates `source_points` and their
@@ -1286,15 +1272,17 @@ def sparse_image_warp(
 
     Parameters
     ----------
-    image : torch.FloatTensor
+    image : torch.Tensor
         A float tensor of shape ``(N, C, H, W)``, where ``N`` is the batch dimension,
         ``C`` the channel dimension, ``H`` the image height, and ``W`` the image width.
     source_points : torch.Tensor
         A tensor of shape ``(N, M, 2)``, where ``M`` is the number of control points
         and the final dimension stores the coordinates of the control point in `image`.
+        Cast to float.
     dest_points : torch.Tensor
         A tensor of shape ``(N, M, 2)`` such that the point ``source_points[n, m, :]``
         in `image` will be mapped to ``dest_points[n, m, :]`` in `warped`.
+        Cast to float.
     indexing : {'hw', 'wh'}, optional
         If `indexing` is ``"hw"``, ``source_points[n, m, 0]`` and
         ``dest_points[n, m, 0]`` index the height dimension in `image` and `warped`,
@@ -1331,7 +1319,7 @@ def sparse_image_warp(
 
     Returns
     -------
-    warped[, flow] : torch.FloatTensor[, torch.FloatTensor]
+    warped[, flow] : torch.Tensor[, torch.Tensor]
         `warped` is a float tensor of shape ``(N, C, H, W)`` containing the warped
         images. If `include_flow` is :obj:`True`, `flow`, a float tensor of shape
         ``(N, H, W, 2)``. ``flow[n, h, w, :]`` is the flow for coordinates ``h, w``
