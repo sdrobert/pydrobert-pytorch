@@ -19,18 +19,17 @@ source:
 
 requirements:
   build:
+    - python >=3.6
     - setuptools
     - setuptools_scm
   run:
     - python >=3.6
-    - numpy
-    - pytorch>= 1.0.1
+    - pytorch >=1.0.1
     - param
   run_constrained:
     - pydrobert-param >0.2.0
     - pydrobert-kaldi >0.5.3
-    - pydrobert-pytorch >0.2.1
-
+    - pydrobert-speech >0.1.0
 
 build:
   noarch: python

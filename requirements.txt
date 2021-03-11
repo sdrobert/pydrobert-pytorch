@@ -1,4 +1,0 @@
-future
-numpy
-torch>=1.0.1
-param
