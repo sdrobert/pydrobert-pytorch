@@ -1,3 +1,8 @@
+# v0.3.1
+
+1. Modified frame end in `pydrobert.torch.data.transcript_to_token` and added
+   some notes on the ambiguity of the conversion.
+
 # v0.3.0
 
 A considerable amount of refactoring occurred for this build, chiefly to get

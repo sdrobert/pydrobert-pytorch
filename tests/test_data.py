@@ -484,18 +484,30 @@ def test_transcript_to_token(transcript, token2id, unk, skip_frame_times, exp):
 
 @pytest.mark.cpu
 def test_transcript_to_token_frame_shift():
-    trans = [(12, 0.5, 0.81), 420, (1, 2.1, 2.2)]
+    trans = [(12, 0.5, 0.81), 420, (1, 2.1, 2.2), (3, 2.8, 2.815), (12, 2.9, 3.0025)]
     # normal case: frame shift 10ms. Frame happens every hundredth of a second,
-    # so multiply by 100
+    # so multiply by 100. Half-frames should round up; quarter-frames down
     tok = data.transcript_to_token(trans, frame_shift_ms=10)
     assert torch.allclose(
-        tok, torch.LongTensor([[12, 50, 81], [420, -1, -1], [1, 210, 220]])
+        tok,
+        torch.LongTensor(
+            [[12, 50, 81], [420, -1, -1], [1, 210, 220], [3, 280, 282], [12, 290, 300]]
+        ),
     )
     # raw case @ 8000Hz sample rate. "Frame" is every sample. frames/msec =
     # 1000 / sample_rate_hz = 1 / 8.
     tok = data.transcript_to_token(trans, frame_shift_ms=1 / 8)
     assert torch.allclose(
-        tok, torch.LongTensor([[12, 4000, 6480], [420, -1, -1], [1, 16800, 17600]])
+        tok,
+        torch.LongTensor(
+            [
+                [12, 4000, 6480],
+                [420, -1, -1],
+                [1, 16800, 17600],
+                [3, 22400, 22520],
+                [12, 23200, 24020],
+            ]
+        ),
     )
 
 
