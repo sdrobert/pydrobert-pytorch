@@ -51,13 +51,6 @@ def _get_torch_spect_data_dir_info_parse_args(args):
         help="The file to write to. If unspecified, stdout",
     )
     parser.add_argument(
-        "--strict",
-        action="store_true",
-        default=False,
-        help="If set, validate the data directory before collecting info. The "
-        "process is described in pydrobert.torch.data.validate_spect_data_set",
-    )
-    parser.add_argument(
         "--file-prefix", default="", help="The file prefix indicating a torch data file"
     )
     parser.add_argument(
@@ -76,6 +69,24 @@ def _get_torch_spect_data_dir_info_parse_args(args):
         default="ref",
         help="Subdirectory where reference token sequences are stored",
     )
+
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--strict",
+        action="store_true",
+        default=False,
+        help="If set, validate the data directory before collecting info. The "
+        "process is described in pydrobert.torch.data.validate_spect_data_set",
+    )
+    group.add_argument(
+        "--fix",
+        action="store_true",
+        default=False,
+        help="If set, validate the data directory before collecting info, potentially "
+        "fixing small errors in the directory. The process is described in "
+        "pydrobert.torch.validate_spect_data_set",
+    )
+
     return parser.parse_args(args)
 
 
@@ -144,8 +155,8 @@ def get_torch_spect_data_dir_info(args: Optional[Sequence[str]] = None) -> None:
         ali_subdir=options.ali_subdir,
         ref_subdir=options.ref_subdir,
     )
-    if options.strict:
-        data.validate_spect_data_set(data_set)
+    if options.strict or options.fix:
+        data.validate_spect_data_set(data_set, options.fix)
     info_dict = {
         "num_utterances": len(data_set),
         "total_frames": 0,

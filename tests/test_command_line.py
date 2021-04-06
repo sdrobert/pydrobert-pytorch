@@ -36,19 +36,23 @@ def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
     assert not command_line.get_torch_spect_data_dir_info(
         [temp_dir, table_path, "--strict"]
     )
-    table = dict()
-    with open(table_path) as table_file:
-        for line in table_file:
-            line = line.split()
-            table[line[0]] = int(line[1])
-    assert table["num_utterances"] == 20
-    assert table["total_frames"] == sum(feat_sizes)
-    assert table["num_filts"] == 5
-    assert table["max_ali_class"] == 10
-    assert table["max_ref_class"] == 100
-    for class_idx in range(11):
-        key = "count_{:02d}".format(class_idx)
-        assert table[key] == alis.count(class_idx)
+
+    def check():
+        table = dict()
+        with open(table_path) as table_file:
+            for line in table_file:
+                line = line.split()
+                table[line[0]] = int(line[1])
+        assert table["num_utterances"] == 20
+        assert table["total_frames"] == sum(feat_sizes)
+        assert table["num_filts"] == 5
+        assert table["max_ali_class"] == 10
+        assert table["max_ref_class"] == 100
+        for class_idx in range(11):
+            key = "count_{:02d}".format(class_idx)
+            assert table[key] == alis.count(class_idx)
+
+    check()
     # ensure we're only looking at the ids in the recorded refs
     torch.save(torch.tensor([[100, 0, 101]]), os.path.join(temp_dir, "ref", "utt19.pt"))
     assert not command_line.get_torch_spect_data_dir_info([temp_dir, table_path])
@@ -59,9 +63,18 @@ def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
             table[line[0]] = int(line[1])
     assert table["max_ref_class"] == 100
     # invalidate the data set and try again
-    torch.save(torch.rand(1, 4), os.path.join(temp_dir, "feat", "utt19.pt"))
-    with pytest.raises(ValueError):
+    torch.save(
+        torch.tensor([[100, 0, 1]]).int(), os.path.join(temp_dir, "ref", "utt19.pt")
+    )
+    with pytest.raises(ValueError, match="long tensor"):
         command_line.get_torch_spect_data_dir_info([temp_dir, table_path, "--strict"])
+    # ...but the problem is fixable. So if we set the flag...
+    with pytest.warns(UserWarning, match="long tensor"):
+        command_line.get_torch_spect_data_dir_info([temp_dir, table_path, "--fix"])
+    check()
+    # ...it shouldn't happen again
+    command_line.get_torch_spect_data_dir_info([temp_dir, table_path, "--strict"])
+    check()
 
 
 def _write_token2id(path, swap, collapse_vowels=False):
