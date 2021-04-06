@@ -1,7 +1,9 @@
 # v0.3.1
 
-1. Modified frame end in `pydrobert.torch.data.transcript_to_token` and added
-   some notes on the ambiguity of the conversion.
+- Modified frame end in `pydrobert.torch.data.transcript_to_token` and added
+  some notes on the ambiguity of the conversion.
+- Added some more checks and a 'fix' flag to
+  `pydrobert.torch.data.validate_spect_data_set`.
 
 # v0.3.0
 

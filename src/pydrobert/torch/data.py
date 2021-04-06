@@ -458,21 +458,22 @@ class SpectDataSet(torch.utils.data.Dataset):
         )
 
 
-def validate_spect_data_set(data_set: SpectDataSet) -> None:
+def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
     """Validate SpectDataSet data directory
 
     The data directory is valid if the following conditions are observed
 
-    1. All features are tensor instances of the same dtype
-    2. All features have two axes
-    3. All features have the same size second axis
-    4. If alignments are present
+    1. All tensors are on the CPU
+    2. All features are tensor instances of the same dtype
+    3. All features have two dimensions
+    4. All features have the same size second dimension
+    5. If alignments are present
 
        1. All alignments are long tensor instances
-       2. All alignments have one axis
+       2. All alignments have one dimension
        3. Features and alignments have the same size first axes for a given utterance id
 
-    5. If reference sequences are present
+    6. If reference sequences are present
 
        1. All references are long tensor instances
        2. All alignments have the same number of dimensions: either 1 or 2
@@ -484,137 +485,172 @@ def validate_spect_data_set(data_set: SpectDataSet) -> None:
              r[i, 2] <= T``, where ``T`` is the number of frames in the utterance. We do
              not enforce that tokens be non-overlapping
 
-    Raises a :class:`ValueError` if a condition is violated
+    Raises a :class:`ValueError` if a condition is violated.
+
+    If `fix` is :obj:`True`, the following changes to the data will be permitted instead
+    of raising an error. Any of these changes will be warned of using :mod:`warnings`
+    and then written back to disk.
+
+    1. Any CUDA tensors will be converted into CPU tensors
+    2. A reference or alignment of bytes or 32-bit integers can be upcast to long
+       tensors.
+    3. A reference token with only a start or end bound (but not both) will have the
+       existing one removed.
+    5. A reference token with an exclusive boundary exceeding the number of features by
+       one will be decreased by one. This is only possible if the exclusive end
+       remains above the inclusive start.
     """
     num_filts = None
     ref_is_2d = None
     feat_dtype = None
     for idx in range(len(data_set.utt_ids)):
+        fn = data_set.utt_ids[idx] + data_set.file_suffix
         feat, ali, ref = data_set.get_utterance_tuple(idx)
+        write_back = False
+        prefix = "'{}' (index {})".format(fn, idx)
+        dir_ = os.path.join(data_set.data_dir, data_set.feat_subdir)
+        prefix_ = "{} in '{}'".format(prefix, dir_)
         if not isinstance(feat, torch.Tensor) or feat_dtype not in {None, feat.dtype}:
             raise ValueError(
-                "'{}' (index {}) in '{}' is not a tensor or not the same "
-                "tensor type as previous features".format(
-                    data_set.utt_ids[idx] + data_set.file_suffix,
-                    idx,
-                    os.path.join(data_set.data_dir, data_set.feat_subdir),
-                )
+                "{} is not a tensor or not the same tensor type as previous features"
+                "".format(prefix_)
             )
+        if feat.device.type == "cuda":
+            msg = "{} is a cuda tensor".format(prefix_)
+            if fix:
+                warnings.warn(msg)
+                feat = feat.cpu()
+                write_back = True
+            else:
+                raise ValueError(msg)
         feat_dtype = feat.dtype
-        if len(feat.size()) != 2:
-            raise ValueError(
-                "'{}' (index {}) in '{}' does not have two axes".format(
-                    data_set.utt_ids[idx] + data_set.file_suffix,
-                    idx,
-                    os.path.join(data_set.data_dir, data_set.feat_subdir),
-                )
-            )
+        if feat.dim() != 2:
+            raise ValueError("{} does not have two dimensions".format(prefix_))
         if num_filts is None:
-            num_filts = feat.shape[1]
-        elif feat.shape[1] != num_filts:
+            num_filts = feat.size(1)
+        elif feat.size(1) != num_filts:
             raise ValueError(
-                "'{}' (index {}) in '{}' has second axis size {}, which "
+                "{} has second dimension of size {}, which "
                 "does not match prior utterance ('{}') size of {}".format(
-                    data_set.utt_ids[idx] + data_set.file_suffix,
-                    idx,
-                    os.path.join(data_set.data_dir, data_set.feat_subdir),
-                    feat.shape[1],
+                    prefix_,
+                    feat.size(1),
                     data_set.utt_ids[idx - 1] + data_set.file_suffix,
                     num_filts,
                 )
             )
+        if write_back:
+            torch.save(feat, os.path.join(dir_, fn))
+            write_back = False
         if ali is not None:
+            dir_ = os.path.join(data_set.data_dir, data_set.ali_subdir)
+            prefix_ = "{} in '{}'".format(prefix, dir_)
+            if isinstance(ali, torch.Tensor) and ali.device.type == "cuda":
+                msg = "{} is a cuda tensor".format(prefix_)
+                if fix:
+                    warnings.warn(msg + ". Converting")
+                    ali = ali.cpu()
+                    write_back = True
+                else:
+                    raise ValueError(msg)
             if not isinstance(ali, torch.LongTensor):
-                raise ValueError(
-                    "'{}' (index {}) in '{}' is not a long tensor".format(
-                        data_set.utt_ids[idx] + data_set.file_suffix,
-                        idx,
-                        os.path.join(data_set.data_dir, data_set.ali_subdir),
-                    )
-                )
+                msg = "{} is not a long tensor".format(prefix_)
+                if fix and isinstance(
+                    ali,
+                    (
+                        torch.ByteTensor,
+                        torch.CharTensor,
+                        torch.ShortTensor,
+                        torch.IntTensor,
+                    ),
+                ):
+                    warnings.warn(msg + ". Converting")
+                    ali = ali.long()
+                    write_back = True
+                else:
+                    raise ValueError(msg)
             if len(ali.shape) != 1:
-                raise ValueError(
-                    "'{}' (index {}) in '{}' does not have one axis".format(
-                        data_set.utt_ids[idx] + data_set.file_suffix,
-                        idx,
-                        os.path.join(data_set.data_dir, data_set.ali_subdir),
-                    )
-                )
+                raise ValueError("{} does not have one dimension".format(prefix_))
             if ali.shape[0] != feat.shape[0]:
                 raise ValueError(
-                    "'{}' (index {}) in '{}' does not have the same first axis"
-                    " size ({}) as it's companion in '{}' ({})".format(
-                        data_set.utt_ids[idx] + data_set.file_suffix,
-                        idx,
-                        os.path.join(data_set.data_dir, data_set.feat_subdir),
+                    "{} does not have the same first dimension of"
+                    " size ({}) as its companion in '{}' ({})".format(
+                        prefix_,
                         feat.shape[0],
                         os.path.join(data_set.data_dir, data_set.ali_subdir),
                         ali.shape[0],
                     )
                 )
+            if write_back:
+                torch.save(ali, os.path.join(dir_, fn))
+                write_back = False
         if ref is not None:
+            dir_ = os.path.join(data_set.data_dir, data_set.ref_subdir)
+            prefix_ = "{} in '{}'".format(prefix, dir_)
+            if isinstance(ref, torch.Tensor) and ref.device.type == "cuda":
+                msg = "{} is a cuda tensor".format(prefix_)
+                if fix:
+                    warnings.warn(msg + ". Converting")
+                    ref = ref.cpu()
+                    write_back = True
+                else:
+                    raise ValueError(msg)
             if not isinstance(ref, torch.LongTensor):
-                raise ValueError(
-                    "'{}' (index {}) in '{}' is not a long tensor".format(
-                        data_set.utt_ids[idx] + data_set.file_suffix,
-                        idx,
-                        os.path.join(data_set.data_dir, data_set.ref_subdir),
-                    )
-                )
-            if len(ref.shape) == 2:
+                msg = "{} is not a long tensor".format(prefix_)
+                if fix and isinstance(
+                    ref,
+                    (
+                        torch.ByteTensor,
+                        torch.CharTensor,
+                        torch.ShortTensor,
+                        torch.IntTensor,
+                    ),
+                ):
+                    warnings.warn(msg + ". Converting")
+                    ref = ref.long()
+                    write_back = True
+                else:
+                    raise ValueError(msg)
+            if ref.dim() == 2:
                 if ref_is_2d is False:
                     raise ValueError(
-                        "'{}' (index {}) in '{}' is 2D. Previous "
-                        "transcriptions were 1D".format(
-                            data_set.utt_ids[idx] + data_set.file_suffix,
-                            idx,
-                            os.path.join(data_set.data_dir, data_set.ref_subdir),
-                        )
+                        "{} is 2D. Previous transcriptions were 1D".format(prefix_)
                     )
                 ref_is_2d = True
-                if ref.shape[1] != 3:
-                    raise ValueError(
-                        "'{}' (index {}) in '{}' does not have shape (D, 3)"
-                        "".format(
-                            data_set.utt_ids[idx] + data_set.file_suffix,
-                            idx,
-                            os.path.join(data_set.data_dir, data_set.ref_subdir),
-                        )
-                    )
+                if ref.size(1) != 3:
+                    raise ValueError("{} does not have shape (D, 3)".format(prefix_))
                 for idx2, r in enumerate(ref):
-                    if not (r[1] < 0 and r[2] < 0) and not (
-                        0 <= r[1] < r[2] <= feat.shape[0]
-                    ):
-                        raise ValueError(
-                            "'{}' (index {}) in '{}', has a reference token "
-                            "(index {}) with invalid boundaries"
-                            "".format(
-                                data_set.utt_ids[idx] + data_set.file_suffix,
-                                idx,
-                                os.path.join(data_set.data_dir, data_set.ref_subdir),
-                                idx2,
-                            )
-                        )
-            elif len(ref.shape) == 1:
+                    msg = (
+                        "{} has a reference token (index {}) with invalid boundaries"
+                        "".format(prefix_, idx2)
+                    )
+                    if not (r[1] < 0 and r[2] < 0):
+                        if r[1] < 0 or r[2] < 0:
+                            if fix:
+                                warnings.warn(msg + ". Removing unpaired boundary")
+                                r[1:] = -1
+                                write_back = True
+                            else:
+                                raise ValueError(msg)
+                        elif r[2] > feat.size(0):
+                            if fix and r[2] - 1 == feat.size(0) and r[1] < r[2] - 1:
+                                warnings.warn(msg + ". Reducing upper bound by 1")
+                                r[2] -= 1
+                                write_back = True
+                            else:
+                                raise ValueError(msg)
+                        elif r[1] >= r[2]:
+                            raise ValueError(msg)
+
+            elif ref.dim() == 1:
                 if ref_is_2d is True:
                     raise ValueError(
-                        "'{}' (index {}) in '{}' is 1D. Previous "
-                        "transcriptions were 2D".format(
-                            data_set.utt_ids[idx] + data_set.file_suffix,
-                            idx,
-                            os.path.join(data_set.data_dir, data_set.ref_subdir),
-                        )
+                        "{} is 1D. Previous transcriptions were 2D".format(prefix_)
                     )
                 ref_is_2d = False
             else:
-                raise ValueError(
-                    "'{}' (index {}) in '{}' is not 1D nor 2D"
-                    "".format(
-                        data_set.utt_ids[idx] + data_set.file_suffix,
-                        idx,
-                        os.path.join(data_set.data_dir, data_set.ref_subdir),
-                    )
-                )
+                raise ValueError("{} is not 1D nor 2D".format(prefix_))
+            if write_back:
+                torch.save(ref, os.path.join(dir_, fn))
 
 
 class _AltTree(object):
