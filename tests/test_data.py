@@ -234,34 +234,85 @@ def test_spect_data_set_validity(temp_dir, eos):
     with pytest.raises(ValueError, match="not the same tensor type"):
         data.validate_spect_data_set(data_set)
     torch.save(torch.rand(4,), feats_b_pt)
-    with pytest.raises(ValueError, match="does not have two axes"):
+    with pytest.raises(ValueError, match="does not have two dimensions"):
         data.validate_spect_data_set(data_set)
     torch.save(torch.rand(4, 3), feats_b_pt)
-    with pytest.raises(ValueError, match="has second axis size 3.*"):
+    with pytest.raises(ValueError, match="has second dimension of size 3.*"):
         data.validate_spect_data_set(data_set)
     torch.save(torch.rand(4, 4), feats_b_pt)
     data.validate_spect_data_set(data_set)
     torch.save(torch.randint(10, (4,)).int(), ali_b_pt)
     with pytest.raises(ValueError, match="is not a long tensor"):
         data.validate_spect_data_set(data_set)
+    with pytest.warns(UserWarning):
+        data.validate_spect_data_set(data_set, True)  # will fix bad type
+    data.validate_spect_data_set(data_set)  # fine after correction
     torch.save(torch.randint(10, (4, 1), dtype=torch.long), ali_b_pt)
-    with pytest.raises(ValueError, match="does not have one axis"):
+    with pytest.raises(ValueError, match="does not have one dimension"):
         data.validate_spect_data_set(data_set)
     torch.save(torch.randint(10, (3,), dtype=torch.long), ali_b_pt)
     with pytest.raises(ValueError, match="does not have the same first"):
         data.validate_spect_data_set(data_set)
     torch.save(torch.randint(10, (4,), dtype=torch.long), ali_b_pt)
     data.validate_spect_data_set(data_set)
+    torch.save(torch.Tensor([[0, 1, 2]]).int(), ref_b_pt)
+    with pytest.raises(ValueError, match="is not a long tensor"):
+        data.validate_spect_data_set(data_set)
+    with pytest.warns(UserWarning):
+        data.validate_spect_data_set(data_set, True)  # convert to long
+    data.validate_spect_data_set(data_set)
     torch.save(torch.tensor([[0, -1, 2], [1, 1, 2]]), ref_b_pt)
     with pytest.raises(ValueError, match="invalid boundaries"):
         data.validate_spect_data_set(data_set)
-    torch.save(torch.tensor([[0, 0, 1], [1, 5, 30]]), ref_b_pt)
+    with pytest.warns(UserWarning):
+        data.validate_spect_data_set(data_set, True)  # will remove end bound
+    data.validate_spect_data_set(data_set)
+    torch.save(torch.tensor([[0, 0, 1], [1, 3, 5]]), ref_b_pt)
     with pytest.raises(ValueError, match="invalid boundaries"):
         data.validate_spect_data_set(data_set)
+    with pytest.warns(UserWarning):
+        data.validate_spect_data_set(data_set, True)  # will trim 5 to 4
+    data.validate_spect_data_set(data_set)
+    torch.save(torch.tensor([[0, 0, 1], [1, 4, 5]]), ref_b_pt)
+    with pytest.raises(ValueError, match="invalid boundaries"):
+        data.validate_spect_data_set(data_set, True)  # will not trim b/c causes s == e
     torch.save(torch.tensor([1, 2, 3]), ref_b_pt)
     with pytest.raises(ValueError, match="were 2D"):
         data.validate_spect_data_set(data_set)
     torch.save(torch.tensor([10, 4, 2, 5]), ref_a_pt)
+    data.validate_spect_data_set(data_set)
+
+
+@pytest.mark.gpu
+def test_validate_spect_data_set_cuda(temp_dir):
+    torch.manual_seed(29)
+    feat_dir = os.path.join(temp_dir, "feat")
+    ali_dir = os.path.join(temp_dir, "ali")
+    ref_dir = os.path.join(temp_dir, "ref")
+    feats_pt = os.path.join(feat_dir, "a.pt")
+    ali_pt = os.path.join(ali_dir, "a.pt")
+    ref_pt = os.path.join(ref_dir, "a.pt")
+    os.makedirs(feat_dir)
+    os.makedirs(ali_dir)
+    os.makedirs(ref_dir)
+    torch.save(torch.rand(10, 5), feats_pt)
+    torch.save(torch.randint(10, (10,), dtype=torch.long), ali_pt)
+    torch.save(torch.tensor([1, 2, 3]), ref_pt)
+    data_set = data.SpectDataSet(temp_dir)
+    data.validate_spect_data_set(data_set)
+    torch.save(torch.rand(10, 5).cuda(), feats_pt)
+    with pytest.raises(ValueError, match="cuda"):
+        data.validate_spect_data_set(data_set)
+    with pytest.warns(UserWarning):
+        data.validate_spect_data_set(data_set, True)  # to CPU
+    data.validate_spect_data_set(data_set)
+    torch.save(torch.rand(10, 5).cuda(), feats_pt)
+    torch.save(torch.randint(10, (10,), dtype=torch.long).cuda(), ali_pt)
+    torch.save(torch.tensor([1, 2, 3]).cuda(), ref_pt)
+    with pytest.raises(ValueError, match="cuda"):
+        data.validate_spect_data_set(data_set)
+    with pytest.warns(UserWarning):
+        data.validate_spect_data_set(data_set, True)  # to CPU
     data.validate_spect_data_set(data_set)
 
 
@@ -484,18 +535,30 @@ def test_transcript_to_token(transcript, token2id, unk, skip_frame_times, exp):
 
 @pytest.mark.cpu
 def test_transcript_to_token_frame_shift():
-    trans = [(12, 0.5, 0.81), 420, (1, 2.1, 2.2)]
+    trans = [(12, 0.5, 0.81), 420, (1, 2.1, 2.2), (3, 2.8, 2.815), (12, 2.9, 3.0025)]
     # normal case: frame shift 10ms. Frame happens every hundredth of a second,
-    # so multiply by 100
+    # so multiply by 100. Half-frames should round up; quarter-frames down
     tok = data.transcript_to_token(trans, frame_shift_ms=10)
     assert torch.allclose(
-        tok, torch.LongTensor([[12, 50, 81], [420, -1, -1], [1, 210, 220]])
+        tok,
+        torch.LongTensor(
+            [[12, 50, 81], [420, -1, -1], [1, 210, 220], [3, 280, 282], [12, 290, 300]]
+        ),
     )
     # raw case @ 8000Hz sample rate. "Frame" is every sample. frames/msec =
     # 1000 / sample_rate_hz = 1 / 8.
     tok = data.transcript_to_token(trans, frame_shift_ms=1 / 8)
     assert torch.allclose(
-        tok, torch.LongTensor([[12, 4000, 6480], [420, -1, -1], [1, 16800, 17600]])
+        tok,
+        torch.LongTensor(
+            [
+                [12, 4000, 6480],
+                [420, -1, -1],
+                [1, 16800, 17600],
+                [3, 22400, 22520],
+                [12, 23200, 24020],
+            ]
+        ),
     )
 
 

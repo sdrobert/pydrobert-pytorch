@@ -1,4 +1,14 @@
-# v0.3.0
+# Change log
+
+## HEAD
+
+- Modified frame end in `pydrobert.torch.data.transcript_to_token` and added
+  some notes on the ambiguity of the conversion.
+- Added some more checks and a 'fix' flag to
+  `pydrobert.torch.data.validate_spect_data_set`. Entry
+  `get-torch-spect-data-dir-info` now has `--fix` flag, too.
+
+## v0.3.0
 
 A considerable amount of refactoring occurred for this build, chiefly to get
 rid of Python 2.7 support. While the functionality did not change much for this
