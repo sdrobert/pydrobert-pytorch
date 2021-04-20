@@ -33,6 +33,7 @@ import pydrobert.torch
 
 __all__ = [
     "beam_search_advance",
+    "ctc_prefix_search_advance",
     "dense_image_warp",
     "error_rate",
     "optimal_completion",
@@ -174,11 +175,11 @@ def beam_search_advance(
     logits_t: torch.Tensor,
     width: int,
     log_prior: Optional[torch.Tensor] = None,
-    y_prev=None,
-    eos=pydrobert.torch.INDEX_PAD_VALUE,
-    lens=None,
-    prevent_eos=False,
-    distribution=True,
+    y_prev: Optional[torch.Tensor] = None,
+    eos: int = pydrobert.torch.INDEX_PAD_VALUE,
+    lens: Optional[torch.Tensor] = None,
+    prevent_eos: bool = False,
+    distribution: bool = True,
 ):
     r"""Advance a beam search
 
@@ -434,6 +435,153 @@ def beam_search_advance(
         y_prev = y_prev.gather(2, s.unsqueeze(0).expand(t - 1, batch_size, width))
         y = torch.cat([y_prev, y], 0)
     return score, y, s
+
+
+def ctc_prefix_search_advance(
+    probs_t: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],  # ((N,K',V), (N,V), (N))
+    width: int,  # K
+    probs_prev: Tuple[torch.Tensor, torch.Tensor],  # (N,K'), (N,K')
+    y_prev: torch.Tensor,  # (N, K', t-1)
+    y_prev_last: torch.Tensor,  # (N,K')
+    y_prev_lens: torch.Tensor,  # (N, K')
+    prev_is_prefix: torch.Tensor,  # (N, K', K')  # [n, k, k'] iff k prefix of k'
+    needs_sorted: bool = True,
+):
+    """CTC prefix/beam search step function"""
+
+    ext_probs_t, nonext_probs_t, blank_probs_t = probs_t
+    del probs_t
+
+    nb_probs_prev, b_probs_prev = probs_prev
+    tot_probs_prev = nb_probs_prev + b_probs_prev
+    del probs_prev
+
+    N, Kp, V = ext_probs_t.shape
+    tm1 = y_prev.size(2)
+
+    # b_ext_probs_cand is all zeros
+    # nonblank extensions include blank prefix + extension and non-blank, non-matching
+    # prefixes
+    nb_ext_probs_cand = (
+        nb_probs_prev.unsqueeze(2)
+        .expand(N, Kp, V)
+        .scatter(2, y_prev_last.unsqueeze(2), 0.0)
+        + b_probs_prev.unsqueeze(2)
+    ) * ext_probs_t  # (N, K', V)
+    # blank non-extensions are all previous paths plus a blank
+    b_nonext_probs_cand = tot_probs_prev * blank_probs_t.unsqueeze(1)  # (N, K')
+    # nonblank non-extensions are non-blank, matching prefixes and final matching token
+    nb_nonext_probs_cand = nb_probs_prev * nonext_probs_t.gather(1, y_prev_last)  # N,K'
+    del nb_probs_prev, b_probs_prev, tot_probs_prev
+
+    # An extending candidate can match an existing non-extending candidate.
+    # We'll dump the extending candidate's probability mass into the non-extending
+    # candidate's mass if they're equal.
+    #
+    # let's assume path k is a prefix of path k'. What's the token that we'd have to
+    # match if we wanted to extend path k while remaining a prefix of k'?
+    # y_prev[n, k', y_prev_lens[n, k]] = to_match[n, k', k]
+    to_match = y_prev.gather(
+        2, y_prev_lens.clamp(max=tm1 - 1).unsqueeze(1).expand(N, Kp, Kp)
+    ).clamp(
+        0, V - 1
+    )  # (N, K', K')
+    # if we match to_match, will we be an exact match?
+    ext_is_exact = (
+        (y_prev_lens + 1).unsqueeze(2) == y_prev_lens.unsqueeze(1)
+    ) & prev_is_prefix  # (N, K', K')
+    # gather the extensions that match to_match, multiply with zero if k won't exactly
+    # match k', and sum into k'. Then sum those into the relevant non-extension
+    # candidates
+    nb_nonext_probs_cand = nb_nonext_probs_cand + (
+        nb_ext_probs_cand.gather(2, to_match) * ext_is_exact
+    ).sum(2)
+    # clear the probabilities of extensions k->v that exactly matched some k' for v
+    has_match = torch.full(
+        nb_ext_probs_cand.shape,
+        False,
+        dtype=torch.bool,
+        device=nb_ext_probs_cand.device,
+    ).scatter_(2, to_match, ext_is_exact)
+    nb_ext_probs_cand = nb_ext_probs_cand * (~has_match)
+    del has_match, ext_is_exact
+
+    # we can finally determine the top k paths. Put the non-extending candidates after
+    # the extending candidates (the last K' elements of the second dimension)
+    tot_probs_cand = torch.cat(
+        [nb_ext_probs_cand.view(N, Kp * V), nb_nonext_probs_cand + b_nonext_probs_cand],
+        1,
+    )  # (N, K' * (V + 1))
+    tot_probs_next, next_ind = tot_probs_cand.topk(width, 1, sorted=needs_sorted)
+    del tot_probs_cand, tot_probs_next
+
+    next_is_nonext = next_ind >= (Kp * V)
+    next_src = (next_ind - (Kp * V)) * next_is_nonext + (next_ind // V) * (
+        ~next_is_nonext
+    )
+    next_ext = next_ind % V
+
+    y_next_prefix_lens = y_prev_lens.gather(1, next_src)  # (N, K)
+    y_next = torch.cat(
+        [
+            y_prev.gather(1, next_src.unsqueeze(2).expand(N, width, tm1)),
+            torch.empty((N, width, 1), device=y_prev.device, dtype=y_prev.dtype),
+        ],
+        2,
+    ).scatter(
+        2, y_next_prefix_lens.unsqueeze(2), next_ext.unsqueeze(2)
+    )  # (N, K, t)
+    y_next_lens = y_next_prefix_lens + (~next_is_nonext)
+    del y_next_prefix_lens
+
+    nb_ext_probs_next = nb_ext_probs_cand.view(N, Kp * V).gather(
+        1, next_ind.clamp(max=Kp * V - 1)
+    )  # (N, K)
+    nb_nonext_probs_next = nb_nonext_probs_cand.gather(1, next_src)  # (N, K)
+    nb_probs_next = (
+        nb_ext_probs_next * (~next_is_nonext) + nb_nonext_probs_next * next_is_nonext
+    )
+    del nb_ext_probs_next, nb_nonext_probs_next, nb_nonext_probs_cand, nb_ext_probs_cand
+
+    b_probs_next = b_nonext_probs_cand.gather(1, next_src) * next_is_nonext  # (N, K)
+    del b_nonext_probs_cand
+
+    y_next_last = y_prev_last.gather(1, next_src) * next_is_nonext + next_ext * (
+        ~next_is_nonext
+    )
+    del y_prev_last
+
+    next_prefix_is_prefix = prev_is_prefix.gather(
+        1, next_src.unsqueeze(2).expand(N, width, Kp)
+    ).gather(2, next_src.unsqueeze(1).expand(N, width, width))
+    next_len_leq = y_next_lens.unsqueeze(2) <= y_next_lens.unsqueeze(1)
+    next_to_match = y_next.gather(
+        2, (y_next_lens - 1).clamp(min=0).unsqueeze(1).expand(N, width, width)
+    ).transpose(1, 2)
+    next_ext_matches = next_to_match == next_ext.unsqueeze(2)
+    next_is_prefix = (
+        next_prefix_is_prefix
+        & next_len_leq
+        & (next_is_nonext | (~next_is_nonext & next_ext_matches))
+    )
+    del (
+        next_prefix_is_prefix,
+        next_len_leq,
+        next_to_match,
+        next_ext_matches,
+        next_ext,
+        next_ind,
+        next_src,
+        next_is_nonext,
+    )
+
+    return (
+        y_next,  # (N, K, t)
+        y_next_last,  # (N, K)
+        y_next_lens,  # (N, K)
+        (nb_probs_next, b_probs_next),  # (N, K), (N, K)
+        next_is_prefix,  # (N, K, K)
+    )
 
 
 def time_distributed_return(
