@@ -162,9 +162,37 @@ def test_beam_search_advance_greedy(distribution):
             [[0], [1]],
             [[1], [0, 1], [1, 1], [0], [1, 0], [0, 0]],
             ([0.28, 0.28, 0.14, 0.01, 0.06, 0.03], [0.12, 0.0, 0.0, 0.08, 0.0, 0.0]),
-        )
+        ),
+        (
+            ([0.1, 0.2, 0.3], 0.4),
+            ([0.0], [1.0]),
+            [[]],
+            [[], [2], [1], [0]],
+            ([0.0, 0.3, 0.2, 0.1], [0.4, 0.0, 0.0, 0.0]),
+        ),
+        (
+            ([0.2, 0.3, 0.1], 0.4),
+            ([0.1, 0.3, 0.5], [0.07, 0.11, 0.0]),
+            [[0], [0, 1], [0, 1, 2]],
+            [
+                [0, 1],
+                [0, 1, 2],
+                [0, 1, 2, 1],
+                [0, 1, 2, 0],
+                [0],
+                [0, 1, 0],
+                [0, 1, 1],
+                [0, 2],
+                [0, 0],
+                [0, 1, 2, 2],
+            ],
+            (
+                [0.141, 0.091, 0.15, 0.1, 0.02, 0.082, 0.033, 0.017, 0.014, 0.0],
+                [0.164, 0.2, 0.0, 0.0, 0.068, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ),
+        ),
     ],
-    ids=("A"),
+    ids=("A", "B", "C"),
 )
 def test_ctc_prefix_search_advance(
     probs_t, probs_prev, y_prev, y_next_exp, probs_next_exp
@@ -174,7 +202,7 @@ def test_ctc_prefix_search_advance(
     y_prev_lens = torch.tensor([[len(x) for x in y_prev]])
     assert y_prev_lens.shape == (1, Kp)
 
-    y_prev_last = torch.tensor([[x[-1] if x else -1 for x in y_prev]])
+    y_prev_last = torch.tensor([[x[-1] if x else 0 for x in y_prev]])
     assert y_prev_last.shape == (1, Kp)
 
     prev_is_prefix = []
@@ -183,7 +211,9 @@ def test_ctc_prefix_search_advance(
     prev_is_prefix = torch.tensor(prev_is_prefix).view(1, Kp, Kp)
 
     y_prev = torch.nn.utils.rnn.pad_sequence(
-        [torch.tensor(x) for x in y_prev], batch_first=True, padding_value=0
+        [torch.tensor(x, dtype=torch.long) for x in y_prev],
+        batch_first=True,
+        padding_value=0,
     ).unsqueeze(0)
     assert y_prev.dtype == torch.long
     assert y_prev.dim() == 3
@@ -207,7 +237,7 @@ def test_ctc_prefix_search_advance(
     y_next_lens_exp = torch.tensor([[len(x) for x in y_next_exp]])
     assert y_next_lens_exp.shape == (1, K)
 
-    y_next_last_exp = torch.tensor([[x[-1] if x else -1 for x in y_next_exp]])
+    y_next_last_exp = torch.tensor([[x[-1] if x else 0 for x in y_next_exp]])
     assert y_next_last_exp.shape == (1, K)
 
     next_is_prefix_exp = []
@@ -230,8 +260,11 @@ def test_ctc_prefix_search_advance(
         probs_t, K, probs_prev, y_prev, y_prev_last, y_prev_lens, prev_is_prefix
     )
 
-    assert y_next_lens_act.shape == y_next_lens_exp.shape
-    assert (y_next_lens_act == y_next_lens_exp).all()
+    assert y_next_lens_exp.shape == y_next_lens_act.shape
+    assert (y_next_lens_exp == y_next_lens_act).all(), (
+        y_next_lens_exp,
+        y_next_lens_act,
+    )
 
     assert y_next_act.dim() == 3
     assert y_next_act.shape[:2] == (1, K)

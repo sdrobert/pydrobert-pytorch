@@ -480,12 +480,20 @@ def ctc_prefix_search_advance(
     #
     # let's assume path k is a prefix of path k'. What's the token that we'd have to
     # match if we wanted to extend path k while remaining a prefix of k'?
-    # y_prev[n, k', y_prev_lens[n, k]] = to_match[n, k', k]
-    to_match = y_prev.gather(
-        2, y_prev_lens.clamp(max=tm1 - 1).unsqueeze(1).expand(N, Kp, Kp)
-    ).clamp(
-        0, V - 1
-    )  # (N, K', K')
+    # y_prev[n, k', y_prev_lens[n, k]] = to_match[n, k, k']
+    if tm1:
+        to_match = (
+            y_prev.gather(
+                2, y_prev_lens.clamp(max=tm1 - 1).unsqueeze(1).expand(N, Kp, Kp)
+            )
+            .transpose(1, 2)
+            .clamp(0, V - 1)
+        )  # (N, K', K')
+        # for k in range(Kp):
+        #     for kp in range(Kp):
+        #         print(f"k={k}, k'={kp}, to_match={to_match[0, k, kp].item()}")
+    else:
+        to_match = torch.zeros((N, Kp, Kp), device=y_prev.device, dtype=y_prev.dtype)
     # if we match to_match, will we be an exact match?
     ext_is_exact = (
         (y_prev_lens + 1).unsqueeze(2) == y_prev_lens.unsqueeze(1)
@@ -495,15 +503,12 @@ def ctc_prefix_search_advance(
     # candidates
     nb_nonext_probs_cand = nb_nonext_probs_cand + (
         nb_ext_probs_cand.gather(2, to_match) * ext_is_exact
-    ).sum(2)
+    ).sum(1)
     # clear the probabilities of extensions k->v that exactly matched some k' for v
-    has_match = torch.full(
-        nb_ext_probs_cand.shape,
-        False,
-        dtype=torch.bool,
-        device=nb_ext_probs_cand.device,
-    ).scatter_(2, to_match, ext_is_exact)
-    nb_ext_probs_cand = nb_ext_probs_cand * (~has_match)
+    has_match = (
+        torch.nn.functional.one_hot(to_match, V).bool() & ext_is_exact.unsqueeze(2)
+    ).any(2)
+    nb_ext_probs_cand = nb_ext_probs_cand.masked_fill(has_match, -float('inf'))
     del has_match, ext_is_exact
 
     # we can finally determine the top k paths. Put the non-extending candidates after
@@ -562,7 +567,10 @@ def ctc_prefix_search_advance(
     next_is_prefix = (
         next_prefix_is_prefix
         & next_len_leq
-        & (next_is_nonext | (~next_is_nonext & next_ext_matches))
+        & (
+            next_is_nonext.unsqueeze(2)
+            | (~next_is_nonext.unsqueeze(2) & next_ext_matches)
+        )
     )
     del (
         next_prefix_is_prefix,
