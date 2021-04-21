@@ -33,6 +33,7 @@ import pydrobert.torch
 
 __all__ = [
     "beam_search_advance",
+    "ctc_greedy_search",
     "ctc_prefix_search_advance",
     "dense_image_warp",
     "error_rate",
@@ -443,7 +444,7 @@ def ctc_greedy_search(
     blank_idx: int = -1,
     batch_first: bool = False,
     is_probs: bool = False,
-):
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """CTC greedy search
 
     The CTC greedy search picks the path with the highest probability class in
@@ -536,7 +537,13 @@ def ctc_prefix_search_advance(
     y_prev_lens: torch.Tensor,  # (N, K')
     prev_is_prefix: torch.Tensor,  # (N, K', K')  # [n, k, k'] iff k prefix of k'
     needs_sorted: bool = True,
-):
+) -> Tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    Tuple[torch.Tensor, torch.Tensor],
+    torch.Tensor,
+]:
     """CTC prefix/beam search step function"""
 
     ext_probs_t, nonext_probs_t, blank_probs_t = probs_t
