@@ -154,6 +154,73 @@ def test_beam_search_advance_greedy(distribution):
 
 
 @pytest.mark.parametrize(
+    "probs,in_lens,max_exp,paths_exp",
+    [
+        (
+            [
+                [[0.5, 0.3, 0.2], [0.1, 0.2, 0.7], [0.1, 0.6, 0.3]],
+                [[0.25, 0.25, 0.5], [0.25, 0.25, 0.5], [0.25, 0.25, 0.5]],
+            ],
+            None,
+            [0.21, 0.125],
+            [[0, 1], []],
+        ),
+        (
+            [[[0.6, 0.4], [0.6, 0.4]], [[0.6, 0.4], [0.6, 0.4]]],
+            [1, 0],
+            [0.6, 1.0],
+            [[0], []],
+        ),
+        (
+            [
+                [
+                    [0.6, 0.3, 0.1],
+                    [0.6, 0.3, 0.1],
+                    [0.3, 0.1, 0.6],
+                    [0.6, 0.3, 0.1],
+                    [0.3, 0.6, 0.1],
+                ]
+            ],
+            None,
+            [0.6 ** 5],
+            [[0, 0, 1]],
+        ),
+    ],
+    ids=("A", "B", "C"),
+)
+@pytest.mark.parametrize("batch_first", [True, False])
+@pytest.mark.parametrize("is_probs", [True, False])
+def test_ctc_greedy_search(
+    probs, in_lens, max_exp, paths_exp, batch_first, is_probs, device
+):
+    probs = torch.tensor(probs, device=device)
+    if in_lens is not None:
+        in_lens = torch.tensor(in_lens, device=device)
+    max_exp = torch.tensor(max_exp, device=device)
+    out_lens_exp = torch.tensor([len(x) for x in paths_exp], device=device)
+    paths_exp = tuple(
+        torch.tensor(x, device=device, dtype=torch.long) for x in paths_exp
+    )
+    if not batch_first:
+        probs = probs.transpose(0, 1)
+    if not is_probs:
+        max_exp = max_exp.log()
+        probs = probs.log()
+    max_act, paths_act, out_lens_act = util.ctc_greedy_search(
+        probs, in_lens, batch_first=batch_first, is_probs=is_probs
+    )
+    assert max_exp.shape == max_act.shape
+    assert torch.allclose(max_exp, max_act)
+    assert out_lens_exp.shape == out_lens_act.shape
+    assert (out_lens_exp == out_lens_act).all()
+    assert paths_act.dim() == 2
+    if not batch_first:
+        paths_act = paths_act.t()
+    for paths_exp_n, paths_act_n in zip(paths_exp, paths_act):
+        assert (paths_exp_n == paths_act_n[: len(paths_exp_n)]).all()
+
+
+@pytest.mark.parametrize(
     "probs_t,probs_prev,y_prev,y_next_exp,probs_next_exp",
     [
         (
