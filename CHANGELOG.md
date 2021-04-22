@@ -2,6 +2,7 @@
 
 ## HEAD
 
+- Fixed logic errors in `compute-torch-token-data-dir-error-rates` (#50)
 - Modified frame end in `pydrobert.torch.data.transcript_to_token` and added
   some notes on the ambiguity of the conversion.
 - Added some more checks and a 'fix' flag to

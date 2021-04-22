@@ -21,14 +21,22 @@ import pydrobert.torch.command_line as command_line
 
 
 @pytest.mark.cpu
-def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
+@pytest.mark.parametrize("include_frame_shift", [True, False])
+def test_get_torch_spect_data_dir_info(
+    temp_dir, populate_torch_dir, include_frame_shift
+):
     _, alis, _, feat_sizes, _, _ = populate_torch_dir(
-        temp_dir, 19, num_filts=5, max_class=10
+        temp_dir, 19, num_filts=5, max_class=10, include_frame_shift=include_frame_shift
     )
     # add one with class idx 10 to ensure all classes are accounted for
     torch.save(torch.rand(1, 5), os.path.join(temp_dir, "feat", "utt19.pt"))
     torch.save(torch.tensor([10]), os.path.join(temp_dir, "ali", "utt19.pt"))
-    torch.save(torch.tensor([[100, 0, 1]]), os.path.join(temp_dir, "ref", "utt19.pt"))
+    if include_frame_shift:
+        torch.save(
+            torch.tensor([[100, 0, 1]]), os.path.join(temp_dir, "ref", "utt19.pt")
+        )
+    else:
+        torch.save(torch.tensor([100]), os.path.join(temp_dir, "ref", "utt19.pt"))
     feat_sizes += (1,)
     alis = torch.cat(alis + [torch.tensor([10])])
     alis = [class_idx.item() for class_idx in alis]
@@ -53,28 +61,33 @@ def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
             assert table[key] == alis.count(class_idx)
 
     check()
-    # ensure we're only looking at the ids in the recorded refs
-    torch.save(torch.tensor([[100, 0, 101]]), os.path.join(temp_dir, "ref", "utt19.pt"))
-    assert not command_line.get_torch_spect_data_dir_info([temp_dir, table_path])
-    table = dict()
-    with open(table_path) as table_file:
-        for line in table_file:
-            line = line.split()
-            table[line[0]] = int(line[1])
-    assert table["max_ref_class"] == 100
-    # invalidate the data set and try again
-    torch.save(
-        torch.tensor([[100, 0, 1]]).int(), os.path.join(temp_dir, "ref", "utt19.pt")
-    )
-    with pytest.raises(ValueError, match="long tensor"):
+    if include_frame_shift:
+        # ensure we're only looking at the ids in the recorded refs
+        torch.save(
+            torch.tensor([[100, 0, 101]]), os.path.join(temp_dir, "ref", "utt19.pt")
+        )
+        assert not command_line.get_torch_spect_data_dir_info([temp_dir, table_path])
+        table = dict()
+        with open(table_path) as table_file:
+            for line in table_file:
+                line = line.split()
+                table[line[0]] = int(line[1])
+        assert table["max_ref_class"] == 100
+        # invalidate the data set and try again
+        torch.save(
+            torch.tensor([[100, 0, 1]]).int(), os.path.join(temp_dir, "ref", "utt19.pt")
+        )
+        with pytest.raises(ValueError, match="long tensor"):
+            command_line.get_torch_spect_data_dir_info(
+                [temp_dir, table_path, "--strict"]
+            )
+        # ...but the problem is fixable. So if we set the flag...
+        with pytest.warns(UserWarning, match="long tensor"):
+            command_line.get_torch_spect_data_dir_info([temp_dir, table_path, "--fix"])
+        check()
+        # ...it shouldn't happen again
         command_line.get_torch_spect_data_dir_info([temp_dir, table_path, "--strict"])
-    # ...but the problem is fixable. So if we set the flag...
-    with pytest.warns(UserWarning, match="long tensor"):
-        command_line.get_torch_spect_data_dir_info([temp_dir, table_path, "--fix"])
-    check()
-    # ...it shouldn't happen again
-    command_line.get_torch_spect_data_dir_info([temp_dir, table_path, "--strict"])
-    check()
+        check()
 
 
 def _write_token2id(path, swap, collapse_vowels=False):
@@ -320,8 +333,9 @@ def test_torch_token_data_dir_to_ctm(temp_dir, tokens, channels, frame_shift_ms)
     [("token2id", False), ("id2token", True), ("id2token", False), (None, False)],
 )
 @pytest.mark.parametrize("norm", [True, False])
+@pytest.mark.parametrize("with_timing", [True, False])
 def test_compute_torch_token_data_dir_error_rates(
-    temp_dir, per_utt, tokens, collapse_vowels, norm
+    temp_dir, per_utt, tokens, collapse_vowels, norm, with_timing
 ):
     torch.manual_seed(3820)
     tokens_path = os.path.join(temp_dir, "map")
@@ -391,8 +405,12 @@ def test_compute_torch_token_data_dir_error_rates(
             fill_idx = torch.randint(len(hyp) + 1, (1,)).item()
             filler = ignore_chars[torch.randint(len(ignore_chars), (1,)).item()]
             hyp = hyp[:fill_idx] + filler + hyp[fill_idx:]
-        ref = torch.tensor([(ord(c) - ord("a"), -1, -1) for c in ref])
-        hyp = torch.tensor([(ord(c) - ord("a"), -1, -1) for c in hyp])
+        if with_timing:
+            ref = torch.tensor([(ord(c) - ord("a"), -1, -1) for c in ref])
+            hyp = torch.tensor([(ord(c) - ord("a"), -1, -1) for c in hyp])
+        else:
+            ref = torch.tensor([ord(c) - ord("a") for c in ref])
+            hyp = torch.tensor([ord(c) - ord("a") for c in hyp])
         utt_id = num_utt_ids
         num_utt_ids += 1
         ref_path = os.path.join(ref_dir, "{}.pt".format(utt_id))
