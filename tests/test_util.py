@@ -268,61 +268,72 @@ def test_ctc_greedy_search(
     ],
     ids=("A", "B", "C", "D"),
 )
+@pytest.mark.parametrize("batch_size", [1, 2, 7])
 def test_ctc_prefix_search_advance(
-    probs_t, probs_prev, y_prev, y_next_exp, probs_next_exp
+    probs_t, probs_prev, y_prev, y_next_exp, probs_next_exp, batch_size, device
 ):
-    Kp = len(y_prev)
+    Kp, K, N = len(y_prev), len(y_next_exp), batch_size
 
-    y_prev_lens = torch.tensor([[len(x) for x in y_prev]])
-    assert y_prev_lens.shape == (1, Kp)
+    y_prev_lens = torch.tensor([[len(x) for x in y_prev]] * N, device=device)
+    assert y_prev_lens.shape == (N, Kp)
 
-    y_prev_last = torch.tensor([[x[-1] if x else 0 for x in y_prev]])
-    assert y_prev_last.shape == (1, Kp)
+    y_prev_last = torch.tensor([[x[-1] if x else 0 for x in y_prev]] * N, device=device)
+    assert y_prev_last.shape == (N, Kp)
 
     prev_is_prefix = []
     for k, kp in itertools.product(range(Kp), repeat=2):
         prev_is_prefix.append(y_prev[k] == y_prev[kp][: len(y_prev[k])])
-    prev_is_prefix = torch.tensor(prev_is_prefix).view(1, Kp, Kp)
+    prev_is_prefix = (
+        torch.tensor(prev_is_prefix, device=device).view(1, Kp, Kp).expand(N, Kp, Kp)
+    )
 
-    y_prev = torch.nn.utils.rnn.pad_sequence(
-        [torch.tensor(x, dtype=torch.long) for x in y_prev],
-        batch_first=True,
-        padding_value=0,
-    ).unsqueeze(0)
+    y_prev = (
+        torch.nn.utils.rnn.pad_sequence(
+            [torch.tensor(x, dtype=torch.long, device=device) for x in y_prev],
+            batch_first=True,
+            padding_value=0,
+        )
+        .unsqueeze(0)
+        .expand(N, Kp, -1)
+    )
     assert y_prev.dtype == torch.long
-    assert y_prev.dim() == 3
-    assert y_prev.shape[:2] == (1, Kp)
 
     if len(probs_t) == 2:
         # the usual CTC setup w/o fusion: extension probabilities are the same as
         # non-extension probabilities
         probs_t = ([probs_t[0]] * Kp, probs_t[0], probs_t[1])
-    probs_t = tuple(torch.tensor(x).unsqueeze(0) for x in probs_t)
+    probs_t = tuple(torch.stack([torch.tensor(x, device=device)] * N) for x in probs_t)
     V = probs_t[0].size(2)
-    assert probs_t[0].shape == (1, Kp, V)
-    assert probs_t[1].shape == (1, V)
-    assert probs_t[2].shape == (1,)
+    assert probs_t[0].shape == (N, Kp, V)
+    assert probs_t[1].shape == (N, V)
+    assert probs_t[2].shape == (N,)
 
-    probs_prev = tuple(torch.tensor(x).unsqueeze(0) for x in probs_prev)
-    assert all(x.shape == (1, Kp) for x in probs_prev)
+    probs_prev = tuple(
+        torch.tensor(x, device=device).unsqueeze(0).expand(N, Kp) for x in probs_prev
+    )
 
-    K = len(y_next_exp)
+    y_next_lens_exp = torch.tensor([[len(x) for x in y_next_exp]] * N, device=device)
+    assert y_next_lens_exp.shape == (N, K)
 
-    y_next_lens_exp = torch.tensor([[len(x) for x in y_next_exp]])
-    assert y_next_lens_exp.shape == (1, K)
-
-    y_next_last_exp = torch.tensor([[x[-1] if x else 0 for x in y_next_exp]])
-    assert y_next_last_exp.shape == (1, K)
+    y_next_last_exp = torch.tensor(
+        [[x[-1] if x else 0 for x in y_next_exp]] * N, device=device
+    )
+    assert y_next_last_exp.shape == (N, K)
 
     next_is_prefix_exp = []
     for k, kp in itertools.product(range(K), repeat=2):
         next_is_prefix_exp.append(y_next_exp[k] == y_next_exp[kp][: len(y_next_exp[k])])
-    next_is_prefix_exp = torch.tensor(next_is_prefix_exp).view(1, K, K)
+    next_is_prefix_exp = (
+        torch.tensor(next_is_prefix_exp, device=device).view(1, K, K).expand(N, K, K)
+    )
 
-    y_next_exp = tuple(torch.tensor(x) for x in y_next_exp)
+    y_next_exp = tuple(
+        torch.tensor(x, device=device).unsqueeze(0).expand(N, -1) for x in y_next_exp
+    )
 
-    probs_next_exp = tuple(torch.tensor(x).unsqueeze(0) for x in probs_next_exp)
-    assert all(x.shape == (1, K) for x in probs_next_exp)
+    probs_next_exp = tuple(
+        torch.tensor(x, device=device).unsqueeze(0).expand(N, K) for x in probs_next_exp
+    )
 
     (
         y_next_act,
@@ -341,10 +352,10 @@ def test_ctc_prefix_search_advance(
     )
 
     assert y_next_act.dim() == 3
-    assert y_next_act.shape[:2] == (1, K)
+    assert y_next_act.shape[:2] == (N, K)
     for k in range(K):
         y_next_exp_k = y_next_exp[k]
-        y_next_act_k = y_next_act[0, k, : len(y_next_exp_k)]
+        y_next_act_k = y_next_act[:, k, : y_next_exp_k.size(1)]
         assert (y_next_exp_k == y_next_act_k).all()
 
     assert y_next_last_act.shape == y_next_last_exp.shape
