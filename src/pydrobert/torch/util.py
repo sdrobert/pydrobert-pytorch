@@ -505,7 +505,7 @@ def error_rate(
 ) -> torch.Tensor:
     """Calculate error rates over a batch
 
-    An error rate is merely a `Levenshtein (edit) distance
+    An error rate is merely a `Levenshtein distance
     <https://en.wikipedia.org/wiki/Levenshtein_distance>`__ normalized over
     reference sequence lengths.
 

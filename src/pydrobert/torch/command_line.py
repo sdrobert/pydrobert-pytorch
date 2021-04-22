@@ -963,7 +963,8 @@ def _compute_torch_token_data_dir_parse_args(args):
         "--distances",
         action="store_true",
         default=False,
-        help="If set, do not normalize by reference lengths",
+        help="If set, return the average distance per utterance instead of the total "
+        "errors over the number of reference tokens",
     )
     parser.add_argument(
         "--per-utt",
@@ -973,29 +974,37 @@ def _compute_torch_token_data_dir_parse_args(args):
         "per-utterance error rates instead of the average",
     )
     parser.add_argument(
-        "--ins-cost",
-        type=float,
-        default=1.0,
-        help="The cost of an adding a superfluous token to a hypothesis " "transcript",
-    )
-    parser.add_argument(
-        "--del-cost",
-        type=float,
-        default=1.0,
-        help="The cost of missing a token from a reference transcript",
-    )
-    parser.add_argument(
-        "--sub-cost",
-        type=float,
-        default=1.0,
-        help="The cost of swapping a reference token with a hypothesis token",
-    )
-    parser.add_argument(
         "--batch-size",
         type=int,
         default=100,
         help="The number of error rates to compute at once. Reduce if you "
         "run into memory errors",
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--ins-cost",
+        type=float,
+        default=1.0,
+        help="The cost of an adding a superfluous token to a hypothesis transcript",
+    )
+    group.add_argument(
+        "--del-cost",
+        type=float,
+        default=1.0,
+        help="The cost of missing a token from a reference transcript",
+    )
+    group.add_argument(
+        "--sub-cost",
+        type=float,
+        default=1.0,
+        help="The cost of swapping a reference token with a hypothesis token",
+    )
+    group.add_argument(
+        "--nist-costs",
+        action="store_true",
+        default=False,
+        help="Use NIST (sclite, score) default costs for insertions, deletions, and "
+        "substitutions (3/3/4)",
     )
     return parser.parse_args(args)
 
@@ -1008,9 +1017,11 @@ def compute_torch_token_data_dir_error_rates(
     This is a very simple script that computes and prints the error rates between the
     ``ref/`` (reference/gold standard) token sequences and ``hyp/``
     (hypothesis/generated) token sequences in a
-    :class:`pydrobert.torch.data.SpectDataSet` directory. An error rate is merely a
-    `Levenshtein Distance <https://en.wikipedia.org/wiki/Levenshtein_distance>`__
-    normalized to the reference sequence length.
+    :class:`pydrobert.torch.data.SpectDataSet` directory. Consult the Wikipedia article
+    on the `Levenshtein distance <https://en.wikipedia.org/wiki/Levenshtein_distance>`__
+    for more info on error rates. The error rate for the entire partition will be
+    calculated as the total number of insertions, deletions, and substitutions made in
+    all transcriptions divided by the sum of lengths of reference transcriptions.
 
     While convenient and accurate, this script has very few features. Consider pairing
     the command ``torch-token-data-dir-to-trn`` with `sclite
@@ -1018,12 +1029,15 @@ def compute_torch_token_data_dir_error_rates(
 
     Many tasks will ignore some tokens (e.g. silences) or collapse others (e.g. phones).
     Please consult a standard recipe (such as those in `Kaldi
-    <http://kaldi-asr.org/>`__) before performing these computations
+    <http://kaldi-asr.org/>`__) before performing these computations.
     """
     try:
         options = _compute_torch_token_data_dir_parse_args(args)
     except SystemExit as ex:
         return ex.code
+    if options.nist_costs:
+        options.ins_cost = options.del_cost = 3.0
+        options.sub_cost = 4.0
     if options.hyp:
         ref_dir, hyp_dir = options.dir, options.hyp
     else:
@@ -1120,35 +1134,43 @@ def compute_torch_token_data_dir_error_rates(
 
     token2id = defaultdict(get_idee)
     error_rates = OrderedDict()
+    tot_errs = 0
+    total_ref_tokens = 0.0
     while len(ref_transcripts):
-        batch_ref_transcripts = ref_transcripts[: options.batch_size]
-        batch_hyp_transcripts = hyp_transcripts[: options.batch_size]
+        batch_ref_transcripts = [
+            (
+                utt,
+                [
+                    token2id[replace.get(t, t)]
+                    for t in transcript
+                    if replace.get(t, t) not in ignore
+                ],
+            )
+            for (utt, transcript) in ref_transcripts[: options.batch_size]
+        ]
+        batch_hyp_transcripts = [
+            (
+                utt,
+                [
+                    token2id[replace.get(t, t)]
+                    for t in transcript
+                    if replace.get(t, t) not in ignore
+                ],
+            )
+            for (utt, transcript) in hyp_transcripts[: options.batch_size]
+        ]
         ref_transcripts = ref_transcripts[options.batch_size :]
         hyp_transcripts = hyp_transcripts[options.batch_size :]
         ref = torch.nn.utils.rnn.pad_sequence(
             [
-                torch.tensor(
-                    [
-                        token2id[replace.get(token, token)]
-                        for token in transcript
-                        if replace.get(token, token) not in ignore
-                    ]
-                    + [eos]
-                )
+                torch.tensor(transcript + [eos])
                 for _, transcript in batch_ref_transcripts
             ],
             padding_value=padding,
         )
         hyp = torch.nn.utils.rnn.pad_sequence(
             [
-                torch.tensor(
-                    [
-                        token2id[replace.get(token, token)]
-                        for token in transcript
-                        if replace.get(token, token) not in ignore
-                    ]
-                    + [eos]
-                )
+                torch.tensor(transcript + [eos])
                 for _, transcript in batch_hyp_transcripts
             ],
             padding_value=padding,
@@ -1161,13 +1183,21 @@ def compute_torch_token_data_dir_error_rates(
             ins_cost=options.ins_cost,
             del_cost=options.del_cost,
             sub_cost=options.sub_cost,
-            norm=not options.distances,
+            norm=False,
         )
-        for (utt_id, _), er in zip(batch_ref_transcripts, ers):
-            error_rates[utt_id] = er.item()
+        for (utt_id, transcript), er in zip(batch_ref_transcripts, ers):
+            error_rates[utt_id] = er.item() / (
+                1 if options.distances else len(transcript)
+            )
+            tot_errs += er.item()
+            total_ref_tokens += len(transcript)
     if options.per_utt:
         for utt_id, er in list(error_rates.items()):
             options.out.write("{} {}\n".format(utt_id, er))
     else:
-        options.out.write("{}\n".format(sum(error_rates.values()) / len(error_rates)))
+        options.out.write(
+            "{}\n".format(
+                tot_errs / (len(error_rates) if options.distances else total_ref_tokens)
+            )
+        )
     return 0

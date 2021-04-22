@@ -319,7 +319,7 @@ def test_torch_token_data_dir_to_ctm(temp_dir, tokens, channels, frame_shift_ms)
     "tokens,collapse_vowels",
     [("token2id", False), ("id2token", True), ("id2token", False), (None, False)],
 )
-@pytest.mark.parametrize("norm", [False])
+@pytest.mark.parametrize("norm", [True, False])
 def test_compute_torch_token_data_dir_error_rates(
     temp_dir, per_utt, tokens, collapse_vowels, norm
 ):
@@ -371,6 +371,8 @@ def test_compute_torch_token_data_dir_error_rates(
                 else:
                     f.write("{} {}\n".format(c, ord(c) - ord("a")))
     exp = dict()
+    tot_err = 0
+    tot_len = 0
     num_utt_ids = 0
     while len(exp) < num_elem:
         tuple_ = tuples[torch.randint(len(tuples), (1,)).item()]
@@ -378,8 +380,7 @@ def test_compute_torch_token_data_dir_error_rates(
             ref, hyp, _, er = tuple_
         else:
             ref, hyp, er, _ = tuple_
-        if norm:
-            er = er / len(ref)
+        len_ = len(ref)
         num_ref_fillers = torch.randint(max_fillers, (1,)).item()
         num_hyp_fillers = torch.randint(max_fillers, (1,)).item()
         for _ in range(num_ref_fillers):
@@ -403,7 +404,9 @@ def test_compute_torch_token_data_dir_error_rates(
                 torch.save(hyp, hyp_path)
         torch.save(ref, ref_path)
         torch.save(hyp, hyp_path)
-        exp[str(utt_id)] = er
+        tot_err += er
+        tot_len += len_
+        exp[str(utt_id)] = er / (len_ if norm else 1)
     args = [
         ref_dir,
         hyp_dir,
@@ -429,11 +432,11 @@ def test_compute_torch_token_data_dir_error_rates(
                 ls = f.readline().strip().split()
                 if len(ls) != 2:
                     break
-                assert abs(exp[ls[0]] - float(ls[1])) < 1e-4
+                assert abs(exp[ls[0]] - float(ls[1])) < 1e-5
                 del exp[ls[0]]
         assert not len(exp)
     else:
-        exp = sum(exp.values()) / len(exp)
+        exp = tot_err / (tot_len if norm else num_utt_ids)
         with open(out_path) as f:
             act = float(f.read().strip())
             assert abs(exp - act) < 1e-4
