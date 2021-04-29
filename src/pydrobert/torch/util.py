@@ -1574,7 +1574,7 @@ def _levenshtein(
                         "contain the eos symbol ({}). To suppress this "
                         "warning, set warn=False".format(eos)
                     )
-                ref_lens = torch.where(ref_eq_mask, ref_lens - 1, ref_lens)
+                ref_lens = ref_lens - ref_eq_mask.to(ref_lens.dtype)
             hyp_eq_mask = hyp_lens == max_hyp_steps
             hyp_lens = hyp_lens + 1
             if hyp_eq_mask.any():
@@ -1584,7 +1584,7 @@ def _levenshtein(
                         "contain the eos symbol ({}). To suppress this "
                         "warning, set warn=False".format(eos)
                     )
-                hyp_lens = torch.where(hyp_eq_mask, hyp_lens - 1, hyp_lens)
+                hyp_lens = hyp_lens - hyp_eq_mask.to(hyp_lens.dtype)
             del ref_eq_mask, hyp_eq_mask
     else:
         ref_lens = torch.full_like(ref[0], max_ref_steps)
@@ -1647,10 +1647,8 @@ def _levenshtein(
     last_row = torch.empty_like(row)
     for hyp_idx in range(1, max_hyp_steps + 1):
         last_row = row
-        row = torch.where(hyp_lens < hyp_idx, last_row, last_row + ins_cost)
-        sub_row = torch.where(
-            ref == hyp[hyp_idx - 1], last_row[:-1], last_row[:-1] + sub_cost,
-        )
+        row = last_row + ins_cost * (hyp_lens >= hyp_idx).to(row.dtype)
+        sub_row = last_row[:-1] + sub_cost * (ref != hyp[hyp_idx - 1]).to(row.dtype)
         row[1:] = torch.min(row[1:], sub_row)
         row = (del_mat + row).min(1)[0]
         if return_mask and (hyp_idx < max_hyp_steps or not exclude_last):
@@ -1684,7 +1682,7 @@ def _levenshtein(
         return mask
     elif return_prf_dsts:
         if norm:
-            prefix_ers = prefix_ers / ref_lens.float()
+            prefix_ers = prefix_ers / ref_lens.to(row.dtype)
             zero_mask = ref_lens.eq(0).unsqueeze(0)
             if zero_mask.any():
                 if warn:
@@ -1696,9 +1694,9 @@ def _levenshtein(
                 prefix_ers = torch.where(
                     zero_mask,
                     (
-                        torch.arange(prefix_ers.shape[0], device=device)
+                        torch.arange(prefix_ers.size(0), device=device)
                         .gt(0)
-                        .float()
+                        .to(row.dtype)
                         .unsqueeze(1)
                         .expand_as(prefix_ers)
                     ),
@@ -1706,7 +1704,7 @@ def _levenshtein(
                 )
         prefix_ers = prefix_ers.masked_fill(
             (
-                torch.arange(prefix_ers.shape[0], device=device)
+                torch.arange(prefix_ers.size(0), device=device)
                 .unsqueeze(1)
                 .ge(hyp_lens + (0 if exclude_last else 1))
             ),
@@ -1717,7 +1715,7 @@ def _levenshtein(
         return prefix_ers
     er = row[ref_lens, batch_range]
     if norm:
-        er = er / ref_lens.float()
+        er = er / ref_lens.to(er.dtype)
         zero_mask = ref_lens.eq(0)
         if zero_mask.any():
             if warn:
@@ -1726,5 +1724,5 @@ def _levenshtein(
                     "will be 1 if any insertion and 0 otherwise. To suppress "
                     "this warning, set warn=False"
                 )
-            er = torch.where(zero_mask, hyp_lens.gt(0).float(), er,)
+            er = torch.where(zero_mask, hyp_lens.gt(0).to(er.dtype), er)
     return er
