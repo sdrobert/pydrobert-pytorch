@@ -1592,7 +1592,6 @@ def _levenshtein(
     ins_cost = torch.tensor(float(ins_cost), device=device)
     del_cost = torch.tensor(float(del_cost), device=device)
     sub_cost = torch.tensor(float(sub_cost), device=device)
-    batch_range = torch.arange(batch_size, device=device)
     if return_mask:
         # this dtype business is a workaround for different default mask
         # types < 1.2.0 and > 1.2.0
@@ -1644,7 +1643,6 @@ def _levenshtein(
     del_mat = del_mat + torch.full_like(del_mat, float("inf")).triu(1)
     del_mat = del_mat.unsqueeze(-1)  # batch
     row = row.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
-    last_row = torch.empty_like(row)
     for hyp_idx in range(1, max_hyp_steps + 1):
         last_row = row
         row = last_row + ins_cost * (hyp_lens >= hyp_idx).to(row.dtype)
@@ -1669,7 +1667,7 @@ def _levenshtein(
                 row_mask = row_mask & (hyp_idx <= hyp_lens)
             mask[hyp_idx] = row_mask
         elif return_prf_dsts and (hyp_idx < max_hyp_steps or not exclude_last):
-            prefix_ers[hyp_idx] = row[ref_lens, batch_range]
+            prefix_ers[hyp_idx] = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
     if return_mask:
         mask = mask & (
             (
@@ -1713,7 +1711,7 @@ def _levenshtein(
         if batch_first:
             prefix_ers = prefix_ers.t()
         return prefix_ers
-    er = row[ref_lens, batch_range]
+    er = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
     if norm:
         er = er / ref_lens.to(er.dtype)
         zero_mask = ref_lens.eq(0)
