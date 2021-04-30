@@ -980,24 +980,20 @@ def _compute_torch_token_data_dir_parse_args(args):
         help="The number of error rates to compute at once. Reduce if you "
         "run into memory errors",
     )
+    parser.add_argument(
+        '--quiet',
+        action='store_true',
+        default=False,
+        help='Suppress warnings which arise from edit distance computations'
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
-        "--ins-cost",
+        "--costs",
+        nargs=3,
         type=float,
-        default=1.0,
-        help="The cost of an adding a superfluous token to a hypothesis transcript",
-    )
-    group.add_argument(
-        "--del-cost",
-        type=float,
-        default=1.0,
-        help="The cost of missing a token from a reference transcript",
-    )
-    group.add_argument(
-        "--sub-cost",
-        type=float,
-        default=1.0,
-        help="The cost of swapping a reference token with a hypothesis token",
+        metavar=("INS", "DEL", "SUB"),
+        default=(1.0, 1.0, 1.0),
+        help="The costs of an insertion, deletion, and substitution, respectively",
     )
     group.add_argument(
         "--nist-costs",
@@ -1027,6 +1023,12 @@ def compute_torch_token_data_dir_error_rates(
     the command ``torch-token-data-dir-to-trn`` with `sclite
     <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__ instead.
 
+    Warnings
+    --------
+    The error rates reported by this command have changed since version ``v0.3.0`` of
+    ``pydrobert-pytorch`` when the insertion, deletion, and substitution costs do not
+    all equal 1. Consult the documentation of :func:`error_rate` for more information.
+
     Many tasks will ignore some tokens (e.g. silences) or collapse others (e.g. phones).
     Please consult a standard recipe (such as those in `Kaldi
     <http://kaldi-asr.org/>`__) before performing these computations.
@@ -1036,8 +1038,7 @@ def compute_torch_token_data_dir_error_rates(
     except SystemExit as ex:
         return ex.code
     if options.nist_costs:
-        options.ins_cost = options.del_cost = 3.0
-        options.sub_cost = 4.0
+        options.costs = (3.0, 3.0, 4.0)
     if options.hyp:
         ref_dir, hyp_dir = options.dir, options.hyp
     else:
@@ -1180,10 +1181,11 @@ def compute_torch_token_data_dir_error_rates(
             hyp,
             eos=eos,
             include_eos=False,
-            ins_cost=options.ins_cost,
-            del_cost=options.del_cost,
-            sub_cost=options.sub_cost,
+            ins_cost=options.costs[0],
+            del_cost=options.costs[1],
+            sub_cost=options.costs[2],
             norm=False,
+            warn=not options.quiet,
         )
         for (utt_id, transcript), er in zip(batch_ref_transcripts, ers):
             error_rates[utt_id] = er.item() / (
