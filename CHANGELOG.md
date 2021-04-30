@@ -2,6 +2,10 @@
 
 ## HEAD
 
+- Modified `error_rate`, `prefix_error_rates` to actually compute error rates
+  when non-default costs are used. Old functionality is now in
+  `edit_distance` and `prefix_edit_distances` (#51)
+- Fixed bug in how padding is handled in string matching utilities.
 - Fixed logic errors in `compute-torch-token-data-dir-error-rates` (#50)
 - Modified frame end in `pydrobert.torch.data.transcript_to_token` and added
   some notes on the ambiguity of the conversion.
