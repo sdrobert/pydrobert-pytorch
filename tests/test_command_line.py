@@ -458,3 +458,42 @@ def test_compute_torch_token_data_dir_error_rates(
         with open(out_path) as f:
             act = float(f.read().strip())
             assert abs(exp - act) < 1e-4
+
+
+@pytest.mark.cpu
+def test_error_rates_match_sclite_with_flag(temp_dir):
+    dir_ = os.path.join(os.path.dirname(__file__), "sclite")
+    token2id = os.path.join(dir_, "token2id.txt")
+    per_utt_act_file = os.path.join(temp_dir, "per_utt.txt")
+    total_act_file = os.path.join(temp_dir, "total.txt")
+    per_utt_exp_file = os.path.join(dir_, "per_utt.txt")
+    total_exp_file = os.path.join(dir_, "total.txt")
+    ref_dir = os.path.join(temp_dir, "ref")
+    hyp_dir = os.path.join(temp_dir, "hyp")
+    assert not command_line.trn_to_torch_token_data_dir(
+        [os.path.join(dir_, "ref.trn"), token2id, ref_dir]
+    )
+    assert not command_line.trn_to_torch_token_data_dir(
+        [os.path.join(dir_, "hyp.trn"), token2id, hyp_dir]
+    )
+    assert not command_line.compute_torch_token_data_dir_error_rates(
+        [ref_dir, hyp_dir, total_act_file, "--nist-costs", "--quiet"]
+    )
+    assert not command_line.compute_torch_token_data_dir_error_rates(
+        [ref_dir, hyp_dir, per_utt_act_file, "--nist-costs", "--per-utt", "--quiet"]
+    )
+    per_utt_exp = dict()
+    per_utt_act = dict()
+    for fn, dict_ in ((per_utt_exp_file, per_utt_exp), (per_utt_act_file, per_utt_act)):
+        with open(fn) as file_:
+            for line in file_:
+                utt, v = line.strip().split()
+                v = "{:.03f}".format(float(v))
+                dict_[utt] = v
+    for utt in per_utt_exp:
+        assert per_utt_exp[utt] == per_utt_act[utt], utt
+    with open(total_exp_file) as file_:
+        total_exp = "{:.03f}".format(float(file_.read().strip()))
+    with open(total_act_file) as file_:
+        total_act = "{:.03f}".format(float(file_.read().strip()))
+    assert total_exp == total_act

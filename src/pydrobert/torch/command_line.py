@@ -981,10 +981,10 @@ def _compute_torch_token_data_dir_parse_args(args):
         "run into memory errors",
     )
     parser.add_argument(
-        '--quiet',
-        action='store_true',
+        "--quiet",
+        action="store_true",
         default=False,
-        help='Suppress warnings which arise from edit distance computations'
+        help="Suppress warnings which arise from edit distance computations",
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
@@ -1018,6 +1018,8 @@ def compute_torch_token_data_dir_error_rates(
     for more info on error rates. The error rate for the entire partition will be
     calculated as the total number of insertions, deletions, and substitutions made in
     all transcriptions divided by the sum of lengths of reference transcriptions.
+
+    Error rates are printed as ratios, not by "percentage."
 
     While convenient and accurate, this script has very few features. Consider pairing
     the command ``torch-token-data-dir-to-trn`` with `sclite
@@ -1202,4 +1204,3 @@ def compute_torch_token_data_dir_error_rates(
                 tot_errs / (len(error_rates) if options.distances else total_ref_tokens)
             )
         )
-    return 0
