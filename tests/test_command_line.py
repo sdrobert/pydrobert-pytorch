@@ -21,14 +21,22 @@ import pydrobert.torch.command_line as command_line
 
 
 @pytest.mark.cpu
-def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
+@pytest.mark.parametrize("include_frame_shift", [True, False])
+def test_get_torch_spect_data_dir_info(
+    temp_dir, populate_torch_dir, include_frame_shift
+):
     _, alis, _, feat_sizes, _, _ = populate_torch_dir(
-        temp_dir, 19, num_filts=5, max_class=10
+        temp_dir, 19, num_filts=5, max_class=10, include_frame_shift=include_frame_shift
     )
     # add one with class idx 10 to ensure all classes are accounted for
     torch.save(torch.rand(1, 5), os.path.join(temp_dir, "feat", "utt19.pt"))
     torch.save(torch.tensor([10]), os.path.join(temp_dir, "ali", "utt19.pt"))
-    torch.save(torch.tensor([[100, 0, 1]]), os.path.join(temp_dir, "ref", "utt19.pt"))
+    if include_frame_shift:
+        torch.save(
+            torch.tensor([[100, 0, 1]]), os.path.join(temp_dir, "ref", "utt19.pt")
+        )
+    else:
+        torch.save(torch.tensor([100]), os.path.join(temp_dir, "ref", "utt19.pt"))
     feat_sizes += (1,)
     alis = torch.cat(alis + [torch.tensor([10])])
     alis = [class_idx.item() for class_idx in alis]
@@ -53,28 +61,33 @@ def test_get_torch_spect_data_dir_info(temp_dir, populate_torch_dir):
             assert table[key] == alis.count(class_idx)
 
     check()
-    # ensure we're only looking at the ids in the recorded refs
-    torch.save(torch.tensor([[100, 0, 101]]), os.path.join(temp_dir, "ref", "utt19.pt"))
-    assert not command_line.get_torch_spect_data_dir_info([temp_dir, table_path])
-    table = dict()
-    with open(table_path) as table_file:
-        for line in table_file:
-            line = line.split()
-            table[line[0]] = int(line[1])
-    assert table["max_ref_class"] == 100
-    # invalidate the data set and try again
-    torch.save(
-        torch.tensor([[100, 0, 1]]).int(), os.path.join(temp_dir, "ref", "utt19.pt")
-    )
-    with pytest.raises(ValueError, match="long tensor"):
+    if include_frame_shift:
+        # ensure we're only looking at the ids in the recorded refs
+        torch.save(
+            torch.tensor([[100, 0, 101]]), os.path.join(temp_dir, "ref", "utt19.pt")
+        )
+        assert not command_line.get_torch_spect_data_dir_info([temp_dir, table_path])
+        table = dict()
+        with open(table_path) as table_file:
+            for line in table_file:
+                line = line.split()
+                table[line[0]] = int(line[1])
+        assert table["max_ref_class"] == 100
+        # invalidate the data set and try again
+        torch.save(
+            torch.tensor([[100, 0, 1]]).int(), os.path.join(temp_dir, "ref", "utt19.pt")
+        )
+        with pytest.raises(ValueError, match="long tensor"):
+            command_line.get_torch_spect_data_dir_info(
+                [temp_dir, table_path, "--strict"]
+            )
+        # ...but the problem is fixable. So if we set the flag...
+        with pytest.warns(UserWarning, match="long tensor"):
+            command_line.get_torch_spect_data_dir_info([temp_dir, table_path, "--fix"])
+        check()
+        # ...it shouldn't happen again
         command_line.get_torch_spect_data_dir_info([temp_dir, table_path, "--strict"])
-    # ...but the problem is fixable. So if we set the flag...
-    with pytest.warns(UserWarning, match="long tensor"):
-        command_line.get_torch_spect_data_dir_info([temp_dir, table_path, "--fix"])
-    check()
-    # ...it shouldn't happen again
-    command_line.get_torch_spect_data_dir_info([temp_dir, table_path, "--strict"])
-    check()
+        check()
 
 
 def _write_token2id(path, swap, collapse_vowels=False):
@@ -319,9 +332,10 @@ def test_torch_token_data_dir_to_ctm(temp_dir, tokens, channels, frame_shift_ms)
     "tokens,collapse_vowels",
     [("token2id", False), ("id2token", True), ("id2token", False), (None, False)],
 )
-@pytest.mark.parametrize("norm", [False])
+@pytest.mark.parametrize("norm", [True, False])
+@pytest.mark.parametrize("with_timing", [True, False])
 def test_compute_torch_token_data_dir_error_rates(
-    temp_dir, per_utt, tokens, collapse_vowels, norm
+    temp_dir, per_utt, tokens, collapse_vowels, norm, with_timing
 ):
     torch.manual_seed(3820)
     tokens_path = os.path.join(temp_dir, "map")
@@ -371,6 +385,8 @@ def test_compute_torch_token_data_dir_error_rates(
                 else:
                     f.write("{} {}\n".format(c, ord(c) - ord("a")))
     exp = dict()
+    tot_err = 0
+    tot_len = 0
     num_utt_ids = 0
     while len(exp) < num_elem:
         tuple_ = tuples[torch.randint(len(tuples), (1,)).item()]
@@ -378,8 +394,7 @@ def test_compute_torch_token_data_dir_error_rates(
             ref, hyp, _, er = tuple_
         else:
             ref, hyp, er, _ = tuple_
-        if norm:
-            er = er / len(ref)
+        len_ = len(ref)
         num_ref_fillers = torch.randint(max_fillers, (1,)).item()
         num_hyp_fillers = torch.randint(max_fillers, (1,)).item()
         for _ in range(num_ref_fillers):
@@ -390,8 +405,12 @@ def test_compute_torch_token_data_dir_error_rates(
             fill_idx = torch.randint(len(hyp) + 1, (1,)).item()
             filler = ignore_chars[torch.randint(len(ignore_chars), (1,)).item()]
             hyp = hyp[:fill_idx] + filler + hyp[fill_idx:]
-        ref = torch.tensor([(ord(c) - ord("a"), -1, -1) for c in ref])
-        hyp = torch.tensor([(ord(c) - ord("a"), -1, -1) for c in hyp])
+        if with_timing:
+            ref = torch.tensor([(ord(c) - ord("a"), -1, -1) for c in ref])
+            hyp = torch.tensor([(ord(c) - ord("a"), -1, -1) for c in hyp])
+        else:
+            ref = torch.tensor([ord(c) - ord("a") for c in ref])
+            hyp = torch.tensor([ord(c) - ord("a") for c in hyp])
         utt_id = num_utt_ids
         num_utt_ids += 1
         ref_path = os.path.join(ref_dir, "{}.pt".format(utt_id))
@@ -403,7 +422,9 @@ def test_compute_torch_token_data_dir_error_rates(
                 torch.save(hyp, hyp_path)
         torch.save(ref, ref_path)
         torch.save(hyp, hyp_path)
-        exp[str(utt_id)] = er
+        tot_err += er
+        tot_len += len_
+        exp[str(utt_id)] = er / (len_ if norm else 1)
     args = [
         ref_dir,
         hyp_dir,
@@ -429,11 +450,50 @@ def test_compute_torch_token_data_dir_error_rates(
                 ls = f.readline().strip().split()
                 if len(ls) != 2:
                     break
-                assert abs(exp[ls[0]] - float(ls[1])) < 1e-4
+                assert abs(exp[ls[0]] - float(ls[1])) < 1e-5
                 del exp[ls[0]]
         assert not len(exp)
     else:
-        exp = sum(exp.values()) / len(exp)
+        exp = tot_err / (tot_len if norm else num_utt_ids)
         with open(out_path) as f:
             act = float(f.read().strip())
             assert abs(exp - act) < 1e-4
+
+
+@pytest.mark.cpu
+def test_error_rates_match_sclite_with_flag(temp_dir):
+    dir_ = os.path.join(os.path.dirname(__file__), "sclite")
+    token2id = os.path.join(dir_, "token2id.txt")
+    per_utt_act_file = os.path.join(temp_dir, "per_utt.txt")
+    total_act_file = os.path.join(temp_dir, "total.txt")
+    per_utt_exp_file = os.path.join(dir_, "per_utt.txt")
+    total_exp_file = os.path.join(dir_, "total.txt")
+    ref_dir = os.path.join(temp_dir, "ref")
+    hyp_dir = os.path.join(temp_dir, "hyp")
+    assert not command_line.trn_to_torch_token_data_dir(
+        [os.path.join(dir_, "ref.trn"), token2id, ref_dir]
+    )
+    assert not command_line.trn_to_torch_token_data_dir(
+        [os.path.join(dir_, "hyp.trn"), token2id, hyp_dir]
+    )
+    assert not command_line.compute_torch_token_data_dir_error_rates(
+        [ref_dir, hyp_dir, total_act_file, "--nist-costs", "--quiet"]
+    )
+    assert not command_line.compute_torch_token_data_dir_error_rates(
+        [ref_dir, hyp_dir, per_utt_act_file, "--nist-costs", "--per-utt", "--quiet"]
+    )
+    per_utt_exp = dict()
+    per_utt_act = dict()
+    for fn, dict_ in ((per_utt_exp_file, per_utt_exp), (per_utt_act_file, per_utt_act)):
+        with open(fn) as file_:
+            for line in file_:
+                utt, v = line.strip().split()
+                v = "{:.03f}".format(float(v))
+                dict_[utt] = v
+    for utt in per_utt_exp:
+        assert per_utt_exp[utt] == per_utt_act[utt], utt
+    with open(total_exp_file) as file_:
+        total_exp = "{:.03f}".format(float(file_.read().strip()))
+    with open(total_act_file) as file_:
+        total_act = "{:.03f}".format(float(file_.read().strip()))
+    assert total_exp == total_act

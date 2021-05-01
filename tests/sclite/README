@@ -1,0 +1,13 @@
+Hypothesis and reference text are sanitized Lorem Ipsum
+(https://en.wikipedia.org/wiki/Lorem_ipsum)
+
+SCLITE is part of the SCTK toolkit (https://github.com/usnistgov/SCTK)
+developed by NIST. The license can be found at
+http://www.nist.gov/open/license.cfm.
+
+The following calls were used to extract the relevant results. Divisions
+convert the "percentage" to fractions.
+
+sclite -r ref.trn -h hyp.trn -i swb > sclite_out.txt
+cat sclite_out.txt | grep '^ *| [0-9]' | tr '|' ' ' | awk '{print $1"-"$1,$8/100}' > per_utt.txt
+cat sclite_out.txt | grep 'Sum/Avg' | awk '{print $10/100}' > total.txt
