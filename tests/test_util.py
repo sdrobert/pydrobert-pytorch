@@ -228,10 +228,11 @@ def test_beam_search_advance(device, prevent_eos):
             assert not torch.any(y[: l.item(), bt, bm] == eos)
 
 
-@pytest.mark.parametrize("norm", [True, False])
 @pytest.mark.parametrize("include_eos", [0, 1])
 @pytest.mark.parametrize("batch_first", [True, False])
-def test_error_rate_against_known(device, norm, include_eos, batch_first):
+@pytest.mark.parametrize("norm", [True, False], ids=("normed", "unnormed"))
+@pytest.mark.parametrize("distance", [True, False], ids=("edit", "rate"))
+def test_error_rate_against_known(device, norm, include_eos, batch_first, distance):
     eos = 0
     pairs = (
         ((1, 2, 3), (1, 2, 3), 0,),
@@ -262,7 +263,12 @@ def test_error_rate_against_known(device, norm, include_eos, batch_first):
     exp = torch.tensor([float(x[2]) for x in pairs], device=device)
     if norm:
         exp = torch.where(ref_lens == 0, hyp_lens.ne(0).float(), exp / ref_lens.float())
-    act = util.error_rate(
+    # when all the costs are one, the edit distance should be the same as the error rate
+    if distance:
+        func = util.edit_distance
+    else:
+        func = util.error_rate
+    act = func(
         ref,
         hyp,
         eos=eos,
@@ -274,15 +280,17 @@ def test_error_rate_against_known(device, norm, include_eos, batch_first):
     assert torch.allclose(exp, act)
 
 
-@pytest.mark.parametrize("ins_cost", [-0.1, 0.0, 1.0])
-@pytest.mark.parametrize("del_cost", [-0.1, 0.0, 1.0])
-@pytest.mark.parametrize("sub_cost", [-0.1, 0.0, 1.0])
+@pytest.mark.parametrize("ins_cost", [-0.1, 0.0, 1.0], ids=("i-0.1", "i0.0", "i1.0"))
+@pytest.mark.parametrize("del_cost", [-0.1, 0.0, 1.0], ids=("d-0.1", "d0.0", "d1.0"))
+@pytest.mark.parametrize("sub_cost", [-0.1, 0.0, 1.0], ids=("s-0.1", "s0.0", "s1.0"))
+@pytest.mark.parametrize("distance", [True, False], ids=("edit", "rate"))
 @pytest.mark.parametrize("ref_bigger", [True, False])
 def test_error_rate_against_simple_impl(
-    device, ins_cost, del_cost, sub_cost, ref_bigger
+    device, ins_cost, del_cost, sub_cost, ref_bigger, distance
 ):
     torch.manual_seed(2502)
-    hyp_steps, ref_steps, batch_size, num_classes = 10, 9, 50, 10
+    hyp_steps, ref_steps, batch_size, num_classes = 10, 9, 10, 10
+    eps = 1e-4
     if ref_bigger:
         ref_steps, hyp_steps = hyp_steps, ref_steps
     ref = torch.randint(num_classes, (ref_steps, batch_size), device=device)
@@ -296,25 +304,96 @@ def test_error_rate_against_simple_impl(
     cost_matrix[:, 0] = (
         torch.arange(float(hyp_steps + 1), device=device).unsqueeze(-1) * ins_cost
     )
+    edit_matrix = torch.empty(hyp_steps + 1, ref_steps + 1, batch_size, device=device)
+    edit_matrix[0] = torch.arange(float(ref_steps + 1), device=device).unsqueeze(-1)
+    edit_matrix[:, 0] = torch.arange(float(hyp_steps + 1), device=device).unsqueeze(-1)
     for hyp_idx in range(1, hyp_steps + 1):
         for ref_idx in range(1, ref_steps + 1):
-            sub = torch.where(
+            neq_mask = torch.where(
                 ref[ref_idx - 1] == hyp[hyp_idx - 1],
                 torch.tensor(0.0, device=device),
-                torch.tensor(sub_cost, device=device),
+                torch.tensor(1.0, device=device),
             )
-            cost_matrix[hyp_idx, ref_idx] = torch.min(
-                torch.min(
-                    cost_matrix[hyp_idx - 1, ref_idx - 1] + sub,
-                    cost_matrix[hyp_idx - 1, ref_idx] + ins_cost,
-                ),
-                cost_matrix[hyp_idx, ref_idx - 1] + del_cost,
+            sub_align = cost_matrix[hyp_idx - 1, ref_idx - 1] + sub_cost * neq_mask
+            ins_align = cost_matrix[hyp_idx - 1, ref_idx] + ins_cost + eps
+            del_align = cost_matrix[hyp_idx, ref_idx - 1] + del_cost + eps
+            cur_costs, argmin = torch.stack([sub_align, ins_align, del_align]).min(0)
+            cur_costs -= argmin.gt(0) * eps
+            cost_matrix[hyp_idx, ref_idx] = cur_costs
+            sub_count = edit_matrix[hyp_idx - 1, ref_idx - 1] + neq_mask
+            ins_count = edit_matrix[hyp_idx - 1, ref_idx] + 1
+            del_count = edit_matrix[hyp_idx, ref_idx - 1] + 1
+            cur_counts = (
+                torch.stack([sub_count, ins_count, del_count])
+                .gather(0, argmin.unsqueeze(0))
+                .squeeze(0)
             )
-    exp = cost_matrix[-1, -1]
-    act = util.error_rate(
-        ref, hyp, norm=False, ins_cost=ins_cost, del_cost=del_cost, sub_cost=sub_cost
+            edit_matrix[hyp_idx, ref_idx] = cur_counts
+    if ins_cost == del_cost == sub_cost == 1:
+        assert torch.allclose(cost_matrix, edit_matrix)
+    if distance:
+        exp = cost_matrix[-1, -1]
+        func = util.edit_distance
+    else:
+        exp = edit_matrix[-1, -1]
+        func = util.error_rate
+    act = func(
+        ref,
+        hyp,
+        norm=False,
+        ins_cost=ins_cost,
+        del_cost=del_cost,
+        sub_cost=sub_cost,
+        warn=False,
     )
     assert torch.allclose(exp, act)
+
+
+@pytest.mark.parametrize("ins_cost", [0.5, 1.0], ids=("i0.5", "i1.0"))
+@pytest.mark.parametrize("del_cost", [0.5, 1.0], ids=("d0.5", "d1.0"))
+@pytest.mark.parametrize("sub_cost", [0.5, 1.0], ids=("s0.5", "s1.0"))
+@pytest.mark.parametrize("norm", [True, False], ids=("normed", "unnormed"))
+@pytest.mark.parametrize("distance", [True, False], ids=("edit", "rate"))
+def test_error_rate_ignores_padding(
+    device, ins_cost, del_cost, sub_cost, norm, distance
+):
+    N, Tmax, V, eos = 11, 50, 5, -1
+    ref_lens = torch.randint(Tmax, size=(N,), device=device)
+    refs = [torch.randint(V, size=(len_.item(),), device=device) for len_ in ref_lens]
+    hyp_lens = torch.randint(Tmax, size=(N,), device=device)
+    hyps = [torch.randint(V, size=(len_.item(),), device=device) for len_ in hyp_lens]
+    if distance:
+        func = util.edit_distance
+    else:
+        func = util.error_rate
+    out_a = []
+    for ref, hyp in zip(refs, hyps):
+        out_a.append(
+            func(
+                ref.unsqueeze(1),
+                hyp.unsqueeze(1),
+                norm=norm,
+                ins_cost=ins_cost,
+                del_cost=del_cost,
+                sub_cost=sub_cost,
+                warn=False,
+            )
+        )
+    out_a = torch.cat(out_a, 0)
+    assert out_a.dim() == 1 and out_a.size(0) == N
+    refs = torch.nn.utils.rnn.pad_sequence(refs, padding_value=eos)
+    hyps = torch.nn.utils.rnn.pad_sequence(hyps, padding_value=eos)
+    out_b = func(
+        refs,
+        hyps,
+        eos=eos,
+        norm=norm,
+        ins_cost=ins_cost,
+        del_cost=del_cost,
+        sub_cost=sub_cost,
+        warn=False,
+    )
+    assert torch.allclose(out_a, out_b)
 
 
 @pytest.mark.parametrize("include_eos", [True, False])
@@ -441,10 +520,14 @@ def test_random_walk_advance_config(device, prevent_eos, lens):
 
 @pytest.mark.parametrize("exclude_last", [True, False])
 @pytest.mark.parametrize("batch_first", [True, False])
-@pytest.mark.parametrize("norm", [True, False])
-@pytest.mark.parametrize("ins_cost", [1.0, 0.5])
-def test_prefix_error_rates(device, exclude_last, batch_first, norm, ins_cost):
-    torch.manual_seed(1937540)
+@pytest.mark.parametrize("ins_cost", [0.5, 1.0], ids=("i0.5", "i1.0"))
+@pytest.mark.parametrize("del_cost", [0.5, 1.0], ids=("d0.5", "d1.0"))
+@pytest.mark.parametrize("sub_cost", [0.5, 1.0], ids=("s0.5", "s1.0"))
+@pytest.mark.parametrize("norm", [True, False], ids=("normed", "unnormed"))
+@pytest.mark.parametrize("distance", [True, False], ids=("edit", "rate"))
+def test_prefix_error_rates(
+    device, exclude_last, batch_first, ins_cost, del_cost, sub_cost, norm, distance
+):
     N, max_ref_steps, max_hyp_steps, C, eos = 30, 11, 12, 10, -1
     padding = -2
     hyp_lens = torch.randint(1, max_hyp_steps + 1, (N,), device=device)
@@ -455,13 +538,21 @@ def test_prefix_error_rates(device, exclude_last, batch_first, norm, ins_cost):
     ref[ref_lens - 1, range(N)] = eos
     ref_lens -= 1  # exclude the eos
     hyp_lens -= 1
-    act = util.prefix_error_rates(
+    if distance:
+        funcs = util.prefix_edit_distances
+        func = util.edit_distance
+    else:
+        funcs = util.prefix_error_rates
+        func = util.error_rate
+    act = funcs(
         ref.t().contiguous() if batch_first else ref,
         hyp.t().contiguous() if batch_first else hyp,
         eos=eos,
         include_eos=False,
         norm=norm,
         ins_cost=ins_cost,
+        del_cost=del_cost,
+        sub_cost=sub_cost,
         exclude_last=exclude_last,
         padding=padding,
         batch_first=batch_first,
@@ -474,13 +565,15 @@ def test_prefix_error_rates(device, exclude_last, batch_first, norm, ins_cost):
     # which isn't in its prefix
     for pref_len in range(max_hyp_steps - (1 if exclude_last else 0), -1, -1):
         hyp[pref_len:] = eos
-        exp[pref_len] = util.error_rate(
+        exp[pref_len] = func(
             ref,
             hyp,
             eos=eos,
             include_eos=False,
             norm=norm,
             ins_cost=ins_cost,
+            del_cost=del_cost,
+            sub_cost=sub_cost,
             warn=False,
         )
     exp = exp.masked_fill(

@@ -34,10 +34,12 @@ import pydrobert.torch
 __all__ = [
     "beam_search_advance",
     "dense_image_warp",
+    "edit_distance",
     "error_rate",
     "optimal_completion",
     "parse_arpa_lm",
     "polyharmonic_spline",
+    "prefix_edit_distances",
     "prefix_error_rates",
     "random_walk_advance",
     "sequence_log_probs",
@@ -503,11 +505,13 @@ def error_rate(
     sub_cost: float = 1.0,
     warn: bool = True,
 ) -> torch.Tensor:
-    """Calculate error rates over a batch
+    """Calculate error rates over a batch of references and hypotheses
 
-    An error rate is merely a `Levenshtein (edit) distance
-    <https://en.wikipedia.org/wiki/Levenshtein_distance>`__ normalized over
-    reference sequence lengths.
+    An error rate is the total number of insertions, deletions, and substitutions
+    between a reference (gold-standard) and hypothesis (generated) transcription,
+    normalized by the number of elements in a reference. Consult the Wikipedia article
+    on the `Levenshtein distance <https://en.wikipedia.org/wiki/Levenshtein_distance>`__
+    for more information.
 
     Given a reference (gold-standard) transcript long tensor `ref` of size
     ``(max_ref_steps, batch_size)`` if `batch_first` is :obj:`False` or ``(batch_size,
@@ -515,8 +519,8 @@ def error_rate(
     batch_size)`` or ``(batch_size, max_hyp_steps)``, this function produces a tensor
     `er` of shape ``(batch_size,)`` storing the associated error rates.
 
-    `er` will not have a gradient, and is thus not directly suited to being a
-    loss function
+    `er` will not have a gradient, and is thus not directly suited to being a loss
+    function.
 
     Parameters
     ----------
@@ -528,11 +532,12 @@ def error_rate(
         in the batch
     include_eos : bool, optional
         Whether to include the first instance of `eos` found in both `ref` and `hyp` as
-        valid tokens to be computed as part of the distance. This is useful when gauging
+        valid tokens to be computed as part of the rate. This is useful when gauging
         if a model is learning to emit the `eos` properly, but is not usually included
         in an evaluation. Only the first `eos` per transcript is included
     norm : bool, optional
-        If :obj:`False`, will return edit distances instead of error rates
+        If :obj:`False`, will return the number of mistakes (rather than the number
+        of mistakes over the total number of referene tokens)
     batch_first : bool, optional
     ins_cost : float, optional
         The cost of an adding a superfluous token to a transcript in `hyp`
@@ -541,8 +546,111 @@ def error_rate(
     sub_cost : float, optional
         The cost of swapping a token from `ref` with one from `hyp`
     warn : bool, optional
-        Whether to display warnings on irregularities. Currently, this can happen in two
-        ways:
+        Whether to display warnings on irregularities. Currently, this can happen in
+        three ways.
+
+        1. If :obj:`True` and `ins_cost`, `del_cost`, or `sub_cost` is not 1, a warning
+           about a difference in computations will be raised. See the below warning for
+           more info.
+        2. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
+           transcription has zero length
+        3. If `eos` is set and `include_eos` is :obj:`True`, will warn when a transcript
+           does not include an `eos` symbol
+
+    Returns
+    -------
+    er : torch.Tensor
+        The error rates in `er` will always be floating-point, regardless of whether
+        they are normalized or not
+
+    Warnings
+    --------
+    Up to and including `v0.3.0`, `error_rate` computed a normalized `Edit distance
+    <https://en.wikipedia.org/wiki/Edit_distance>`__ instead of an error rate. The
+    latter can be considered the total weighted cost of insertions, deletions, and
+    substitutions (as per `ins_cost`, `del_cost`, and `sub_cost`), whereas the former is
+    the sum of the number of mistakes. The old behaviour of returning the cost is now in
+    :func:`edit_distance` (though `norm` is :obj:`False` by default). For speech
+    recognition evaluation, `error_rate` is the function to use. However, if you are
+    using the default costs, ``ins_cost == del_cost == sub_cost == 1``, there should be
+    no numerical difference between the two.
+
+    While `error_rate` does not report the total cost, `ins_cost`, `del_cost`, and
+    `sub_cost` impact how references are aligned to hypotheses. For example, setting
+    ``sub_cost == 0`` will not remove the count of substitutions from the error rate.
+    In fact, it's more likely to do the opposite: since the cost for a substitution is
+    lower, the underlying algorithm is more likely to align with substitutions,
+    increasing the contribution of substitutions to the error rate.
+    """
+    er = _string_matching(
+        ref,
+        hyp,
+        eos,
+        include_eos,
+        batch_first,
+        ins_cost,
+        del_cost,
+        sub_cost,
+        warn,
+        norm=norm,
+        return_mistakes=True,
+    )
+    return er
+
+
+def edit_distance(
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = False,
+    norm: bool = False,
+    batch_first: bool = False,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    warn: bool = True,
+) -> torch.Tensor:
+    """Compute an edit distance over a batch of references and hypotheses
+
+    An `Edit Distance <https://en.wikipedia.org/wiki/Edit_distance>`__ quantifies
+    how dissimilar two token sequences are as the total cost of transforming a
+    reference sequence into a hypothesis sequence. There are three operations that can
+    be performed, each with an associated cost: adding an extra token to the reference,
+    removing a token from the reference, or swapping a token in the reference with a
+    token in the hypothesis.
+
+    Given a reference (gold-standard) transcript long tensor `ref` of size
+    ``(max_ref_steps, batch_size)`` if `batch_first` is :obj:`False` or ``(batch_size,
+    max_ref_steps)`` otherwise, and a long tensor `hyp` of shape ``(max_hyp_steps,
+    batch_size)`` or ``(batch_size, max_hyp_steps)``, this function produces a tensor
+    `er` of shape ``(batch_size,)`` storing the associated edit distances.
+
+    Parameters
+    ----------
+    ref : torch.Tensor
+    hyp : torch.Tensor
+    eos : int or None, optional
+        A special token in `ref` and `hyp` whose first occurrence in each batch
+        indicates the end of a transcript. This allows for variable-length transcripts
+        in the batch
+    include_eos : bool, optional
+        Whether to include the first instance of `eos` found in both `ref` and `hyp` as
+        valid tokens to be computed as part of the rate. This is useful when gauging
+        if a model is learning to emit the `eos` properly, but is not usually included
+        in an evaluation. Only the first `eos` per transcript is included
+    norm : bool, optional
+        If :obj:`True`, will normalize the distance by the number of tokens in the
+        reference sequence (making the returned value a divergence)
+    batch_first : bool, optional
+    ins_cost : float, optional
+        The cost of an adding an extra token to a sequence in `ref`
+    del_cost : float, optional
+        The cost of removing a token from a sequence in `ref`
+    sub_cost : float, optional
+        The cost of swapping a token from `ref` with one from `hyp`
+    warn : bool, optional
+        Whether to display warnings on irregularities. Currently, this can happen in
+        two ways.
 
         1. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
            transcription has zero length
@@ -551,11 +659,18 @@ def error_rate(
 
     Returns
     -------
-    er : torch.Tensor
-        The error rates in `er` will always be floating-point, regardless of whether
+    ed : torch.Tensor
+        The error rates in `ed` will always be floating-point, regardless of whether
         they are normalized or not
+
+    Notes
+    -----
+    This function returns identical values (modulo a bug fix) to :func:`error_rate` up
+    to `v0.3.0` (though the default of `norm` has changed to :obj:`False`). For more
+    details on the distinction between this function and the new :func:`error_rate`,
+    please see that function's documentation.
     """
-    er = _levenshtein(
+    ed = _string_matching(
         ref,
         hyp,
         eos,
@@ -567,7 +682,7 @@ def error_rate(
         warn,
         norm=norm,
     )
-    return er
+    return ed
 
 
 def optimal_completion(
@@ -585,16 +700,15 @@ def optimal_completion(
 ) -> torch.Tensor:
     r"""Return a mask of next tokens of a minimum edit distance prefix
 
-    Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)``
-    (or ``(batch_size, max_ref_steps)`` if `batch_first` is :obj:`True`) and a
-    hypothesis transcript `hyp` of shape ``(max_hyp_steps, batch_size)`` (or
-    ``(batch_size, max_hyp_steps)``), this function produces a long tensor
-    `optimals` of shape ``(max_hyp_steps + 1, batch_size, max_unique_next)``
-    (or ``(batch_size, max_hyp_steps + 1, max_unique_next)``), where
-    ``max_unique_next <= max_ref_steps``, of the unique tokens that could be
-    added to the hypothesis prefix ``hyp[:prefix_len, batch]`` such that some
-    remaining suffix concatenated to the prefix would result in a minimal edit
-    distance. See below for an example
+    Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)`` (or
+    ``(batch_size, max_ref_steps)`` if `batch_first` is :obj:`True`) and a hypothesis
+    transcript `hyp` of shape ``(max_hyp_steps, batch_size)`` (or ``(batch_size,
+    max_hyp_steps)``), this function produces a long tensor `optimals` of shape
+    ``(max_hyp_steps + 1, batch_size, max_unique_next)`` (or ``(batch_size,
+    max_hyp_steps + 1, max_unique_next)``), where ``max_unique_next <= max_ref_steps``,
+    of the unique tokens that could be added to the hypothesis prefix ``hyp[:prefix_len,
+    batch]`` such that some remaining suffix concatenated to the prefix would result in
+    a minimal edit distance. See below for an example.
 
     Parameters
     ----------
@@ -675,7 +789,7 @@ def optimal_completion(
     pydrobert.torch.layers.HardOptimalCompletionDistillationLoss
         A loss function that uses these optimal completions to train a model
     """
-    mask = _levenshtein(
+    mask = _string_matching(
         ref,
         hyp,
         eos,
@@ -730,7 +844,7 @@ def prefix_error_rates(
     max_hyp_steps)``), this function produces a tensor `prefix_ers` of shape
     ``(max_hyp_steps + 1, batch_size)`` (or ``(batch_size, max_hyp_steps + 1))`` which
     contains the error rates for each prefix of each hypothesis, starting from the empty
-    prefix
+    prefix.
 
     Parameters
     ----------
@@ -739,13 +853,14 @@ def prefix_error_rates(
     eos : int or None, optional
         A special token in `ref` and `hyp` whose first occurrence in each batch
         indicates the end of a transcript. This allows for variable-length transcripts
-        in the batch
+        in the batch.
     include_eos : bool, optional
         Whether to include the first instance of `eos` found in both `ref` and `hyp` as
         valid tokens to be computed as part of the distance. Only the first `eos` per
-        transcript is included
+        transcript is included.
     norm : bool, optional
-        If :obj:`False`, will return edit distances instead of error rates
+        If :obj:`False`, will return the numbers of mistakes (rather than the numbers
+        of mistakes over the total number of referene tokens)
     batch_first : bool, optional
     ins_cost : float, optional
         The cost of an adding a superfluous token to a transcript in `hyp`
@@ -761,9 +876,16 @@ def prefix_error_rates(
         from the returned `dists`. `dists` will be of shape ``(max_hyp_steps,
         batch_size, max_unique_next)``
     warn : bool, optional
-        Whether to display warnings on irregularities. Currently, this only occurs when
-        `eos` is set, `include_eos` is :obj:`True`, and a transcript does not contain
-        the `eos` symbol
+        Whether to display warnings on irregularities. Currently, this can happen in
+        three ways.
+
+        1. If :obj:`True` and `ins_cost`, `del_cost`, or `sub_cost` is not 1, a warning
+           about a difference in computations will be raised. See the below warning for
+           more info.
+        2. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
+           transcription has zero length
+        3. If `eos` is set and `include_eos` is :obj:`True`, will warn when a transcript
+           does not include an `eos` symbol
 
     Returns
     -------
@@ -774,8 +896,14 @@ def prefix_error_rates(
     :ref:`Gradient Estimators`
         Provides an example where this function is used to determine a reward
         function for reinforcement learning
+
+    Warnings
+    --------
+    The values returned by this function changed after `v0.3.0`. The old behaviour
+    can be found in :func:`prefix_edit_distances` (though with `norm` defaulting to
+    :obj:`False`). Consult the warning in :func:`error_rate` for more info.
     """
-    prefix_ers = _levenshtein(
+    prefix_ers = _string_matching(
         ref,
         hyp,
         eos,
@@ -789,8 +917,102 @@ def prefix_error_rates(
         return_prf_dsts=True,
         exclude_last=exclude_last,
         padding=padding,
+        return_mistakes=True,
     )
     return prefix_ers
+
+
+def prefix_edit_distances(
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    norm: bool = False,
+    batch_first: bool = False,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    padding: int = pydrobert.torch.INDEX_PAD_VALUE,
+    exclude_last: bool = False,
+    warn: bool = True,
+) -> torch.Tensor:
+    """Compute the edit distance between ref and each prefix of hyp
+
+    Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)`` (or
+    ``(batch_size, max_ref_steps)`` if `batch_first` is :obj:`True`) and a hypothesis
+    transcript `hyp` of shape ``(max_hyp_steps, batch_size)`` (or ``(batch_size,
+    max_hyp_steps)``), this function produces a tensor `prefix_eds` of shape
+    ``(max_hyp_steps + 1, batch_size)`` (or ``(batch_size, max_hyp_steps + 1))`` which
+    contains the edit distance between the reference for each prefix of each hypothesis,
+    starting from the empty prefix.
+
+    Parameters
+    ----------
+    ref : torch.Tensor
+    hyp : torch.Tensor
+    eos : int or None, optional
+        A special token in `ref` and `hyp` whose first occurrence in each batch
+        indicates the end of a transcript. This allows for variable-length transcripts
+        in the batch.
+    include_eos : bool, optional
+        Whether to include the first instance of `eos` found in both `ref` and `hyp` as
+        valid tokens to be computed as part of the distance. Only the first `eos` per
+        transcript is included.
+    norm : bool, optional
+        If :obj:`True`, will normalize the distances by the number of tokens in the
+        reference sequence (making the returned values divergences)
+    batch_first : bool, optional
+    ins_cost : float, optional
+        The cost of an adding an extra token to a sequence in `ref`
+    del_cost : float, optional
+        The cost of removing a token from a sequence in `ref`
+    sub_cost : float, optional
+        The cost of swapping a token from `ref` with one from `hyp`
+    padding : int, optional
+        The value to right-pad the edit distance of unequal-length sequences with in
+        `prefix_eds`
+    exclude_last : bool, optional
+        If true, will exclude the final prefix, consisting of the entire transcript,
+        from the returned `dists`. `dists` will be of shape ``(max_hyp_steps,
+        batch_size, max_unique_next)``
+    warn : bool, optional
+        Whether to display warnings on irregularities. Currently, this can happen in
+        two ways.
+
+        1. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
+           transcription has zero length
+        2. If `eos` is set and `include_eos` is :obj:`True`, will warn when a transcript
+           does not include an `eos` symbol
+
+    Returns
+    -------
+    prefix_eds : torch.Tensor
+
+    Notes
+    -----
+    This function returns identical values (modulo a bug fix) to
+    :func:`prefix_error_rates` up to `v0.3.0` (though the default of `norm` has changed
+    to :obj:`False`). For more details on the distinction between this function and the
+    new :func:`prefix_error_rates`, please consult the documentation of
+    :func:`error_rate`.
+    """
+    prefix_eds = _string_matching(
+        ref,
+        hyp,
+        eos,
+        include_eos,
+        batch_first,
+        ins_cost,
+        del_cost,
+        sub_cost,
+        warn,
+        norm=norm,
+        return_prf_dsts=True,
+        exclude_last=exclude_last,
+        padding=padding,
+        return_mistakes=False,
+    )
+    return prefix_eds
 
 
 def random_walk_advance(
@@ -1530,7 +1752,7 @@ def _sequence_log_probs_packed(logits, hyp):
     return torch.stack(tuple(x.sum(0) for x in logits_split), 0)
 
 
-def _levenshtein(
+def _string_matching(
     ref,
     hyp,
     eos,
@@ -1545,10 +1767,22 @@ def _levenshtein(
     return_prf_dsts=False,
     exclude_last=False,
     padding=None,
+    return_mistakes=False,
 ):
     assert not return_mask or not return_prf_dsts
+    assert not exclude_last or (return_mask or return_prf_dsts)
     if ref.dim() != 2 or hyp.dim() != 2:
         raise RuntimeError("ref and hyp must be 2 dimensional")
+    if ins_cost == del_cost == sub_cost > 0.0:
+        # results are equivalent and faster to return
+        ins_cost = del_cost = sub_cost = 1.0
+        return_mistakes = False
+    elif return_mistakes and warn:
+        warnings.warn(
+            "The behaviour for non-uniform error rates has changed after v0.3.0. "
+            "Please switch to edit_distance functions for old behaviour. Set "
+            "warn=False to suppress this warning"
+        )
     if batch_first:
         ref = ref.t()
         hyp = hyp.t()
@@ -1574,7 +1808,7 @@ def _levenshtein(
                         "contain the eos symbol ({}). To suppress this "
                         "warning, set warn=False".format(eos)
                     )
-                ref_lens = torch.where(ref_eq_mask, ref_lens - 1, ref_lens)
+                ref_lens = ref_lens - ref_eq_mask.to(ref_lens.dtype)
             hyp_eq_mask = hyp_lens == max_hyp_steps
             hyp_lens = hyp_lens + 1
             if hyp_eq_mask.any():
@@ -1584,15 +1818,14 @@ def _levenshtein(
                         "contain the eos symbol ({}). To suppress this "
                         "warning, set warn=False".format(eos)
                     )
-                hyp_lens = torch.where(hyp_eq_mask, hyp_lens - 1, hyp_lens)
+                hyp_lens = hyp_lens - hyp_eq_mask.to(hyp_lens.dtype)
             del ref_eq_mask, hyp_eq_mask
     else:
-        ref_lens = torch.full_like(ref[0], max_ref_steps)
-        hyp_lens = torch.full_like(hyp[0], max_hyp_steps)
+        ref_lens = torch.full((batch_size,), max_ref_steps, device=ref.device)
+        hyp_lens = torch.full((batch_size,), max_hyp_steps, device=ref.device)
     ins_cost = torch.tensor(float(ins_cost), device=device)
     del_cost = torch.tensor(float(del_cost), device=device)
     sub_cost = torch.tensor(float(sub_cost), device=device)
-    batch_range = torch.arange(batch_size, device=device)
     if return_mask:
         # this dtype business is a workaround for different default mask
         # types < 1.2.0 and > 1.2.0
@@ -1610,68 +1843,98 @@ def _levenshtein(
             device=device,
             dtype=torch.float,
         )
-        prefix_ers[0] = ref_lens
+        prefix_ers[0] = ref_lens * (1.0 if return_mistakes else del_cost)
     # direct row down corresponds to insertion
     # direct col right corresponds to a deletion
-    # we vectorize as much as we can. Neither substitutions nor insertions
-    # require values from the current row to be computed, and since the last
-    # row can't be altered, we can easily vectorize there.
-    # To vectorize deletions, we use del_matrix. It has entries
+    #
+    # we vectorize as much as we can. Neither substitutions nor insertions require
+    # values from the current row to be computed, and since the last row can't be
+    # altered, we can easily vectorize there. To vectorize deletions, we use del_matrix.
+    # It has entries
     #
     # 0   inf inf inf ...
     # d   0   inf inf ...
     # 2d  d   0   inf ...
     # ...
     #
-    # Where "d" is del_cost. When we sum with the intermediate values of the
-    # next row "v" (containing the minimum of insertion and subs costs), we get
+    # Where "d" is del_cost. When we sum with the intermediate values of the next row
+    # "v" (containing the minimum of insertion and subs costs), we get
     #
     # v[0]    inf     inf     inf ...
     # v[0]+d  v[1]    inf     inf ...
     # v[0]+2d v[1]+d  v[2]    inf ...
     # ...
     #
-    # And we take the minimum of each row. The dynamic programming algorithm
-    # for levenshtein would usually handle deletions as:
+    # And we take the minimum of each row. The dynamic programming algorithm for
+    # levenshtein would usually handle deletions as:
     #
     # for i=1..|v|:
     #     v[i] = min(v[i], v[i-1]+d)
     #
-    # if we unroll the loop, we get the minimum of the elements of each row of
-    # the above matrix
-    row = torch.arange(max_ref_steps + 1, device=device, dtype=torch.float) * del_cost
-    del_mat = row.unsqueeze(1) - row
-    del_mat = del_mat + torch.full_like(del_mat, float("inf")).triu(1)
-    del_mat = del_mat.unsqueeze(-1)  # batch
+    # if we unroll the loop, we get the minimum of the elements of each row of the above
+    # matrix
+    row = torch.arange(max_ref_steps + 1, device=device, dtype=torch.float)  # (R+1, N)
+    if return_mistakes:
+        mistakes = row.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
+        row = row * del_cost
+    else:
+        row *= del_cost
+        del_mat = row.unsqueeze(1) - row
+        del_mat = del_mat + torch.full_like(del_mat, float("inf")).triu(1)
+        del_mat = del_mat.unsqueeze(-1)  # (R + 1, R + 1, 1)
     row = row.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
-    last_row = torch.empty_like(row)
-    for hyp_idx in range(1, max_hyp_steps + 1):
+    for hyp_idx in range(1, max_hyp_steps + (0 if exclude_last else 1)):
+        not_done = (hyp_idx - (0 if exclude_last else 1)) < hyp_lens
         last_row = row
-        row = torch.where(hyp_lens < hyp_idx, last_row, last_row + ins_cost)
-        sub_row = torch.where(
-            ref == hyp[hyp_idx - 1], last_row[:-1], last_row[:-1] + sub_cost,
-        )
-        row[1:] = torch.min(row[1:], sub_row)
-        row = (del_mat + row).min(1)[0]
-        if return_mask and (hyp_idx < max_hyp_steps or not exclude_last):
-            # As proven in the OCD paper, the optimal targets are always the
-            # first character of a suffix of the reference transcript that
-            # remains to be aligned. The levenshtein operation
-            # corresponding to what we do with that target would be a matched
-            # substitution (i.e. hyp's next token is the OCD target, resulting
-            # in no change in cost from the prefix). Thus, given a levenshtein
-            # matrix for one of these OCD targets (which is this matrix,
-            # except for the final row), the minimal values on the final row
-            # sit on a diagonal from the minimal values of the current row.
+        ins_mask = (hyp_lens >= hyp_idx).float()  # (N,)
+        neq_mask = (ref != hyp[hyp_idx - 1]).float()  # (R + 1, N)
+        row = last_row + ins_cost * ins_mask
+        sub_row = last_row[:-1] + sub_cost * neq_mask
+        if return_mistakes:
+            # The kicker is substitutions over insertions or deletions.
+            pick_sub = row[1:] >= sub_row
+            row[1:] = torch.where(pick_sub, sub_row, row[1:])
+            last_mistakes = mistakes
+            mistakes = last_mistakes + ins_mask
+            msub_row = last_mistakes[:-1] + neq_mask
+            mistakes[1:] = torch.where(pick_sub, msub_row, mistakes[1:])
+            # FIXME(sdrobert): the min function behaves non-determinically r.n.
+            # (regardless of what the 1.7.0 docs say!) so techniques for extracting
+            # indices from the min are a wash. If we can get determinism, we can flip
+            # the 1 dimension if (del_mat + row) before the min and get the least idx
+            # min, which should have the fewest number of deletions.
+            for ref_idx in range(1, max_ref_steps + 1):
+                del_ = row[ref_idx - 1] + del_cost
+                pick_sub = del_ >= row[ref_idx]
+                row[ref_idx] = torch.where(pick_sub, row[ref_idx], del_)
+                mistakes[ref_idx] = torch.where(
+                    pick_sub, mistakes[ref_idx], mistakes[ref_idx - 1] + 1.0
+                )
+            mistakes = torch.where(not_done, mistakes, last_mistakes)
+        else:
+            row[1:] = torch.min(row[1:], sub_row)
+            row, _ = (del_mat + row).min(1)
+        row = torch.where(not_done, row, last_row)
+        if return_mask:
+            # As proven in the OCD paper, the optimal targets are always the first
+            # character of a suffix of the reference transcript that remains to be
+            # aligned. The levenshtein operation corresponding to what we do with that
+            # target would be a matched substitution (i.e. hyp's next token is the OCD
+            # target, resulting in no change in cost from the prefix). Thus, given a
+            # levenshtein matrix for one of these OCD targets (which is this matrix,
+            # except for the final row), the minimal values on the final row sit on a
+            # diagonal from the minimal values of the current row.
             mins = row.min(0, keepdim=True)[0]
             row_mask = row[:-1] == mins
-            if exclude_last:
-                row_mask = row_mask & (hyp_idx < hyp_lens)
-            else:
-                row_mask = row_mask & (hyp_idx <= hyp_lens)
+            row_mask &= not_done
             mask[hyp_idx] = row_mask
-        elif return_prf_dsts and (hyp_idx < max_hyp_steps or not exclude_last):
-            prefix_ers[hyp_idx] = row[ref_lens, batch_range]
+        elif return_prf_dsts:
+            if return_mistakes:
+                prefix_ers[hyp_idx] = mistakes.gather(0, ref_lens.unsqueeze(0)).squeeze(
+                    0
+                )
+            else:
+                prefix_ers[hyp_idx] = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
     if return_mask:
         mask = mask & (
             (
@@ -1684,7 +1947,7 @@ def _levenshtein(
         return mask
     elif return_prf_dsts:
         if norm:
-            prefix_ers = prefix_ers / ref_lens.float()
+            prefix_ers = prefix_ers / ref_lens.to(row.dtype)
             zero_mask = ref_lens.eq(0).unsqueeze(0)
             if zero_mask.any():
                 if warn:
@@ -1696,9 +1959,9 @@ def _levenshtein(
                 prefix_ers = torch.where(
                     zero_mask,
                     (
-                        torch.arange(prefix_ers.shape[0], device=device)
+                        torch.arange(prefix_ers.size(0), device=device)
                         .gt(0)
-                        .float()
+                        .to(row.dtype)
                         .unsqueeze(1)
                         .expand_as(prefix_ers)
                     ),
@@ -1706,7 +1969,7 @@ def _levenshtein(
                 )
         prefix_ers = prefix_ers.masked_fill(
             (
-                torch.arange(prefix_ers.shape[0], device=device)
+                torch.arange(prefix_ers.size(0), device=device)
                 .unsqueeze(1)
                 .ge(hyp_lens + (0 if exclude_last else 1))
             ),
@@ -1715,9 +1978,12 @@ def _levenshtein(
         if batch_first:
             prefix_ers = prefix_ers.t()
         return prefix_ers
-    er = row[ref_lens, batch_range]
+    if return_mistakes:
+        er = mistakes.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
+    else:
+        er = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
     if norm:
-        er = er / ref_lens.float()
+        er = er / ref_lens.to(er.dtype)
         zero_mask = ref_lens.eq(0)
         if zero_mask.any():
             if warn:
@@ -1726,5 +1992,5 @@ def _levenshtein(
                     "will be 1 if any insertion and 0 otherwise. To suppress "
                     "this warning, set warn=False"
                 )
-            er = torch.where(zero_mask, hyp_lens.gt(0).float(), er,)
+            er = torch.where(zero_mask, hyp_lens.gt(0).to(er.dtype), er)
     return er
