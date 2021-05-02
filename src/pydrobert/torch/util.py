@@ -457,19 +457,19 @@ def ctc_greedy_search(
     Parameters
     ----------
     logits : torch.Tensor
-        A float tensor of shape ``(T, N, V)`` where ``T`` is the sequence dimension,
+        A float tensor of shape ``(N, T, V)`` where ``T`` is the sequence dimension,
         ``N`` is the batch dimension, and ``V`` is the number of classes including the
-        blank label. ``logits[t, n, :]`` represent the unnormalized log-probabilities
+        blank label. ``logits[n, t, :]`` represent the unnormalized log-probabilities
         of the labels at time ``t`` in batch element ``n``.
     in_lens : torch.Tensor or None, optional
         If specified, a long tensor of shape ``(N,)`` providing the lengths of the
         sequence in the batch. For a given batch element ``n``, only the values of
-        `logits` in the slice ``logits[:in_lens[n], n]`` will be considered valid.
+        `logits` in the slice ``logits[n, :in_lens[n]]`` will be considered valid.
     blank_idx : int, optional
         Which index along the class dimension specifices the blank label
     batch_first : bool, optional
-        If :obj:`True`, `logits` is of shape ``(N, T, V)`` and `paths` is of shape
-        ``(N, T)``.
+        If :obj:`False`, `logits` is of shape ``(T, N, V)`` and `paths` is of shape
+        ``(T, N)``.
     is_probs : bool, optional
         If :obj:`True`, `logits` will be considered a normalized probability
         distribution instead of an un-normalized log-probability distribution. The
@@ -480,11 +480,11 @@ def ctc_greedy_search(
     -------
     max_, paths, out_lens : torch.Tensor, torch.Tensor, torch.Tensor
         `max_` is a float tensor of shape ``(N,)`` of the total probability of the
-        greedy path. `paths` is a long tensor of shape ``(T, N)`` which stores the
+        greedy path. `paths` is a long tensor of shape ``(N, T`` which stores the
         reduced greedy paths. `out_lens` is a long tensor of shape ``(N,)`` which
         specifies the lengths of the greedy paths within `paths`: for a given batch
         element ``n``, the reduced greedy path is the sequence in the range
-        ``paths[:out_lens[n], n]``. The values of `paths` outside this range are
+        ``paths[n, :out_lens[n]]``. The values of `paths` outside this range are
         undefined.
     """
     if logits.dim() != 3:
@@ -499,35 +499,36 @@ def ctc_greedy_search(
     if not is_probs:
         # normalize
         logits = logits.log_softmax(2)
+    if not batch_first:
+        # the masked_fill/scatter_ logic won't work if it isn't batch_first
+        logits = logits.transpose(0, 1)
     max_, argmax = logits.max(2)
     keep_mask = argmax != blank_idx
-    if batch_first:
-        keep_mask[:, 1:] &= argmax[:, 1:] != argmax[:, :-1]
-        seq_dim = 1
-    else:
-        keep_mask[1:] &= argmax[1:] != argmax[:-1]
-        seq_dim = 0
-    seq_size = argmax.size(seq_dim)
+    keep_mask[:, 1:] &= argmax[:, 1:] != argmax[:, :-1]
+    seq_size = argmax.size(1)
     if in_lens is not None:
         in_len_mask = torch.arange(seq_size, device=argmax.device).unsqueeze(
-            1 - seq_dim
-        ) < in_lens.unsqueeze(seq_dim)
+            0
+        ) < in_lens.unsqueeze(1)
         keep_mask = keep_mask & in_len_mask
         if is_probs:
             max_ = max_.masked_fill(~in_len_mask, 1.0)
         else:
             max_ = max_.masked_fill(~in_len_mask, 0.0)
         del in_len_mask
-    out_lens = keep_mask.long().sum(seq_dim)
+    out_lens = keep_mask.long().sum(1)
     data = argmax.masked_select(keep_mask)
     out_len_mask = torch.arange(seq_size, device=argmax.device).unsqueeze(
-        1 - seq_dim
-    ) < out_lens.unsqueeze(seq_dim)
+        0
+    ) < out_lens.unsqueeze(1)
     if is_probs:
-        max_ = max_.prod(seq_dim)
+        max_ = max_.prod(1)
     else:
-        max_ = max_.sum(seq_dim)
-    return max_, argmax.masked_scatter_(out_len_mask, data), out_lens
+        max_ = max_.sum(1)
+    argmax = argmax.masked_scatter_(out_len_mask, data)
+    if not batch_first:
+        argmax = argmax.t()
+    return max_, argmax, out_lens
 
 
 def ctc_prefix_search_advance(

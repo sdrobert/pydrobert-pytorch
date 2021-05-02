@@ -220,6 +220,38 @@ def test_ctc_greedy_search(
         assert (paths_exp_n == paths_act_n[: len(paths_exp_n)]).all()
 
 
+@pytest.mark.parametrize("batch_first", [True, False])
+def test_ctc_greedy_search_ignores_padding(device, batch_first):
+    Tmax, N, V = 30, 51, 10
+    lens = torch.randint(1, Tmax + 1, size=(N,), device=device)
+    logits = torch.rand(N, Tmax, V + 1, device=device)
+    max_a, out_paths_a, out_lens_a = [], [], []
+    for logits_n, lens_n in zip(logits, lens):
+        max_a_n, out_paths_a_n, out_lens_a_n = util.ctc_greedy_search(
+            logits_n[:lens_n].unsqueeze(0 if batch_first else 1),
+            lens_n.view(1),
+            batch_first=batch_first,
+        )
+        max_a.append(max_a_n)
+        out_paths_a.append(out_paths_a_n.squeeze(0 if batch_first else 1))
+        out_lens_a.append(out_lens_a_n)
+    if not batch_first:
+        logits = logits.transpose(0, 1)
+    max_a = torch.cat(max_a, dim=0)
+    out_paths_a = torch.nn.utils.rnn.pad_sequence(out_paths_a, batch_first=batch_first)
+    out_lens_a = torch.cat(out_lens_a, dim=0)
+    max_b, out_paths_b, out_lens_b = util.ctc_greedy_search(
+        logits, lens, batch_first=batch_first
+    )
+    assert (out_lens_a == out_lens_b).all(), (out_lens_a, out_lens_b)
+    assert torch.allclose(max_a, max_b)
+    if not batch_first:
+        out_paths_a = out_paths_a.t()
+        out_paths_b = out_paths_b.t()
+    for out_path_a, out_path_b, len_ in zip(out_paths_a, out_paths_b, out_lens_a):
+        assert (out_path_a[:len_] == out_path_b[:len_]).all()
+
+
 @pytest.mark.parametrize(
     "probs_t,probs_prev,y_prev,y_next_exp,probs_next_exp",
     [
