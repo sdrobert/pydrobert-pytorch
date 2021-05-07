@@ -1684,6 +1684,8 @@ def pad_variable(
     NotImplementedError
         If any value in ``pad[:, n]`` equals or exceeds ``lens[n]`` when
         ``mode == 'reflect'``
+    RuntimeError
+        If any element in `lens` is less than 1 when ``mode == 'replicate'``
     """
     old_shape = x.shape
     ndim = len(old_shape)
@@ -1727,6 +1729,20 @@ def pad_variable(
         right_mask_ = (pad[1].unsqueeze(1) > arange_[:right_max]).unsqueeze(2)
         right_pad = x.gather(1, right_idxs).masked_select(right_mask_)
         del left_idxs, right_idxs, right_mask_, left_max, right_max
+    elif mode == "replicate":
+        if (lens < 1).any():
+            raise RuntimeError(f"For replicate padding, all lens must be > 0")
+        (left_max, right_max), _ = pad.max(1)
+        left_pad = (
+            x[:, :1].expand(N, left_max, F).masked_select(left_mask[:, :left_max])
+        )
+        right_mask_ = (pad[1].unsqueeze(1) > arange_[:right_max]).unsqueeze(2)
+        right_pad = (
+            x.gather(1, (lens - 1).view(N, 1, 1))
+            .expand(N, right_max, F)
+            .masked_select(right_mask_[:, :right_max])
+        )
+        del left_max, right_max, right_mask_
     else:
         raise ValueError(
             f"mode must be one of 'constant', 'reflect', 'replicate', got '{mode}'"

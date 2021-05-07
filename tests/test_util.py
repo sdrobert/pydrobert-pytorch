@@ -793,9 +793,7 @@ def test_sparse_image_warp_matches_tensorflow(
     )
 
 
-@pytest.mark.parametrize(
-    "mode", ["constant", "reflect", pytest.param("replicate", marks=pytest.mark.xfail)],
-)
+@pytest.mark.parametrize("mode", ["constant", "reflect", "replicate"])
 def test_pad_variable(device, mode):
     N, Tmax, Tmin = 10, 50, 5
     x = torch.rand((N, Tmax), device=device)
@@ -811,4 +809,6 @@ def test_pad_variable(device, mode):
     act_padded = util.pad_variable(x, lens, pad, mode)
     for exp_padded_n, act_padded_n in zip(exp_padded, act_padded):
         assert torch.allclose(exp_padded_n, act_padded_n[: len(exp_padded_n)])
-
+    # quick double-check that other types work
+    for type_ in (torch.long, torch.bool):
+        assert util.pad_variable(x.to(type_), lens, pad, mode).dtype == type_
