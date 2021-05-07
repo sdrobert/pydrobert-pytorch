@@ -1686,6 +1686,34 @@ def pad_variable(
         ``mode == 'reflect'``
     RuntimeError
         If any element in `lens` is less than 1 when ``mode == 'replicate'``
+
+    Examples
+    --------
+
+    >>> x = torch.arange(10)
+    >>> x
+    tensor([[0, 1, 2, 3, 4],
+            [5, 6, 7, 8, 9]])
+    >>> lens = torch.tensor([3, 4])
+    >>> pad = torch.arange(4).view(2, 2)
+    >>> pad.t()  # [[0_left, 0_right], [1_left, 1_right]]
+    tensor([[0, 2],
+            [1, 3]])
+    >>> y = pad_variable(x, lens, pad)  # constant w/ value 0
+    >>> y[0, :3 + 0 + 2]
+    tensor([0, 1, 2, 0, 0])
+    >>> y[1, :4 + 1 + 3]
+    tensor([0, 5, 6, 7, 8, 0, 0, 0])
+    >>> y = pad_variable(x, lens, pad, 'reflect')
+    >>> y[0, :3 + 0 + 2]
+    tensor([0, 1, 2, 1, 0])
+    >>> y[1, :4 + 1 + 3]
+    tensor([6, 5, 6, 7, 8, 7, 6, 5])
+    >>> y = pad_variable(x, lens, pad, 'replicate')
+    >>> y[0, :3 + 0 + 2]
+    tensor([0, 1, 2, 2, 2])
+    >>> y[1, :4 + 1 + 3]
+    tensor([5, 5, 6, 7, 8, 8, 8, 8])
     """
     old_shape = x.shape
     ndim = len(old_shape)
