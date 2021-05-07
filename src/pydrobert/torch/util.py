@@ -37,6 +37,7 @@ __all__ = [
     "edit_distance",
     "error_rate",
     "optimal_completion",
+    "pad_variable",
     "parse_arpa_lm",
     "polyharmonic_spline",
     "prefix_edit_distances",
@@ -1631,6 +1632,93 @@ def sparse_image_warp(
         )
 
         return warped
+
+
+def pad_variable(
+    x: torch.Tensor,
+    lens: torch.Tensor,
+    pad: torch.Tensor,
+    mode: str = "constant",
+    value: float = 0.0,
+) -> torch.Tensor:
+    """Pad variable-length input by a variable amount on each side
+
+    This function attempts to replicate the behaviour of :func:`torch.nn.functional.pad`
+    for `x` of variable sequence length with variable amounts of padding. `x` is a
+    tensor of shape ``(N, T, *)`` where ``N`` is the batch index and ``T`` is the
+    sequence index. `lens` is a long tensor of shape ``(N,)`` specifying the sequence
+    lengths: only the values in the range ``x[n, :lens[n]]`` are considered part of the
+    sequence of batch element ``n``. `pad` is a tensor of shape ``(2, N)`` specifying
+    how many elements at the start (``pad[0]``) and end (``pad[1]``) of each sequence.
+    The return tensor `padded` will have shape ``(N, T', *)`` such
+    that, for a given batch index ``n``,
+
+        padded[n, :pad[0, n]] = left padding
+        padded[n, pad[0,n]:pad[0,n] + lens[n]] = x[n, :lens[n]]
+        padded[n, pad[0,n] + lens[n]:pad[0,n] + lens[n] + pad[1, n]] = right padding
+
+    Parameters
+    ----------
+    x : torch.Tensor
+    lens : torch.Tensor
+    pad : torch.Tensor
+    mode : {'constant', 'reflect', 'replicate'}, optional
+        How to pad the sequences. :obj:`'constant'`: fill the padding region with the
+        value specified by `value`. :obj:`'reflect'`: padded values are reflections
+        around the endpoints. For example, the first right-padded value of the ``n``-th
+        sequence would be ``x[n, lens[n] - 2``, the third ``x[n, lens[n] - 3]``, and
+        so on. :obj:`replicate`: padding duplicates the endpoints of each sequence.
+        For example, the left-padded values of the ``n``-th sequence would all be
+        ``x[n, 0]``; the right-padded values would be ``x[n, lens[n] - 1]``.
+    value : scalar, optional
+        The value to pad with when ``mode == 'constant'``.
+
+    Returns
+    -------
+    padded : torch.Tensor
+        The new size for the second dimension would be
+        ``T' = (lens + pad.sum(0)).max().clamp_(min=T)``
+    """
+    old_shape = x.shape
+    ndim = len(old_shape)
+    if ndim < 2:
+        raise ValueError("Expected x to be at least two dimensional")
+    N, T = old_shape[:2]
+    if lens.shape != (N,):
+        raise ValueError(
+            f"For x of shape {old_shape}, lens should have shape ({N},) but got"
+            f"{lens.shape}"
+        )
+    if pad.shape != (2, N):
+        raise ValueError(
+            f"For x of shape {old_shape}, pad should have shape (2, {N}), but got "
+            f"{pad.shape}"
+        )
+    x = x.reshape(N, T, -1)
+    F = x.size(2)
+    new_lens = lens + pad.sum(0)
+    Tp = new_lens.max().clamp_(min=T)
+    arange_ = torch.arange(Tp, device=x.device)
+    if mode == "constant":
+        buff = torch.tensor(value, device=x.device, dtype=x.dtype).view(1)
+        left_pad = buff.expand(pad[0].sum() * F)
+        right_pad = buff.expand(pad[1].sum() * F)
+    else:
+        raise ValueError(
+            f"mode must be one of 'constant', 'reflect', 'replicate', got '{mode}'"
+        )
+    padded = torch.empty((N, Tp, F), device=x.device, dtype=x.dtype)
+    left_mask = (pad[0].unsqueeze(1) > arange_).unsqueeze(2)  # (N, Tp, 1)
+    padded = padded.masked_scatter(left_mask, left_pad)
+    mid_mask = ((pad[0] + lens).unsqueeze(1) > arange_).unsqueeze(2)  # (N, Tp, 1)
+    len_mask = (lens.unsqueeze(1) > arange_[:T]).unsqueeze(2)  # (N, T, 1)
+    x = x.masked_select(len_mask)
+    padded = padded.masked_scatter(mid_mask & ~left_mask, x)
+    right_mask = (new_lens.unsqueeze(1) > arange_).unsqueeze(2)  # (N, Tp, 1)
+    padded = padded.masked_scatter(right_mask & ~mid_mask, right_pad)
+    old_shape = list(old_shape)
+    old_shape[1] = Tp
+    return padded.view(*old_shape)
 
 
 def _deterimine_pinned_points(k, sizes):

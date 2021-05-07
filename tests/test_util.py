@@ -791,3 +791,29 @@ def test_sparse_image_warp_matches_tensorflow(
     assert torch.allclose(exp_warped, act_warped, atol=1e-3), (
         (exp_warped - act_warped).abs().max()
     )
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "constant",
+        pytest.param("repeat", marks=pytest.mark.xfail),
+        pytest.param("replicate", marks=pytest.mark.xfail),
+    ],
+)
+def test_pad_variable(device, mode):
+    N, Tmax, Tmin, value = 10, 50, 5, -1
+    x = torch.rand((N, Tmax), device=device)
+    lens = torch.randint(Tmin, Tmax + 1, (N,), device=device)
+    pad = torch.randint(Tmin - 1, size=(2, N), device=device)
+    exp_padded = []
+    for x_n, lens_n, pad_n in zip(x, lens, pad.t()):
+        x_n = x_n[:lens_n]
+        padded_n = torch.nn.functional.pad(
+            x_n.unsqueeze(0).unsqueeze(0), pad_n.tolist(), mode, value
+        ).flatten()
+        exp_padded.append(padded_n)
+    act_padded = util.pad_variable(x, lens, pad, mode, value)
+    for exp_padded_n, act_padded_n in zip(exp_padded, act_padded):
+        assert torch.allclose(exp_padded_n, act_padded_n[: len(exp_padded_n)])
+
