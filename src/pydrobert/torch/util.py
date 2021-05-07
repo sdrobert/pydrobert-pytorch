@@ -1678,6 +1678,12 @@ def pad_variable(
     padded : torch.Tensor
         The new size for the second dimension would be
         ``T' = (lens + pad.sum(0)).max().clamp_(min=T)``
+
+    Raises
+    ------
+    NotImplementedError
+        If any value in ``pad[:, n]`` equals or exceeds ``lens[n]`` when
+        ``mode == 'reflect'``
     """
     old_shape = x.shape
     ndim = len(old_shape)
@@ -1699,19 +1705,36 @@ def pad_variable(
     new_lens = lens + pad.sum(0)
     Tp = new_lens.max().clamp_(min=T)
     arange_ = torch.arange(Tp, device=x.device)
+    left_mask = (pad[0].unsqueeze(1) > arange_).unsqueeze(2)  # (N, Tp, 1)
     if mode == "constant":
         buff = torch.tensor(value, device=x.device, dtype=x.dtype).view(1)
         left_pad = buff.expand(pad[0].sum() * F)
         right_pad = buff.expand(pad[1].sum() * F)
+    elif mode == "reflect":
+        if (pad >= lens.unsqueeze(0)).any():
+            raise NotImplementedError(
+                "For reflect padding, all padding lengths must be less than the "
+                "sequence length"
+            )
+        (left_max, right_max), _ = pad.max(1)
+        left_idxs = (
+            (pad[0].unsqueeze(1) - arange_[:left_max]).clamp_(min=0).unsqueeze(2)
+        )
+        left_pad = x.gather(1, left_idxs).masked_select(left_mask[:, :left_max])
+        right_idxs = (
+            (lens.unsqueeze(1) - arange_[:right_max] - 2).clamp_(min=0).unsqueeze(2)
+        )
+        right_mask_ = (pad[1].unsqueeze(1) > arange_[:right_max]).unsqueeze(2)
+        right_pad = x.gather(1, right_idxs).masked_select(right_mask_)
+        del left_idxs, right_idxs, right_mask_, left_max, right_max
     else:
         raise ValueError(
             f"mode must be one of 'constant', 'reflect', 'replicate', got '{mode}'"
         )
-    padded = torch.empty((N, Tp, F), device=x.device, dtype=x.dtype)
-    left_mask = (pad[0].unsqueeze(1) > arange_).unsqueeze(2)  # (N, Tp, 1)
-    padded = padded.masked_scatter(left_mask, left_pad)
     mid_mask = ((pad[0] + lens).unsqueeze(1) > arange_).unsqueeze(2)  # (N, Tp, 1)
     len_mask = (lens.unsqueeze(1) > arange_[:T]).unsqueeze(2)  # (N, T, 1)
+    padded = torch.empty((N, Tp, F), device=x.device, dtype=x.dtype)
+    padded = padded.masked_scatter(left_mask, left_pad)
     x = x.masked_select(len_mask)
     padded = padded.masked_scatter(mid_mask & ~left_mask, x)
     right_mask = (new_lens.unsqueeze(1) > arange_).unsqueeze(2)  # (N, Tp, 1)
