@@ -41,6 +41,7 @@ __all__ = [
     "LookupLanguageModel",
     "MinimumErrorRateLoss",
     "MultiHeadedAttention",
+    "RandomShift",
     "SequentialLanguageModel",
     "SpecAugment",
 ]
