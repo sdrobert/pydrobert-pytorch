@@ -1735,7 +1735,7 @@ def pad_variable(
     new_lens = lens + pad.sum(0)
     Tp = new_lens.max().clamp_(min=T)
     arange_ = torch.arange(Tp, device=x.device)
-    left_mask = (pad[0].unsqueeze(1) > arange_).unsqueeze(2)  # (N, Tp, 1)
+    left_mask = (pad[0].unsqueeze(1) > arange_).unsqueeze(2).expand(N, Tp, F)
     if mode == "constant":
         buff = torch.tensor(value, device=x.device, dtype=x.dtype).view(1)
         left_pad = buff.expand(pad[0].sum() * F)
@@ -1748,13 +1748,23 @@ def pad_variable(
             )
         (left_max, right_max), _ = pad.max(1)
         left_idxs = (
-            (pad[0].unsqueeze(1) - arange_[:left_max]).clamp_(min=0).unsqueeze(2)
+            (pad[0].unsqueeze(1) - arange_[:left_max])
+            .clamp_(min=0)
+            .unsqueeze(2)
+            .expand(N, left_max, F)
         )
         left_pad = x.gather(1, left_idxs).masked_select(left_mask[:, :left_max])
         right_idxs = (
-            (lens.unsqueeze(1) - arange_[:right_max] - 2).clamp_(min=0).unsqueeze(2)
+            (lens.unsqueeze(1) - arange_[:right_max] - 2)
+            .clamp_(min=0)
+            .unsqueeze(2)
+            .expand(N, right_max, F)
         )
-        right_mask_ = (pad[1].unsqueeze(1) > arange_[:right_max]).unsqueeze(2)
+        right_mask_ = (
+            (pad[1].unsqueeze(1) > arange_[:right_max])
+            .unsqueeze(2)
+            .expand(N, right_max, F)
+        )
         right_pad = x.gather(1, right_idxs).masked_select(right_mask_)
         del left_idxs, right_idxs, right_mask_, left_max, right_max
     elif mode == "replicate":
@@ -1764,9 +1774,13 @@ def pad_variable(
         left_pad = (
             x[:, :1].expand(N, left_max, F).masked_select(left_mask[:, :left_max])
         )
-        right_mask_ = (pad[1].unsqueeze(1) > arange_[:right_max]).unsqueeze(2)
+        right_mask_ = (
+            (pad[1].unsqueeze(1) > arange_[:right_max])
+            .unsqueeze(2)
+            .expand(N, right_max, F)
+        )
         right_pad = (
-            x.gather(1, (lens - 1).view(N, 1, 1))
+            x.gather(1, (lens - 1).view(N, 1, 1).expand(N, right_max, F))
             .expand(N, right_max, F)
             .masked_select(right_mask_[:, :right_max])
         )
@@ -1775,13 +1789,13 @@ def pad_variable(
         raise ValueError(
             f"mode must be one of 'constant', 'reflect', 'replicate', got '{mode}'"
         )
-    mid_mask = ((pad[0] + lens).unsqueeze(1) > arange_).unsqueeze(2)  # (N, Tp, 1)
-    len_mask = (lens.unsqueeze(1) > arange_[:T]).unsqueeze(2)  # (N, T, 1)
+    mid_mask = ((pad[0] + lens).unsqueeze(1) > arange_).unsqueeze(2).expand(N, Tp, F)
+    len_mask = (lens.unsqueeze(1) > arange_[:T]).unsqueeze(2).expand(N, T, F)
     padded = torch.empty((N, Tp, F), device=x.device, dtype=x.dtype)
     padded = padded.masked_scatter(left_mask, left_pad)
     x = x.masked_select(len_mask)
     padded = padded.masked_scatter(mid_mask & ~left_mask, x)
-    right_mask = (new_lens.unsqueeze(1) > arange_).unsqueeze(2)  # (N, Tp, 1)
+    right_mask = (new_lens.unsqueeze(1) > arange_).unsqueeze(2).expand(N, Tp, F)
     padded = padded.masked_scatter(right_mask & ~mid_mask, right_pad)
     old_shape = list(old_shape)
     old_shape[1] = Tp
