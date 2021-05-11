@@ -21,11 +21,16 @@ The loss functions :class:`HardOptimalCompletionDistillationLoss` and
 """
 
 import abc
-from typing import NoReturn, Optional, Sequence, Tuple
+from typing import NoReturn, Optional, Sequence, Tuple, Union
 
 import torch
 
-from pydrobert.torch.util import error_rate, optimal_completion, polyharmonic_spline
+from pydrobert.torch.util import (
+    error_rate,
+    optimal_completion,
+    polyharmonic_spline,
+    pad_variable,
+)
 
 __all__ = [
     "ConcatSoftAttention",
@@ -36,6 +41,7 @@ __all__ = [
     "LookupLanguageModel",
     "MinimumErrorRateLoss",
     "MultiHeadedAttention",
+    "RandomShift",
     "SequentialLanguageModel",
     "SpecAugment",
 ]
@@ -2156,3 +2162,123 @@ class SpecAugment(torch.nn.Module):
             lengths = torch.tensor([T] * N, device=feats.device)
         params = self.draw_parameters(feats, lengths)
         return self.apply_parameters(feats, params, lengths)
+
+
+class RandomShift(torch.nn.Module):
+    """Pad to the left and right of each sequence by a random amount
+
+    This layer is intended for training models which are robust to small shifts in some
+    variable-length sequence dimension (e.g. speech recognition). It pads each input
+    sequence with some number of elements at its beginning and end. The number of
+    elements is randomly chosen but bounded above by some proportion of the input length
+    specified by the user. Its call signature is
+
+        out, out_lens = layer(in_, in_lens)
+
+    Where: `in_` is a tensor of shape ``(N, T, *)`` where ``N`` is the batch dimension
+    and ``T`` is the sequence dimension; `in_lens` is a long tensor of shape ``(N,)``;
+    `out` is a tensor of the same type as `in_` of shape ``(N, T', *)``; and `out_lens`
+    is of shape ``(N,)``. The ``n``-th input sequence is stored in the range
+    ``in_[n, :in_lens[n]]``. The padded ``n``-th sequence is stored in the range
+    ``out[n, :out_lens[n]]``. Values outside of these ranges are undefined.
+
+    The amount of padding is dictated by the parameter `prop` this layer is initialized
+    with. A proportion is a non-negative float dictating the maximum ratio of the
+    original sequence length which may be padded, exclusive. `prop` can be a pair
+    ``left, right`` for separate ratios of padding at the beginning and end of a
+    sequence, or just one float if the proportions are the same. For example,
+    ``prop=0.5`` of a sequence of length ``10`` could result in a sequence of length
+    between ``10`` and ``18`` inclusive since each side of the sequence could be padded
+    with ``0-4`` elements (``0.5 * 10 = 5`` is an exclusive bound).
+
+    Padding is only applied if this layer is in training mode. If testing,
+    ``out, out_lens = in_, in_lens``.
+
+    Parameters
+    ----------
+    prop : float or tuple
+    mode : {'reflect', 'constant', 'replicate'}, optional
+        The method with which to pad the input sequence.
+    value : float, optional
+        The constant with which to pad the sequence if `mode` is set to
+        :obj:`'constant'`.
+
+    Attributes
+    ----------
+    mode : {'reflect', 'replicate', 'constant'}
+    prop : tuple
+    value : float
+
+    Raises
+    ------
+    NotImplementedError
+        On initialization if `mode` is :obj:`'reflect'` and a value in `prop` exceeds
+        ``1.0``. Reflection currently requires the amount of padding does not exceed
+        the original sequence length.
+
+    See Also
+    --------
+    pydrobert.torch.util.pad_variable
+        For more details on the different types of padding. Note the default `mode` is
+        different between this and the function.
+    """
+
+    def __init__(
+        self,
+        prop: Union[float, Tuple[float, float]],
+        mode: str = "reflect",
+        value: float = 0.0,
+    ):
+        super().__init__()
+        try:
+            prop = (float(prop), float(prop))
+        except TypeError:
+            prop = tuple(prop)
+        if len(prop) != 2:
+            raise ValueError(
+                f"prop must be a single or pair of floating points, got '{prop}'"
+            )
+        if prop[0] < 0.0 or prop[1] < 0.0:
+            raise ValueError("prop values must be non-negative")
+        if mode == "reflect":
+            if prop[0] > 1.0 or prop[1] > 1.0:
+                raise NotImplementedError(
+                    "if 'mode' is 'reflect', values in 'prop' must be <= 1"
+                )
+        elif mode not in {"constant", "replicate"}:
+            raise ValueError(
+                "'mode' must be one of 'reflect', 'constant', or 'replicate', got "
+                f"'{mode}'"
+            )
+        self.mode = mode
+        self.prop = prop
+        self.value = value
+
+    def extra_repr(self) -> str:
+        return f"prop={self.prop}, mode={self.mode}, value={self.value}"
+
+    def reset_parameters(self) -> None:
+        pass
+
+    def check_input(self, in_: torch.Tensor, in_lens: torch.Tensor) -> None:
+        if in_.dim() < 2:
+            raise RuntimeError(f"in_ must be at least 2 dimensional")
+        if in_lens.dim() != 1 or in_lens.size(0) != in_.size(0):
+            raise RuntimeError(
+                f"For in_ of shape {in_.shape}, expected in_lens to be of shape "
+                f"({in_.size(0)}), got {in_lens.shape}"
+            )
+
+    def forward(
+        self, in_: torch.Tensor, in_lens: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self.check_input(in_, in_lens)
+        if self.training:
+            in_lens_ = in_lens.float()
+            pad = torch.stack([self.prop[0] * in_lens_, self.prop[1] * in_lens_])
+            pad *= torch.rand_like(pad)
+            pad = pad.long()
+            out_lens = in_lens + pad.sum(0)
+            return pad_variable(in_, in_lens, pad, self.mode, self.value), out_lens
+        else:
+            return in_, in_lens
