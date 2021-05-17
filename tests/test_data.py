@@ -233,7 +233,12 @@ def test_spect_data_set_validity(temp_dir, eos):
     torch.save(torch.rand(4, 4).long(), feats_b_pt)
     with pytest.raises(ValueError, match="not the same tensor type"):
         data.validate_spect_data_set(data_set)
-    torch.save(torch.rand(4,), feats_b_pt)
+    torch.save(
+        torch.rand(
+            4,
+        ),
+        feats_b_pt,
+    )
     with pytest.raises(ValueError, match="does not have two dimensions"):
         data.validate_spect_data_set(data_set)
     torch.save(torch.rand(4, 3), feats_b_pt)
@@ -506,7 +511,13 @@ last A 0.0 10.0111 hullo
     "transcript,token2id,unk,skip_frame_times,exp",
     [
         ([], None, None, False, torch.LongTensor(0, 3)),
-        ([1, 2, 3, 4], None, None, True, torch.LongTensor([1, 2, 3, 4]),),
+        (
+            [1, 2, 3, 4],
+            None,
+            None,
+            True,
+            torch.LongTensor([1, 2, 3, 4]),
+        ),
         (
             [1, ("a", 4, 10), "a", 3],
             {"a": 2},
@@ -867,8 +878,9 @@ def test_spect_training_data_loader(
     _compare_epochs(_get_epoch(True), _get_epoch(True), True)
     data_loader.epoch = 1
     _compare_epochs(ep1, _get_epoch(False), True)
+    # XXX(sdrobert): warning spit out on CI if num_workers > 2
     data_loader = data.SpectTrainingDataLoader(
-        temp_dir, params, data_params=data_params, num_workers=4, seed=2
+        temp_dir, params, data_params=data_params, num_workers=2, seed=2
     )
     _compare_epochs(ep0, _get_epoch(False), True)
     _compare_epochs(ep1, _get_epoch(False), True)
@@ -992,7 +1004,7 @@ def test_spect_evaluation_data_loader(
     _compare_data_loader()
     _compare_data_loader()  # order should not change
     data_loader = data.SpectEvaluationDataLoader(
-        temp_dir, params, data_params=data_params, num_workers=4
+        temp_dir, params, data_params=data_params, num_workers=2
     )
     _compare_data_loader()  # order should still not change
     data_loader.batch_first = False
@@ -1042,7 +1054,7 @@ def test_window_training_data_loader(temp_dir, populate_torch_dir, split_params)
         params,
         init_epoch=1,
         data_params=data_params,
-        num_workers=4,
+        num_workers=2,
         seed=seed,
     )
     feats_ep1_b, alis_ep1_b = [], []
@@ -1114,7 +1126,7 @@ def test_window_evaluation_data_loader(temp_dir, populate_torch_dir, split_param
     _compare_data_loader(data_loader)
     _compare_data_loader(data_loader)  # order should not change
     data_loader = data.ContextWindowEvaluationDataLoader(
-        temp_dir, params, data_params=data_params, num_workers=4
+        temp_dir, params, data_params=data_params, num_workers=2
     )
     _compare_data_loader(data_loader)  # order should still not change
 
@@ -1152,10 +1164,13 @@ def test_pydrobert_param_optuna_hooks():
     sampler = optuna.samplers.RandomSampler(seed=5)
     study = optuna.create_study(sampler=sampler)
     study.optimize(objective, n_trials=10)
-    assert not {
-        "data_set.batch_size",
-        "spect_data_set.batch_size",
-        "context_window_data.reverse",
-        "context_window_data_set.batch_size",
-    } - set(study.best_params)
+    assert (
+        not {
+            "data_set.batch_size",
+            "spect_data_set.batch_size",
+            "context_window_data.reverse",
+            "context_window_data_set.batch_size",
+        }
+        - set(study.best_params)
+    )
     assert study.best_params["data_set.batch_size"] < 7

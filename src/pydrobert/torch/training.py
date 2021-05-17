@@ -369,7 +369,15 @@ class TrainingStateController(object):
             int(math.log10(max(params.early_stopping_patience, 1))) + 1
         )
         self.fmt_dict["rlr_resume_cd"] = "{{:0{}d}}".format(
-            int(math.log10(max(params.reduce_lr_cooldown, params.reduce_lr_burnin, 1,)))
+            int(
+                math.log10(
+                    max(
+                        params.reduce_lr_cooldown,
+                        params.reduce_lr_burnin,
+                        1,
+                    )
+                )
+            )
             + 1
         )
         self.fmt_dict["rlr_patience_cd"] = "{{:0{}d}}".format(
@@ -559,7 +567,8 @@ class TrainingStateController(object):
             epoch_info = self[epoch]
             model_basename = self.params.saved_model_fmt.format(**epoch_info)
             model_state_dict = torch.load(
-                os.path.join(self.state_dir, model_basename), map_location="cpu",
+                os.path.join(self.state_dir, model_basename),
+                map_location="cpu",
             )
             model.load_state_dict(model_state_dict, strict=strict)
         else:
@@ -621,11 +630,13 @@ class TrainingStateController(object):
             model_basename = self.params.saved_model_fmt.format(**epoch_info)
             optimizer_basename = self.params.saved_optimizer_fmt.format(**epoch_info)
             model_state_dict = torch.load(
-                os.path.join(self.state_dir, model_basename), map_location="cpu",
+                os.path.join(self.state_dir, model_basename),
+                map_location="cpu",
             )
             model.load_state_dict(model_state_dict, strict=strict)
             optimizer_state_dict = torch.load(
-                os.path.join(self.state_dir, optimizer_basename), map_location="cpu",
+                os.path.join(self.state_dir, optimizer_basename),
+                map_location="cpu",
             )
             optimizer.load_state_dict(optimizer_state_dict)
         else:
@@ -711,10 +722,12 @@ class TrainingStateController(object):
         model_basename = self.params.saved_model_fmt.format(**info)
         optimizer_basename = self.params.saved_optimizer_fmt.format(**info)
         torch.save(
-            model.state_dict(), os.path.join(self.state_dir, model_basename),
+            model.state_dict(),
+            os.path.join(self.state_dir, model_basename),
         )
         torch.save(
-            optimizer.state_dict(), os.path.join(self.state_dir, optimizer_basename),
+            optimizer.state_dict(),
+            os.path.join(self.state_dir, optimizer_basename),
         )
 
     def save_info_to_hist(self, info: dict) -> None:
@@ -817,6 +830,7 @@ class TrainingStateController(object):
         """
         if epoch is None:
             epoch = self.get_last_epoch() + 1
+        last_best = self.get_best_epoch()
         if not self.params.num_epochs:
             cont = True
         else:
@@ -848,17 +862,18 @@ class TrainingStateController(object):
                 "arguments but were specified via add_entry(): {}"
                 "".format(sorted(remaining_user_entries))
             )
-        last_best = self.get_best_epoch()
-        best_info = self[last_best]
         if info["lr"] is None:
             # can only happen during the first epoch. We don't know the
             # optimizer defaults, so we get them now
             info["lr"] = optimizer.defaults["lr"]
+        es_epoch = (
+            epoch - self.params.early_stopping_patience + info["es_patience_cd"] - 1
+        )
+        es_info = self.get_info(es_epoch)
         if info["es_resume_cd"]:
             info["es_resume_cd"] -= 1
         elif (
-            max(best_info["val_met"] - val_met, 0)
-            < self.params.early_stopping_threshold
+            max(es_info["val_met"] - val_met, 0) < self.params.early_stopping_threshold
         ):
             info["es_patience_cd"] -= 1
             if info["es_patience_cd"] < 0:
@@ -873,9 +888,11 @@ class TrainingStateController(object):
         # stopping has been reached
         if self.params.early_stopping_threshold and not info["es_patience_cd"]:
             cont = False
+        rlr_epoch = epoch - self.params.reduce_lr_patience + info["rlr_patience_cd"] - 1
+        rlr_info = self.get_info(rlr_epoch)
         if info["rlr_resume_cd"]:
             info["rlr_resume_cd"] -= 1
-        elif max(best_info["val_met"] - val_met, 0) < self.params.reduce_lr_threshold:
+        elif max(rlr_info["val_met"] - val_met, 0) < self.params.reduce_lr_threshold:
             info["rlr_patience_cd"] -= 1
             if not info["rlr_patience_cd"]:
                 old_lr = info["lr"]
