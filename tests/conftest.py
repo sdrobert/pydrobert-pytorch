@@ -123,3 +123,8 @@ def populate_torch_dir():
         return feats, alis, refs, feat_sizes, ref_sizes, utt_ids
 
     return _populate_torch_dir
+
+
+@pytest.fixture(params=[pytest.param("trace", marks=pytest.mark.trace), "notrace"])
+def trace(request):
+    return request.param == "trace"

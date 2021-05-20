@@ -32,6 +32,11 @@ from pydrobert.torch.util import (
     pad_variable,
 )
 
+try:
+    import torch.jit.script_if_tracing as script_if_tracing  # type: ignore
+except ImportError:  # pre 1.8.1
+    script_if_tracing = torch.jit.script
+
 __all__ = [
     "ConcatSoftAttention",
     "DotProductSoftAttention",
@@ -739,6 +744,80 @@ class LookupLanguageModel(SequentialLanguageModel):
         return logs, ids, pointers
 
 
+@script_if_tracing
+def hard_optimal_completion_distillation_loss(
+    logits: torch.Tensor,
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    batch_first: bool = False,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    weight: Optional[torch.Tensor] = None,
+    reduction: str = "mean",
+    ignore_index: int = -2,
+    warn: bool = True,
+) -> torch.Tensor:
+    """Functional version of HardOptimalCompletionDistillationLoss
+
+    See Also
+    --------
+    HardOptimalCompletionDistillationLoss
+        The :class:`torch.nn.Module` version. Describes the arguments.
+    """
+    if logits.dim() != 3:
+        raise RuntimeError("logits must be 3 dimensional")
+    if logits.shape[:-1] != hyp.shape:
+        raise RuntimeError("first two dims of logits must match hyp shape")
+    if include_eos:
+        if eos is not None and ((eos < 0) or (eos >= logits.size(-1))):
+            raise RuntimeError(f"If include_eos=True, eos ({eos}) must be a class idx")
+        if eos is not None and eos == ignore_index:
+            raise RuntimeError(
+                f"If include_eos=True, eos cannot equal ignore_index ({eos}"
+            )
+    if reduction not in ("mean", "sum", "none"):
+        raise RuntimeError(f"'{reduction}' is not a valid value for reduction")
+    optimals = optimal_completion(
+        ref,
+        hyp,
+        eos=eos,
+        include_eos=include_eos,
+        batch_first=batch_first,
+        ins_cost=ins_cost,
+        del_cost=del_cost,
+        sub_cost=sub_cost,
+        padding=ignore_index,
+        exclude_last=True,
+        warn=warn,
+    )
+    max_unique_next = optimals.shape[-1]
+    logits = logits.unsqueeze(2).expand(-1, -1, max_unique_next, -1)
+    logits = logits.contiguous()
+    loss = torch.nn.functional.cross_entropy(
+        logits.view(-1, logits.size(-1)),
+        optimals.flatten(),
+        weight=weight,
+        ignore_index=ignore_index,
+        reduction="none",
+    ).view_as(optimals)
+    padding_mask = optimals.eq(ignore_index)
+    no_padding_mask = padding_mask.eq(0)
+    loss = loss.masked_fill(padding_mask, 0.0).sum(2)
+    loss = torch.where(
+        no_padding_mask.any(2),
+        loss / no_padding_mask.float().sum(2),
+        loss,
+    )
+    if reduction == "mean":
+        loss = loss.mean()
+    elif reduction == "sum":
+        loss = loss.sum()
+    return loss
+
+
 class HardOptimalCompletionDistillationLoss(torch.nn.Module):
     r"""A categorical loss function over optimal next tokens
 
@@ -795,14 +874,9 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         Specifies the reduction to be applied to the output. 'none': no
         reduction will be applied. 'sum': the output will be summed. 'mean':
         the output will be averaged.
-
-    Attributes
-    ----------
-    eos : int
-    include_eos, batch_first : bool
-    ins_cost, del_cost, sub_cost : float
-    reduction : {'mean', 'none', 'sum'}
-    weight : torch.Tensor or None
+    ignore_index : int, optional
+        Specify a target value that is ignored and does not contribute to the input
+        gradient. Should not be set to `eos` when `include_eos` is :obj:`True`.
 
     See Also
     --------
@@ -814,6 +888,26 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         of sampling non-auto-regressive models
     """
 
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "reduction",
+        "ignore_index",
+    ]
+
+    eos: Optional[int]
+    include_eos: bool
+    batch_first: bool
+    ins_cost: float
+    del_cost: float
+    sub_cost: float
+    reduction: str
+    ignore_index: int
+
     def __init__(
         self,
         eos: Optional[int] = None,
@@ -824,6 +918,7 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         sub_cost: float = 1.0,
         weight: Optional[torch.Tensor] = None,
         reduction: str = "mean",
+        ignore_index: int = -100,
     ):
         super(HardOptimalCompletionDistillationLoss, self).__init__()
         self.eos = eos
@@ -833,34 +928,8 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         self.del_cost = del_cost
         self.sub_cost = sub_cost
         self.reduction = reduction
-        self._cross_ent = torch.nn.CrossEntropyLoss(weight=weight, reduction="none")
-
-    @property
-    def weight(self) -> Optional[torch.Tensor]:
-        return self._cross_ent.weight
-
-    @weight.setter
-    def weight(self, value: Optional[torch.Tensor]):
-        self._cross_ent.weight = value
-
-    def check_input(self, logits: torch.Tensor, ref: torch.Tensor, hyp: torch.Tensor):
-        """Check if input formatted correctly, otherwise RuntimeError"""
-        if logits.dim() != 3:
-            raise RuntimeError("logits must be 3 dimensional")
-        if logits.shape[:-1] != hyp.shape:
-            raise RuntimeError("first two dims of logits must match hyp shape")
-        if (
-            self.include_eos
-            and self.eos is not None
-            and ((self.eos < 0) or (self.eos >= logits.shape[-1]))
-        ):
-            raise RuntimeError(
-                "if include_eos=True, eos ({}) must be a class idx".format(self.eos)
-            )
-        if self.reduction not in {"mean", "sum", "none"}:
-            raise RuntimeError(
-                '"{}" is not a valid value for reduction' "".format(self.reduction)
-            )
+        self.ignore_index = ignore_index
+        self.register_buffer("weight", weight)
 
     def forward(
         self,
@@ -869,43 +938,21 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         hyp: torch.Tensor,
         warn: bool = True,
     ) -> torch.Tensor:
-        self.check_input(logits, ref, hyp)
-        # the padding we use will never be exposed to the user, so we merely
-        # ensure we're not trampling the eos
-        padding = -2 if self.eos == -1 else -1
-        self._cross_ent.ignore_index = padding
-        optimals = optimal_completion(
+        return hard_optimal_completion_distillation_loss(
+            logits,
             ref,
             hyp,
-            eos=self.eos,
-            include_eos=self.include_eos,
-            batch_first=self.batch_first,
-            ins_cost=self.ins_cost,
-            del_cost=self.del_cost,
-            sub_cost=self.sub_cost,
-            padding=padding,
-            exclude_last=True,
-            warn=warn,
+            self.eos,
+            self.include_eos,
+            self.batch_first,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.weight,
+            self.reduction,
+            self.ignore_index,
+            warn,
         )
-        max_unique_next = optimals.shape[-1]
-        logits = logits.unsqueeze(2).expand(-1, -1, max_unique_next, -1)
-        logits = logits.contiguous()
-        loss = self._cross_ent(
-            logits.view(-1, logits.shape[-1]), optimals.flatten()
-        ).view_as(optimals)
-        padding_mask = optimals.eq(padding)
-        no_padding_mask = padding_mask.eq(0)
-        loss = loss.masked_fill(padding_mask, 0.0).sum(2)
-        loss = torch.where(
-            no_padding_mask.any(2),
-            loss / no_padding_mask.float().sum(2),
-            loss,
-        )
-        if self.reduction == "mean":
-            loss = loss.mean()
-        elif self.reduction == "sum":
-            loss = loss.sum()
-        return loss
 
 
 class MinimumErrorRateLoss(torch.nn.Module):

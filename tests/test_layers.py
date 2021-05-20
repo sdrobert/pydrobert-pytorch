@@ -400,7 +400,10 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction):
         ref[0] = 0
     log_probs = torch.randn(num_batches, samples, device=device)
     loss = layers.MinimumErrorRateLoss(
-        eos=None, sub_avg=sub_avg, batch_first=batch_first, reduction=reduction,
+        eos=None,
+        sub_avg=sub_avg,
+        batch_first=batch_first,
+        reduction=reduction,
     )
     l1 = loss(log_probs, ref, hyp)
     assert l1.ne(0.0).any()
@@ -417,7 +420,7 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction):
 @pytest.mark.parametrize("reduction", ["mean", "none"])
 @pytest.mark.parametrize("include_eos", [True, False])
 def test_hard_optimal_completion_distillation_loss(
-    device, batch_first, eos, ref_steps_times, reduction, include_eos
+    device, batch_first, eos, ref_steps_times, reduction, include_eos, trace
 ):
     torch.manual_seed(209384)
     num_batches, max_steps, num_classes = 20, 41, 10
@@ -460,8 +463,13 @@ def test_hard_optimal_completion_distillation_loss(
     inv_len_mask = len_mask.eq(0)
     logits.requires_grad_(True)
     loss = layers.HardOptimalCompletionDistillationLoss(
-        eos=eos, include_eos=include_eos, batch_first=batch_first, reduction=reduction,
+        eos=eos,
+        include_eos=include_eos,
+        batch_first=batch_first,
+        reduction=reduction,
     )
+    if trace:
+        loss = torch.jit.trace(loss, (logits, ref, hyp))
     l1 = loss(logits, ref, hyp)
     assert torch.all(l1 == l1)  # no nans
     if reduction == "none":
@@ -506,7 +514,10 @@ def test_sequential_language_model(device, sos):
             else:
                 assert self.sos is None
                 out = -torch.full(
-                    (hist.shape[1], self.vocab_size,),
+                    (
+                        hist.shape[1],
+                        self.vocab_size,
+                    ),
                     self.vocab_size,
                     device=device,
                     dtype=torch.float,
