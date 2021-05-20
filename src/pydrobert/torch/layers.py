@@ -515,12 +515,16 @@ class LookupLanguageModel(SequentialLanguageModel):
                     new_backoff = step_mask & next_step.eq(0)
                     # add backoff for newly failed paths
                     out = torch.where(
-                        new_backoff, out + self.logs[X + G + parents], out,
+                        new_backoff,
+                        out + self.logs[X + G + parents],
+                        out,
                     )
                 else:
                     # we're not last. Update children
                     children = torch.where(
-                        matches, all_children, torch.zeros_like(all_children),
+                        matches,
+                        all_children,
+                        torch.zeros_like(all_children),
                     ).sum(1)
                 # this'll be invalid for the last step, so don't re-use!
                 step_mask = next_step
@@ -893,7 +897,9 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         no_padding_mask = padding_mask.eq(0)
         loss = loss.masked_fill(padding_mask, 0.0).sum(2)
         loss = torch.where(
-            no_padding_mask.any(2), loss / no_padding_mask.float().sum(2), loss,
+            no_padding_mask.any(2),
+            loss / no_padding_mask.float().sum(2),
+            loss,
         )
         if self.reduction == "mean":
             loss = loss.mean()
@@ -1954,14 +1960,16 @@ class SpecAugment(torch.nn.Module):
             lengths = lengths.float()
             max_ = (
                 torch.clamp(
-                    lengths * self.max_time_mask_proportion, max=self.max_time_mask,
+                    lengths * self.max_time_mask_proportion,
+                    max=self.max_time_mask,
                 )
                 .floor()
                 .to(device)
             )
             nums_ = (
                 torch.clamp(
-                    lengths * self.num_time_mask_proportion, max=self.num_time_mask,
+                    lengths * self.num_time_mask_proportion,
+                    max=self.num_time_mask,
                 )
                 .floor()
                 .to(device)
