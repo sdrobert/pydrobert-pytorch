@@ -378,8 +378,8 @@ def test_lookup_language_model_state_dict():
 
 @pytest.mark.parametrize("batch_first", [True, False])
 @pytest.mark.parametrize("sub_avg", [True, False])
-@pytest.mark.parametrize("reduction", ["mean", "none"])
-def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction):
+@pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction, trace):
     torch.manual_seed(100)
     num_batches, samples, num_classes = 5, 5, 30
     max_ref_steps, max_hyp_steps = 10, 5
@@ -405,11 +405,20 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction):
         batch_first=batch_first,
         reduction=reduction,
     )
+    if trace:
+        loss = torch.jit.trace(loss, (log_probs, ref, hyp))
     l1 = loss(log_probs, ref, hyp)
     assert l1.ne(0.0).any()
     l2 = loss(log_probs, ref, hyp)
     assert torch.allclose(l1, l2)
-    loss.eos = 0
+    loss = layers.MinimumErrorRateLoss(
+        eos=0,
+        sub_avg=sub_avg,
+        batch_first=batch_first,
+        reduction=reduction,
+    )
+    if trace:
+        loss = torch.jit.trace(loss, (log_probs, ref, hyp))
     l3 = loss(log_probs, ref, hyp)
     assert l3.eq(0.0).all()
 

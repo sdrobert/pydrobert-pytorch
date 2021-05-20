@@ -778,8 +778,6 @@ def hard_optimal_completion_distillation_loss(
             raise RuntimeError(
                 f"If include_eos=True, eos cannot equal ignore_index ({eos}"
             )
-    if reduction not in ("mean", "sum", "none"):
-        raise RuntimeError(f"'{reduction}' is not a valid value for reduction")
     optimals = optimal_completion(
         ref,
         hyp,
@@ -815,6 +813,8 @@ def hard_optimal_completion_distillation_loss(
         loss = loss.mean()
     elif reduction == "sum":
         loss = loss.sum()
+    elif reduction != "none":
+        raise RuntimeError(f"'{reduction}' is not a valid value for reduction")
     return loss
 
 
@@ -955,6 +955,87 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         )
 
 
+@script_if_tracing
+def minimum_error_rate_loss(
+    log_probs: torch.Tensor,
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    sub_avg: bool = True,
+    batch_first: bool = False,
+    norm: bool = True,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    reduction: str = "mean",
+    warn: bool = True,
+) -> torch.Tensor:
+    """Functional version of MinimumErrorRateLoss
+
+    See Also
+    --------
+    MinimumErrorRateLoss
+        The :class:`torch.nn.Module` version. Describes the arguments
+    """
+    if log_probs.dim() != 2:
+        raise RuntimeError("log_probs must be 2 dimensional")
+    if hyp.dim() != 3:
+        raise RuntimeError("hyp must be 3 dimensional")
+    if ref.dim() not in (2, 3):
+        raise RuntimeError("ref must be 2 or 3 dimensional")
+    if batch_first:
+        batch_size, samples, max_hyp_steps = hyp.shape
+        if ref.dim() == 2:
+            ref = ref.unsqueeze(1).repeat(1, samples, 1)
+        if (ref.shape[:2] != (batch_size, samples)) or (
+            ref.shape[:2] != log_probs.shape
+        ):
+            raise RuntimeError(
+                "ref and hyp batch_size and sample dimensions must match"
+            )
+        max_ref_steps = ref.size(-1)
+        ref = ref.view(-1, max_ref_steps)
+        hyp = hyp.view(-1, max_hyp_steps)
+    else:
+        max_hyp_steps, batch_size, samples = hyp.shape
+        if ref.dim() == 2:
+            ref = ref.unsqueeze(-1).repeat(1, 1, samples)
+        if (ref.shape[1:] != (batch_size, samples)) or (
+            ref.shape[1:] != log_probs.shape
+        ):
+            raise RuntimeError(
+                "ref and hyp batch_size and sample dimensions must match"
+            )
+        max_ref_steps = ref.size(0)
+        ref = ref.view(max_ref_steps, -1)
+        hyp = hyp.view(max_hyp_steps, -1)
+    if samples < 2:
+        raise RuntimeError(f"Batch must have at least two samples, got {samples}")
+    er = error_rate(
+        ref,
+        hyp,
+        eos=eos,
+        include_eos=include_eos,
+        norm=norm,
+        batch_first=batch_first,
+        ins_cost=ins_cost,
+        del_cost=del_cost,
+        sub_cost=sub_cost,
+        warn=warn,
+    ).view(batch_size, samples)
+    if sub_avg:
+        er = er - er.mean(1, keepdim=True)
+    loss = er * torch.nn.functional.softmax(log_probs, 1)
+    if reduction == "mean":
+        loss = loss.mean()
+    elif reduction == "sum":
+        loss = loss.sum()
+    elif reduction != "none":
+        raise RuntimeError(f"'{reduction}' is not a valid value for reduction")
+    return loss
+
+
 class MinimumErrorRateLoss(torch.nn.Module):
     r"""Error rate expectation normalized over some number of transcripts
 
@@ -976,7 +1057,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
     This loss function has the following signature::
 
-        loss(log_probs, ref, hyp)
+        loss(log_probs, ref, hyp, warn=True)
 
     `log_probs` is a tensor of shape ``(batch_size, samples)`` providing the log joint
     probabilities of every path. `hyp` is a long tensor of shape ``(max_hyp_steps,
@@ -1086,6 +1167,27 @@ class MinimumErrorRateLoss(torch.nn.Module):
         For converting token log probs (or logits) to sequence log probs
     """
 
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "sub_avg",
+        "batch_first",
+        "norm",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "reduction",
+    ]
+
+    eos: Optional[int]
+    include_eos: bool
+    sub_avg: bool
+    norm: bool
+    ins_cost: float
+    del_cost: float
+    sub_cost: float
+    reduction: str
+
     def __init__(
         self,
         eos: Optional[int] = None,
@@ -1109,45 +1211,6 @@ class MinimumErrorRateLoss(torch.nn.Module):
         self.sub_cost = sub_cost
         self.reduction = reduction
 
-    def check_input(
-        self, log_probs: torch.Tensor, ref: torch.Tensor, hyp: torch.Tensor
-    ):
-        """Check if the input is formatted correctly, otherwise RuntimeError"""
-        if log_probs.dim() != 2:
-            raise RuntimeError("log_probs must be 2 dimensional")
-        if hyp.dim() != 3:
-            raise RuntimeError("hyp must be 3 dimensional")
-        if ref.dim() not in {2, 3}:
-            raise RuntimeError("ref must be 2 or 3 dimensional")
-        if self.batch_first:
-            if ref.dim() == 2:
-                ref = ref.unsqueeze(1).expand(-1, hyp.shape[1], -1)
-            if (ref.shape[:2] != hyp.shape[:2]) or (ref.shape[:2] != log_probs.shape):
-                raise RuntimeError(
-                    "ref and hyp batch_size and sample dimensions must match"
-                )
-            if ref.shape[1] < 2:
-                raise RuntimeError(
-                    "Batch must have at least two samples, got {}"
-                    "".format(ref.shape[1])
-                )
-        else:
-            if ref.dim() == 2:
-                ref = ref.unsqueeze(-1).expand(-1, -1, hyp.shape[-1])
-            if (ref.shape[1:] != hyp.shape[1:]) or (ref.shape[1:] != log_probs.shape):
-                raise RuntimeError(
-                    "ref and hyp batch_size and sample dimensions must match"
-                )
-            if ref.shape[2] < 2:
-                raise RuntimeError(
-                    "Batch must have at least two samples, got {}"
-                    "".format(ref.shape[2])
-                )
-        if self.reduction not in {"mean", "sum", "none"}:
-            raise RuntimeError(
-                '"{}" is not a valid value for reduction' "".format(self.reduction)
-            )
-
     def forward(
         self,
         log_probs: torch.Tensor,
@@ -1155,41 +1218,22 @@ class MinimumErrorRateLoss(torch.nn.Module):
         hyp: torch.Tensor,
         warn: bool = True,
     ) -> torch.Tensor:
-        self.check_input(log_probs, ref, hyp)
-        if self.batch_first:
-            batch_size, samples, max_hyp_steps = hyp.shape
-            max_ref_steps = ref.shape[-1]
-            if ref.dim() == 2:
-                ref = ref.unsqueeze(1).repeat(1, samples, 1)
-            ref = ref.view(-1, max_ref_steps)
-            hyp = hyp.view(-1, max_hyp_steps)
-        else:
-            max_hyp_steps, batch_size, samples = hyp.shape
-            max_ref_steps = ref.shape[0]
-            if ref.dim() == 2:
-                ref = ref.unsqueeze(-1).repeat(1, 1, samples)
-            ref = ref.view(max_ref_steps, -1)
-            hyp = hyp.view(max_hyp_steps, -1)
-        er = error_rate(
+        return minimum_error_rate_loss(
+            log_probs,
             ref,
             hyp,
-            eos=self.eos,
-            include_eos=self.include_eos,
-            norm=self.norm,
-            batch_first=self.batch_first,
-            ins_cost=self.ins_cost,
-            del_cost=self.del_cost,
-            sub_cost=self.sub_cost,
-            warn=warn,
-        ).view(batch_size, samples)
-        if self.sub_avg:
-            er = er - er.mean(1, keepdim=True)
-        loss = er * torch.nn.functional.softmax(log_probs, 1)
-        if self.reduction == "mean":
-            loss = loss.mean()
-        elif self.reduction == "sum":
-            loss = loss.sum()
-        return loss
+            self.eos,
+            self.include_eos,
+            self.sub_avg,
+            self.batch_first,
+            self.norm,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.reduction,
+            warn,
+        )
+
 
 
 class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
