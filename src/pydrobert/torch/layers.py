@@ -14,6 +14,13 @@
 
 """Common neural layers from the literature not included in pytorch.nn
 
+If using PyTorch < 1.8.0, all of the functions/layers in this submodule are compiled
+with
+[TorchScript](https://pytorch.org/docs/master/jit_language_reference.html#language-reference)
+unless explicitly stated in the function docstring. If using PyTorch >= 1.8.0, those
+same functions have been decorated with :func:`torch.jit.script_if_tracing` instead,
+which makes them safe to use in a traced module.
+
 Notes
 -----
 The loss functions :class:`HardOptimalCompletionDistillationLoss` and
@@ -45,12 +52,18 @@ __all__ = [
     "DotProductSoftAttention",
     "GeneralizedDotProductSoftAttention",
     "GlobalSoftAttention",
+    "hard_optimal_completion_distillation_loss",
     "HardOptimalCompletionDistillationLoss",
     "LookupLanguageModel",
+    "minimum_error_rate_loss",
     "MinimumErrorRateLoss",
     "MultiHeadedAttention",
+    "random_shift",
     "RandomShift",
     "SequentialLanguageModel",
+    "spec_augment_apply_parameters",
+    "spec_augment_draw_parameters",
+    "spec_augment",
     "SpecAugment",
 ]
 
@@ -2138,7 +2151,7 @@ class SpecAugment(torch.nn.Module):
         Controls order of interpolation of warping. 1 = linear (default for
         [park2020]_). 2 = thin plate (default for [park2019]_). Higher orders are
         possible at increased computational cost.
-    
+
     Warnings
     --------
     JIT tracing this function is only possible when `lengths` is always specified. You
@@ -2339,6 +2352,9 @@ class SpecAugment(torch.nn.Module):
             feats, params, self.interpolation_order, lengths
         )
 
+    def reset_parameters(self) -> None:
+        pass
+
     def forward(
         self, feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
@@ -2356,6 +2372,40 @@ class SpecAugment(torch.nn.Module):
             lengths,
             self.training,
         )
+
+
+@script_if_tracing
+def random_shift(
+    in_: torch.Tensor,
+    in_lens: torch.Tensor,
+    prop: Tuple[float, float],
+    mode: str,
+    value: float,
+    training: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Functional version of RandomShift
+
+    See Also
+    --------
+    RandomShift
+        For definitions of arguments and a description of this function
+    """
+    if in_.dim() < 2:
+        raise RuntimeError(f"in_ must be at least 2 dimensional")
+    if in_lens.dim() != 1 or in_lens.size(0) != in_.size(0):
+        raise RuntimeError(
+            f"For in_ of shape {in_.shape}, expected in_lens to be of shape "
+            f"({in_.size(0)}), got {in_lens.shape}"
+        )
+    if training:
+        in_lens_ = in_lens.float()
+        pad = torch.stack([prop[0] * in_lens_, prop[1] * in_lens_])
+        pad *= torch.rand_like(pad)
+        pad = pad.long()
+        out_lens = in_lens + pad.sum(0)
+        return pad_variable(in_, in_lens, pad, mode, value), out_lens
+    else:
+        return in_, in_lens
 
 
 class RandomShift(torch.nn.Module):
@@ -2397,12 +2447,6 @@ class RandomShift(torch.nn.Module):
         The constant with which to pad the sequence if `mode` is set to
         :obj:`'constant'`.
 
-    Attributes
-    ----------
-    mode : {'reflect', 'replicate', 'constant'}
-    prop : tuple
-    value : float
-
     Raises
     ------
     NotImplementedError
@@ -2416,6 +2460,12 @@ class RandomShift(torch.nn.Module):
         For more details on the different types of padding. Note the default `mode` is
         different between this and the function.
     """
+
+    __constants__ = ["prop", "mode", "value"]
+
+    prop: Tuple[float, float]
+    mode: str
+    value: float
 
     def __init__(
         self,
@@ -2454,25 +2504,9 @@ class RandomShift(torch.nn.Module):
     def reset_parameters(self) -> None:
         pass
 
-    def check_input(self, in_: torch.Tensor, in_lens: torch.Tensor) -> None:
-        if in_.dim() < 2:
-            raise RuntimeError(f"in_ must be at least 2 dimensional")
-        if in_lens.dim() != 1 or in_lens.size(0) != in_.size(0):
-            raise RuntimeError(
-                f"For in_ of shape {in_.shape}, expected in_lens to be of shape "
-                f"({in_.size(0)}), got {in_lens.shape}"
-            )
-
     def forward(
         self, in_: torch.Tensor, in_lens: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        self.check_input(in_, in_lens)
-        if self.training:
-            in_lens_ = in_lens.float()
-            pad = torch.stack([self.prop[0] * in_lens_, self.prop[1] * in_lens_])
-            pad *= torch.rand_like(pad)
-            pad = pad.long()
-            out_lens = in_lens + pad.sum(0)
-            return pad_variable(in_, in_lens, pad, self.mode, self.value), out_lens
-        else:
-            return in_, in_lens
+        return random_shift(
+            in_, in_lens, self.prop, self.mode, self.value, self.training
+        )

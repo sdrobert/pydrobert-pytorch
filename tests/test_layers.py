@@ -953,12 +953,15 @@ def test_spec_augment_call(device, trace):
 
 
 @pytest.mark.parametrize("mode", ["reflect", "constant", "replicate"])
-def test_random_shift_call(device, mode):
+def test_random_shift_call(device, mode, trace):
     torch.manual_seed(50)
     N, T, A, B = 50, 300, 13, 11
     in_ = torch.rand(N, T, A, B, device=device)
     in_lens = torch.randint(1, T + 1, (N,), device=device)
     rand_shift = layers.RandomShift(1.0, mode).to(device)
+    if trace:
+        # random_shift is nondeterministic, so we don't check repeat return values
+        rand_shift = torch.jit.trace(rand_shift, (in_, in_lens), check_trace=False)
     out, out_lens = rand_shift(in_, in_lens)
     assert out.dim() == 4
     assert (out_lens >= in_lens).all()
