@@ -618,7 +618,7 @@ def test_global_soft_attention(device, dim):
 
 
 @pytest.mark.parametrize("dim", [0, 1, 2])
-def test_dot_product_soft_attention(device, dim):
+def test_dot_product_soft_attention(device, dim, trace):
     torch.manual_seed(387420)
     dim1, dim2, dim3, dim4 = 50, 30, 12, 100
     key_shape = (dim1, dim2, dim3, dim4)
@@ -629,6 +629,9 @@ def test_dot_product_soft_attention(device, dim):
     exp = torch.nn.functional.softmax(key[..., 0], dim).unsqueeze(-1) * key
     exp = exp.sum(dim)
     attention = layers.DotProductSoftAttention(dim4, dim, scale_factor=0.5)
+    if trace:
+        pytest.xfail("Trace doesn't work for attention")
+        attention = torch.jit.trace(attention, (query, key, key))
     act = attention(query, key, key)
     assert torch.allclose(exp, act)
 
@@ -698,7 +701,7 @@ def test_dot_product_soft_attention_on_transformer_input():
 @pytest.mark.parametrize(
     "layer", ["general", "concat", "multihead_general", "multihead_concat"]
 )
-def test_learnable_soft_attention(device, dim, bias, layer):
+def test_learnable_soft_attention(device, dim, bias, layer, trace):
     torch.manual_seed(347201)
     max_dim, max_dim_size, max_num_heads = 5, 30, 10
     num_dim = torch.randint(dim + 2, max_dim + 1, (1,), device=device).item()
@@ -747,15 +750,20 @@ def test_learnable_soft_attention(device, dim, bias, layer):
     attention.reset_parameters()
     optim = torch.optim.Adam(attention.parameters(), lr=1.0)
     optim.zero_grad()
-    out1 = attention(query, key, key)
+    if trace:
+        pytest.xfail("Trace doesn't work for attention")
+        attention_trace = torch.jit.trace(attention, (query, key, key))
+    else:
+        attention_trace = attention
+    out1 = attention_trace(query, key, key)
     out1.mean().backward()
     optim.step()
     optim.zero_grad()
-    out2 = attention(query, key, key)
+    out2 = attention_trace(query, key, key)
     assert not torch.allclose(out1, out2, atol=1e-5)
     torch.manual_seed(30)
     attention.reset_parameters()
-    out3 = attention(query, key, key)
+    out3 = attention_trace(query, key, key)
     assert torch.allclose(out1, out3, atol=1e-5)
 
 

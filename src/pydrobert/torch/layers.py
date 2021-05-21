@@ -21,6 +21,8 @@ The loss functions :class:`HardOptimalCompletionDistillationLoss` and
 """
 
 import abc
+from math import sin
+from multiprocessing import Value
 from typing import NoReturn, Optional, Sequence, Tuple, Union
 
 import torch
@@ -1235,6 +1237,32 @@ class MinimumErrorRateLoss(torch.nn.Module):
         )
 
 
+@script_if_tracing
+def _attention_check_input(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    mask: Optional[torch.Tensor],
+    dim: int,
+    key_size: int,
+    query_size: int,
+):
+    key_dim = key.dim()
+    if query.dim() != key_dim - 1:
+        raise RuntimeError("query must have one fewer dimension than key")
+    if key_dim != value.dim():
+        raise RuntimeError("key must have same number of dimensions as value")
+    if query.shape[-1] != query_size:
+        raise RuntimeError("Last dimension of query must match query_size")
+    if key.shape[-1] != key_size:
+        raise RuntimeError("Last dimension of key must match key_size")
+    if dim > key_dim - 2 or key_dim == -1 or dim < -key_dim + 1:
+        raise RuntimeError(
+            f"dim must be in the range [{-key_dim + 1}, {key_dim - 2}] and not -1"
+        )
+    if mask is not None and mask.dim() != key_dim - 1:
+        raise RuntimeError("mask must have one fewer dimension than key")
+
 
 class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
     r"""Parent class for soft attention mechanisms on an entire input sequence
@@ -1292,9 +1320,10 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
     dim : int, optional
         The sequence dimension of the `key` argument
 
-    Attributes
-    ----------
-    query_size, key_size, dim : int
+    Warnings
+    --------
+    While it is possible to JIT script the attention modules in
+    :mod:`pydrobert.torch.layers`, tracing them is not.
 
     Examples
     --------
@@ -1333,6 +1362,12 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
         This tutorial gives a toy transformer network to illustrate
         broadcasting semantics
     """
+
+    __constants__ = ["query_size", "key_size", "dim"]
+
+    query_size: int
+    key_size: int
+    dim: int
 
     def __init__(self, query_size: int, key_size: int, dim: int = 0):
         super(GlobalSoftAttention, self).__init__()
@@ -1382,21 +1417,9 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
         :ref:`Advanced Attention and Transformer Networks`
             For full broadcasting rules
         """
-        key_dim = key.dim()
-        if query.dim() != key_dim - 1:
-            raise RuntimeError("query must have one fewer dimension than key")
-        if key_dim != value.dim():
-            raise RuntimeError("key must have same number of dimensions as value")
-        if query.shape[-1] != self.query_size:
-            raise RuntimeError("Last dimension of query must match query_size")
-        if key.shape[-1] != self.key_size:
-            raise RuntimeError("Last dimension of key must match key_size")
-        if self.dim > key_dim - 2 or self.dim < -key_dim + 1:
-            raise RuntimeError(
-                "dim must be in the range [{}, {}]" "".format(-key_dim + 1, key_dim - 2)
-            )
-        if mask is not None and mask.dim() != key_dim - 1:
-            raise RuntimeError("mask must have one fewer dimension than key")
+        _attention_check_input(
+            query, key, value, mask, self.dim, self.key_size, self.query_size
+        )
 
     def forward(
         self,
@@ -1410,15 +1433,14 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
         if mask is not None:
             e = e.masked_fill(mask.eq(0), -float("inf"))
         a = torch.nn.functional.softmax(e, self.dim)
-        c = (a.unsqueeze(-1) * value).sum(self.dim)
-        return c
+        return (a.unsqueeze(-1) * value).sum(self.dim)
 
     def extra_repr(self) -> str:
         return "query_size={}, key_size={}, dim={}".format(
             self.query_size, self.key_size, self.dim
         )
 
-    def reset_parameters(self):
+    def reset_parameters(self) -> None:
         pass
 
 
@@ -1443,16 +1465,15 @@ class DotProductSoftAttention(GlobalSoftAttention):
         1, but if set to :math:`1 / size`, you'll get the scaled dot-product
         attention of [vaswani2017]_
 
-    Attributes
-    ----------
-    query_size, key_size, dim : int
-    scale_factor : float
-
     See Also
     --------
     GlobalSoftAttention
         For a description of how to call this module, how it works, etc.
     """
+
+    __constants__ = ["query_size", "key_size", "dim", "scale_factor"]
+
+    scale_factor: float
 
     def __init__(self, size: int, dim: int = 0, scale_factor: float = 1.0):
         super(DotProductSoftAttention, self).__init__(size, size, dim)
@@ -1463,7 +1484,7 @@ class DotProductSoftAttention(GlobalSoftAttention):
         return (query * key).sum(-1) * self.scale_factor
 
     def extra_repr(self) -> str:
-        return "size={}, dim={}".format(self.query_size, self.dim)
+        return super().extra_repr() + f", scale_factor={self.scale_factor}"
 
 
 class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
@@ -1487,33 +1508,31 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
     bias : bool, optional
         Whether to add a bias term ``b``: :math:`W key + b`
 
-    Attributes
-    ----------
-    query_size, key_size, dim : int
-    W : torch.nn.Linear
-        The matrix :math:`W`
-
     See Also
     --------
     GlobalSoftAttention
         For a description of how to call this module, how it works, etc.
     """
 
+    weight: torch.Tensor
+
     def __init__(
         self, query_size: int, key_size: int, dim: int = 0, bias: bool = False
     ):
-        super(GeneralizedDotProductSoftAttention, self).__init__(
-            query_size, key_size, dim
-        )
-        self.W = torch.nn.Linear(key_size, query_size, bias=bias)
+        super().__init__(query_size, key_size, dim)
+        self.weight = torch.nn.parameter.Parameter(torch.empty(query_size, key_size))
+        if bias:
+            self.bias = torch.nn.parameter.Parameter(torch.empty(query_size))
+        else:
+            self.register_parameter("bias", None)
+        self.reset_parameters()
 
     def score(self, query: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
-        Wkey = self.W(key)
+        Wkey = torch.nn.functional.linear(key, self.weight, self.bias)
         query = query.unsqueeze(self.dim)
         return (query * Wkey).sum(-1)
 
-    def reset_parameters(self) -> None:
-        self.W.reset_parameters()
+    reset_parameters = torch.jit.unused(torch.nn.Linear.reset_parameters)
 
 
 class ConcatSoftAttention(GlobalSoftAttention):
@@ -1540,19 +1559,14 @@ class ConcatSoftAttention(GlobalSoftAttention):
         Whether to add bias term ``b`` :math:`W [query, key] + b`
     hidden_size : int, optional
 
-    Attributes
-    ----------
-    query_size, key_size, dim, hidden_size : int
-    W : torch.nn.Linear
-        The matrix :math:`W`
-    v : torch.nn.Linear
-        The vector :math:`v` as a single-row matrix
-
     See Also
     --------
     GlobalSoftAttention
         For a description of how to call this module, how it works, etc.
     """
+
+    weight: torch.Tensor
+    v: torch.Tensor
 
     def __init__(
         self,
@@ -1562,12 +1576,18 @@ class ConcatSoftAttention(GlobalSoftAttention):
         bias: bool = False,
         hidden_size: int = 1000,
     ):
-        super(ConcatSoftAttention, self).__init__(query_size, key_size, dim)
-        self.hidden_size = hidden_size
-        self.W = torch.nn.Linear(query_size + key_size, hidden_size, bias=bias)
+        super().__init__(query_size, key_size, dim)
+        self.weight = torch.nn.parameter.Parameter(
+            torch.empty(hidden_size, query_size + key_size)
+        )
+        if bias:
+            self.bias = torch.nn.parameter.Parameter(torch.empty(hidden_size))
+        else:
+            self.register_parameter("bias", None)
         # there's no point in a bias for v. It'll just be absorbed by the
         # softmax later. You could add a bias after the tanh layer, though...
-        self.v = torch.nn.Linear(hidden_size, 1, bias=False)
+        self.v = torch.nn.parameter.Parameter(torch.empty(hidden_size))
+        self.reset_parameters()
 
     def score(self, query: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
         query = query.unsqueeze(self.dim)
@@ -1575,17 +1595,21 @@ class ConcatSoftAttention(GlobalSoftAttention):
         query, _ = torch.broadcast_tensors(query, query_wo_last.unsqueeze(-1))
         key, _ = torch.broadcast_tensors(key, key_wo_last.unsqueeze(-1))
         cat = torch.cat([query, key], -1)
-        Wcat = self.W(cat)
-        return self.v(Wcat).squeeze(-1)
+        Wcat = torch.nn.functional.linear(cat, self.weight, self.bias)
+        tanhWcat = torch.tanh(Wcat)
+        return torch.nn.functional.linear(tanhWcat, self.v.unsqueeze(0), None).squeeze(
+            -1
+        )
 
     def reset_parameters(self) -> None:
-        self.W.reset_parameters()
-        self.v.reset_parameters()
+        torch.nn.Linear.reset_parameters(self)
+        torch.nn.init.normal_(self.v)
 
     def extra_repr(self) -> str:
-        s = super(ConcatSoftAttention, self).extra_repr()
-        s += ", hidden_size={}".format(self.hidden_size)
-        return s
+        return (
+            super(ConcatSoftAttention, self).extra_repr()
+            + f", hidden_size={self.v.size(0)}"
+        )
 
 
 class MultiHeadedAttention(GlobalSoftAttention):
@@ -1676,6 +1700,21 @@ class MultiHeadedAttention(GlobalSoftAttention):
         Matrices :math:`W^Q`, :math:`W^K`, :math:`W^V`, and :math:`W^C`
     """
 
+    __constants__ = [
+        "query_size",
+        "key_size",
+        "dim",
+        "value_size",
+        "num_heads",
+        "out_size",
+        "d_v",
+    ]
+
+    value_size: int
+    num_heads: int
+    out_size: int
+    d_v: int
+
     def __init__(
         self,
         query_size: int,
@@ -1693,6 +1732,10 @@ class MultiHeadedAttention(GlobalSoftAttention):
         super(MultiHeadedAttention, self).__init__(
             query_size, key_size, dim=single_head_attention.dim
         )
+        if self.dim < 0:
+            raise ValueError(
+                "Negative dimensions are ambiguous for multi-headed attention"
+            )
         self.value_size = value_size
         self.out_size = value_size if out_size is None else out_size
         self.num_heads = num_heads
@@ -1716,13 +1759,15 @@ class MultiHeadedAttention(GlobalSoftAttention):
         mask: Optional[torch.Tensor] = None,
     ):
         """Check that input is formatted correctly, RuntimeError otherwise"""
-        super(MultiHeadedAttention, self).check_input(query, key, value, mask)
-        if value.shape[-1] != self.value_size:
+        _attention_check_input(
+            query, key, value, mask, self.dim, self.key_size, self.query_size
+        )
+        if value.size(-1) != self.value_size:
             raise RuntimeError("Last dimension of value must match value_size")
 
     def score(self, query: torch.Tensor, key: torch.Tensor) -> NoReturn:
         raise NotImplementedError(
-            "In MultiHeadedAttention, score() is handled by " "single_head_attention"
+            "In MultiHeadedAttention, score() is handled by single_head_attention"
         )
 
     def forward(
@@ -1733,27 +1778,20 @@ class MultiHeadedAttention(GlobalSoftAttention):
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self.check_input(query, key, value, mask)
-        query_shape = tuple(query.shape)
-        key_shape = tuple(key.shape)
-        value_shape = tuple(value.shape)
-        key_dim = key.dim()
-        dim = (self.dim + key_dim) % key_dim
+        query_shape = query.shape
+        key_shape = key.shape
+        value_shape = value.shape
         query_heads = self.WQ(query).view(
-            *(query_shape[:-1] + (self.num_heads, self.d_q))
+            (query_shape[:-1] + (self.num_heads, self.d_q))
         )
-        key_heads = self.WK(key).view(*(key_shape[:-1] + (self.num_heads, self.d_k)))
+        key_heads = self.WK(key).view((key_shape[:-1] + (self.num_heads, self.d_k)))
         value_heads = self.WV(value).view(
-            *(value_shape[:-1] + (self.num_heads, self.d_v))
+            (value_shape[:-1] + (self.num_heads, self.d_v))
         )
         if mask is not None:
             mask = mask.unsqueeze(-2)
-        old_dim = self.single_head_attention.dim
-        try:
-            self.single_head_attention.dim = dim
-            cat = self.single_head_attention(query_heads, key_heads, value_heads, mask)
-        finally:
-            self.single_head_attention.dim = old_dim
-        cat = cat.view(*(tuple(cat.shape[:-2]) + (self.num_heads * self.d_v,)))
+        cat = self.single_head_attention(query_heads, key_heads, value_heads, mask)
+        cat = cat.view((cat.shape[:-2] + (self.num_heads * self.d_v,)))
         return self.WC(cat)
 
     def reset_parameters(self) -> None:
