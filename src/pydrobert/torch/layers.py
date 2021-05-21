@@ -30,8 +30,9 @@ import torch
 from pydrobert.torch.util import (
     error_rate,
     optimal_completion,
-    polyharmonic_spline,
     pad_variable,
+    warp_1d_grid,
+    _get_tensor_eps,
 )
 
 try:
@@ -52,9 +53,6 @@ __all__ = [
     "SequentialLanguageModel",
     "SpecAugment",
 ]
-
-# XXX(sdrobert): a quick note on style. pytorch doesn't tend to protect its
-# read-only attributes using private members, so neither do we
 
 
 class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
@@ -1237,6 +1235,8 @@ class MinimumErrorRateLoss(torch.nn.Module):
         )
 
 
+# FIXME(sdrobert): jit scripting doesn't allow calls to super(), so I've offloaded
+# the common code between MultiHeadedAttention and regular-old attention here
 @script_if_tracing
 def _attention_check_input(
     query: torch.Tensor,
@@ -1323,7 +1323,8 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
     Warnings
     --------
     While it is possible to JIT script the attention modules in
-    :mod:`pydrobert.torch.layers`, tracing them is not.
+    :mod:`pydrobert.torch.layers`, tracing them is not. This is because Optional types
+    are currently not supported by the tracing mechansism.
 
     Examples
     --------
@@ -1810,6 +1811,250 @@ class MultiHeadedAttention(GlobalSoftAttention):
         return s
 
 
+@script_if_tracing
+def spec_augment_draw_parameters(
+    feats: torch.Tensor,
+    max_time_warp: float,
+    max_freq_warp: float,
+    max_time_mask: int,
+    max_freq_mask: int,
+    max_time_mask_proportion: float,
+    num_time_mask: int,
+    num_time_mask_proportion: float,
+    num_freq_mask: int,
+    lengths: Optional[torch.Tensor] = None,
+) -> Tuple[
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+]:
+    """Functional version of SpecAugment.draw_parameters
+
+    See Also
+    --------
+    SpecAugment
+        For definitions of arguments and a description of this function.
+    """
+    N, T, F = feats.shape
+    device = feats.device
+    eps = _get_tensor_eps(feats)
+    omeps = 1 - eps
+    if lengths is None:
+        lengths = torch.tensor([T] * N, device=device)
+    lengths = lengths.to(device)
+    # note that order matters slightly in whether we draw widths or positions first.
+    # The paper specifies that position is drawn first for warps, whereas widths
+    # are drawn first for masks
+    if max_time_warp:
+        # we want the range (W, length - W) exclusive to be where w_0 can come
+        # from. If W >= length / 2, this is impossible. Rather than giving up,
+        # we limit the maximum length to W < length / 2
+        max_ = torch.clamp(lengths.float() / 2 - eps, max=max_time_warp)
+        w_0 = torch.rand([N], device=device) * (lengths - 2 * (max_ + eps)) + max_ + eps
+        w = torch.rand([N], device=device) * (2 * max_) - max_
+    else:
+        w_0 = w = None
+    if max_freq_warp:
+        max_ = min(max_freq_warp, F / 2 - eps)
+        v_0 = torch.rand([N], device=device) * (F - 2 * (max_ + eps)) + max_ + eps
+        v = torch.rand([N], device=device) * (2 * max_) - max_
+    else:
+        v_0 = v = None
+    if (
+        max_time_mask
+        and max_time_mask_proportion
+        and num_time_mask
+        and num_time_mask_proportion
+    ):
+        lengths = lengths.float()
+        max_ = (
+            torch.clamp(
+                lengths * max_time_mask_proportion,
+                max=max_time_mask,
+            )
+            .floor()
+            .to(device)
+        )
+        nums_ = (
+            torch.clamp(
+                lengths * num_time_mask_proportion,
+                max=num_time_mask,
+            )
+            .floor()
+            .to(device)
+        )
+        t = (
+            (
+                torch.rand([N, num_time_mask], device=device)
+                * (max_ + omeps).unsqueeze(1)
+            )
+            .long()
+            .masked_fill(
+                nums_.unsqueeze(1)
+                <= torch.arange(num_time_mask, dtype=lengths.dtype, device=device),
+                0,
+            )
+        )
+        t_0 = (
+            torch.rand([N, num_time_mask], device=device)
+            * (lengths.unsqueeze(1) - t + omeps)
+        ).long()
+    else:
+        t = t_0 = None
+    if max_freq_mask and num_freq_mask:
+        max_ = min(max_freq_mask, F)
+        f = (torch.rand([N, num_freq_mask], device=device) * (max_ + omeps)).long()
+        f_0 = (torch.rand([N, num_freq_mask], device=device) * (F - f + omeps)).long()
+    else:
+        f = f_0 = None
+    return w_0, w, v_0, v, t_0, t, f_0, f
+
+
+@script_if_tracing
+def spec_augment_apply_parameters(
+    feats: torch.Tensor,
+    params: Tuple[
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+    ],
+    interpolation_order: int,
+    lengths: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Functional version of SpecAugment.apply_parameters
+
+    See Also
+    --------
+    SpecAugment
+        For definitions of arguments and a description of this function.
+    """
+    N, T, F = feats.shape
+    device = feats.device
+    if lengths is None:
+        lengths = torch.tensor([T] * N, device=device, dtype=feats.dtype)
+    lengths = lengths.to(feats.dtype)
+    w_0, w, v_0, v, t_0, t, f_0, f = params
+    new_feats = feats
+    time_grid: Optional[torch.Tensor] = None
+    freq_grid: Optional[torch.Tensor] = None
+    do_warp = False
+    if w_0 is not None and w is not None:
+        time_grid = warp_1d_grid(w_0, w, lengths, T, interpolation_order)
+        do_warp = True
+    if v_0 is not None and v is not None:
+        freq_grid = warp_1d_grid(
+            v_0,
+            v,
+            torch.tensor([F] * N, device=device),
+            F,
+            interpolation_order,
+        )
+        do_warp = True
+    if do_warp:
+        if time_grid is None:
+            time_grid = torch.arange(T, device=device, dtype=torch.float)
+            time_grid = (2 * time_grid + 1) / T - 1
+            time_grid = time_grid.unsqueeze(0).expand(N, T)
+        if freq_grid is None:
+            freq_grid = torch.arange(F, device=device, dtype=torch.float)
+            freq_grid = (2 * freq_grid + 1) / F - 1
+            freq_grid = freq_grid.unsqueeze(0).expand(N, F)
+        time_grid = time_grid.unsqueeze(2).expand(N, T, F)
+        freq_grid = freq_grid.unsqueeze(1).expand(N, T, F)
+        # note: grid coordinate are (freq, time) rather than (time, freq)
+        grid = torch.stack([freq_grid, time_grid], 3)  # (N, T, F, 2)
+        new_feats = torch.nn.functional.grid_sample(
+            new_feats.unsqueeze(1), grid, padding_mode="border", align_corners=False
+        ).squeeze(1)
+    tmask: Optional[torch.Tensor] = None
+    fmask: Optional[torch.Tensor] = None
+    if t_0 is not None and t is not None:
+        tmask = torch.arange(T, device=device).unsqueeze(0).unsqueeze(2)  # (1, T,1)
+        t_1 = t_0 + t  # (N, MT)
+        tmask = (tmask >= t_0.unsqueeze(1)) & (tmask < t_1.unsqueeze(1))  # (N,T,MT)
+        tmask = tmask.any(2, keepdim=True)  # (N, T, 1)
+    if f_0 is not None and f is not None:
+        fmask = torch.arange(F, device=device).unsqueeze(0).unsqueeze(2)  # (1, F,1)
+        f_1 = f_0 + f  # (N, MF)
+        fmask = (fmask >= f_0.unsqueeze(1)) & (fmask < f_1.unsqueeze(1))  # (N,F,MF)
+        fmask = fmask.any(2).unsqueeze(1)  # (N, 1, F)
+    if tmask is not None:
+        if fmask is not None:
+            tmask = tmask | fmask
+        new_feats = new_feats.masked_fill(tmask, 0.0)
+    elif fmask is not None:
+        new_feats = new_feats.masked_fill(fmask, 0.0)
+    return new_feats
+
+
+@script_if_tracing
+def spec_augment(
+    feats: torch.Tensor,
+    max_time_warp: float,
+    max_freq_warp: float,
+    max_time_mask: int,
+    max_freq_mask: int,
+    max_time_mask_proportion: float,
+    num_time_mask: int,
+    num_time_mask_proportion: float,
+    num_freq_mask: int,
+    interpolation_order: int,
+    lengths: Optional[torch.Tensor] = None,
+    training: bool = True,
+) -> torch.Tensor:
+    """Functional version of SpecAugment
+
+    See Also
+    --------
+    SpecAugment
+        For definitions of arguments and a description of this function.
+    """
+    if feats.dim() != 3:
+        raise RuntimeError(
+            f"Expected feats to have three dimensions, got {feats.dim()}"
+        )
+    N, T, _ = feats.shape
+    if lengths is not None:
+        if lengths.dim() != 1:
+            raise RuntimeError(
+                f"Expected lengths to be one dimensional, got {lengths.dim()}"
+            )
+        if lengths.size(0) != N:
+            raise RuntimeError(
+                f"Batch dimension of feats ({N}) and lengths ({lengths.size(0)}) "
+                "do not match"
+            )
+        if not torch.all((lengths <= T) & (lengths > 0)):
+            raise RuntimeError(f"values of lengths must be between (1, {T})")
+    else:
+        lengths = torch.tensor([T] * N, device=feats.device)
+    if not training:
+        return feats
+    params = spec_augment_draw_parameters(
+        feats,
+        max_time_warp,
+        max_freq_warp,
+        max_time_mask,
+        max_freq_mask,
+        max_time_mask_proportion,
+        num_time_mask,
+        num_time_mask_proportion,
+        num_freq_mask,
+        lengths,
+    )
+    return spec_augment_apply_parameters(feats, params, interpolation_order, lengths)
+
+
 class SpecAugment(torch.nn.Module):
     r"""Perform warping/masking of time/frequency dimensions of filter bank features
 
@@ -1893,17 +2138,12 @@ class SpecAugment(torch.nn.Module):
         Controls order of interpolation of warping. 1 = linear (default for
         [park2020]_). 2 = thin plate (default for [park2019]_). Higher orders are
         possible at increased computational cost.
-
-    Attributes
-    ----------
-    max_time_warp : float
-    max_freq_warp : float
-    max_time_mask : int
-    max_freq_mask : int
-    max_time_mask_proportion : float
-    num_time_mask : int
-    num_freq_mask : int
-    interpolation_order : int
+    
+    Warnings
+    --------
+    JIT tracing this function is only possible when `lengths` is always specified. You
+    can reproduce the behaviour of a :obj:`None` argument by setting
+    ``lengths = torch.tensor([feats.size(0)] * feats.size(1))``.
 
     Notes
     -----
@@ -1934,6 +2174,28 @@ class SpecAugment(torch.nn.Module):
     with [park2020]_. I have confirmed with the first author that the slight warping
     of frequency that occurred due to the 2D warp was unintentional.
     """
+
+    __constants__ = [
+        "max_time_warp",
+        "max_freq_warp",
+        "max_time_mask",
+        "max_freq_mask",
+        "max_time_mask_proportion",
+        "num_time_mask",
+        "num_time_mask_proportion",
+        "num_freq_mask",
+        "interpolation_order",
+    ]
+
+    max_time_warp: float
+    max_freq_warp: float
+    max_time_mask: int
+    max_freq_mask: int
+    max_time_mask_proportion: float
+    num_time_mask: int
+    num_time_mask_proportion: float
+    num_freq_mask: int
+    interpolation_order: int
 
     def __init__(
         self,
@@ -1970,30 +2232,6 @@ class SpecAugment(torch.nn.Module):
         if self.max_freq_warp:
             s += ",warp_f={}".format(self.max_freq_warp)
         return s
-
-    def check_input(
-        self, feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
-    ) -> None:
-        if feats.dim() != 3:
-            raise RuntimeError(
-                "Expected feats to have three dimensions, got {}".format(feats.dim())
-            )
-        if lengths is not None:
-            if lengths.dim() != 1:
-                raise RuntimeError(
-                    "Expected lengths to be one dimensional, got {}"
-                    "".format(lengths.dim())
-                )
-            N, T, _ = feats.shape
-            if lengths.shape[0] != N:
-                raise RuntimeError(
-                    "Batch dimension of feats ({}) and lengths ({}) do not match"
-                    "".format(N, lengths.shape[0])
-                )
-            if not torch.all((lengths <= T) & (lengths > 0)):
-                raise RuntimeError(
-                    "values of lengths must be between (1, {})".format(T)
-                )
 
     def draw_parameters(
         self, feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
@@ -2051,153 +2289,18 @@ class SpecAugment(torch.nn.Module):
             If step 4 is enabled, of shape ``(N, M_F)`` specifying the number of
             frequency coefficients per frequency mask. Integer
         """
-        N, T, F = feats.shape
-        device = feats.device
-        eps = torch.finfo(torch.float).eps
-        omeps = 1 - eps
-        if lengths is None:
-            lengths = torch.tensor([T] * N, device=device)
-        lengths = lengths.to(device)
-        # note that order matters slightly in whether we draw widths or positions first.
-        # The paper specifies that position is drawn first for warps, whereas widths
-        # are drawn first for masks
-        if self.max_time_warp:
-            # we want the range (W, length - W) exclusive to be where w_0 can come
-            # from. If W >= length / 2, this is impossible. Rather than giving up,
-            # we limit the maximum length to W < length / 2
-            max_ = torch.clamp(lengths.float() / 2 - eps, max=self.max_time_warp)
-            w_0 = (
-                torch.rand([N], device=device) * (lengths - 2 * (max_ + eps))
-                + max_
-                + eps
-            )
-            w = torch.rand([N], device=device) * (2 * max_) - max_
-        else:
-            w_0 = w = None
-        if self.max_freq_warp:
-            max_ = min(self.max_freq_warp, F / 2 - eps)
-            v_0 = torch.rand([N], device=device) * (F - 2 * (max_ + eps)) + max_ + eps
-            v = torch.rand([N], device=device) * (2 * max_) - max_
-        else:
-            v_0 = v = None
-        if (
-            self.max_time_mask
-            and self.max_time_mask_proportion
-            and self.num_time_mask
-            and self.num_time_mask_proportion
-        ):
-            lengths = lengths.float()
-            max_ = (
-                torch.clamp(
-                    lengths * self.max_time_mask_proportion,
-                    max=self.max_time_mask,
-                )
-                .floor()
-                .to(device)
-            )
-            nums_ = (
-                torch.clamp(
-                    lengths * self.num_time_mask_proportion,
-                    max=self.num_time_mask,
-                )
-                .floor()
-                .to(device)
-            )
-            t = (
-                (
-                    torch.rand([N, self.num_time_mask], device=device)
-                    * (max_ + omeps).unsqueeze(1)
-                )
-                .long()
-                .masked_fill(
-                    nums_.unsqueeze(1)
-                    <= torch.arange(
-                        self.num_time_mask, dtype=lengths.dtype, device=device
-                    ),
-                    0,
-                )
-            )
-            t_0 = (
-                torch.rand([N, self.num_time_mask], device=device)
-                * (lengths.unsqueeze(1) - t + omeps)
-            ).long()
-        else:
-            t = t_0 = None
-        if self.max_freq_mask and self.num_freq_mask:
-            max_ = min(self.max_freq_mask, F)
-            f = (
-                torch.rand([N, self.num_freq_mask], device=device) * (max_ + omeps)
-            ).long()
-            f_0 = (
-                torch.rand([N, self.num_freq_mask], device=device) * (F - f + omeps)
-            ).long()
-        else:
-            f = f_0 = None
-        return w_0, w, v_0, v, t_0, t, f_0, f
-
-    @staticmethod
-    def warp_1d_grid(
-        src: torch.Tensor,
-        flow: torch.Tensor,
-        lengths: torch.Tensor,
-        max_length: int,
-        interpolation_order: int,
-    ) -> torch.Tensor:
-        """Interpolate grid values for 1d of a grid_sample
-
-        Called as part of this layer's :func:`__call__` method.
-
-        Parameters
-        ----------
-        src : torch.Tensor
-            A long tensor of shape ``(N,)`` containing random source points.
-        flow : torch.Tensor
-            A long tensor of shape ``(N,)`` containing corresponding flow fields for
-            ``src`` such that ``new_feats[n, * dst[n] *] =
-            feats[n, * src[n] - flow[n] *]`` (for whichever dimension we're talking
-            about).
-        lengths : torch.Tensor
-            A long tensor of shape ``(N,)`` specifying the number of valid indices along
-            the dimension in question.
-        max_length : int
-            An integer s.t. ``max_length >= lengths[n]`` for all ``n``.
-        interpolation order : int
-            Degree of warp.
-
-        Returns
-        -------
-        grid : torch.Tensor
-            A float tensor of shape ``(N, max_length)`` providing coordinates for one
-            dimension of :func:`torch.nn.functional.grid_sample` that will be used to
-            warp the features
-        """
-        device = src.device
-        # the interpolation has three points (per batch elem):
-        # 1. t=-.5, flow=0
-        # 2. t=src, flow=flow
-        # 3. t=lengths -.5, flow=0
-        # whatever happens after lengths -.5 is undefined
-        # grid = (2 * dst - 2 * flow + 1) / max_length - 1
-        N = src.shape[0]
-        src, flow, lengths = src.float(), flow.float(), lengths.float()
-        zeros = torch.zeros_like(src)
-        src = torch.stack([zeros - 0.5, src, lengths - 0.5], 1)  # (N, 3)
-        flow = torch.stack([zeros, flow, zeros], 1)  # (N, 3)
-        sparse_grid = (2.0 * src + 1.0) / max_length - 1.0  # (N,3)
-        t = torch.arange(max_length, device=device, dtype=torch.float)
-        grid = polyharmonic_spline(
-            (src + flow).unsqueeze(-1),  # dst (N, 3, 1)
-            sparse_grid.unsqueeze(-1),  # (N, 3, 1)
-            t.unsqueeze(0).expand(N, max_length).unsqueeze(-1),  # (N, T, 1)
-            interpolation_order,
-        ).squeeze(
-            -1
-        )  # (N, T)
-        # we perform "boundary" interpolation, meaning any values past index length - 1
-        # are assumed to be equal to the boundary and with zero gradient.
-        boundary = (2.0 * lengths - 1.0) / max_length - 1.0
-        grid = torch.min(grid, boundary.unsqueeze(-1))
-        return grid
+        return spec_augment_draw_parameters(
+            feats,
+            self.max_time_warp,
+            self.max_freq_warp,
+            self.max_time_mask,
+            self.max_freq_mask,
+            self.max_time_mask_proportion,
+            self.num_time_mask,
+            self.num_time_mask_proportion,
+            self.num_freq_mask,
+            lengths,
+        )
 
     def apply_parameters(
         self,
@@ -2232,73 +2335,27 @@ class SpecAugment(torch.nn.Module):
         new_feats : torch.Tensor
             Augmented time-frequency features of same shape as `feats`.
         """
-        N, T, F = feats.shape
-        device = feats.device
-        if lengths is None:
-            lengths = torch.tensor([T] * N, device=device)
-        lengths = lengths.float()
-        w_0, w, v_0, v, t_0, t, f_0, f = params
-        new_feats = feats
-        time_grid = freq_grid = None
-        do_warp = False
-        if w_0 is not None and w is not None:
-            time_grid = self.warp_1d_grid(w_0, w, lengths, T, self.interpolation_order)
-            do_warp = True
-        if v_0 is not None and v is not None:
-            freq_grid = self.warp_1d_grid(
-                v_0,
-                v,
-                torch.tensor([F] * N, device=device),
-                F,
-                self.interpolation_order,
-            )
-            do_warp = True
-        if do_warp:
-            if time_grid is None:
-                time_grid = torch.arange(T, device=device, dtype=torch.float)
-                time_grid = (2 * time_grid + 1) / T - 1
-                time_grid = time_grid.unsqueeze(0).expand(N, T)
-            elif freq_grid is None:
-                freq_grid = torch.arange(F, device=device, dtype=torch.float)
-                freq_grid = (2 * freq_grid + 1) / F - 1
-                freq_grid = freq_grid.unsqueeze(0).expand(N, F)
-            time_grid = time_grid.unsqueeze(2).expand(N, T, F)
-            freq_grid = freq_grid.unsqueeze(1).expand(N, T, F)
-            # note: grid coordinate are (freq, time) rather than (time, freq)
-            grid = torch.stack([freq_grid, time_grid], 3)  # (N, T, F, 2)
-            new_feats = torch.nn.functional.grid_sample(
-                new_feats.unsqueeze(1), grid, padding_mode="border", align_corners=False
-            ).squeeze(1)
-        tmask = fmask = None
-        if t_0 is not None and t is not None:
-            tmask = torch.arange(T, device=device).unsqueeze(0).unsqueeze(2)  # (1, T,1)
-            t_1 = t_0 + t  # (N, MT)
-            tmask = (tmask >= t_0.unsqueeze(1)) & (tmask < t_1.unsqueeze(1))  # (N,T,MT)
-            tmask = tmask.any(2, keepdim=True)  # (N, T, 1)
-        if f_0 is not None and f is not None:
-            fmask = torch.arange(F, device=device).unsqueeze(0).unsqueeze(2)  # (1, F,1)
-            f_1 = f_0 + f  # (N, MF)
-            fmask = (fmask >= f_0.unsqueeze(1)) & (fmask < f_1.unsqueeze(1))  # (N,F,MF)
-            fmask = fmask.any(2).unsqueeze(1)  # (N, 1, F)
-        if tmask is not None:
-            if fmask is not None:
-                tmask = tmask | fmask
-            new_feats = new_feats.masked_fill(tmask, 0.0)
-        elif fmask is not None:
-            new_feats = new_feats.masked_fill(fmask, 0.0)
-        return new_feats
+        return spec_augment_apply_parameters(
+            feats, params, self.interpolation_order, lengths
+        )
 
     def forward(
         self, feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        self.check_input(feats, lengths)
-        if not self.training:
-            return feats
-        N, T, _ = feats.shape
-        if lengths is None:
-            lengths = torch.tensor([T] * N, device=feats.device)
-        params = self.draw_parameters(feats, lengths)
-        return self.apply_parameters(feats, params, lengths)
+        return spec_augment(
+            feats,
+            self.max_time_warp,
+            self.max_freq_warp,
+            self.max_time_mask,
+            self.max_freq_mask,
+            self.max_time_mask_proportion,
+            self.num_time_mask,
+            self.num_time_mask_proportion,
+            self.num_freq_mask,
+            self.interpolation_order,
+            lengths,
+            self.training,
+        )
 
 
 class RandomShift(torch.nn.Module):

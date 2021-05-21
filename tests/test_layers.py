@@ -927,8 +927,7 @@ def test_spec_augment_masking(device):
     assert torch.all(act_masked_f == exp_masked_f)
 
 
-def test_spec_augment_call(device):
-    torch.manual_seed(6493263)
+def test_spec_augment_call(device, trace):
     N, T, F = 30, 2048, 80
     max_time_warp, max_freq_warp = 15, 20
     max_time_mask, max_freq_mask = 30, 7
@@ -945,6 +944,11 @@ def test_spec_augment_call(device):
         num_time_mask=num_time_mask,
         num_freq_mask=num_freq_mask,
     ).to(device)
+    if trace:
+        # spec_augment is nondeterministic, so we don't check repeat return values
+        spec_augment = torch.jit.trace(
+            spec_augment, (feats, lengths), check_trace=False
+        )
     spec_augment(feats, lengths)
 
 

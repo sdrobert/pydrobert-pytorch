@@ -59,6 +59,7 @@ __all__ = [
     "sequence_log_probs",
     "sparse_image_warp",
     "time_distributed_return",
+    "warp_1d_grid",
 ]
 
 
@@ -2050,6 +2051,69 @@ def sparse_image_warp(
         )
 
         return warped
+
+
+@script_if_tracing
+def warp_1d_grid(
+    src: torch.Tensor,
+    flow: torch.Tensor,
+    lengths: torch.Tensor,
+    max_length: int,
+    interpolation_order: int,
+) -> torch.Tensor:
+    """Interpolate grid values for 1d of a grid_sample
+
+    Parameters
+    ----------
+    src : torch.Tensor
+        A long tensor of shape ``(N,)`` containing random source points.
+    flow : torch.Tensor
+        A long tensor of shape ``(N,)`` containing corresponding flow fields for
+        ``src`` such that ``new_feats[n, * dst[n] *] =
+        feats[n, * src[n] - flow[n] *]`` (for whichever dimension we're talking
+        about).
+    lengths : torch.Tensor
+        A long tensor of shape ``(N,)`` specifying the number of valid indices along
+        the dimension in question.
+    max_length : int
+        An integer s.t. ``max_length >= lengths[n]`` for all ``n``.
+    interpolation order : int
+        Degree of warp.
+
+    Returns
+    -------
+    grid : torch.Tensor
+        A float tensor of shape ``(N, max_length)`` providing coordinates for one
+        dimension of :func:`torch.nn.functional.grid_sample` that will be used to
+        warp the features
+    """
+    device = src.device
+    # the interpolation has three points (per batch elem):
+    # 1. t=-.5, flow=0
+    # 2. t=src, flow=flow
+    # 3. t=lengths -.5, flow=0
+    # whatever happens after lengths -.5 is undefined
+    # grid = (2 * dst - 2 * flow + 1) / max_length - 1
+    N = src.shape[0]
+    src, flow, lengths = src.float(), flow.float(), lengths.float()
+    zeros = torch.zeros_like(src)
+    src = torch.stack([zeros - 0.5, src, lengths - 0.5], 1)  # (N, 3)
+    flow = torch.stack([zeros, flow, zeros], 1)  # (N, 3)
+    sparse_grid = (2.0 * src + 1.0) / max_length - 1.0  # (N,3)
+    t = torch.arange(max_length, device=device, dtype=torch.float)
+    grid = polyharmonic_spline(
+        (src + flow).unsqueeze(-1),  # dst (N, 3, 1)
+        sparse_grid.unsqueeze(-1),  # (N, 3, 1)
+        t.unsqueeze(0).expand(N, max_length).unsqueeze(-1),  # (N, T, 1)
+        interpolation_order,
+    ).squeeze(
+        -1
+    )  # (N, T)
+    # we perform "boundary" interpolation, meaning any values past index length - 1
+    # are assumed to be equal to the boundary and with zero gradient.
+    boundary = (2.0 * lengths - 1.0) / max_length - 1.0
+    grid = torch.min(grid, boundary.unsqueeze(-1))
+    return grid
 
 
 @script_if_tracing
