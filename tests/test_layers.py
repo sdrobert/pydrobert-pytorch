@@ -246,7 +246,6 @@ def test_lookup_language_model_sos_context(device):
 
 
 @pytest.mark.gpu  # this is a really slow test on the cpu
-@pytest.mark.xfail(reason="LookupLanguageModel not updated yet")
 def test_lookup_language_model_republic():
     device = torch.device("cuda:0")
     dir_ = os.path.join(os.path.dirname(__file__), "republic")
@@ -288,14 +287,16 @@ def test_lookup_language_model_republic():
     import pydrobert.torch.util as util
 
     prob_list = util.parse_arpa_lm(arpa_file, token2id=token2id)
-    lm = layers.LookupLanguageModel(
-        vocab_size, sos=sos, eos=eos, oov=oov, prob_list=prob_list
-    )
+    lm = layers.LookupLanguageModel(vocab_size, sos=sos, oov=oov, prob_list=prob_list)
     lm = lm.to(device)
-    log_probs = lm(queries, full=True)
+    log_probs = lm(queries)
     queries = torch.cat([queries, torch.full_like(queries[:1], eos)])
     assert log_probs.shape[:-1] == queries.shape
     log_probs = log_probs.gather(2, queries.unsqueeze(2)).squeeze(2)
+    # determine the first location of eos and zero everything afterwards
+    eos_mask = queries[:-1].eq(eos).cumsum(0).bool()
+    eos_mask = torch.cat([eos_mask.new_full((1, queries.size(1)), False), eos_mask], 0)
+    log_probs.masked_fill_(eos_mask, 0.0)
     assert torch.allclose(log_probs.sum(0), exp, atol=1e-5)
 
 
@@ -382,7 +383,10 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction):
         ref[0] = 0
     log_probs = torch.randn(num_batches, samples, device=device)
     loss = layers.MinimumErrorRateLoss(
-        eos=None, sub_avg=sub_avg, batch_first=batch_first, reduction=reduction,
+        eos=None,
+        sub_avg=sub_avg,
+        batch_first=batch_first,
+        reduction=reduction,
     )
     l1 = loss(log_probs, ref, hyp)
     assert l1.ne(0.0).any()
@@ -442,7 +446,10 @@ def test_hard_optimal_completion_distillation_loss(
     inv_len_mask = len_mask.eq(0)
     logits.requires_grad_(True)
     loss = layers.HardOptimalCompletionDistillationLoss(
-        eos=eos, include_eos=include_eos, batch_first=batch_first, reduction=reduction,
+        eos=eos,
+        include_eos=include_eos,
+        batch_first=batch_first,
+        reduction=reduction,
     )
     l1 = loss(logits, ref, hyp)
     assert torch.all(l1 == l1)  # no nans
