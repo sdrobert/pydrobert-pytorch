@@ -134,10 +134,9 @@ NAN = float("nan")
     ],
     ids=["deft", "unigram", "bigram", "trigram"],
 )
-@pytest.mark.xfail(reason="LookupLanguageModel not updated yet")
 def test_lookup_language_model_builds_trie(prob_list, pointers, ids, logs):
     vocab_size = 5
-    lm = layers.LookupLanguageModel(vocab_size, prob_list=prob_list)
+    lm = layers.LookupLanguageModel(vocab_size, 0, prob_list=prob_list)
     assert lm.pointers.shape == pointers.shape
     assert lm.ids.shape == ids.shape
     assert lm.logs.shape == logs.shape
@@ -151,11 +150,9 @@ def test_lookup_language_model_builds_trie(prob_list, pointers, ids, logs):
 
 
 @pytest.mark.parametrize("N", [1, 2, 5])
-@pytest.mark.parametrize("sos", [-2, None])
-@pytest.mark.xfail(reason="LookupLanguageModel not updated yet")
-def test_lookup_language_model_log_probs(device, N, sos):
+def test_lookup_language_model_log_probs(device, N):
     torch.manual_seed(1900)
-    vocab_size, eos = 10, -1
+    vocab_size, sos = 10, -1
     prob_list = []
     for n in range(1, N + 1):
         max_ngrams = vocab_size ** n
@@ -222,23 +219,13 @@ def test_lookup_language_model_log_probs(device, N, sos):
     # the sos shouldn't matter -- it isn't in the lookup table. The lm will
     # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
     # be 0
-    lm = layers.LookupLanguageModel(vocab_size, sos=sos, eos=eos, prob_list=prob_list)
+    lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list)
     lm = lm.to(device)
     for exp, hist in zip(exps, hists):
-        act = lm(hist)
+        act = lm(hist, None, -1)[0]
         assert torch.allclose(exp, act, atol=1e-5)
-        hist = torch.cat(
-            [
-                hist,
-                torch.full((1,) + hist.shape[1:], eos, dtype=torch.long, device=device),
-            ]
-        )
-        act = lm(hist, full=True)
-        assert torch.allclose(exp, act[-2], atol=1e-5)
-        assert torch.allclose(torch.zeros_like(exp), act[-1])
 
 
-@pytest.mark.xfail(reason="LookupLanguageModel not updated yet")
 def test_lookup_language_model_sos_context(device):
     # 0 = sos
     prob_list = [
@@ -248,21 +235,12 @@ def test_lookup_language_model_sos_context(device):
     ]
     lm = layers.LookupLanguageModel(4, sos=0, prob_list=prob_list)
     lm.to(device)
-    # with pad_sos_to_n = True
+    # XXX(sdrobert): pad_sos_to_n has been removed now - it's always true
     # P(0|0, 0) = P(0) = -99
     # P(1|0, 0) = 0.001
     # P(2|0, 0) = P(2|0) = 0.02
     # P(3|0, 0) = P(3) = 0.3
     exp = torch.tensor([[[-99.0, 0.001, 0.02, 0.3]]], device=device)
-    act = lm(torch.empty((0, 1), device=device, dtype=torch.long))
-    assert torch.allclose(exp, act, atol=1e-5)
-    lm.pad_sos_to_n = False
-    # with pad_sos_to_n = False
-    # P(0|0) = P(0) = -99
-    # P(1|0) = 0.01
-    # P(2|0) = 0.02
-    # P(3|0) = P(3) = 0.3
-    exp[..., 1] = 0.01
     act = lm(torch.empty((0, 1), device=device, dtype=torch.long))
     assert torch.allclose(exp, act, atol=1e-5)
 
@@ -322,12 +300,11 @@ def test_lookup_language_model_republic():
 
 
 @pytest.mark.cpu
-@pytest.mark.xfail(reason="LookupLanguageModel not updated yet")
 def test_lookup_language_model_state_dict():
-    vocab_size, sos, eos = 10, -1, 0
+    vocab_size, sos = 10, -1
     uni_list = [{0: 0.0, 1: 0.1, 2: 0.2}]
-    lm_a = layers.LookupLanguageModel(vocab_size, sos=sos, eos=eos, prob_list=uni_list)
-    lm_b = layers.LookupLanguageModel(vocab_size, sos=sos, eos=eos)
+    lm_a = layers.LookupLanguageModel(vocab_size, sos, prob_list=uni_list)
+    lm_b = layers.LookupLanguageModel(vocab_size, sos)
 
     def compare(assert_same):
         same_max_ngram = lm_a.max_ngram == lm_b.max_ngram
@@ -366,7 +343,7 @@ def test_lookup_language_model_state_dict():
     lm_b.load_state_dict(lm_a.state_dict())
     compare(True)
     bi_list = [{2: (0.2, -0.2), 3: (0.3, -0.3)}, {(0, 3): 0.03, (2, 4): 0.24}]
-    lm_a = layers.LookupLanguageModel(vocab_size, sos=sos, eos=eos, prob_list=bi_list)
+    lm_a = layers.LookupLanguageModel(vocab_size, sos=sos, prob_list=bi_list)
     compare(False)
     lm_b.load_state_dict(lm_a.state_dict())
     compare(True)
@@ -375,7 +352,7 @@ def test_lookup_language_model_state_dict():
         dict(),
         {(0, 0, 0): 0.0, (4, 4, 4): 0.444, (2, 3, 2): 0.232},
     ]
-    lm_a = layers.LookupLanguageModel(vocab_size, sos=sos, eos=eos, prob_list=tri_list)
+    lm_a = layers.LookupLanguageModel(vocab_size, sos=sos, prob_list=tri_list)
     compare(False)
     lm_b.load_state_dict(lm_a.state_dict())
     compare(True)

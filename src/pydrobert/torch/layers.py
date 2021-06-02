@@ -160,7 +160,8 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     ) -> Tuple[torch.Tensor, Any]:
         """Calculates log_prob_idx over types at prefix up to and excluding idx
 
-        Subclasses implement this
+        Subclasses implement this. Values in idx are guaranteed to be between
+        ``[0, hist.size(0)]``
         """
         raise NotImplementedError()
 
@@ -237,15 +238,16 @@ class LookupLanguageModel(SequentialLanguageModel):
             Pr(w_t|w_{t-1},\ldots,w_{t-(N-1)+1}) & \text{else}
         \end{cases}
 
-    Missing entries are assumed to have value 0. and missing backoff penalties
-    are assumed to have value 1.
+    Missing entries are assumed to have value 0 and missing backoff penalties are
+    assumed to have value 1.
 
     Parameters
     ----------
     vocab_size : int
-    sos : int or None, optional
-    eos : int or None, optional
     oov : int or None, optional
+    sos : int or None, optional
+        The start of sequence token. Any prefix with fewer tokens than the maximum order
+        of n-grams minus 1 will be prepended up to that length with this token.
     prob_list : sequence or None, optional
         A list of dictionaries whose entry at index ``i`` corresponds to a
         table of ``i+1``-gram probabilities. Keys must all be ids, not strings.
@@ -255,15 +257,6 @@ class LookupLanguageModel(SequentialLanguageModel):
         keys. Lower order dictionaries' values are pairs of log-probability and
         log-backoff penalty. If `prob_list` is not specified, a unigram model
         with a uniform prior will be built
-    pad_sos_to_n : bool, optional
-        For backoff models, it is usually the case that the input sequence is
-        pre-padded with `sos` (n - 1) times rather than just once so that the
-        context window is always of size `n`. If `pad_sos_to_n` is
-        :obj:`False`, we will not perform the additional padding (though there
-        will still be a sequence-initial `sos`). If no `sos` token is
-        specified, this option is moot. It is usually safe to keep this setting
-        :obj:`True` since no language model should assign a backoff penalty
-        to prefixes of `sos` symbols.
 
     Notes
     -----
@@ -277,10 +270,10 @@ class LookupLanguageModel(SequentialLanguageModel):
     `prob_list` on initialization:
 
     >>> # first time
-    >>> lm = LookupLanguageModel(vocab_size, sos, eos, oov, prob_list)  # slow
+    >>> lm = LookupLanguageModel(vocab_size, sos, oov, prob_list)  # slow
     >>> state_dict = lm.state_dict()
     >>> # save state dict, quit, startup, then reload state dict
-    >>> lm = LookupLanguageModel(vocab_size, sos, eos, oov)  # fast!
+    >>> lm = LookupLanguageModel(vocab_size, sos, oov)  # fast!
     >>> lm.load_state_dict(state_dict)
 
     See Also
@@ -289,6 +282,12 @@ class LookupLanguageModel(SequentialLanguageModel):
         How to read a pretrained table of n-gram probabilities into
         `prob_list`. The parameter `token2id` should be specified to ensure
         id-based keys.
+
+    Warnings
+    --------
+    After 0.3.0, `sos` became no longer optional. `pad_sos_to_n` was removed as an
+    argument (implicitly true now). `eos` was also removed as part of updated to
+    :obj:`SequentialLanguageModel`
     """
 
     # XXX(sdrobert): as discussed in [heafield2011], we could potentially speed
@@ -300,15 +299,13 @@ class LookupLanguageModel(SequentialLanguageModel):
     def __init__(
         self,
         vocab_size: int,
-        sos: Optional[int] = None,
-        eos: Optional[int] = None,
+        sos: int,
         oov: Optional[int] = None,
         prob_list: Optional[Sequence[dict]] = None,
-        pad_sos_to_n: bool = True,
     ):
-        super(LookupLanguageModel, self).__init__(vocab_size, sos=sos, eos=eos, oov=oov)
-        self.pad_sos_to_n = pad_sos_to_n
-        if sos is not None and (sos < 0 or sos > vocab_size):
+        super(LookupLanguageModel, self).__init__(vocab_size, oov=oov)
+        self.sos = sos
+        if sos < 0 or sos > vocab_size:
             # we want sos to refer to an index but it's oov, so we'll shift all
             # indices in hyp up by one and fill the occurrences of sos with 0
             self.shift = 1
@@ -331,14 +328,16 @@ class LookupLanguageModel(SequentialLanguageModel):
 
     def extra_repr(self) -> str:
         s = super(LookupLanguageModel, self).extra_repr()
-        s += ", max_ngram={}".format(self.max_ngram)
-        if not self.pad_sos_to_n:
-            s += ", pad_sos_to_n=False"
+        s += ", max_ngram={}, sos={}".format(self.max_ngram, self.sos)
         return s
 
-    def calc_last_log_probs(
-        self, hist: torch.Tensor, eos_mask: Optional[torch.Tensor]
-    ) -> torch.Tensor:
+    @property
+    def prev_is_hist_compatible(self) -> bool:
+        return True
+
+    def calc_idx_log_probs(
+        self, hist: torch.Tensor, prev: Any, idx: Union[int, torch.Tensor]
+    ) -> Tuple[torch.Tensor, None]:
         # we produce two tries with the same node ids: one for logp and one for
         # logb. Let N be the maximal n-gram. The children of the root are
         # 1-grams, their children are 2-grams, etc. Thus, x-gram is synonymous
@@ -368,54 +367,57 @@ class LookupLanguageModel(SequentialLanguageModel):
         #   1-grams + 1; 2-grams + 1; ...; (N-1)-grams]. The first X values
         # are the log-probabilities. Letting G be the number of N-gram nodes,
         # the remaining X - G entries are the backoff probabilities
-        B, V, N = hist.shape[1], self.vocab_size, self.max_ngram
+        B, V, N = hist.size(1), self.vocab_size, self.max_ngram
         M, G, X = B * V, self.max_ngram_nodes, len(self.pointers)
         U = V + self.shift + (1 % N)
         K, L = X + G - U, 2 * X + G
         device = hist.device
         assert len(self.ids) == K
         assert len(self.logs) == L
-        if self.eos is not None and (self.eos < 0 or self.eos >= self.vocab_size):
-            # eos is out-of-vocabulary. Replace with in-vocabulary (it'll be
-            # zero-filled by the parent class)
-            hist = hist.masked_fill(hist.eq(self.eos), 0)
-        hist = hist[max(0, hist.shape[0] - (N - 1)) :]
-        if self.pad_sos_to_n and self.sos is not None and hist.shape[0] != N - 1:
-            sos_prepend = torch.full(
-                (N - 1 - hist.shape[0],) + hist.shape[1:],
-                self.sos,
-                dtype=hist.dtype,
-                device=hist.device,
-            )
-            hist = torch.cat([sos_prepend, hist], dim=0)
-            del sos_prepend
+        if isinstance(idx, int):
+            hist = hist[:idx]
+            if idx >= N - 1:
+                hist = hist[hist.size(0) - (N - 1) :]
+            else:
+                hist = torch.cat(
+                    [hist.new_full((N - 1 - hist.size(0), B), self.sos), hist], 0
+                )
+        else:
+            min_idx = idx.min().item()  # SequentialLanguageModel ensures min_idx >=0
+            if min_idx < N - 1:
+                hist = torch.cat(
+                    [hist.new_full((N - 1 - min_idx, B), self.sos), hist], 0
+                )
+            idx = torch.arange(-N, -1, -1, device=idx.device).unsqueeze(1) + idx
+            hist = hist.gather(0, idx)
+        assert hist.size(0) == N - 1
         if self.shift:
             hist = hist.masked_fill(hist.eq(self.sos), -self.shift)
             hist = hist + self.shift
+
+        # add the possible extensions to the history
         cur_step = torch.arange(
             self.shift, V + self.shift, dtype=hist.dtype, device=device
         )
-        cur_step = cur_step.view(1, 1, V).expand(-1, B, -1)
-        if hist.shape[0]:
-            hist = hist.unsqueeze(-1).expand(-1, -1, V)
-            hist = torch.cat([hist, cur_step], dim=0)
-        else:
-            hist = cur_step
-        del cur_step
-        if N == 1 or hist.shape[0] == 1:
+        cur_step = cur_step.view(1, 1, V).expand(1, B, V)
+        hist = torch.cat([hist.unsqueeze(2).expand(N - 1, B, V), cur_step], 0)
+
+        if N == 1:
             # we're a unigram model, or we've only got unigram history
             hist = hist[-1]  # (B, V)
             logs = self.logs[:G].unsqueeze(0).expand(B, G)
-            return logs.gather(1, hist)  # (B, V)
+            return logs.gather(1, hist), None  # (B, V)
+
         # we're now definitely not a unigram model w/ non-empty history
         assert X and K
         hist = hist.view(-1, M)  # pretend M is batch; reshape at end
         out = torch.zeros(M, dtype=torch.float, device=device)
         running_mask = torch.ones_like(out, dtype=torch.uint8).eq(1)
         vrange = torch.arange(V, dtype=torch.int32, device=device)
+        n = N
         while True:
             children = tokens = hist[0]
-            if hist.shape[0] == 1:
+            if n == 1:
                 # unigrams always exist. Add the log-probability and exit
                 out = torch.where(running_mask, out + self.logs[tokens], out)
                 break
@@ -427,7 +429,7 @@ class LookupLanguageModel(SequentialLanguageModel):
             parents = children
             first_children = parents + offsets.long()
             step_mask = running_mask
-            for t in range(1, hist.shape[0]):
+            for t in range(1, n):
                 next_step = step_mask & num_children.ne(0)
                 tokens = hist[t]
                 S = num_children.max()
@@ -441,7 +443,7 @@ class LookupLanguageModel(SequentialLanguageModel):
                 )
                 matches = matches & step_mask.unsqueeze(1)
                 next_step = matches.any(1)
-                if t == hist.shape[0] - 1:
+                if t == n - 1:
                     # we're last. Add probabilities
                     logs = torch.where(
                         matches,
@@ -469,14 +471,15 @@ class LookupLanguageModel(SequentialLanguageModel):
                     ).sum(1)
                 # this'll be invalid for the last step, so don't re-use!
                 step_mask = next_step
-                if t != hist.shape[0] - 1:
+                if t != n - 1:
                     offsets = self.pointers[children].to(torch.int32)
                     num_children = self.pointers[children + 1].to(torch.int32)
                     num_children = num_children - offsets + 1
                     parents = children
                     first_children = parents + offsets.long()
             hist = hist[1:]
-        return out.view(B, V)
+            n -= 1
+        return out.view(B, V), None
 
     def load_state_dict(self, state_dict: dict, **kwargs) -> None:
         error_prefix = "Error(s) in loading state_dict for {}:\n".format(
@@ -495,7 +498,7 @@ class LookupLanguageModel(SequentialLanguageModel):
             if len(pointers) < self.vocab_size + self.shift + 1:
                 raise RuntimeError(
                     error_prefix + "Expected {} unigram probabilities, got {} "
-                    "(vocab_size, eos, and sos must be correct!)".format(
+                    "(vocab_size and sos must be correct!)".format(
                         self.vocab_size + self.shift, len(pointers) - 1
                     )
                 )
@@ -505,7 +508,7 @@ class LookupLanguageModel(SequentialLanguageModel):
             self.max_ngram_nodes = last_ptr = U - 1
             error = RuntimeError(
                 error_prefix + "buffer contains unexpected value (are you sure "
-                "you've set vocab_size, eos, and sos correctly?)"
+                "you've set vocab_size and sos correctly?)"
             )
             while last_ptr < len(pointers):
                 offset = pointers[last_ptr].item()
@@ -523,7 +526,7 @@ class LookupLanguageModel(SequentialLanguageModel):
             if len(logs) != self.vocab_size + self.shift:
                 raise RuntimeError(
                     error_prefix + "Expected {} unigram probabilities, got {} "
-                    "(vocab_size, eos, and sos must be correct!)"
+                    "(vocab_size and sos must be correct!)"
                     "".format(self.vocab_size + self.shift, len(logs))
                 )
             self.max_ngram_nodes = self.vocab_size + self.shift
@@ -587,7 +590,7 @@ class LookupLanguageModel(SequentialLanguageModel):
             )
             for n in range(1, self.max_ngram):
                 prob_list[n] = dict(
-                    (tuple(0 if t == self.eos else t + 1 for t in k), v)
+                    (tuple(t + 1 for t in k), v)
                     for (k, v) in list(prob_list[n].items())
                 )
         N, G, V = self.max_ngram, self.max_ngram_nodes, self.vocab_size
