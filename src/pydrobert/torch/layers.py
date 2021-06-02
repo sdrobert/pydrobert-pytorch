@@ -21,7 +21,7 @@ The loss functions :class:`HardOptimalCompletionDistillationLoss` and
 """
 
 import abc
-from typing import NoReturn, Optional, Sequence, Tuple
+from typing import Any, NoReturn, Optional, Sequence, Tuple, Union
 
 import torch
 
@@ -60,214 +60,165 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     probability of the current token is based only on a fixed-length history, as well as
     recurrent neural language models [mikolov2010]_.
 
-    Subclasses have the following signature:
+    Subclasses are called with the following signature:
 
-        lm(hist, full=False)
+        lm(hist, prev=None, idx=None)
 
-    Where `hist` is a long tensor of shape ``(s - 1, *)`` corresponding to the sequence
-    up to but excluding the current step ``s``, where ``s >= 1``. Letting ``i`` be a
-    multi-index of all but the first dimension of `hist`, ``hist[:, i]`` is the i-th
-    sequence :math:`(w^{(i)}_1, w^{(i)}_2, \ldots, w^{(i)}_{s - 1})`.
+    `hist` is a long tensor of shape ``(S, N)`` consisting of prefixes up to length
+    ``S``. ``hist[:, n]`` is the n-th prefix :math:`(w^{(n)}_0, w^{(n)}_1, \ldots,
+    w^{(n)}_{S-1})`.
 
-    When `full` is :obj:`False`, it outputs a float tensor `log_probs` of shape ``(*,
-    vocab_size)``, where ``log_probs[i, v]`` equals :math:`\log P(w^{(i)}_s = v |
-    w^{(i)}_{s-1}, \ldots)`
+    If `idx` is not specified, it outputs a float tensor `log_probs` of shape ``(S + 1,
+    N, vocab_size)`` where each ``log_probs[s, n, v]`` equals :math:`\log P(w^{(n)}_{s}
+    = v | w^{(n)}_{s - 1}, \ldots)`. That is, each distribution over types conditioned
+    on each prefix of tokens (``:0``, ``:1``, ``:2``, etc.) is returned.
 
-    When `full` is :obj:`True`, `log_probs` is of shape ``(s, *, vocab_size)`` where
-    each ``log_probs[s', i, v]`` equals :math:`\log P(w^{(i)}_{s'} = v | w^{(i)}_{s' -
-    1}, \ldots)`
+    If `idx` is specified, it must be either an integer or long tensor of shape
+    ``(N,)``. The former is broadcast into the latter. The call returns a pair. The
+    first element is `log_probs_idx` of shape ``(N, vocab_size)``, where ``log_probs[n,
+    v]`` equals :math:`\log P(w^{(n)}_{idx[n]} = v | w^{(n)}_{idx[n]-1}, \ldots)`. That
+    is, the distributions over the next type conditioned on token prefixes up to and
+    excluding ``s = idx`` are returned. The second elemnt, `cur`, is discussed in
+    relation to `prev` below.
+
+    The `prev` argument represents some additional input used in the computation. It may
+    contain static input (e.g. a tensor of encoder output in neural machine translation)
+    and/or dynamic input from prior calls to the LM (e.g. the previous hidden state in
+    an RNN-based language model). The contents of `prev` and whether or not it is
+    necessary to specify is specific to the subclass. However, subclasses are expected
+    to observe the following rules:
+
+    1. The return value ``cur = lm(hist, prev, idx)[1]`` can be passed as the `prev`
+       argument in the next step, i.e. ``lm(hist, cur, idx + 1)``.
+    2. The value of `prev` used in calling ``lm(hist, prev)`` should be the same value
+       as the first `prev` in sequence, i.e. ``lm(hist, prev, 0)``.
 
     Parameters
     ----------
     vocab_size : int
         The vocabulary size. Controls the size of the final output dimension,
         as well as what values of `hist` are considered in-vocabulary
-    sos : int, optional
-        An optional start-of-sequence token. Setting this option will prepend
-        `hist` with a tensor full of `sos`. `sos` can be in- or
-        out-of-vocabulary. Setting `sos` does not change the size of the
-        output, regardless of whether `full` is :obj:`True`: the prepended
-        tensor is considered context for ``s' == 0``
-    eos : int, optional
-        An optional end-of-sequence token. If this token is found in `hist`,
-        values succeeding it in `log_prob` will be replaced with zero. `eos`
-        need not be in-vocabulary
     oov : int, optional
         An optional out-of-vocabulary token. If any elements of `hist` are not
-        `eos` or not within the range ``[0, vocab_size)``, they will be
-        replaced with this token. `oov` must be in-vocabulary itself
+        ``[0, vocab_size)``, they will be replaced with this token. `oov` must be
+        in-vocabulary itself
 
-    Attributes
-    ----------
-    vocab_size : int
-    sos : int or :obj:`None`
-    eos : int or :obj:`None`
-    oov : int or :obj:`None`
+    Warnings
+    --------
+    This module has changed considerably since version 0.3.0. The primary changes are a)
+    to replace the boolean switch `full` with `idx`; b) the inclusion of the `prev`
+    argument for shared computations; c) the removal of both the `eos` and `sos`
+    attributes; and d) replacing the more general signature of `hist`, ``(S, *)``, with
+    ``(S, N)``. The former is strictly more powerful: the functionality of ``full=True``
+    is replicated by setting ``idx=None`` and ``full=False`` by setting ``idx=-1``. The
+    added functionality is intended to facilitate CTC decoding where prefixes stored in
+    `hist` may be of different lengths. b) generalizes LMs by allowing additional input
+    while also speeding up iterative computations. The removal of functionality in c) -
+    the `sos` and `eos` - was due to a lack of generalizability. It should be up to
+    subclasses whether prepending a start-of-sequence token makes sense and that
+    decision is inconsequential to the user. The way end-of-sequence tokens didn't
+    make too much sense without further downstream intervention and placed too much
+    of a burden on subclasses.
     """
 
     def __init__(
-        self,
-        vocab_size: int,
-        sos: Optional[int] = None,
-        eos: Optional[int] = None,
-        oov: Optional[int] = None,
+        self, vocab_size: int, oov: Optional[int] = None,
     ):
         super(SequentialLanguageModel, self).__init__()
         self.vocab_size = vocab_size
-        self.sos = sos
-        self.eos = eos
         self.oov = oov
         if vocab_size < 1:
             raise ValueError("vocab_size must be positive")
-        if sos is not None and sos == eos:
-            raise ValueError("sos cannot equal eos")
         if self.oov is not None and (self.oov < 0 or self.oov >= vocab_size):
             raise ValueError("oov must be within [0, vocab_size)")
 
+    @property
+    def prev_is_hist_compatible(self) -> bool:
+        """Whether prev[n] "matches" hist[:, n]
+
+        Subclasses returning :obj:`True` promise `prev` (and return value `cur`) is
+        either :obj:`None` or a tensor which, if `hist` is of shape ``(S, N)``, has
+        shape ``(N, ...)``. Further, if `prev` is non-none, ``prev[n]`` contains the
+        input relevant to ``hist[:, n]``.
+
+        Effectively, :obj:`True` promises that were we to copy, delete, or permute
+        sequences in `hist`, those same operations could be applied to `prev`. This
+        property is crucial to beam search algorithms which shuffle or delete paths
+        according to probability.
+        """
+        return False
+
     def extra_repr(self) -> str:
         s = "vocab_size={}".format(self.vocab_size)
-        if self.sos is not None:
-            s += ", sos={}".format(self.sos)
-        if self.eos is not None:
-            s += ", eos={}".format(self.eos)
         if self.oov is not None:
             s += ", oov={}".format(self.oov)
         return s
 
-    def check_input(self, hist, **kwargs):
-        """Check if the input is formatted correctly, otherwise RuntimeError"""
-        if hist.dim() < 2:
-            raise RuntimeError("hist must be at least 2-D")
-        if self.oov is None:
-            oov_mask = kwargs.get("oov_mask", None)
-            if oov_mask is None:
-                oov_mask = hist.ge(self.vocab_size) | hist.lt(0)
-                eos_mask = kwargs.get("eos_mask", None)
-                if eos_mask is None and self.eos is not None:
-                    eos_mask = hist.eq(self.eos).cumsum(0, dtype=torch.long)
-                    eos_mask = eos_mask.ne(0)
-                if eos_mask is not None:
-                    oov_mask = oov_mask & eos_mask.eq(0)
-            if kwargs.get("skip_first", False):
-                assert self.sos is not None
-                oov_mask = oov_mask[1:]
-            if oov_mask.any():
-                raise RuntimeError(
-                    "Found values in hist that were not eos and not between "
-                    "[0, {})".format(self.vocab_size)
-                )
-
     @abc.abstractmethod
-    def calc_last_log_probs(
-        self, hist: torch.Tensor, eos_mask: Optional[torch.Tensor]
-    ) -> torch.Tensor:
-        """Calculate log probabilities conditioned on history
+    def calc_idx_log_probs(
+        self, hist: torch.Tensor, prev: Any, idx: Union[int, torch.Tensor]
+    ) -> Tuple[torch.Tensor, Any]:
+        """Calculates log_prob_idx over types at prefix up to and excluding idx
 
-        Do not call this directly; instead, call the instance.
-
-        Subclasses implement this method. `hist` is of shape ``(s, N)``, where ``s`` is
-        the sequence dimension and ``N`` is the batch dimension. ``s`` can be zero,
-        indicating no history is available. All out-of-vocabulary elements (except eos)
-        have been replaced with the oov token (if `oov` is not :obj:`None`). If eos is
-        not :obj:`None`, `eos_mask` is also not :obj:`None` and of size ``(s, N)``.
-        ``hist[s', n] == eos`` iff ``eos_mask[s', n].ne(0)``. `hist` has been
-        right-filled with eos s.t. if ``hist[s', n] == eos`` and ``s' < s - 1`` then
-        ``hist[s' + 1, n] == eos``. If sos has been set, `hist` has been prepended with
-        a vector of ``(N,)`` filled with the symbol, which may or may not be
-        in-vocabulary
+        Subclasses implement this
         """
         raise NotImplementedError()
 
-    def calc_full_log_probs(
-        self, hist: torch.Tensor, eos_mask: Optional[torch.Tensor]
-    ) -> torch.Tensor:
-        """Calculate log probabilities at each step of history and next
+    def calc_full_log_probs(self, hist: torch.Tensor, prev: Any) -> torch.Tensor:
+        """Calculates log_prob over all prefixes and stacks them on the first dim
 
-        Do not call this directly; instead, call the instance with the keyword argument
-        `full` set to :obj:`True`.
-
-        Subclasses may implement this method to avoid repeated computation. It should
-        produce an output identical to the following default implementation
-
-        >>> out = torch.stack([
-        >>>     self.calc_last_log_probs(
-        >>>         hist[:s], None if eos_mask is None else eos_mask[:s])
-        >>>     for s in range(0 if self.sos is None else 1, hist.shape[0] + 1)
-        >>> ], dim=0)
-
-        If sos has been set, `hist` has been prepended with a vector of sos.
-        In this case, the probability of the empty slice of `hist` should not
-        be calculated
+        Implemented in :class:`SequentialLanguageModel` as a simple loop. Subclasses
+        may overload this function if the result can be calculated more quickly.
         """
-        return torch.stack(
-            [
-                self.calc_last_log_probs(
-                    hist[:s], None if eos_mask is None else eos_mask[:s]
-                )
-                for s in range(0 if self.sos is None else 1, hist.shape[0] + 1)
-            ],
-            dim=0,
-        )
+        log_probs = []
+        for idx in range(hist.size(0) + 1):
+            log_probs_idx, prev = self.calc_idx_log_probs(hist, prev, idx)
+            log_probs.append(log_probs_idx)
+        return torch.stack(log_probs, 0)
 
-    def forward(self, hist: torch.Tensor, full: bool = False) -> torch.Tensor:
-        if self.sos is not None:
-            if hist.dim() < 2:
-                raise RuntimeError("hist must be at least 2-D")
-            sos_prepend = torch.full(
-                (1,) + hist.shape[1:], self.sos, dtype=hist.dtype, device=hist.device
-            )
-            if hist.shape[0]:
-                hist = torch.cat([sos_prepend, hist], dim=0)
+    def forward(
+        self,
+        hist: torch.Tensor,
+        prev: Any = None,
+        idx: Optional[Union[int, torch.Tensor]] = None,
+    ) -> torch.Tensor:
+        if hist.dim() != 2:
+            raise RuntimeError("hist must be 2 dimensional")
+        S, N = hist.shape
+        if idx is not None:
+            if isinstance(idx, int):
+                if -S - 1 > idx or S < idx:
+                    raise RuntimeError(
+                        f"idx must be between ({-S - 1}, {S}), got {idx}"
+                    )
             else:
-                hist = sos_prepend
-            del sos_prepend
-        if self.eos is not None:
-            eos_mask = hist.eq(self.eos).cumsum(0, dtype=torch.long).ne(0)
-        else:
-            eos_mask = None
+                if idx.dim() != 1:
+                    raise RuntimeError("idx must be 1-dimensional")
+                elif idx.size(0) != N:
+                    raise RuntimeError(
+                        f"Expected dim 0 of idx to be of size {N}, got {idx.size(0)}"
+                    )
+                elif ((idx < -S - 1) | (idx > S)).any():
+                    raise RuntimeError(
+                        f"All values in idx must be between ({-S - 1}, {S})"
+                    )
+            idx = (idx + S + 1) % (S + 1)
+        if self.prev_is_hist_compatible and prev is not None:
+            if not isinstance(prev, torch.Tensor):
+                raise RuntimeError(f"Expected prev to be a tensor or None")
+            elif prev.size(0) != N:
+                raise RuntimeError(
+                    f"Expected prev to be of shape leading with {N}, got "
+                    f"{prev.size(0)}"
+                )
         if self.oov is not None:
             oov_mask = hist.ge(self.vocab_size) | hist.lt(0)
-            if eos_mask is not None:
-                oov_mask = oov_mask & eos_mask.eq(0)
-        else:
-            oov_mask = None
-        self.check_input(
-            hist, eos_mask=eos_mask, oov_mask=oov_mask, skip_first=self.sos is not None
-        )
-        if oov_mask is not None:
             hist = hist.masked_fill(oov_mask, self.oov)
-        if eos_mask is not None:
-            hist = hist.masked_fill(eos_mask, self.eos)
-        hist_shape = hist.shape
-        first, rest = hist_shape[0], hist_shape[1:].numel()
-        hist = hist.view(first, rest)
-        if full:
-            out_shape = (-1,)
-            out_shape += tuple(hist_shape[1:]) + (self.vocab_size,)
-            out = self.calc_full_log_probs(
-                hist, None if eos_mask is None else eos_mask.view(first, rest)
-            )
-            out = out.reshape(*out_shape)
-            if eos_mask is not None:
-                if self.sos is not None:
-                    eos_mask = eos_mask[1:]
-                if eos_mask.shape[0]:
-                    eos_mask = torch.cat(
-                        [eos_mask[:1].ne(eos_mask[:1]), eos_mask], dim=0
-                    )
-                    out = out.masked_fill(eos_mask.unsqueeze(-1), 0.0)
+            del oov_mask
+        if idx is None:
+            return self.calc_full_log_probs(hist, prev)
         else:
-            out_shape = tuple(hist_shape[1:]) + (self.vocab_size,)
-            out = self.calc_last_log_probs(
-                hist, None if eos_mask is None else eos_mask.view(first, rest)
-            )
-            out = out.reshape(*out_shape)
-            if eos_mask is not None and eos_mask.shape[0]:
-                out = out.masked_fill(eos_mask[-1].unsqueeze(-1), 0.0)
-        return out
-
-    def reset_parameters(self):
-        pass
+            return self.calc_idx_log_probs(hist, prev, idx)
 
 
 class LookupLanguageModel(SequentialLanguageModel):
