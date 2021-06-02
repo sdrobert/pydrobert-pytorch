@@ -226,6 +226,42 @@ def test_lookup_language_model_log_probs(device, N):
         assert torch.allclose(exp, act, atol=1e-5)
 
 
+def test_lookup_language_model_nonuniform_idx(device):
+    S, N, B = 100, 5, 30
+    prob_list = []
+    vocab_size, sos = 10, -1
+    prob_list = []
+    for n in range(1, N + 1):
+        max_ngrams = vocab_size ** n
+        has_ngram = torch.randint(2, (max_ngrams,), device=device).eq(1)
+        dict_ = dict()
+        last = n == N
+        for idx, has in enumerate(has_ngram):
+            if not has:
+                continue
+            key = []
+            for _ in range(n):
+                key.append(idx % vocab_size)
+                idx //= vocab_size
+            if n == 1:
+                key = key[0]
+            else:
+                key = tuple(key)
+            if last:
+                dict_[key] = torch.randn((1,), device=device).item()
+            else:
+                dict_[key] = torch.randn((2,), device=device).tolist()
+        prob_list.append(dict_)
+    prob_list[0][sos] = (-99, 0)
+    lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list).to(device)
+    hist = torch.randint(0, vocab_size, (S, B), device=device)
+    exp = lm(hist)
+    idx = torch.randint(0, S + 1, (B,), device=device)
+    exp = exp.gather(0, idx.view(1, B, 1).expand(1, B, vocab_size)).squeeze(0)
+    act, _ = lm(hist, idx=idx)
+    assert torch.allclose(exp, act, atol=1e-5)
+
+
 def test_lookup_language_model_sos_context(device):
     # 0 = sos
     prob_list = [
