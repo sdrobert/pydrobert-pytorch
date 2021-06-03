@@ -253,7 +253,8 @@ def test_ctc_greedy_search_ignores_padding(device, batch_first):
 
 
 @pytest.mark.parametrize(
-    "probs_t,probs_prev,y_prev,y_next_exp,probs_next_exp",
+    "probs_t,probs_prev,y_prev,y_next_exp,probs_next_exp,next_src_exp,"
+    "next_is_nonext_exp",
     [
         (
             ([0.1, 0.7], 0.2),
@@ -261,6 +262,8 @@ def test_ctc_greedy_search_ignores_padding(device, batch_first):
             [[0], [1]],
             [[1], [0, 1], [1, 1], [0], [1, 0], [0, 0]],
             ([0.28, 0.28, 0.14, 0.01, 0.06, 0.03], [0.12, 0.0, 0.0, 0.08, 0.0, 0.0]),
+            [1, 0, 1, 0, 1, 0],
+            [True, False, False, True, False, False],
         ),
         (
             ([0.1, 0.2, 0.3], 0.4),
@@ -268,6 +271,8 @@ def test_ctc_greedy_search_ignores_padding(device, batch_first):
             [[]],
             [[], [2], [1], [0]],
             ([0.0, 0.3, 0.2, 0.1], [0.4, 0.0, 0.0, 0.0]),
+            [0, 0, 0, 0],
+            [True, False, False, False],
         ),
         (
             ([0.2, 0.3, 0.1], 0.4),
@@ -289,6 +294,8 @@ def test_ctc_greedy_search_ignores_padding(device, batch_first):
                 [0.141, 0.091, 0.15, 0.1, 0.02, 0.082, 0.033, 0.017, 0.014, 0.0],
                 [0.164, 0.2, 0.0, 0.0, 0.068, 0.0, 0.0, 0.0, 0.0, 0.0],
             ),
+            [1, 2, 2, 2, 0, 1, 1, 0, 0, 2],
+            [True, True, False, False, True, False, False, False, False, False],
         ),
         (
             ([[0.1, 0.3], [0.2, 0.3]], [0.4, 0.5], 0.1),
@@ -296,13 +303,23 @@ def test_ctc_greedy_search_ignores_padding(device, batch_first):
             [[0], [1]],
             [[1], [0, 1], [0], [1, 0], [0, 0], [1, 1]],
             [[0.15, 0.09, 0.04, 0.06, 0.02, 0.0], [0.03, 0.0, 0.03, 0.0, 0.0, 0.0]],
+            [1, 0, 0, 1, 0, 1],
+            [True, False, True, False, False, False],
         ),
     ],
     ids=("A", "B", "C", "D"),
 )
 @pytest.mark.parametrize("batch_size", [1, 2, 7])
 def test_ctc_prefix_search_advance(
-    probs_t, probs_prev, y_prev, y_next_exp, probs_next_exp, batch_size, device
+    probs_t,
+    probs_prev,
+    y_prev,
+    y_next_exp,
+    probs_next_exp,
+    next_src_exp,
+    next_is_nonext_exp,
+    batch_size,
+    device,
 ):
     Kp, K, N = len(y_prev), len(y_next_exp), batch_size
 
@@ -367,12 +384,19 @@ def test_ctc_prefix_search_advance(
         torch.tensor(x, device=device).unsqueeze(0).expand(N, K) for x in probs_next_exp
     )
 
+    next_src_exp = torch.tensor(next_src_exp, device=device).unsqueeze(0).expand(N, K)
+    next_is_nonext_exp = (
+        torch.tensor(next_is_nonext_exp, device=device).unsqueeze(0).expand(N, K)
+    )
+
     (
         y_next_act,
         y_next_last_act,
         y_next_lens_act,
         probs_next_act,
         next_is_prefix_act,
+        next_src_act,
+        next_is_nonext_act,
     ) = util.ctc_prefix_search_advance(
         probs_t, K, probs_prev, y_prev, y_prev_last, y_prev_lens, prev_is_prefix
     )
@@ -399,6 +423,12 @@ def test_ctc_prefix_search_advance(
 
     assert next_is_prefix_act.shape == next_is_prefix_exp.shape
     assert (next_is_prefix_act == next_is_prefix_exp).all()
+
+    assert next_src_exp.shape == next_src_act.shape
+    assert (next_src_act == next_src_exp).all()
+    
+    assert next_is_nonext_act.shape == next_is_nonext_exp.shape
+    assert (next_is_nonext_act == next_is_nonext_exp).all()
 
 
 @pytest.mark.parametrize("prevent_eos", [True, False])
@@ -484,18 +514,69 @@ def test_beam_search_advance(device, prevent_eos):
 def test_error_rate_against_known(device, norm, include_eos, batch_first, distance):
     eos = 0
     pairs = (
-        ((1, 2, 3), (1, 2, 3), 0,),
-        ((2, 3), (1, 2, 3), 1,),
-        ((1, 3), (1, 2, 3), 1,),
-        ((3,), (1, 2, 3), 2,),
-        ((1, 2, 3), (1, 3), 1,),
-        ((1, 2, 3), (1, 2,), 1,),
-        ((1, 2, 3), (1,), 2,),
-        ((1, 3, 1, 2, 3), (1, 2, 3), 2,),
-        ((1, 2, 3), (4, 5, 6), 3,),
-        ((2, 2, 2), (2,), 2,),
-        (tuple(), (1,), 1,),
-        (tuple(), tuple(), 0,),
+        (
+            (1, 2, 3),
+            (1, 2, 3),
+            0,
+        ),
+        (
+            (2, 3),
+            (1, 2, 3),
+            1,
+        ),
+        (
+            (1, 3),
+            (1, 2, 3),
+            1,
+        ),
+        (
+            (3,),
+            (1, 2, 3),
+            2,
+        ),
+        (
+            (1, 2, 3),
+            (1, 3),
+            1,
+        ),
+        (
+            (1, 2, 3),
+            (
+                1,
+                2,
+            ),
+            1,
+        ),
+        (
+            (1, 2, 3),
+            (1,),
+            2,
+        ),
+        (
+            (1, 3, 1, 2, 3),
+            (1, 2, 3),
+            2,
+        ),
+        (
+            (1, 2, 3),
+            (4, 5, 6),
+            3,
+        ),
+        (
+            (2, 2, 2),
+            (2,),
+            2,
+        ),
+        (
+            tuple(),
+            (1,),
+            1,
+        ),
+        (
+            tuple(),
+            tuple(),
+            0,
+        ),
     )
     ref_lens = torch.tensor([len(x[0]) + include_eos for x in pairs], device=device)
     hyp_lens = torch.tensor([len(x[1]) + include_eos for x in pairs], device=device)
@@ -656,7 +737,11 @@ def test_optimal_completion(device, include_eos, batch_first, exclude_last):
             "saturday#",
             ["s", "u", "un", "und", "n", "nd", "a", "y", "#", ""],
         ),
-        ("sunday#", "satrapy#", ["s", "u", "un", "und", "unda", "y", "y#", "#", ""],),
+        (
+            "sunday#",
+            "satrapy#",
+            ["s", "u", "un", "und", "unda", "y", "y#", "#", ""],
+        ),
         ("abc#", "abc#", ["a", "b", "c", "#", ""]),
         ("foot#", "bot#", ["f", "fo", "o", "ot#", ""]),
         ("abc#", "def#", ["a", "ab", "abc", "abc#", ""]),

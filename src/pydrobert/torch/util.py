@@ -348,7 +348,8 @@ def beam_search_advance(
     elif log_prior.shape != logits_t.shape[:-1]:
         raise RuntimeError(
             "If logits_t of shape {} then log_prior must have shape {}".format(
-                (batch_size, old_width, num_classes), (batch_size, old_width),
+                (batch_size, old_width, num_classes),
+                (batch_size, old_width),
             )
         )
     if prevent_eos and 0 <= eos < num_classes:
@@ -363,7 +364,9 @@ def beam_search_advance(
             raise RuntimeError(
                 "If logits_t of shape {} then y_prev must have shape "
                 "(*, {}, {})".format(
-                    (batch_size, old_width, num_classes), batch_size, old_width,
+                    (batch_size, old_width, num_classes),
+                    batch_size,
+                    old_width,
                 )
             )
         eos_mask = y_prev[-1].eq(eos)
@@ -379,7 +382,11 @@ def beam_search_advance(
             # eos is a legit class label)
             done_classes = torch.full_like(logits_t[0, 0], neg_inf)
             done_classes[0] = 0.0
-            logits_t = torch.where(eos_mask.unsqueeze(2), done_classes, logits_t,)
+            logits_t = torch.where(
+                eos_mask.unsqueeze(2),
+                done_classes,
+                logits_t,
+            )
             # If eos_mask looks like this (vertical batch, horizontal beam):
             #   1 0 0 1 0
             #   0 1 0 0 0
@@ -429,10 +436,16 @@ def beam_search_advance(
         y_mask = (s.unsqueeze(2) == eos_set.unsqueeze(1)).any(2)
         y = y.masked_fill(y_mask, eos)
     if len_mask is not None:
-        score = torch.where(len_mask.unsqueeze(1), log_prior[..., :width], score,)
+        score = torch.where(
+            len_mask.unsqueeze(1),
+            log_prior[..., :width],
+            score,
+        )
         y = y.masked_fill(len_mask.unsqueeze(1).unsqueeze(0), eos)
         s = torch.where(
-            len_mask.unsqueeze(1), torch.arange(width, device=logits_t.device), s,
+            len_mask.unsqueeze(1),
+            torch.arange(width, device=logits_t.device),
+            s,
         )
     if y_prev is not None:
         y_prev = y_prev.gather(2, s.unsqueeze(0).expand(t - 1, batch_size, width))
@@ -546,8 +559,73 @@ def ctc_prefix_search_advance(
     torch.Tensor,
     Tuple[torch.Tensor, torch.Tensor],
     torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
 ]:
-    """CTC prefix/beam search step function"""
+    """CTC prefix search step function
+
+    The step function of the CTC prefix search.
+
+    Parameters
+    ----------
+    probs_t : (torch.Tensor, torch.Tensor, torch.Tensor)
+        A triple of ``ext_probs_t, nonext_probs_t, blank_probs_t``. `ext_probs_t` is
+        of shape ``(N, old_width, V)`` containing the probabilities of extending a
+        prefix with a token of each type (resulting in a new token being added to the
+        reduced transcription). `nonext_probs_t` has shape ``(N, V)`` and contains the
+        probabilities of adding a token that does not extend a given prefix (i.e. when
+        a token immediately follows another of the same type with no blanks in between).
+        `blank_probs_t` is of shape ``(N)`` and contains the blank label probabilities.
+    width : int
+        The beam width
+    probs_prev : (torch.Tensor, torch.Tensor)
+        A pair of ``nb_probs_prev, b_probs_prev``. Each is a tensor of shape
+        ``(N, old_width)``. `nb_probs_prev` contains the summed mass of the paths
+        reducing to the given prefix which end in a non-blank token. `b_probs_prev`
+        is the summed mass of the paths reducing to the given prefix which end in a
+        blank token. ``nb_probs_prev + b_probs_prev = probs_prev``, the total mass of
+        each prefix.
+    y_prev : torch.Tensor
+        A long tensor of shape ``(N, old_width, S)`` containing the (reduced) prefixes
+        of each path.
+    y_prev_last : torch.Tensor
+        A long tensor of shape ``(N, old_width)`` containing the last token in each
+        prefix. Arbitrary when the prefix is length 0.
+    y_prev_lens: torch.Tensor
+        A long tensor of shape ``(N, old_width)`` specifying the length of each prefix.
+        For batch element ``n`` and prefix ``k``, only the tokens in
+        ``y_prev[n, k, :y_prev_lens[n, k]]`` are valid.
+    prev_is_prefix : torch.Tensor
+        A boolean tensor of shape ``(N, old_width, old_width)``. ``prev_is_prefix[n, k,
+        k']`` if and only if prefix ``k`` is a (non-strict) prefix of ``k'``
+    needs_sorted : bool, optional
+        If :obj:`False` the prefixes in the return value need not be sorted by
+        decreasing probability (the top-`width`-probability prefixes will still be
+        returned).
+
+    Returns
+    -------
+    y_next, y_next_last, y_next_lens, probs_next, next_is_prefix, next_src,
+    next_is_nonext : torch.Tensor, torch.Tensor, torch.Tensor, (torch.Tensor,
+    torch.Tensor), torch.Tensor, torch.Tensor
+        The first five are analogous to the ``*prev*`` arguments, but after the step
+        has completed. `next_src` is a long tensor of shape ``(N, width)`` such that
+        the value ``k_old = next_src[n, k_new]`` is the index from the previous step
+        (over ``old_width``) that is a prefix of the new prefix at ``k_new`` (i.e. its
+        source). `next_is_nonext` is a boolean tensor indicating if the new prefix
+        did _not_ extend its source. If true, the new prefix is identical to the source.
+        If false, it has one token more.
+
+    See Also
+    --------
+    pydrobert.torch.layers.CTCPrefixSearch
+        Performs the entirety of the search.
+
+    Notes
+    -----
+    If an extending prefix matches a previous nonextending prefix, the former's mass
+    is absorbed into the latter's.
+    """
 
     ext_probs_t, nonext_probs_t, blank_probs_t = probs_t
     del probs_t
@@ -679,8 +757,6 @@ def ctc_prefix_search_advance(
         next_ext_matches,
         next_ext,
         next_ind,
-        next_src,
-        next_is_nonext,
     )
 
     return (
@@ -689,6 +765,8 @@ def ctc_prefix_search_advance(
         y_next_lens,  # (N, K)
         (nb_probs_next, b_probs_next),  # (N, K), (N, K)
         next_is_prefix,  # (N, K, K)
+        next_src,  # (N, K)
+        next_is_nonext,  # (N, K)
     )
 
 
@@ -1428,7 +1506,9 @@ def random_walk_advance(
             raise RuntimeError(
                 "If logits_t of shape {} then y_prev must have shape "
                 "(*, {}, {})".format(
-                    (batch_size, old_samp, num_classes), batch_size, old_samp,
+                    (batch_size, old_samp, num_classes),
+                    batch_size,
+                    old_samp,
                 )
             )
         y_prev = y_prev.expand(-1, -1, num_samp)
@@ -1932,12 +2012,18 @@ def _solve_interpolation(c, f, k, reg, full):
         zeros = torch.zeros(
             (B.shape[0], B.shape[2], B.shape[2]), device=B.device, dtype=B.dtype
         )
-        B0 = torch.cat([B, zeros], 1,)  # (N, T+I+1, I+1)
+        B0 = torch.cat(
+            [B, zeros],
+            1,
+        )  # (N, T+I+1, I+1)
         ABtB0 = torch.cat([ABt, B0], 2)  # (N, T+I+1, T+I+1)
         zeros = torch.zeros(
             (B.shape[0], B.shape[2], f.shape[2]), device=f.device, dtype=f.dtype
         )
-        f0 = torch.cat([f, zeros], 1,)  # (N, T+I+1, O)
+        f0 = torch.cat(
+            [f, zeros],
+            1,
+        )  # (N, T+I+1, O)
         wv, _ = torch.solve(f0, ABtB0)
         w, v = wv[:, : B.shape[1]], wv[:, B.shape[1] :]
     else:
