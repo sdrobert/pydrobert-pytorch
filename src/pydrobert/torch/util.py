@@ -621,21 +621,72 @@ def ctc_prefix_search_advance(
     pydrobert.torch.layers.CTCPrefixSearch
         Performs the entirety of the search.
 
+    Warnings
+    --------
+    This function treats large widths the same as
+    :func:`pydrobert.torch.layers.CTCPrefixSearch`: the beam will be filled to `width`
+    but invalid prefixes will be assigned a total probability of :obj:`-float("inf")`.
+    However, this function will only set the non-blank probabilities of invalid prefixes
+    to negative infinity; blank probabilities of invalid prefixes may be :obj:`0`
+    instead. The total (summed) mass will still be :obj:`-float("inf")`.
+
     Notes
     -----
     If an extending prefix matches a previous nonextending prefix, the former's mass
-    is absorbed into the latter's.
+    is absorbed into the latter's and the latter's path is invalidated (see warning).
     """
 
+    if width < 1:
+        raise RuntimeError("width must be positive")
     ext_probs_t, nonext_probs_t, blank_probs_t = probs_t
     del probs_t
-
-    nb_probs_prev, b_probs_prev = probs_prev
-    tot_probs_prev = nb_probs_prev + b_probs_prev
-    del probs_prev
-
+    if ext_probs_t.dim() != 3:
+        raise RuntimeError("ext_probs_t must be 3 dimensional")
     N, Kp, V = ext_probs_t.shape
+    if nonext_probs_t.shape != (N, V):
+        raise RuntimeError(
+            f"expected nonext_probs_t to have shape {(N, V)}, got {nonext_probs_t.shape}"
+        )
+    if blank_probs_t.shape != (N,):
+        raise RuntimeError(
+            f"expected blank_probs_t to have shape {(N,)}, got {blank_probs_t.shape}"
+        )
+    nb_probs_prev, b_probs_prev = probs_prev
+    del probs_prev
+    if nb_probs_prev.shape != (N, Kp):
+        raise RuntimeError(
+            f"expected nb_probs_prev to have shape {(N, Kp)}, got {nb_probs_prev.shape}"
+        )
+    if b_probs_prev.shape != (N, Kp):
+        raise RuntimeError(
+            f"expected b_probs_prev to have shape {(N, Kp)}, got {b_probs_prev.shape}"
+        )
+    if y_prev.dim() != 3:
+        raise RuntimeError("y_prev must be 3 dimensional")
+    if y_prev.shape[:-1] != (N, Kp):
+        raise RuntimeError(
+            f"expected first two dimensions of y_prev to be {(N, Kp)}, "
+            f"got {y_prev.shape[:-1]}"
+        )
     tm1 = y_prev.size(2)
+    if y_prev_last.shape != (N, Kp):
+        raise RuntimeError(
+            f"expected y_prev_last to have shape {(N, Kp)}, got {y_prev_last.shape}"
+        )
+    if y_prev_lens.shape != (N, Kp):
+        raise RuntimeError(
+            f"expected y_prev_lens to have shape {(N, Kp)}, got {y_prev_lens.shape}"
+        )
+    if prev_is_prefix.shape != (N, Kp, Kp):
+        raise RuntimeError(
+            f"expected prev_is_prefix to have shape {(N, Kp, Kp)}, "
+            f"got {prev_is_prefix.shape}"
+        )
+    K = min(width, Kp * (V + 1))  # the maximum number of legitimate paths
+
+    tot_probs_prev = nb_probs_prev + b_probs_prev
+    # this is to ensure invalid or empty paths don't mess up our gather
+    y_prev_last = y_prev_last.clamp(0, V - 1)
 
     # b_ext_probs_cand is all zeros
     # nonblank extensions include blank prefix + extension and non-blank, non-matching
@@ -649,6 +700,7 @@ def ctc_prefix_search_advance(
     # blank non-extensions are all previous paths plus a blank
     b_nonext_probs_cand = tot_probs_prev * blank_probs_t.unsqueeze(1)  # (N, K')
     # nonblank non-extensions are non-blank, matching prefixes and final matching token
+    # (N.B. y_prev_last may be garbage for invalid or empty paths, hence the clamp)
     nb_nonext_probs_cand = nb_probs_prev * nonext_probs_t.gather(1, y_prev_last)  # N,K'
     del nb_probs_prev, b_probs_prev, tot_probs_prev
 
@@ -684,7 +736,7 @@ def ctc_prefix_search_advance(
     ).sum(1)
     # clear the probabilities of extensions k->v that exactly matched some k' for v
     has_match = (
-        torch.nn.functional.one_hot(to_match, V).bool() & ext_is_exact.unsqueeze(2)
+        torch.nn.functional.one_hot(to_match, V).bool() & ext_is_exact.unsqueeze(3)
     ).any(2)
     nb_ext_probs_cand = nb_ext_probs_cand.masked_fill(has_match, -float("inf"))
     del has_match, ext_is_exact
@@ -695,8 +747,8 @@ def ctc_prefix_search_advance(
         [nb_ext_probs_cand.view(N, Kp * V), nb_nonext_probs_cand + b_nonext_probs_cand],
         1,
     )  # (N, K' * (V + 1))
-    tot_probs_next, next_ind = tot_probs_cand.topk(width, 1, sorted=needs_sorted)
-    del tot_probs_cand, tot_probs_next
+    next_ind = tot_probs_cand.topk(K, 1, sorted=needs_sorted)[1]
+    del tot_probs_cand
 
     next_is_nonext = next_ind >= (Kp * V)
     next_src = (next_ind - (Kp * V)) * next_is_nonext + (next_ind // V) * (
@@ -707,8 +759,8 @@ def ctc_prefix_search_advance(
     y_next_prefix_lens = y_prev_lens.gather(1, next_src)  # (N, K)
     y_next = torch.cat(
         [
-            y_prev.gather(1, next_src.unsqueeze(2).expand(N, width, tm1)),
-            torch.empty((N, width, 1), device=y_prev.device, dtype=y_prev.dtype),
+            y_prev.gather(1, next_src.unsqueeze(2).expand(N, K, tm1)),
+            torch.empty((N, K, 1), device=y_prev.device, dtype=y_prev.dtype),
         ],
         2,
     ).scatter(
@@ -735,11 +787,11 @@ def ctc_prefix_search_advance(
     del y_prev_last
 
     next_prefix_is_prefix = prev_is_prefix.gather(
-        1, next_src.unsqueeze(2).expand(N, width, Kp)
-    ).gather(2, next_src.unsqueeze(1).expand(N, width, width))
+        1, next_src.unsqueeze(2).expand(N, K, Kp)
+    ).gather(2, next_src.unsqueeze(1).expand(N, K, K))
     next_len_leq = y_next_lens.unsqueeze(2) <= y_next_lens.unsqueeze(1)
     next_to_match = y_next.gather(
-        2, (y_next_lens - 1).clamp(min=0).unsqueeze(1).expand(N, width, width)
+        2, (y_next_lens - 1).clamp(min=0).unsqueeze(1).expand(N, K, K)
     ).transpose(1, 2)
     next_ext_matches = next_to_match == next_ext.unsqueeze(2)
     next_is_prefix = (
@@ -758,6 +810,30 @@ def ctc_prefix_search_advance(
         next_ext,
         next_ind,
     )
+
+    if K < width:
+        # we've exceeded the possible number of legitimate paths. Append up to the
+        # width but set their probabilities to -inf and make sure they aren't
+        # considered a prefix of anything
+        # This should only happen once in a given rollout assuming width stays
+        # constant, so it's ok to be a bit expensive.
+        rem = width - K
+        y_next = torch.cat([y_next, y_next.new_empty(N, rem, tm1 + 1)], 1)
+        empty = y_next_last.new_empty(N, rem)
+        y_next_last = torch.cat([y_next_last, empty], 1)
+        y_next_lens = torch.cat([y_next_lens, empty], 1)
+        neg_inf = nb_probs_next.new_full((N, rem), -float("inf"))
+        nb_probs_next = torch.cat([nb_probs_next, neg_inf], 1)
+        b_probs_next = torch.cat([b_probs_next, neg_inf], 1)
+        false_ = next_is_prefix.new_full((N, rem), False)
+        next_is_nonext = torch.cat([next_is_nonext, false_], 1)
+        next_is_prefix = torch.cat(
+            [next_is_prefix, false_.unsqueeze(1).expand(N, K, rem)], 2
+        )
+        next_is_prefix = torch.cat(
+            [next_is_prefix, false_.unsqueeze(2).expand(N, rem, width)], 1
+        )
+        next_src = torch.cat([next_src, next_src.new_full((N, rem), 0)], 1)
 
     return (
         y_next,  # (N, K, t)

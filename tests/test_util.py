@@ -426,9 +426,85 @@ def test_ctc_prefix_search_advance(
 
     assert next_src_exp.shape == next_src_act.shape
     assert (next_src_act == next_src_exp).all()
-    
+
     assert next_is_nonext_act.shape == next_is_nonext_exp.shape
     assert (next_is_nonext_act == next_is_nonext_exp).all()
+
+
+def test_ctc_prefix_search_advance_big_width(device):
+    # ensure a large beam width produces zero-probability paths past the possible
+    # number of true paths
+    T, N, V, Kp = 100, 10, 20, 5
+    K = (V + 1) * Kp * 2
+    assert V >= Kp
+    # all nonzero
+    ext_probs_t = torch.rand((N, Kp, V), device=device) + 0.01
+    nonext_probs_t = torch.rand((N, V), device=device) + 0.01
+    blank_probs_t = torch.rand((N,), device=device) + 0.01
+    nb_probs_prev = torch.rand((N, Kp), device=device) + 0.01
+    b_probs_prev = torch.rand((N, Kp), device=device) + 0.01
+    # the first path will be a strict prefix of every other path. The remaining paths
+    # will extend that first path by one different token each (they are not prefixes of
+    # one another)
+    y_prev = torch.randint(1, V + 1, (N, 1, T - 1), device=device).expand(N, Kp, T - 1)
+    y_prev = torch.cat(
+        [y_prev, torch.arange(Kp, device=device).view(1, Kp, 1).expand(N, Kp, 1)], 2
+    )
+    y_prev_lens = torch.tensor([[T - 1] + [T] * (Kp - 1)] * N, device=device)
+    y_prev_last = y_prev.gather(2, (y_prev_lens - 1).unsqueeze(2)).squeeze(2)
+    prev_is_prefix = torch.eye(Kp, device=device, dtype=torch.bool)
+    prev_is_prefix[0] = True  # first element is a prefix of everyone else
+    prev_is_prefix = prev_is_prefix.unsqueeze(0).expand(N, Kp, Kp)
+    (
+        y_next,
+        y_next_last,
+        y_next_lens,
+        (nb_probs_next, b_probs_next),
+        next_is_prefix,
+        next_src,
+        next_is_nonext,
+    ) = util.ctc_prefix_search_advance(
+        (ext_probs_t, nonext_probs_t, blank_probs_t),
+        K,
+        (b_probs_prev, nb_probs_prev),
+        y_prev,
+        y_prev_last,
+        y_prev_lens,
+        prev_is_prefix,
+    )
+    print((y_next_lens[0, :101] == 101).sum())
+    assert y_next.shape == (N, K, T + 1)
+    assert y_next_last.shape == (N, K)
+    assert y_next_lens.shape == (N, K)
+    assert nb_probs_next.shape == (N, K)
+    assert b_probs_next.shape == (N, K)
+    assert next_is_prefix.shape == (N, K, K)
+    assert next_src.shape == (N, K)
+    assert next_is_nonext.shape == (N, K)
+    # the first prefix can be extended in V ways and stay the same in 1 way. Kp - 1 of
+    # the extensions already exist in the beam, so the first prefix leads to V - Kp + 2
+    # new prefixes. The remaining Kp - 1 prefixes can be extended in V ways and stay the
+    # same 1 way.
+    exp_num_valid_prefixes = (V - Kp + 2) + (Kp - 1) * (V + 1)
+    nb_probs_next_is_valid = nb_probs_next >= 0.0
+    assert nb_probs_next_is_valid[:, :exp_num_valid_prefixes].all()
+    assert not nb_probs_next_is_valid[:, exp_num_valid_prefixes:].any(), (
+        nb_probs_next_is_valid.sum(1),
+        exp_num_valid_prefixes,
+    )
+    assert (b_probs_next >= 0.0)[:, :exp_num_valid_prefixes].all()
+    # the corresponding blank probabilities may not be invalidated (it's not worth the
+    # extra computation when the end-user just sees the total probability), but they
+    # should be invalid or nonzero
+    assert (b_probs_next <= 0.0)[:, exp_num_valid_prefixes:].all()
+    # Each of these paths has a non-blank probability mass because they are
+    # either extensions or had some non-blank probability mass already.
+    # the only prefixes that have nonzero blank probality are the ones that aren't
+    # extensions. There are Kp such unique prefixes
+    nb_probs_next = nb_probs_next[:, :exp_num_valid_prefixes]
+    b_probs_next = b_probs_next[:, :exp_num_valid_prefixes]
+    assert ((nb_probs_next != 0.0).sum(1) == exp_num_valid_prefixes).all()
+    assert ((b_probs_next != 0.0).sum(1) == Kp).all()
 
 
 @pytest.mark.parametrize("prevent_eos", [True, False])
