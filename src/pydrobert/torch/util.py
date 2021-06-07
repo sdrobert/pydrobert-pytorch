@@ -552,7 +552,6 @@ def ctc_prefix_search_advance(
     y_prev_last: torch.Tensor,  # (N,K')
     y_prev_lens: torch.Tensor,  # (N, K')
     prev_is_prefix: torch.Tensor,  # (N, K', K')  # [n, k, k'] iff k prefix of k'
-    needs_sorted: bool = True,
 ) -> Tuple[
     torch.Tensor,
     torch.Tensor,
@@ -598,10 +597,6 @@ def ctc_prefix_search_advance(
     prev_is_prefix : torch.Tensor
         A boolean tensor of shape ``(N, old_width, old_width)``. ``prev_is_prefix[n, k,
         k']`` if and only if prefix ``k`` is a (non-strict) prefix of ``k'``
-    needs_sorted : bool, optional
-        If :obj:`False` the prefixes in the return value need not be sorted by
-        decreasing probability (the top-`width`-probability prefixes will still be
-        returned).
 
     Returns
     -------
@@ -685,7 +680,7 @@ def ctc_prefix_search_advance(
     K = min(width, Kp * (V + 1))  # the maximum number of legitimate paths
 
     tot_probs_prev = nb_probs_prev + b_probs_prev
-    # this is to ensure invalid or empty paths don't mess up our gather
+    # this is to ensure invalid or empty paths don't mess up our gather/scatter
     y_prev_last = y_prev_last.clamp(0, V - 1)
 
     # b_ext_probs_cand is all zeros
@@ -747,7 +742,7 @@ def ctc_prefix_search_advance(
         [nb_ext_probs_cand.view(N, Kp * V), nb_nonext_probs_cand + b_nonext_probs_cand],
         1,
     )  # (N, K' * (V + 1))
-    next_ind = tot_probs_cand.topk(K, 1, sorted=needs_sorted)[1]
+    next_ind = tot_probs_cand.topk(K, 1)[1]
     del tot_probs_cand
 
     next_is_nonext = next_ind >= (Kp * V)

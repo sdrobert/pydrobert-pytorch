@@ -25,10 +25,16 @@ from typing import Any, NoReturn, Optional, Sequence, Tuple, Union
 
 import torch
 
-from pydrobert.torch.util import error_rate, optimal_completion, polyharmonic_spline
+from pydrobert.torch.util import (
+    error_rate,
+    optimal_completion,
+    polyharmonic_spline,
+    ctc_prefix_search_advance,
+)
 
 __all__ = [
     "ConcatSoftAttention",
+    "CTCPrefixSearch",
     "DotProductSoftAttention",
     "GeneralizedDotProductSoftAttention",
     "GlobalSoftAttention",
@@ -84,14 +90,14 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     The `prev` argument represents some additional input used in the computation. It may
     contain static input (e.g. a tensor of encoder output in neural machine translation)
     and/or dynamic input from prior calls to the LM (e.g. the previous hidden state in
-    an RNN-based language model). The contents of `prev` and whether or not it is
-    necessary to specify is specific to the subclass. However, subclasses are expected
-    to observe the following rules:
+    an RNN-based language model). Subclasses are expected to follow the following rules
+    regarding `prev` and `cur`.
 
     1. The return value ``cur = lm(hist, prev, idx)[1]`` can be passed as the `prev`
        argument in the next step, i.e. ``lm(hist, cur, idx + 1)``.
     2. The value of `prev` used in calling ``lm(hist, prev)`` should be the same value
        as the first `prev` in sequence, i.e. ``lm(hist, prev, 0)``.
+    3. `prev` and `cur` adhere to signature specified in :func:`batch_signature`
 
     Parameters
     ----------
@@ -135,20 +141,47 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
             raise ValueError("oov must be within [0, vocab_size)")
 
     @property
-    def prev_is_hist_compatible(self) -> bool:
-        """Whether prev[n] "matches" hist[:, n]
+    @abc.abstractmethod
+    def batch_signature(self) -> Union[Optional[int], Tuple[Optional[int], ...]]:
+        """Indicates which dims in each element of `prev` or `cur` are batch dims
 
-        Subclasses returning :obj:`True` promise `prev` (and return value `cur`) is
-        either :obj:`None` or a tensor which, if `hist` is of shape ``(S, N)``, has
-        shape ``(N, ...)``. Further, if `prev` is non-none, ``prev[n]`` contains the
-        input relevant to ``hist[:, n]``.
+        An integer, :obj:`None`, or an arbitrary number of either in a tuple. If an
+        integer, `prev` and `cur` are tensors whose batch dimension equals the return
+        value. That is, the ``n``-th indexed value along that dimension in `prev`
+        corresponds to the ``n``-th indexed value along that same dimension in `cur` and
+        the ``n``-th indexed value along the first dimension of `hist`. If the value is
+        :obj:`None`, `prev` and `cur` either do not have batch dimensions or are not
+        tensors. A tuple of int/none values indicates that `prev` and `cur` are
+        themselves tuples of the same length. The above criteria is then applied to each
+        element.
 
-        Effectively, :obj:`True` promises that were we to copy, delete, or permute
-        sequences in `hist`, those same operations could be applied to `prev`. This
-        property is crucial to beam search algorithms which shuffle or delete paths
-        according to probability.
+        Some examples. If `prev` and `cur` are unused, the batch signature should be
+        :obj:`None`. If `prev` and `cur` represent the hidden states of a GRU, the
+        signature should be :obj:`0` (since the batch dim comes first in
+        :class:`torch.nn.GRUCell`). If `prev` and `cur` are each pairs of hidden and
+        cell states for an :class:`torch.nn.LSTMCell`, the signature should be :obj:`(0,
+        0, 0)`. Finally, if the input to the LSTM includes some static tensor like
+        encoder embeddings preceding the hidden and cell states, the signature would be
+        :obj:`(None, 0, 0)`.
+
+        The signature is primarily used as a means to ensure correctness when performing
+        heuristic search algorithms, e.g. :class:`CTCPrefixSearch`. The order of batch
+        elements will shift around as a function of path probabilities.
         """
-        return False
+        raise NotImplementedError()
+
+    def get_default_first_prev(self, hist: torch.Tensor) -> Any:
+        """Return the first value of prev if it is unspecified by the user
+
+        If `prev` is unspecified (:obj:`None`) when calling this module and `idx` is
+        either unspecified or all 0 (i.e. this is the first `prev` value in the
+        sequence), it will be substituted with the return value here.
+
+        Subclasses may find it useful to overload this method. It may be used to specify
+        the initial hidden state of an RNN without requiring the user to do so, for
+        example.
+        """
+        return None
 
     def extra_repr(self) -> str:
         s = "vocab_size={}".format(self.vocab_size)
@@ -163,7 +196,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         """Calculates log_prob_idx over types at prefix up to and excluding idx
 
         Subclasses implement this. Values in idx are guaranteed to be between
-        ``[0, hist.size(0)]``
+        ``[0, hist.size(0)]``. Return should be a pair of ``log_prob_idx, cur``
         """
         raise NotImplementedError()
 
@@ -178,6 +211,25 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
             log_probs_idx, prev = self.calc_idx_log_probs(hist, prev, idx)
             log_probs.append(log_probs_idx)
         return torch.stack(log_probs, 0)
+
+    def _check_prev_matches_batch_signature(self, prev: Any, batch_size: int) -> None:
+        signature = self.batch_signature
+        if signature is None:
+            return
+        if isinstance(signature, int):
+            signature, prev = (signature,), (prev,)
+        if len(signature) != len(prev):
+            raise RuntimeError(
+                f"Expected {len(signature)} elements in prev, got {len(prev)}"
+            )
+        for sig, pr in zip(signature, prev):
+            if sig is None:
+                continue
+            if pr.size(sig) != batch_size:
+                raise RuntimeError(
+                    f"Expected dim {sig} of prev to be size {batch_size}, "
+                    f"got {pr.size(sig)}"
+                )
 
     def forward(
         self,
@@ -206,14 +258,13 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
                         f"All values in idx must be between ({-S - 1}, {S})"
                     )
             idx = (idx + S + 1) % (S + 1)
-        if self.prev_is_hist_compatible and prev is not None:
-            if not isinstance(prev, torch.Tensor):
-                raise RuntimeError(f"Expected prev to be a tensor or None")
-            elif prev.size(0) != N:
-                raise RuntimeError(
-                    f"Expected prev to be of shape leading with {N}, got "
-                    f"{prev.size(0)}"
-                )
+        if prev is None:
+            if isinstance(idx, torch.Tensor):
+                if (idx == 0).all():
+                    prev = self.get_default_first_prev(hist)
+            elif not idx:  # None or 0
+                prev = self.get_default_first_prev(hist)
+        self._check_prev_matches_batch_signature(prev, N)
         if self.oov is not None:
             oov_mask = hist.ge(self.vocab_size) | hist.lt(0)
             hist = hist.masked_fill(oov_mask, self.oov)
@@ -334,8 +385,8 @@ class LookupLanguageModel(SequentialLanguageModel):
         return s
 
     @property
-    def prev_is_hist_compatible(self) -> bool:
-        return True
+    def batch_signature(self) -> None:
+        return None
 
     def calc_idx_log_probs(
         self, hist: torch.Tensor, prev: Any, idx: Union[int, torch.Tensor]
@@ -688,6 +739,256 @@ class LookupLanguageModel(SequentialLanguageModel):
                     break
             pointers = pointers.to(pointer_type)
         return logs, ids, pointers
+
+
+class CTCPrefixSearch(torch.nn.Module):
+    r"""Perform a CTC prefix search with optional shallow fusion
+
+    A Connectionist Temporal Classification [graves2006]_ prefix search is similar to a
+    beam search, but a fixed number of (reduced) prefixes are maintained in the beam
+    rather than a fixed number of paths. Reduced paths contain no blank labels.
+
+    This module is called with the following signature:
+
+        search(logits, logit_lens=None, lm_prev=None)
+
+    where `logits` is a tensor of shape ``(T, N, V + 1)`` s.t. ``logits[t, n]``
+    represents the unnormalized log-probabilities over the extended vocabulary
+    (including blanks) at step ``t`` of batch element ``n``. The blank type logits are
+    assumed to be stored in the final index of the vocabulary: ``logits[..., V]``.
+    `logit_lens` is an optional tensor of shape ``(N,)`` s.t., for a given batch index
+    ``n``, only the values in the slice ``logits[:lens[n], n]`` are valid. If
+    `logit_lens` is not specified then all sequences are assumed to be of length ``T``.
+
+    The call returns a triple of tensors ``y, y_lens, y_probs``. ``y`` is a long tensor
+    of shape ``(S, N, width)`` containing the `width` prefixes per batch element, ``S <=
+    T``. `y_lens` is a long tensor of shape ``(N, width)`` of the lengths of the
+    corresponding prefixes: for each batch element ``n`` and prefix ``k``, only the
+    tokens ``y[:y_lens[n, k], n, k]`` are valid. `y_probs` is a tensor of shape ``(N,
+    width)`` containing those prefix's etimated (not log) probabilities. Note that for
+    all ``k``, ``y_lens[n, k] <= logit_lens[n]``. Prefixes are ordered in decreasing
+    log-probability (``y_probs[n, k] >= y_probs[n, k + 1]``).
+
+    Shallow fusion [gulcehre2015]_ is enabled by initializing this module with `lm`.
+    Shallow fusion updates the probability of extending a prefix :math:`y_{1..t-1}` with
+    a new token math:`v` (:math:`v` is not blank) with the following equation
+
+    .. math::
+        \log S(y_t=v|y_{1..t-1}) = \log P_{logits}(y_t=v) +
+                                                \beta \log P_{lm}(y_t = v|y_{1..t-1})
+
+    The resulting value :math:`log S(y_t=v)` is not technically a probability. If the
+    LM needs an initial input, it can be passed with the optional argument `lm_prev`
+
+    Parameters
+    ----------
+    width : int
+        The number of prefixes to keep track of per step.
+    beta : float, optional
+        The mixing coefficient :math:`\beta` used when performing shallow fusion.
+    lm : SequentialLanguageModel or None, optional
+        If set, the language model used in shallow fusion. Specifying `lm` will
+        restrict the extended vocabulary size of `logits` to be one more than that
+        of `lm`: ``lm.vocab_size == V``.
+
+    Warnings
+    --------
+    The blank index, effectively ``V``, is different from the default index of
+    :class:`torch.nn.CTCLoss`, ``0``. We chose this in order to avoid confusion between
+    the index set of `logits` and the index set of `lm`: this way, the interpretation of
+    the indices up to but excluding ``V`` in both refer to the same type/label.
+
+    Return values will always contain `width` prefixes, regardless of whether this is
+    possible.
+
+    Notes
+    -----
+    The CTC prefix search is often called a beam search in the literature. We stick with
+    the name from [graves2006]_ as it is entirely possible to apply a normal beam search
+    to CTC logits, only removing blank labels after the search. Doing so would be faster
+    and may not lead to much decrease in performance if `logits` is sufficiently
+    "peaky".
+    """
+
+    __constants__ = ["width", "beta"]
+
+    width: int
+    beta: float
+    lm: Optional[SequentialLanguageModel]
+
+    def __init__(
+        self,
+        width: int,
+        beta: float = 0.2,
+        lm: Optional[SequentialLanguageModel] = None,
+    ):
+        super().__init__()
+        if width < 1:
+            raise ValueError("width must be positive")
+        self.width = width
+        self.beta = beta
+        if lm is None:
+            self.add_module("lm", None)
+        else:
+            self.lm = lm
+
+    def reset_parameters(self) -> None:
+        if self.lm is not None and hasattr(self.lm, "reset_parameters"):
+            self.lm.reset_parameters()
+
+    @staticmethod
+    def _merge_lm_prev_and_cur(
+        batch_dim: int,
+        prev: torch.Tensor,
+        cur: torch.Tensor,
+        src: torch.Tensor,
+        is_nonext: torch.Tensor,
+    ):
+        N, K = src.shape
+        ndim = prev.dim()
+        assert ndim == cur.dim()
+        Kp = prev.size(batch_dim) // N
+        prev = prev.unflatten(batch_dim, (N, Kp))  # (..., N, Kp, ...)
+        cur = cur.unflatten(batch_dim, (N, Kp))  # (..., N, Kp, ...)
+        shape_ = (1,) * batch_dim + (N, K) + (1,) * (ndim - batch_dim - 1)
+        src = src.reshape(shape_)
+        src = src.expand(
+            tuple(K if i == batch_dim + 1 else s for (i, s) in enumerate(cur.shape))
+        )
+        prev = prev.gather(batch_dim + 1, src)  # (..., N, K, ...)
+        cur = cur.gather(batch_dim + 1, src)  # (..., N, K, ...)
+        # the validity of the intermediate states doesn't matter
+        cur = torch.where(is_nonext.reshape(shape_), prev, cur)
+        return cur.flatten(batch_dim, batch_dim + 1)
+
+    def forward(
+        self,
+        logits: torch.Tensor,
+        lens: Optional[torch.Tensor] = None,
+        lm_prev: Any = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if logits.dim() != 3:
+            raise RuntimeError("logits must be 3 dimensional")
+        T, N, Vp1 = logits.shape
+        V = Vp1 - 1
+        if self.lm is not None and self.lm.vocab_size != V:
+            raise RuntimeError(
+                f"Expected dim 2 of logits to be {self.lm.vocab_size + 1}, got {Vp1}"
+            )
+        if lens is None:
+            lens = torch.full((N,), T, device=logits.device)
+            len_min = len_max = T
+        elif lens.dim() != 1:
+            raise RuntimeError("lens must be 1 dimensional")
+        elif lens.size(0) != N:
+            raise RuntimeError(f"expected dim 0 of lens to be {N}, got {lens.size(0)}")
+        else:
+            len_min, len_max = lens.min().item(), lens.max().item()
+
+        probs = logits.softmax(2)
+        blank_probs = probs[..., V]  # (T, N)
+        nonext_probs = probs[..., :V]  # (T, N, V)
+        nb_probs_prev, b_probs_prev = logits.new_zeros((N, 1)), logits.new_ones((N, 1))
+        y_prev = torch.empty((0, N, 1), dtype=torch.long, device=logits.device)
+        y_prev_lens = y_prev_last = torch.zeros(
+            (N, 1), dtype=torch.long, device=logits.device
+        )
+        prev_is_prefix = torch.full((N, 1, 1), True, device=logits.device)
+        if self.lm is not None:
+            if lm_prev is None:
+                lm_prev = self.lm.get_default_first_prev(y_prev.new_empty((0, N)))
+            self.lm._check_prev_matches_batch_signature(lm_prev, N)
+            signature = self.lm.batch_signature
+        else:
+            signature = None
+
+        width_prev = 1
+        for t in range(len_max):
+            valid_mask = None if t < len_min else (t < lens).unsqueeze(1)  # (N, 1)
+            nonext_probs_t, blank_probs_t = nonext_probs[t], blank_probs[t]
+            if self.lm is None or not self.beta:
+                ext_probs_t = nonext_probs_t.unsqueeze(1).expand(N, width_prev, V)
+                lm_next = None
+            else:
+                lm_log_probs_t, lm_next = self.lm(
+                    y_prev.flatten(1), lm_prev, y_prev_lens.flatten()
+                )
+                lm_probs_t = (self.beta * lm_log_probs_t).exp().view(N, width_prev, V)
+                # note we're no longer in log space, so it's a product
+                ext_probs_t = lm_probs_t * nonext_probs_t.unsqueeze(1)
+                del lm_log_probs_t, lm_probs_t
+            (
+                y_next,
+                y_next_last,
+                y_next_lens,
+                (nb_probs_next, b_probs_next),
+                next_is_prefix,
+                next_src,
+                next_is_nonext,
+            ) = ctc_prefix_search_advance(
+                (ext_probs_t, nonext_probs_t, blank_probs_t),
+                self.width,
+                (nb_probs_prev, b_probs_prev),
+                y_prev.transpose(0, 1).transpose(1, 2),
+                y_prev_last,
+                y_prev_lens,
+                prev_is_prefix,
+            )
+            y_next = y_next.transpose(1, 2).transpose(0, 1)
+
+            if signature is not None and t < T - 1:
+                # we have to update the intermediate values
+                if isinstance(signature, int):
+                    lm_prev = self._merge_lm_prev_and_cur(
+                        signature, lm_prev, lm_next, next_src, next_is_nonext
+                    )
+                else:
+                    lm_prev = tuple(
+                        lm_next_s
+                        if s is None
+                        else self._merge_lm_prev_and_cur(
+                            s, lm_prev_s, lm_next_s, next_src, next_is_nonext
+                        )
+                        for s, lm_prev_s, lm_next_s in zip(signature, lm_prev, lm_next)
+                    )
+
+            if valid_mask is None:
+                y_prev_lens = y_next_lens
+                nb_probs_prev, b_probs_prev = nb_probs_next, b_probs_next
+            else:
+                y_next[:-1] = torch.where(valid_mask.unsqueeze(0), y_next[:-1], y_prev)
+                y_prev_lens = torch.where(valid_mask, y_next_lens, y_prev_lens)
+                if width_prev < self.width:
+                    assert width_prev == 1  # otherwise advance would've padded it
+                    # add invalid path probs rather than broadcast the one good one
+                    neg_inf = nb_probs_prev.new_full(
+                        (N, self.width - width_prev), -float("inf")
+                    )
+                    nb_probs_prev = torch.cat([nb_probs_prev, neg_inf], 1)
+                    b_probs_prev = torch.cat([b_probs_prev, neg_inf], 1)
+                nb_probs_prev = torch.where(valid_mask, nb_probs_next, nb_probs_prev)
+                b_probs_prev = torch.where(valid_mask, b_probs_next, b_probs_prev)
+            y_prev = y_next
+            # we can let y_next_last and next_is_prefix continue spinning after t passes
+            # the length
+            y_prev_last, prev_is_prefix = y_next_last, next_is_prefix
+            width_prev = self.width
+
+        probs_prev = nb_probs_prev + b_probs_prev
+
+        if width_prev == 1 != self.width:
+            # fill the shape, but only the first (empty path is valid)
+            y_prev = y_prev.repeat(1, 1, self.width)
+            y_prev_lens = y_prev_lens.repeat(1, self.width)
+            probs_prev = torch.cat(
+                [
+                    probs_prev,
+                    probs_prev.new_full((N, self.width - width_prev), -float("inf")),
+                ],
+                1,
+            )
+        # now we zero out the probabilities of duplicate paths which could've arisen
+        return y_prev, y_prev_lens, probs_prev
 
 
 class HardOptimalCompletionDistillationLoss(torch.nn.Module):

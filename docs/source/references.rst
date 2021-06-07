@@ -4,6 +4,10 @@ References
 .. [williams1992] R. J. Williams, "Simple statistical gradient-following
    algorithms for connectionist reinforcement learning," Machine Learning,
    vol. 8, no. 3, pp. 229-256, May 1992.
+.. [graves2006] A. Graves, S. Fernández, F. Gomez, and J. Schmidhuber,
+   "Connectionist Temporal Classification: Labelling unsegmented sequence data
+   with recurrent neural networks," New York, NY, USA, 2006, pp. 369–376.
+   doi: 10.1145/1143844.1143891.
 .. [mikolov2010] T. Mikolov, M. Karafiát, L. Burget, J. Černocký, and S.
    Khudanpur, "Recurrent neural network based language model," presented at
    Interspeech, Makuhari, Japan, 2010.
@@ -14,6 +18,9 @@ References
    translation by jointly learning to align and translate.," in 3rd
    International Conference on Learning Representations, ICLR 2015, San Diego,
    CA, USA, May 7-9, 2015, Conference Track Proceedings, 2015.
+.. [gulcehre2015] Ç. Gülçehre et al., "On using monolingual corpora in neural
+   machine translation," CoRR, vol. abs/1503.03535, 2015, [Online]. Available:
+   http://arxiv.org/abs/1503.03535
 .. [luong2015] T. Luong, H. Pham, and C. D. Manning, "Effective approaches to
    attention-based neural machine translation," in Proceedings of the 2015
    Conference on Empirical Methods in Natural Language Processing, Lisbon,

@@ -528,6 +528,10 @@ def test_sequential_language_model(device):
             self.rnn = torch.nn.LSTMCell(embed_size, hidden_size)
             self.ff = torch.nn.Linear(hidden_size, vocab_size)
 
+        @property
+        def batch_signature(self) -> None:
+            return None
+
         def calc_idx_log_probs(self, hist, prev, idx):
             assert isinstance(idx, int)  # for this test
             N = hist.size(1)
@@ -550,6 +554,161 @@ def test_sequential_language_model(device):
     for idx in range(S, -1, -1):
         log_probs_idx = lm(hist[:idx], idx=idx)[0]
         assert torch.allclose(log_probs[idx], log_probs_idx)
+
+
+def test_ctc_prefix_search(device):
+    class MyLM(layers.SequentialLanguageModel):
+        def __init__(self):
+            super().__init__(2)
+            self.register_buffer(
+                "bigram_table",
+                torch.tensor(
+                    [
+                        [1.0, 0.0],  # P(0|<s>), P(1|<s>)
+                        [0.5, 0.5],  # P(0|0), P(1|0)
+                        [0.0, 1.0],  # P(0|1), P(1|1)
+                    ]
+                ).log(),
+            )
+
+        @property
+        def batch_signature(self):
+            return None
+
+        def calc_idx_log_probs(self, hist, prev, idx):
+            assert prev is None
+            # note we shift + 1 to make room for <s>
+            idx_zero = idx == 0
+            if idx_zero.all():
+                x = hist.new_full((hist.size(1),), 0)
+            else:
+                x = (
+                    hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(0) + 1
+                )  # (N,)
+                x = x.masked_fill(idx_zero, 0)
+            return self.bigram_table.gather(0, x.unsqueeze(1).expand(-1, 2)), None
+
+    T, N, K, V = 3, 128, 2, 3
+    logits = (
+        torch.tensor(
+            [
+                [1 / 2, 1 / 3, 1 / 6],
+                [1 / 3, 1 / 6, 1 / 2],
+                [1 / 6, 1 / 2, 1 / 3],
+            ]
+        )
+        .log()
+        .unsqueeze(1)
+        .expand(T, N, V)
+        .to(device)
+    )
+    exps = [
+        (0.0, [[0, 1], [0]], [5 / 24, 1 / 6]),
+        (1.0, [[0], [0, 1]], [5 / 24, 17 / 144]),
+    ]
+    lm = MyLM().to(device)
+    for beta, y_exp, probs_exp in exps:
+        search = layers.CTCPrefixSearch(K, beta, lm)
+        y_act, y_lens_act, probs_act = search(logits)
+        assert y_act.shape == (T, N, K)
+        assert y_lens_act.shape == (N, K)
+        assert probs_act.shape == (N, K)
+        for y_k_exp, probs_k_exp, y_k_act, y_lens_k_act, probs_k_act in zip(
+            y_exp, probs_exp, y_act.transpose(0, 2), y_lens_act.t(), probs_act.t()
+        ):
+            Tp = len(y_k_exp)
+            assert (y_lens_k_act == Tp).all()
+            y_k_exp = torch.tensor(y_k_exp, device=device).unsqueeze(0)  # (1, Tp)
+            y_k_act = y_k_act[:, :Tp]  # (N, Tp)
+            assert (y_k_act == y_k_exp).all()
+            probs_k_exp = torch.tensor(probs_k_exp, device=device).unsqueeze(0)
+            assert torch.allclose(probs_k_exp, probs_k_act)
+
+
+def test_ctc_prefix_search_batch(device):
+    class RNNLM(layers.SequentialLanguageModel):
+        def __init__(self, vocab_size, oov=None, embed_size=128, hidden_size=512):
+            super().__init__(vocab_size, oov=oov)
+            self.hidden_size = hidden_size
+            self.embed = torch.nn.Embedding(
+                vocab_size + 1, embed_size, padding_idx=vocab_size
+            )
+            self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
+            self.ff = torch.nn.Linear(hidden_size, vocab_size)
+
+        @property
+        def batch_signature(self):
+            return (0, 0)
+
+        def get_default_first_prev(self, hist):
+            N = hist.size(1)
+            return (self.ff.weight.new_zeros((N, self.hidden_size)),) * 2
+
+        def calc_idx_log_probs(self, hist, prev, idx):
+            idx_zero = idx == 0
+            if idx_zero.all():
+                x = hist.new_full((hist.size(1),), self.vocab_size)
+            else:
+                x = hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(
+                    0
+                )  # (N,)
+                x = x.masked_fill(idx_zero, self.vocab_size)
+            x = self.embed(x)
+            h_1, c_1 = self.cell(x, prev)
+            x = self.ff(h_1)
+            return x, (h_1, c_1)
+
+    T, N, V, K = 50, 128, 50, 5
+    assert K <= V
+    lm = RNNLM(V)
+    search = layers.CTCPrefixSearch(K, lm=lm).to(device)
+    logits = torch.randn((T, N, V + 1), device=device)
+    lens = torch.randint(0, T, (N,), device=device)
+
+    exps = []
+    for logits_n, lens_n in zip(logits.transpose(0, 1), lens):
+        logits_n = logits_n[:lens_n].unsqueeze(1)
+        lens_n = lens_n.view(1)
+        y_n_exp, y_lens_n_exp, probs_n_exp = search(logits_n, lens_n)
+        y_n_exp = y_n_exp.squeeze(1)  # (T_n, K_n)
+        y_lens_n_exp = y_lens_n_exp.squeeze(0)  # (K_n,)
+        probs_n_exp = probs_n_exp.squeeze(0)  # (K_n,)
+        valid_prefix_mask_n_exp = probs_n_exp >= 0.0
+        if not valid_prefix_mask_n_exp.all():
+            assert not lens_n
+            assert y_lens_n_exp[0] == 0
+        else:
+            assert (y_lens_n_exp <= lens_n).all()
+        exps.append((y_n_exp, y_lens_n_exp, probs_n_exp))
+
+    y_act, y_lens_act, probs_act = search(logits, lens)
+    for (y_n_exp, y_lens_n_exp, probs_n_exp), y_n_act, y_lens_n_act, probs_n_act in zip(
+        exps, y_act.transpose(0, 1), y_lens_act, probs_act
+    ):
+        assert y_n_exp.shape[1:] == y_n_act.shape[1:]
+        assert y_n_exp.size(0) <= y_n_act.size(0)
+        assert y_lens_n_exp.shape == y_lens_n_act.shape
+        assert probs_n_exp.shape == probs_n_act.shape
+        valid_prefix_mask_n_exp = probs_n_exp >= 0.0
+        valid_prefix_mask_n_act = probs_n_act >= 0.0
+        assert (valid_prefix_mask_n_exp == valid_prefix_mask_n_act).all()
+        if not valid_prefix_mask_n_exp.all():
+            assert valid_prefix_mask_n_exp.sum() == 1  # only one valid path: empty one
+            y_n_exp, y_n_act = y_n_exp[:, :1], y_n_act[:, :1]
+            y_lens_n_exp, y_lens_n_act = y_lens_n_exp[:1], y_lens_n_act[:1]
+            probs_n_exp, probs_n_act = probs_n_exp[:1], probs_n_act[:1]
+        assert (y_lens_n_exp == y_lens_n_act).all()
+        assert torch.allclose(probs_n_exp, probs_n_act)
+        rem = y_n_act.size(0) - y_n_exp.size(0)
+        if rem > 0:
+            y_n_exp = torch.cat([y_n_exp, y_n_exp.new_empty((rem, y_n_exp.size(1)))], 0)
+            assert y_n_exp.shape == y_n_act.shape
+        len_mask = (
+            torch.arange(y_n_exp.size(0), device=device).unsqueeze(1) >= y_lens_n_exp
+        )
+        y_n_exp = y_n_exp.masked_fill_(len_mask, -1)
+        y_n_act = y_n_act.masked_fill_(len_mask, -1)
+        assert (y_n_exp == y_n_act).all()
 
 
 @pytest.mark.parametrize("dim", [0, 1])
