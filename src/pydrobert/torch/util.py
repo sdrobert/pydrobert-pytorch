@@ -727,7 +727,7 @@ def ctc_prefix_search_advance(
     # match k', and sum into k'. Then sum those into the relevant non-extension
     # candidates
     nb_nonext_probs_cand = nb_nonext_probs_cand + (
-        nb_ext_probs_cand.gather(2, to_match) * ext_is_exact
+        nb_ext_probs_cand.gather(2, to_match).masked_fill(~ext_is_exact, 0.0)
     ).sum(1)
     # clear the probabilities of extensions k->v that exactly matched some k' for v
     has_match = (
@@ -746,9 +746,7 @@ def ctc_prefix_search_advance(
     del tot_probs_cand
 
     next_is_nonext = next_ind >= (Kp * V)
-    next_src = (next_ind - (Kp * V)) * next_is_nonext + (next_ind // V) * (
-        ~next_is_nonext
-    )
+    next_src = torch.where(next_is_nonext, next_ind - (Kp * V), next_ind // V)
     next_ext = next_ind % V
 
     y_next_prefix_lens = y_prev_lens.gather(1, next_src)  # (N, K)
@@ -768,9 +766,7 @@ def ctc_prefix_search_advance(
         1, next_ind.clamp(max=Kp * V - 1)
     )  # (N, K)
     nb_nonext_probs_next = nb_nonext_probs_cand.gather(1, next_src)  # (N, K)
-    nb_probs_next = (
-        nb_ext_probs_next * (~next_is_nonext) + nb_nonext_probs_next * next_is_nonext
-    )
+    nb_probs_next = torch.where(next_is_nonext, nb_nonext_probs_next, nb_ext_probs_next)
     del nb_ext_probs_next, nb_nonext_probs_next, nb_nonext_probs_cand, nb_ext_probs_cand
 
     b_probs_next = b_nonext_probs_cand.gather(1, next_src) * next_is_nonext  # (N, K)
