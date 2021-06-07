@@ -548,7 +548,7 @@ def ctc_prefix_search_advance(
     probs_t: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],  # ((N,K',V), (N,V), (N))
     width: int,  # K
     probs_prev: Tuple[torch.Tensor, torch.Tensor],  # (N,K'), (N,K')
-    y_prev: torch.Tensor,  # (N, K', t-1)
+    y_prev: torch.Tensor,  # (t - 1, N, K')
     y_prev_last: torch.Tensor,  # (N,K')
     y_prev_lens: torch.Tensor,  # (N, K')
     prev_is_prefix: torch.Tensor,  # (N, K', K')  # [n, k, k'] iff k prefix of k'
@@ -585,7 +585,7 @@ def ctc_prefix_search_advance(
         blank token. ``nb_probs_prev + b_probs_prev = probs_prev``, the total mass of
         each prefix.
     y_prev : torch.Tensor
-        A long tensor of shape ``(N, old_width, S)`` containing the (reduced) prefixes
+        A long tensor of shape ``(S, N, old_width)`` containing the (reduced) prefixes
         of each path.
     y_prev_last : torch.Tensor
         A long tensor of shape ``(N, old_width)`` containing the last token in each
@@ -593,7 +593,7 @@ def ctc_prefix_search_advance(
     y_prev_lens: torch.Tensor
         A long tensor of shape ``(N, old_width)`` specifying the length of each prefix.
         For batch element ``n`` and prefix ``k``, only the tokens in
-        ``y_prev[n, k, :y_prev_lens[n, k]]`` are valid.
+        ``y_prev[:y_prev_lens[n, k], n, k]`` are valid.
     prev_is_prefix : torch.Tensor
         A boolean tensor of shape ``(N, old_width, old_width)``. ``prev_is_prefix[n, k,
         k']`` if and only if prefix ``k`` is a (non-strict) prefix of ``k'``
@@ -658,12 +658,12 @@ def ctc_prefix_search_advance(
         )
     if y_prev.dim() != 3:
         raise RuntimeError("y_prev must be 3 dimensional")
-    if y_prev.shape[:-1] != (N, Kp):
+    if y_prev.shape[1:] != (N, Kp):
         raise RuntimeError(
-            f"expected first two dimensions of y_prev to be {(N, Kp)}, "
-            f"got {y_prev.shape[:-1]}"
+            f"expected last two dimensions of y_prev to be {(N, Kp)}, "
+            f"got {y_prev.shape[1:]}"
         )
-    tm1 = y_prev.size(2)
+    tm1 = y_prev.size(0)
     if y_prev_last.shape != (N, Kp):
         raise RuntimeError(
             f"expected y_prev_last to have shape {(N, Kp)}, got {y_prev_last.shape}"
@@ -703,17 +703,22 @@ def ctc_prefix_search_advance(
     # We'll dump the extending candidate's probability mass into the non-extending
     # candidate's mass if they're equal.
     #
-    # let's assume path k is a prefix of path k'. What's the token that we'd have to
-    # match if we wanted to extend path k while remaining a prefix of k'?
-    # y_prev[n, k', y_prev_lens[n, k]] = to_match[n, k, k']
+    # let's assume path k is a strict prefix of path k'. What's the token that we'd have
+    # to match if we wanted to extend path k while remaining a prefix of k'?
+    # y_prev[y_prev_lens[n, k], n, k'] = to_match[n, k, k']
     if tm1:
         to_match = (
             y_prev.gather(
-                2, y_prev_lens.clamp(max=tm1 - 1).unsqueeze(1).expand(N, Kp, Kp)
+                0,
+                y_prev_lens.clamp(max=tm1 - 1)
+                .unsqueeze(2)
+                .expand(N, Kp, Kp)
+                .transpose(0, 1),
             )
-            .transpose(1, 2)
+            .transpose(0, 1)
             .clamp(0, V - 1)
         )  # (N, K', K')
+        # print(y_prev[:, 0].t(), y_prev_lens[0])
         # for k in range(Kp):
         #     for kp in range(Kp):
         #         print(f"k={k}, k'={kp}, to_match={to_match[0, k, kp].item()}")
@@ -742,7 +747,7 @@ def ctc_prefix_search_advance(
         [nb_ext_probs_cand.view(N, Kp * V), nb_nonext_probs_cand + b_nonext_probs_cand],
         1,
     )  # (N, K' * (V + 1))
-    next_ind = tot_probs_cand.topk(K, 1)[1]
+    next_ind = tot_probs_cand.topk(K, 1)[1]  # (N, K)
     del tot_probs_cand
 
     next_is_nonext = next_ind >= (Kp * V)
@@ -752,13 +757,13 @@ def ctc_prefix_search_advance(
     y_next_prefix_lens = y_prev_lens.gather(1, next_src)  # (N, K)
     y_next = torch.cat(
         [
-            y_prev.gather(1, next_src.unsqueeze(2).expand(N, K, tm1)),
-            torch.empty((N, K, 1), device=y_prev.device, dtype=y_prev.dtype),
+            y_prev.gather(2, next_src.unsqueeze(0).expand(tm1, N, K)),
+            torch.empty((1, N, K), device=y_prev.device, dtype=y_prev.dtype),
         ],
-        2,
+        0,
     ).scatter(
-        2, y_next_prefix_lens.unsqueeze(2), next_ext.unsqueeze(2)
-    )  # (N, K, t)
+        0, y_next_prefix_lens.unsqueeze(0), next_ext.unsqueeze(0)
+    )  # (t, N, K)
     y_next_lens = y_next_prefix_lens + (~next_is_nonext)
     del y_next_prefix_lens
 
@@ -782,8 +787,8 @@ def ctc_prefix_search_advance(
     ).gather(2, next_src.unsqueeze(1).expand(N, K, K))
     next_len_leq = y_next_lens.unsqueeze(2) <= y_next_lens.unsqueeze(1)
     next_to_match = y_next.gather(
-        2, (y_next_lens - 1).clamp(min=0).unsqueeze(1).expand(N, K, K)
-    ).transpose(1, 2)
+        0, (y_next_lens - 1).clamp(min=0).unsqueeze(2).expand(N, K, K).transpose(0, 1)
+    ).transpose(0, 1)
     next_ext_matches = next_to_match == next_ext.unsqueeze(2)
     next_is_prefix = (
         next_prefix_is_prefix
@@ -809,7 +814,7 @@ def ctc_prefix_search_advance(
         # This should only happen once in a given rollout assuming width stays
         # constant, so it's ok to be a bit expensive.
         rem = width - K
-        y_next = torch.cat([y_next, y_next.new_empty(N, rem, tm1 + 1)], 1)
+        y_next = torch.cat([y_next, y_next.new_empty(tm1 + 1, N, rem)], 2)
         empty = y_next_last.new_empty(N, rem)
         y_next_last = torch.cat([y_next_last, empty], 1)
         y_next_lens = torch.cat([y_next_lens, empty], 1)
@@ -827,7 +832,7 @@ def ctc_prefix_search_advance(
         next_src = torch.cat([next_src, next_src.new_full((N, rem), 0)], 1)
 
     return (
-        y_next,  # (N, K, t)
+        y_next,  # (t, N, K)
         y_next_last,  # (N, K)
         y_next_lens,  # (N, K)
         (nb_probs_next, b_probs_next),  # (N, K), (N, K)

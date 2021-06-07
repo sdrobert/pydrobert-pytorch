@@ -339,11 +339,11 @@ def test_ctc_prefix_search_advance(
     y_prev = (
         torch.nn.utils.rnn.pad_sequence(
             [torch.tensor(x, dtype=torch.long, device=device) for x in y_prev],
-            batch_first=True,
+            batch_first=False,
             padding_value=0,
         )
-        .unsqueeze(0)
-        .expand(N, Kp, -1)
+        .unsqueeze(1)
+        .expand(-1, N, Kp)
     )
     assert y_prev.dtype == torch.long
 
@@ -377,7 +377,7 @@ def test_ctc_prefix_search_advance(
     )
 
     y_next_exp = tuple(
-        torch.tensor(x, device=device).unsqueeze(0).expand(N, -1) for x in y_next_exp
+        torch.tensor(x, device=device).unsqueeze(1).expand(-1, N) for x in y_next_exp
     )
 
     probs_next_exp = tuple(
@@ -408,10 +408,10 @@ def test_ctc_prefix_search_advance(
     )
 
     assert y_next_act.dim() == 3
-    assert y_next_act.shape[:2] == (N, K)
+    assert y_next_act.shape[1:] == (N, K)
     for k in range(K):
         y_next_exp_k = y_next_exp[k]
-        y_next_act_k = y_next_act[:, k, : y_next_exp_k.size(1)]
+        y_next_act_k = y_next_act[: y_next_exp_k.size(0), :, k]
         assert (y_next_exp_k == y_next_act_k).all()
 
     assert y_next_last_act.shape == y_next_last_exp.shape
@@ -446,12 +446,12 @@ def test_ctc_prefix_search_advance_big_width(device):
     # the first path will be a strict prefix of every other path. The remaining paths
     # will extend that first path by one different token each (they are not prefixes of
     # one another)
-    y_prev = torch.randint(1, V + 1, (N, 1, T - 1), device=device).expand(N, Kp, T - 1)
+    y_prev = torch.randint(1, V + 1, (T - 1, N, 1), device=device).expand(T - 1, N, Kp)
     y_prev = torch.cat(
-        [y_prev, torch.arange(Kp, device=device).view(1, Kp, 1).expand(N, Kp, 1)], 2
+        [y_prev, torch.arange(Kp, device=device).view(1, 1, Kp).expand(1, N, Kp)], 0
     )
     y_prev_lens = torch.tensor([[T - 1] + [T] * (Kp - 1)] * N, device=device)
-    y_prev_last = y_prev.gather(2, (y_prev_lens - 1).unsqueeze(2)).squeeze(2)
+    y_prev_last = y_prev.gather(0, (y_prev_lens - 1).unsqueeze(0)).squeeze(0)
     prev_is_prefix = torch.eye(Kp, device=device, dtype=torch.bool)
     prev_is_prefix[0] = True  # first element is a prefix of everyone else
     prev_is_prefix = prev_is_prefix.unsqueeze(0).expand(N, Kp, Kp)
@@ -472,8 +472,7 @@ def test_ctc_prefix_search_advance_big_width(device):
         y_prev_lens,
         prev_is_prefix,
     )
-    print((y_next_lens[0, :101] == 101).sum())
-    assert y_next.shape == (N, K, T + 1)
+    assert y_next.shape == (T + 1, N, K)
     assert y_next_last.shape == (N, K)
     assert y_next_lens.shape == (N, K)
     assert nb_probs_next.shape == (N, K)

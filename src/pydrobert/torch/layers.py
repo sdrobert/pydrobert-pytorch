@@ -146,22 +146,22 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         """Indicates which dims in each element of `prev` or `cur` are batch dims
 
         An integer, :obj:`None`, or an arbitrary number of either in a tuple. If an
-        integer, `prev` and `cur` are tensors whose batch dimension equals the return
-        value. That is, the ``n``-th indexed value along that dimension in `prev`
-        corresponds to the ``n``-th indexed value along that same dimension in `cur` and
-        the ``n``-th indexed value along the first dimension of `hist`. If the value is
-        :obj:`None`, `prev` and `cur` either do not have batch dimensions or are not
-        tensors. A tuple of int/none values indicates that `prev` and `cur` are
-        themselves tuples of the same length. The above criteria is then applied to each
-        element.
+        integer, `prev` and `cur` are tensors of the same shape whose batch dimension
+        equals the return value. That is, the ``n``-th indexed value along that
+        dimension in `prev` corresponds to the ``n``-th indexed value along that same
+        dimension in `cur` and the ``n``-th indexed value along the first dimension of
+        `hist`. If the value is :obj:`None`, `prev` and `cur` either do not have batch
+        dimensions or are not tensors. A tuple of int/none values indicates that `prev`
+        and `cur` are themselves tuples of the same length. The above criteria is then
+        applied to each element.
 
         Some examples. If `prev` and `cur` are unused, the batch signature should be
         :obj:`None`. If `prev` and `cur` represent the hidden states of a GRU, the
         signature should be :obj:`0` (since the batch dim comes first in
         :class:`torch.nn.GRUCell`). If `prev` and `cur` are each pairs of hidden and
         cell states for an :class:`torch.nn.LSTMCell`, the signature should be :obj:`(0,
-        0, 0)`. Finally, if the input to the LSTM includes some static tensor like
-        encoder embeddings preceding the hidden and cell states, the signature would be
+        0, 0)`. If the input to the LSTM includes some static tensor like encoder
+        embeddings preceding the hidden and cell states, the signature would be
         :obj:`(None, 0, 0)`.
 
         The signature is primarily used as a means to ensure correctness when performing
@@ -799,7 +799,16 @@ class CTCPrefixSearch(torch.nn.Module):
     the indices up to but excluding ``V`` in both refer to the same type/label.
 
     Return values will always contain `width` prefixes, regardless of whether this is
-    possible.
+    possible. The probabilities of invalid prefixes will be set to :obj:`-float("inf")`
+    and will populate the later indices of the beam.
+
+    When used in conjunction with `lm`, intermediate values before and after each step
+    which have a batch index (see `SequentialLanguageModel.batch_signature`) must be of
+    the same shape. A step may or may not extend a prefix with a new token. The model
+    will replace part of the state in `cur` with the state in `prev` in these cases.
+    For networks with dynamically-shaped intermediate values like the decoder in a
+    transformer network, one will instead have to regenerate the values from `hist` at
+    each step.
 
     Notes
     -----
@@ -929,12 +938,11 @@ class CTCPrefixSearch(torch.nn.Module):
                 (ext_probs_t, nonext_probs_t, blank_probs_t),
                 self.width,
                 (nb_probs_prev, b_probs_prev),
-                y_prev.transpose(0, 1).transpose(1, 2),
+                y_prev,
                 y_prev_last,
                 y_prev_lens,
                 prev_is_prefix,
             )
-            y_next = y_next.transpose(1, 2).transpose(0, 1)
 
             if signature is not None and t < T - 1:
                 # we have to update the intermediate values
