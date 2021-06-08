@@ -528,10 +528,6 @@ def test_sequential_language_model(device):
             self.rnn = torch.nn.LSTMCell(embed_size, hidden_size)
             self.ff = torch.nn.Linear(hidden_size, vocab_size)
 
-        @property
-        def batch_signature(self) -> None:
-            return None
-
         def calc_idx_log_probs(self, hist, prev, idx):
             assert isinstance(idx, int)  # for this test
             N = hist.size(1)
@@ -539,7 +535,7 @@ def test_sequential_language_model(device):
                 in_ = hist.new_full((N,), self.vocab_size)
                 prev = [self.rnn.weight_hh.new_zeros((N, self.rnn.hidden_size))] * 2
             else:
-                if prev is None:
+                if not prev:
                     prev = self.calc_idx_log_probs(hist, None, idx - 1)[1]
                 in_ = hist[idx - 1]
             embedding = self.embed(in_)
@@ -557,7 +553,7 @@ def test_sequential_language_model(device):
 
 
 def test_ctc_prefix_search(device):
-    class MyLM(layers.SequentialLanguageModel):
+    class MyLM(layers.MixableSequentialLanguageModel):
         def __init__(self):
             super().__init__(2)
             self.register_buffer(
@@ -571,12 +567,13 @@ def test_ctc_prefix_search(device):
                 ).log(),
             )
 
-        @property
-        def batch_signature(self):
-            return None
+        def extract_by_src(self, in_prev, src):
+            return in_prev
+
+        def mix_by_mask(self, in_prev_true, in_prev_false, mask):
+            return in_prev_true
 
         def calc_idx_log_probs(self, hist, prev, idx):
-            assert prev is None
             # note we shift + 1 to make room for <s>
             idx_zero = idx == 0
             if idx_zero.all():
@@ -626,7 +623,7 @@ def test_ctc_prefix_search(device):
 
 
 def test_ctc_prefix_search_batch(device):
-    class RNNLM(layers.SequentialLanguageModel):
+    class RNNLM(layers.MixableSequentialLanguageModel):
         def __init__(self, vocab_size, oov=None, embed_size=128, hidden_size=512):
             super().__init__(vocab_size, oov=oov)
             self.hidden_size = hidden_size
@@ -636,15 +633,24 @@ def test_ctc_prefix_search_batch(device):
             self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
             self.ff = torch.nn.Linear(hidden_size, vocab_size)
 
-        @property
-        def batch_signature(self):
-            return (0, 0)
+        def extract_by_src(self, in_prev, src):
+            return {
+                "hidden_state": in_prev["hidden_state"].index_select(0, src),
+                "cell_state": in_prev["cell_state"].index_select(0, src),
+            }
 
-        def get_default_first_prev(self, hist):
+        def mix_by_mask(self, in_prev_true, in_prev_false, mask):
+            return dict(
+                (k, torch.where(mask.unsqueeze(1), in_prev_true[k], in_prev_false[k]))
+                for k in in_prev_true
+            )
+
+        def update_input(self, in_prev, hist):
             N = hist.size(1)
-            return (self.ff.weight.new_zeros((N, self.hidden_size)),) * 2
+            zeros = self.ff.weight.new_zeros((N, self.hidden_size))
+            return {"hidden_state": zeros, "cell_state": zeros}
 
-        def calc_idx_log_probs(self, hist, prev, idx):
+        def calc_idx_log_probs(self, hist, in_prev, idx):
             idx_zero = idx == 0
             if idx_zero.all():
                 x = hist.new_full((hist.size(1),), self.vocab_size)
@@ -654,9 +660,9 @@ def test_ctc_prefix_search_batch(device):
                 )  # (N,)
                 x = x.masked_fill(idx_zero, self.vocab_size)
             x = self.embed(x)
-            h_1, c_1 = self.cell(x, prev)
+            h_1, c_1 = self.cell(x, (in_prev["hidden_state"], in_prev["cell_state"]))
             x = self.ff(h_1)
-            return x, (h_1, c_1)
+            return x, {"hidden_state": h_1, "cell_state": c_1}
 
     T, N, V, K = 50, 128, 50, 5
     assert K <= V

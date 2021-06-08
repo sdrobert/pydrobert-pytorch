@@ -68,7 +68,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
 
     Subclasses are called with the following signature:
 
-        lm(hist, prev=None, idx=None)
+        lm(hist, in_prev=None, idx=None)
 
     `hist` is a long tensor of shape ``(S, N)`` consisting of prefixes up to length
     ``S``. ``hist[:, n]`` is the n-th prefix :math:`(w^{(n)}_0, w^{(n)}_1, \ldots,
@@ -79,25 +79,20 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     = v | w^{(n)}_{s - 1}, \ldots)`. That is, each distribution over types conditioned
     on each prefix of tokens (``:0``, ``:1``, ``:2``, etc.) is returned.
 
-    If `idx` is specified, it must be either an integer or long tensor of shape
-    ``(N,)``. The former is broadcast into the latter. The call returns a pair. The
-    first element is `log_probs_idx` of shape ``(N, vocab_size)``, where ``log_probs[n,
-    v]`` equals :math:`\log P(w^{(n)}_{idx[n]} = v | w^{(n)}_{idx[n]-1}, \ldots)`. That
-    is, the distributions over the next type conditioned on token prefixes up to and
-    excluding ``s = idx`` are returned. The second elemnt, `cur`, is discussed in
-    relation to `prev` below.
+    If `idx` is specified, it must be a long tensor of shape ``(1,)`` or ``(N,)``. The
+    former is broadcast into the latter. The call returns a pair. The first element is
+    `log_probs_idx` of shape ``(N, vocab_size)``, where ``log_probs[n, v]`` equals
+    :math:`\log P(w^{(n)}_{idx[n]} = v | w^{(n)}_{idx[n]-1}, \ldots)`. That is, the
+    distributions over the next type conditioned on token prefixes up to and excluding
+    ``s = idx`` are returned. The second element, `in_next`, is discussed in relation to
+    `in_prev` below.
 
-    The `prev` argument represents some additional input used in the computation. It may
-    contain static input (e.g. a tensor of encoder output in neural machine translation)
-    and/or dynamic input from prior calls to the LM (e.g. the previous hidden state in
-    an RNN-based language model). Subclasses are expected to follow the following rules
-    regarding `prev` and `cur`.
-
-    1. The return value ``cur = lm(hist, prev, idx)[1]`` can be passed as the `prev`
-       argument in the next step, i.e. ``lm(hist, cur, idx + 1)``.
-    2. The value of `prev` used in calling ``lm(hist, prev)`` should be the same value
-       as the first `prev` in sequence, i.e. ``lm(hist, prev, 0)``.
-    3. `prev` and `cur` adhere to signature specified in :func:`batch_signature`
+    The `in_prev` argument is a dictionary of tensors which represents some additional
+    input used in the computation. It may contain static input (e.g. a tensor of encoder
+    output in neural machine translation) and/or dynamic input from prior calls to the
+    LM (e.g. the previous hidden state in an RNN-based language model). `in_next`, the
+    second element in the return pair, will be fed to the next forward call as the
+    argument `in_prev` (assuming the new value for `idx` is `idx + 1`).
 
     Parameters
     ----------
@@ -112,7 +107,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     Warnings
     --------
     This module has changed considerably since version 0.3.0. The primary changes are a)
-    to replace the boolean switch `full` with `idx`; b) the inclusion of the `prev`
+    to replace the boolean switch `full` with `idx`; b) the inclusion of the `in_prev`
     argument for shared computations; c) the removal of both the `eos` and `sos`
     attributes; and d) replacing the more general signature of `hist`, ``(S, *)``, with
     ``(S, N)``. The former is strictly more powerful: the functionality of ``full=True``
@@ -120,11 +115,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     added functionality is intended to facilitate CTC decoding where prefixes stored in
     `hist` may be of different lengths. b) generalizes LMs by allowing additional input
     while also speeding up iterative computations. The removal of functionality in c) -
-    the `sos` and `eos` - was due to a lack of generalizability. It should be up to
-    subclasses whether prepending a start-of-sequence token makes sense and that
-    decision is inconsequential to the user. The way end-of-sequence tokens didn't
-    make too much sense without further downstream intervention and placed too much
-    of a burden on subclasses.
+    the `sos` and `eos` - was due to a lack of generalizability.
     """
 
     def __init__(
@@ -140,48 +131,17 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         if self.oov is not None and (self.oov < 0 or self.oov >= vocab_size):
             raise ValueError("oov must be within [0, vocab_size)")
 
-    @property
-    @abc.abstractmethod
-    def batch_signature(self) -> Union[Optional[int], Tuple[Optional[int], ...]]:
-        """Indicates which dims in each element of `prev` or `cur` are batch dims
+    def update_input(
+        self, in_prev: Dict[str, torch.Tensor], hist: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        """Update whatever is passed in as input to the language model
 
-        An integer, :obj:`None`, or an arbitrary number of either in a tuple. If an
-        integer, `prev` and `cur` are tensors of the same shape whose batch dimension
-        equals the return value. That is, the ``n``-th indexed value along that
-        dimension in `prev` corresponds to the ``n``-th indexed value along that same
-        dimension in `cur` and the ``n``-th indexed value along the first dimension of
-        `hist`. If the value is :obj:`None`, `prev` and `cur` either do not have batch
-        dimensions or are not tensors. A tuple of int/none values indicates that `prev`
-        and `cur` are themselves tuples of the same length. The above criteria is then
-        applied to each element.
-
-        Some examples. If `prev` and `cur` are unused, the batch signature should be
-        :obj:`None`. If `prev` and `cur` represent the hidden states of a GRU, the
-        signature should be :obj:`0` (since the batch dim comes first in
-        :class:`torch.nn.GRUCell`). If `prev` and `cur` are each pairs of hidden and
-        cell states for an :class:`torch.nn.LSTMCell`, the signature should be :obj:`(0,
-        0, 0)`. If the input to the LSTM includes some static tensor like encoder
-        embeddings preceding the hidden and cell states, the signature would be
-        :obj:`(None, 0, 0)`.
-
-        The signature is primarily used as a means to ensure correctness when performing
-        heuristic search algorithms, e.g. :class:`CTCPrefixSearch`. The order of batch
-        elements will shift around as a function of path probabilities.
+        This method is called in the :func:`forward` method before sequence generation
+        begins. The return value should replace `in_prev` with whatever additional
+        information is necessary before :func:`calc_idx_log_probs`, such as an initial
+        hidden state. The implementation should be robust to repeated calls
         """
-        raise NotImplementedError()
-
-    def get_default_first_prev(self, hist: torch.Tensor) -> Any:
-        """Return the first value of prev if it is unspecified by the user
-
-        If `prev` is unspecified (:obj:`None`) when calling this module and `idx` is
-        either unspecified or all 0 (i.e. this is the first `prev` value in the
-        sequence), it will be substituted with the return value here.
-
-        Subclasses may find it useful to overload this method. It may be used to specify
-        the initial hidden state of an RNN without requiring the user to do so, for
-        example.
-        """
-        return None
+        return in_prev
 
     def extra_repr(self) -> str:
         s = "vocab_size={}".format(self.vocab_size)
@@ -191,16 +151,23 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def calc_idx_log_probs(
-        self, hist: torch.Tensor, prev: Any, idx: Union[int, torch.Tensor]
-    ) -> Tuple[torch.Tensor, Any]:
+        self,
+        hist: torch.Tensor,
+        in_prev: Dict[str, torch.Tensor],
+        idx: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Calculates log_prob_idx over types at prefix up to and excluding idx
 
-        Subclasses implement this. Values in idx are guaranteed to be between
-        ``[0, hist.size(0)]``. Return should be a pair of ``log_prob_idx, cur``
+        Subclasses implement this. Values in idx are guaranteed to be between ``[0,
+        hist.size(0)]``. Return should be a pair of ``log_prob_idx, in_cur``. Note `idx`
+        may be of size ``(1,)`` if the requested index is the same for all batch
+        elements.
         """
         raise NotImplementedError()
 
-    def calc_full_log_probs(self, hist: torch.Tensor, prev: Any) -> torch.Tensor:
+    def calc_full_log_probs(
+        self, hist: torch.Tensor, in_prev: Dict[str, torch.Tensor]
+    ) -> torch.Tensor:
         """Calculates log_prob over all prefixes and stacks them on the first dim
 
         Implemented in :class:`SequentialLanguageModel` as a simple loop. Subclasses
@@ -208,33 +175,14 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         """
         log_probs = []
         for idx in range(hist.size(0) + 1):
-            log_probs_idx, prev = self.calc_idx_log_probs(hist, prev, idx)
+            log_probs_idx, in_prev = self.calc_idx_log_probs(hist, in_prev, idx)
             log_probs.append(log_probs_idx)
         return torch.stack(log_probs, 0)
-
-    def _check_prev_matches_batch_signature(self, prev: Any, batch_size: int) -> None:
-        signature = self.batch_signature
-        if signature is None:
-            return
-        if isinstance(signature, int):
-            signature, prev = (signature,), (prev,)
-        if len(signature) != len(prev):
-            raise RuntimeError(
-                f"Expected {len(signature)} elements in prev, got {len(prev)}"
-            )
-        for sig, pr in zip(signature, prev):
-            if sig is None:
-                continue
-            if pr.size(sig) != batch_size:
-                raise RuntimeError(
-                    f"Expected dim {sig} of prev to be size {batch_size}, "
-                    f"got {pr.size(sig)}"
-                )
 
     def forward(
         self,
         hist: torch.Tensor,
-        prev: Any = None,
+        in_prev: Dict[str, torch.Tensor] = dict(),
         idx: Optional[Union[int, torch.Tensor]] = None,
     ) -> torch.Tensor:
         if hist.dim() != 2:
@@ -258,24 +206,130 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
                         f"All values in idx must be between ({-S - 1}, {S})"
                     )
             idx = (idx + S + 1) % (S + 1)
-        if prev is None:
-            if isinstance(idx, torch.Tensor):
-                if (idx == 0).all():
-                    prev = self.get_default_first_prev(hist)
-            elif not idx:  # None or 0
-                prev = self.get_default_first_prev(hist)
-        self._check_prev_matches_batch_signature(prev, N)
+        in_prev = self.update_input(in_prev, hist)
         if self.oov is not None:
             oov_mask = hist.ge(self.vocab_size) | hist.lt(0)
             hist = hist.masked_fill(oov_mask, self.oov)
             del oov_mask
         if idx is None:
-            return self.calc_full_log_probs(hist, prev)
+            return self.calc_full_log_probs(hist, in_prev)
         else:
-            return self.calc_idx_log_probs(hist, prev, idx)
+            return self.calc_idx_log_probs(hist, in_prev, idx)
 
 
-class LookupLanguageModel(SequentialLanguageModel):
+class ExtractableSequentialLanguageModel(
+    SequentialLanguageModel, metaclass=abc.ABCMeta
+):
+    """A SequentialLanguageModel whose in_prev values can be reordered on the batch idx
+
+    :class:`SequentialLanguageModel` calls are on batched histories of paths `hist`. A
+    :class:`SequentialLanguageModel` which is also a
+    :class:`ExtractableSequentialLanguageModel` promises that, were we to rearrange
+    and/or choose only some of those batch elements in `hist` to continue computations
+    with, we can call the model's :func:`extract_by_src` method to rearrange/extract
+    the relevant values in `in_prev` or `in_next` in the same way.
+    """
+
+    @abc.abstractmethod
+    def extract_by_src(
+        self, in_prev: Dict[str, torch.Tensor], src: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        """Replace values in in_prev with those indexed in src
+
+        Assume the values in the path history `hist` of shape ``(S, N_old)`` have been
+        transformed into `new_hist` of shape ``(S, N_new)`` according to the mapping
+        ``new_hist[s, n] = hist[s, src[n]]``. This method should apply the same
+        transformation to the contents of `in_prev` and return that dictionary.
+
+        Parameters
+        ----------
+        in_prev : dict
+            An input/output value for a step of the lm
+        src : torch.Tensor
+            A tensor of shape ``(N,)`` containing the indices of the old batch index
+            (of possibly different size) to extract the new batch elements from.
+
+        Returns
+        -------
+        new_in_prev : dict
+
+        Examples
+        --------
+        If we have an LSTM-based model and ``in_prev = {'hidden_state' : h, 'cell_state'
+        : c}`` for a hidden state tensor `h` and cell state tensor `c` both of shape
+        ``(N_old, H)``, then the return value of this method would be computed as
+
+        >>> return {
+        ...     'hidden_state': in_prev['hidden_state'].gather(0, src),
+        ...     'cell_state': in_prev['cell_state'].gather(0, src),
+        ... }
+        """
+        raise NotImplementedError()
+
+
+class MixableSequentialLanguageModel(
+    ExtractableSequentialLanguageModel, metaclass=abc.ABCMeta
+):
+    """An ExtractableSequentialLanguageModel whose in_prev values can be mixed
+
+    In addition to the functionality of :class:`ExtractableSequentialLanguageModel`, a
+    :class:`MixableSequentialLanguageModel` can also account for transformations from
+    pairs of histories `hist_a` and `hist_b` into one `new_hist` such that each path
+    in the latter is either from `hist_a` or `hist_b`. :func:`mix_by_mask` accomplishes
+    this for the dictionaries `in_prev` and `in_next`.
+    """
+
+    @abc.abstractmethod
+    def mix_by_mask(
+        self,
+        in_prev_true: Dict[str, torch.Tensor],
+        in_prev_false: Dict[str, torch.Tensor],
+        mask: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Populate a new in_prev by picking values from either of two others
+
+        Assume we have three batched path history tensors `hist_true`, `hist_false`, and
+        `hist_new` each of shape ``(S, N)``. We're also assuming that if the sequences
+        in each are of different lengths, we've also padded them appropriately.
+        ``hist_new[:, n] = hist_true[:, n]`` when ``mask[n] == True`` and ``hist_new[:,
+        n] = hist_false[:, n]`` otherwise. This method should apply the same transformation
+        between `in_prev_true` and `in_prev_false` to come up with `in_prev_new`.
+
+        Parameters
+        ----------
+        in_prev_true : dict
+            The input/output dictionary for the true branch of `mask`
+        in_prev_false : dict
+            The input/output dictionary for the false branch of `mask`
+        mask : torch.Tensor
+            A boolean tensor of shape ``(N,)``
+
+        Returns
+        -------
+        in_prev_new : dict
+
+        Examples
+        --------
+        Continuing with the LSTM example from
+        :class:`ExtractableSequentialLanguageModel`, the hidden states and cell states
+        of the LSTM should always be the same size regardless of the remaining history,
+        making the implementation trivial:
+
+        >>> return {
+        ...     'hidden_state': torch.where(
+        ...         mask.unsqueeze(1),
+        ...         in_prev_true['hidden_state'],
+        ...         in_prev_false['hidden_state']),
+        ...     'cell_state': torch.where(
+        ...         mask.unsqueeze(1),
+        ...         in_prev_true['cell_state'],
+        ...         in_prev_false['cell_state']),
+        ... }
+        """
+        raise NotImplementedError()
+
+
+class LookupLanguageModel(MixableSequentialLanguageModel):
     r"""Construct a backoff n-gram model from a fixed lookup table
 
     An instance of this model will search for a stored log-probability of the
@@ -384,13 +438,25 @@ class LookupLanguageModel(SequentialLanguageModel):
         s += ", max_ngram={}, sos={}".format(self.max_ngram, self.sos)
         return s
 
-    @property
-    def batch_signature(self) -> None:
-        return None
+    def extract_by_src(
+        self, in_prev: Dict[str, torch.Tensor], src: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        return in_prev
+
+    def mix_by_mask(
+        self,
+        in_prev_true: Dict[str, torch.Tensor],
+        in_prev_false: Dict[str, torch.Tensor],
+        mask: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        return in_prev_true
 
     def calc_idx_log_probs(
-        self, hist: torch.Tensor, prev: Any, idx: Union[int, torch.Tensor]
-    ) -> Tuple[torch.Tensor, None]:
+        self,
+        hist: torch.Tensor,
+        in_prev: Dict[str, torch.Tensor],
+        idx: Union[int, torch.Tensor],
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         # we produce two tries with the same node ids: one for logp and one for
         # logb. Let N be the maximal n-gram. The children of the root are
         # 1-grams, their children are 2-grams, etc. Thus, x-gram is synonymous
@@ -537,7 +603,7 @@ class LookupLanguageModel(SequentialLanguageModel):
                     first_children = parents + offsets.long()
             hist = hist[1:]
             n -= 1
-        return out.view(B, V), None
+        return out.view(B, V), in_prev
 
     def load_state_dict(self, state_dict: dict, **kwargs) -> None:
         error_prefix = "Error(s) in loading state_dict for {}:\n".format(
@@ -750,7 +816,7 @@ class CTCPrefixSearch(torch.nn.Module):
 
     This module is called with the following signature:
 
-        search(logits, logit_lens=None, lm_prev=None)
+        search(logits, logit_lens=None, in_prev=dict())
 
     where `logits` is a tensor of shape ``(T, N, V + 1)`` s.t. ``logits[t, n]``
     represents the unnormalized log-probabilities over the extended vocabulary
@@ -767,7 +833,7 @@ class CTCPrefixSearch(torch.nn.Module):
     tokens ``y[:y_lens[n, k], n, k]`` are valid. `y_probs` is a tensor of shape ``(N,
     width)`` containing those prefix's etimated (not log) probabilities. Note that for
     all ``k``, ``y_lens[n, k] <= logit_lens[n]``. Prefixes are ordered in decreasing
-    log-probability (``y_probs[n, k] >= y_probs[n, k + 1]``).
+    probability (``y_probs[n, k] >= y_probs[n, k + 1]``).
 
     Shallow fusion [gulcehre2015]_ is enabled by initializing this module with `lm`.
     Shallow fusion updates the probability of extending a prefix :math:`y_{1..t-1}` with
@@ -778,7 +844,7 @@ class CTCPrefixSearch(torch.nn.Module):
                                                 \beta \log P_{lm}(y_t = v|y_{1..t-1})
 
     The resulting value :math:`log S(y_t=v)` is not technically a probability. If the
-    LM needs an initial input, it can be passed with the optional argument `lm_prev`
+    LM needs an initial input, it can be passed with the optional argument `in_prev`.
 
     Parameters
     ----------
@@ -786,7 +852,7 @@ class CTCPrefixSearch(torch.nn.Module):
         The number of prefixes to keep track of per step.
     beta : float, optional
         The mixing coefficient :math:`\beta` used when performing shallow fusion.
-    lm : SequentialLanguageModel or None, optional
+    lm : MixableLanguageModel or None, optional
         If set, the language model used in shallow fusion. Specifying `lm` will
         restrict the extended vocabulary size of `logits` to be one more than that
         of `lm`: ``lm.vocab_size == V``.
@@ -800,15 +866,7 @@ class CTCPrefixSearch(torch.nn.Module):
 
     Return values will always contain `width` prefixes, regardless of whether this is
     possible. The probabilities of invalid prefixes will be set to :obj:`-float("inf")`
-    and will populate the later indices of the beam.
-
-    When used in conjunction with `lm`, intermediate values before and after each step
-    which have a batch index (see `SequentialLanguageModel.batch_signature`) must be of
-    the same shape. A step may or may not extend a prefix with a new token. The model
-    will replace part of the state in `cur` with the state in `prev` in these cases.
-    For networks with dynamically-shaped intermediate values like the decoder in a
-    transformer network, one will instead have to regenerate the values from `hist` at
-    each step.
+    and will populate the latter indices of the beam.
 
     Notes
     -----
@@ -823,13 +881,13 @@ class CTCPrefixSearch(torch.nn.Module):
 
     width: int
     beta: float
-    lm: Optional[SequentialLanguageModel]
+    lm: Optional[MixableSequentialLanguageModel]
 
     def __init__(
         self,
         width: int,
         beta: float = 0.2,
-        lm: Optional[SequentialLanguageModel] = None,
+        lm: Optional[MixableSequentialLanguageModel] = None,
     ):
         super().__init__()
         if width < 1:
@@ -845,36 +903,11 @@ class CTCPrefixSearch(torch.nn.Module):
         if self.lm is not None and hasattr(self.lm, "reset_parameters"):
             self.lm.reset_parameters()
 
-    @staticmethod
-    def _merge_lm_prev_and_cur(
-        batch_dim: int,
-        prev: torch.Tensor,
-        cur: torch.Tensor,
-        src: torch.Tensor,
-        is_nonext: torch.Tensor,
-    ):
-        N, K = src.shape
-        ndim = prev.dim()
-        assert ndim == cur.dim()
-        Kp = prev.size(batch_dim) // N
-        prev = prev.unflatten(batch_dim, (N, Kp))  # (..., N, Kp, ...)
-        cur = cur.unflatten(batch_dim, (N, Kp))  # (..., N, Kp, ...)
-        shape_ = (1,) * batch_dim + (N, K) + (1,) * (ndim - batch_dim - 1)
-        src = src.reshape(shape_)
-        src = src.expand(
-            tuple(K if i == batch_dim + 1 else s for (i, s) in enumerate(cur.shape))
-        )
-        prev = prev.gather(batch_dim + 1, src)  # (..., N, K, ...)
-        cur = cur.gather(batch_dim + 1, src)  # (..., N, K, ...)
-        # the validity of the intermediate states doesn't matter
-        cur = torch.where(is_nonext.reshape(shape_), prev, cur)
-        return cur.flatten(batch_dim, batch_dim + 1)
-
     def forward(
         self,
         logits: torch.Tensor,
         lens: Optional[torch.Tensor] = None,
-        lm_prev: Any = None,
+        in_prev: Dict[str, torch.Tensor] = dict(),
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if logits.dim() != 3:
             raise RuntimeError("logits must be 3 dimensional")
@@ -904,23 +937,17 @@ class CTCPrefixSearch(torch.nn.Module):
         )
         prev_is_prefix = torch.full((N, 1, 1), True, device=logits.device)
         if self.lm is not None:
-            if lm_prev is None:
-                lm_prev = self.lm.get_default_first_prev(y_prev.new_empty((0, N)))
-            self.lm._check_prev_matches_batch_signature(lm_prev, N)
-            signature = self.lm.batch_signature
-        else:
-            signature = None
-
+            in_prev = self.lm.update_input(in_prev, y_prev)
         width_prev = 1
         for t in range(len_max):
             valid_mask = None if t < len_min else (t < lens).unsqueeze(1)  # (N, 1)
             nonext_probs_t, blank_probs_t = nonext_probs[t], blank_probs[t]
             if self.lm is None or not self.beta:
                 ext_probs_t = nonext_probs_t.unsqueeze(1).expand(N, width_prev, V)
-                lm_next = None
+                in_next = dict()
             else:
-                lm_log_probs_t, lm_next = self.lm(
-                    y_prev.flatten(1), lm_prev, y_prev_lens.flatten()
+                lm_log_probs_t, in_next = self.lm.calc_idx_log_probs(
+                    y_prev.flatten(1), in_prev, y_prev_lens.flatten()
                 )
                 lm_probs_t = (self.beta * lm_log_probs_t).exp().view(N, width_prev, V)
                 # note we're no longer in log space, so it's a product
@@ -944,20 +971,17 @@ class CTCPrefixSearch(torch.nn.Module):
                 prev_is_prefix,
             )
 
-            if signature is not None and t < T - 1:
-                # we have to update the intermediate values
-                if isinstance(signature, int):
-                    lm_prev = self._merge_lm_prev_and_cur(
-                        signature, lm_prev, lm_next, next_src, next_is_nonext
+            if self.lm is not None and self.beta:
+                next_src = (
+                    torch.arange(
+                        0, width_prev * N, width_prev, device=next_src.device
+                    ).unsqueeze(1)
+                    + next_src
                     )
-                else:
-                    lm_prev = tuple(
-                        lm_next_s
-                        if s is None
-                        else self._merge_lm_prev_and_cur(
-                            s, lm_prev_s, lm_next_s, next_src, next_is_nonext
-                        )
-                        for s, lm_prev_s, lm_next_s in zip(signature, lm_prev, lm_next)
+                in_prev = self.lm.extract_by_src(in_prev, next_src.flatten())
+                in_next = self.lm.extract_by_src(in_next, next_src.flatten())
+                in_prev = self.lm.mix_by_mask(
+                    in_prev, in_next, next_is_nonext.flatten()
                     )
 
             if valid_mask is None:
