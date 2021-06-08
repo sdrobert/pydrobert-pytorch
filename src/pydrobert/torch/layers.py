@@ -21,7 +21,7 @@ The loss functions :class:`HardOptimalCompletionDistillationLoss` and
 """
 
 import abc
-from typing import Any, NoReturn, Optional, Sequence, Tuple, Union
+from typing import NoReturn, Optional, Sequence, Tuple, Dict
 
 import torch
 
@@ -79,7 +79,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     = v | w^{(n)}_{s - 1}, \ldots)`. That is, each distribution over types conditioned
     on each prefix of tokens (``:0``, ``:1``, ``:2``, etc.) is returned.
 
-    If `idx` is specified, it must be a long tensor of shape ``(1,)`` or ``(N,)``. The
+    If `idx` is specified, it must be a long tensor of shape ``(0,)`` or ``(N,)``. The
     former is broadcast into the latter. The call returns a pair. The first element is
     `log_probs_idx` of shape ``(N, vocab_size)``, where ``log_probs[n, v]`` equals
     :math:`\log P(w^{(n)}_{idx[n]} = v | w^{(n)}_{idx[n]-1}, \ldots)`. That is, the
@@ -160,8 +160,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
 
         Subclasses implement this. Values in idx are guaranteed to be between ``[0,
         hist.size(0)]``. Return should be a pair of ``log_prob_idx, in_cur``. Note `idx`
-        may be of size ``(1,)`` if the requested index is the same for all batch
-        elements.
+        may be a scalar if all batch indices are the same.
         """
         raise NotImplementedError()
 
@@ -174,7 +173,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         may overload this function if the result can be calculated more quickly.
         """
         log_probs = []
-        for idx in range(hist.size(0) + 1):
+        for idx in torch.arange(hist.size(0) + 1, device=hist.device):
             log_probs_idx, in_prev = self.calc_idx_log_probs(hist, in_prev, idx)
             log_probs.append(log_probs_idx)
         return torch.stack(log_probs, 0)
@@ -183,28 +182,21 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         self,
         hist: torch.Tensor,
         in_prev: Dict[str, torch.Tensor] = dict(),
-        idx: Optional[Union[int, torch.Tensor]] = None,
+        idx: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if hist.dim() != 2:
             raise RuntimeError("hist must be 2 dimensional")
         S, N = hist.shape
         if idx is not None:
-            if isinstance(idx, int):
-                if -S - 1 > idx or S < idx:
-                    raise RuntimeError(
-                        f"idx must be between ({-S - 1}, {S}), got {idx}"
-                    )
-            else:
-                if idx.dim() != 1:
-                    raise RuntimeError("idx must be 1-dimensional")
+            if idx.dim() == 1:
+                if idx.size(0) == 1:
+                    idx = idx.squeeze(0)
                 elif idx.size(0) != N:
                     raise RuntimeError(
                         f"Expected dim 0 of idx to be of size {N}, got {idx.size(0)}"
                     )
-                elif ((idx < -S - 1) | (idx > S)).any():
-                    raise RuntimeError(
-                        f"All values in idx must be between ({-S - 1}, {S})"
-                    )
+            if ((idx < -S - 1) | (idx > S)).any():
+                raise RuntimeError(f"All values in idx must be between ({-S - 1}, {S})")
             idx = (idx + S + 1) % (S + 1)
         in_prev = self.update_input(in_prev, hist)
         if self.oov is not None:
@@ -455,7 +447,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         self,
         hist: torch.Tensor,
         in_prev: Dict[str, torch.Tensor],
-        idx: Union[int, torch.Tensor],
+        idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         # we produce two tries with the same node ids: one for logp and one for
         # logb. Let N be the maximal n-gram. The children of the root are
@@ -493,7 +485,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         device = hist.device
         assert len(self.ids) == K
         assert len(self.logs) == L
-        if isinstance(idx, int):
+        if idx.numel() == 1:
             hist = hist[:idx]
             if idx >= N - 1:
                 hist = hist[hist.size(0) - (N - 1) :]
@@ -977,12 +969,12 @@ class CTCPrefixSearch(torch.nn.Module):
                         0, width_prev * N, width_prev, device=next_src.device
                     ).unsqueeze(1)
                     + next_src
-                    )
+                )
                 in_prev = self.lm.extract_by_src(in_prev, next_src.flatten())
                 in_next = self.lm.extract_by_src(in_next, next_src.flatten())
                 in_prev = self.lm.mix_by_mask(
                     in_prev, in_next, next_is_nonext.flatten()
-                    )
+                )
 
             if valid_mask is None:
                 y_prev_lens = y_next_lens

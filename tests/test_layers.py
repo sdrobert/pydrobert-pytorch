@@ -529,7 +529,6 @@ def test_sequential_language_model(device):
             self.ff = torch.nn.Linear(hidden_size, vocab_size)
 
         def calc_idx_log_probs(self, hist, prev, idx):
-            assert isinstance(idx, int)  # for this test
             N = hist.size(1)
             if idx == 0:
                 in_ = hist.new_full((N,), self.vocab_size)
@@ -547,7 +546,7 @@ def test_sequential_language_model(device):
     hist = torch.randint(0, Vx, (S, N), device=device)
     lm = RNNLM(V, V - 1).to(device)
     log_probs = lm(hist)
-    for idx in range(S, -1, -1):
+    for idx in torch.arange(S, -1, -1, device=device):
         log_probs_idx = lm(hist[:idx], idx=idx)[0]
         assert torch.allclose(log_probs[idx], log_probs_idx)
 
