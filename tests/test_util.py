@@ -131,25 +131,19 @@ Here's an empty one
     assert util.parse_arpa_lm(file_) == []
 
 
-@pytest.mark.cpu
-@pytest.mark.parametrize("distribution", [True, False])
-def test_beam_search_advance_greedy(distribution):
-    torch.manual_seed(50)
+def test_beam_search_advance_greedy(device):
     N, C, T = 30, 100, 25
-    logits = torch.randn(T, N, C)
-    if distribution:
-        greedy_logits, greedy_paths = torch.nn.functional.log_softmax(logits, -1).max(2)
-    else:
-        greedy_logits, greedy_paths = logits.max(2)
-    greedy_scores = greedy_logits.sum(0) + torch.log(torch.tensor(1 / C))
-    y = None
-    score = None
-    for logit in logits:
-        score, y, _ = util.beam_search_advance(
-            logit, 1, score, y, distribution=distribution
+    logits = torch.randn((T, N, C), device=device)
+    greedy_logits, greedy_paths = logits.max(2)
+    greedy_scores = greedy_logits.sum(0)
+    y = torch.empty((0, N, 1), dtype=torch.long, device=device)
+    log_probs = torch.zeros((N, 1), device=device)
+    for logits_t in logits:
+        y, _, log_probs, _ = util.beam_search_advance(
+            logits_t.unsqueeze(1), 1, log_probs, y
         )
-    score, y = score.squeeze(1), y.squeeze(2)
-    assert torch.allclose(score, greedy_scores)
+    y, log_probs = y.squeeze(2), log_probs.squeeze(1)
+    assert torch.allclose(log_probs, greedy_scores)
     assert torch.all(y == greedy_paths)
 
 
@@ -506,80 +500,59 @@ def test_ctc_prefix_search_advance_big_width(device):
     assert ((b_probs_next != 0.0).sum(1) == Kp).all()
 
 
-@pytest.mark.parametrize("prevent_eos", [True, False])
-def test_beam_search_advance(device, prevent_eos):
-    logits_1 = torch.tensor(
-        [[-10, -2, -4, -10], [-2, 0, 1, 1.1]], device=device
-    )  # ~[[x, 0, -4, x], [x, x, -.8, -.6]]
-    score_1, y_1, s_1 = util.beam_search_advance(logits_1, 2)
-    assert torch.all(y_1 == torch.tensor([[[1, 2], [3, 2]]], device=device))
-    assert torch.all(s_1 == 0)
-    logits_2 = torch.tensor(
-        [
-            [[-5.0, -6, -7, -8.0], [-400, -300, -200, -1]],  # beam for batch 1
-            [[2, 1, 1, 1], [-1, -2, -3, -4]],  # beam for batch 2
-        ],
-        device=device,
-    )  # ~ [[[-.4 -1.4 x x] [x x x 0]],
-    #                      [[-.7 -1.7 x x] [-.4 -1.4 x x]]
-    # batch 0: 0->0 0->1 win b/c 1->3 can't make up for score_1
-    # batch 1: 1->0 0->0 win b/c score_1 about even
-    score_2, y_2, s_2 = util.beam_search_advance(logits_2, 2, score_1)
-    assert torch.all(y_2 == torch.tensor([[[0, 1], [0, 0]]], device=device))
-    assert torch.all(s_2 == torch.tensor([[0, 0], [1, 0]], device=device))
-    logits_3 = torch.tensor(
-        [[[1000.0, 0, 0, 0], [0, -100, 0, 0]], [[0, 0, 0, 100], [2, 2, 1000, 10]]],
-        device=device,
-    )  # ~ [[[0 x x x] [-1 -101 -1 -1]],
-    #                      [[x x x 0] [x x 0 x]]
-    # batch 0: 0->0 1->1 batch 1 done, but no priority b/c 0->0 very small
-    # batch 1: 0->3 1->2
-    score_3, y_3, s_3 = util.beam_search_advance(logits_3, 2, score_2, y_2, 1)
-    assert torch.all(
-        y_3 == torch.tensor([[[0, 1], [0, 0]], [[0, 1], [3, 2]]], device=device)  # y_2
-    )
-    assert torch.all(s_3 == torch.tensor([[0, 1], [0, 1]], device=device))
-    logits_4 = torch.tensor(
-        [[[1.0, 2, 3, 4], [5, 6, 7, 8]], [[2, 2, 3, 2], [5, 6, 7, 8]]],
-        device=device,
-        requires_grad=True,
-    )
-    # (note no eos condition)
-    score_4, y_4, s_4 = util.beam_search_advance(logits_4, 1, score_3)
-    assert torch.all(y_4.flatten() == torch.tensor([3, 3], device=device))
-    assert torch.all(s_4.flatten() == torch.tensor([0, 1], device=device))
-    g = torch.autograd.grad(
-        [score_4], [logits_4], grad_outputs=torch.ones_like(score_4)
-    )[0]
-    # we should only have a gradient for the chosen beam per batch
-    assert torch.allclose(g[0, 1, :], torch.zeros_like(g[0, 1, :]))
-    assert torch.allclose(g[1, 0, :], torch.zeros_like(g[1, 0, :]))
-    # all elements of a non-peaked softmax in the chosen beam should have a
-    # non-negligible gradient
-    assert abs(g[0, 0, 1].item()) > 1e-4
-    assert abs(g[1, 1, 1].item()) > 1e-4
-    # ensure that all paths are always unequal
-    torch.manual_seed(30)
-    y = score = None
-    N, W, C, T = 5, 10, 20, 100
-    eos = 0 if prevent_eos else -1
-    logits_t = torch.randn(N, C).to(device)
-    lens = torch.randint(1, T, (N,)).to(device)
-    while y is None or not torch.all(y[-1].eq(eos)):
-        score, y, _ = util.beam_search_advance(
-            logits_t, W, score, y, eos=eos, lens=lens, prevent_eos=prevent_eos
+def test_beam_search_advance(device):
+    N, V, Kp, num_contours = 1, 256, 16, 5
+    assert V > Kp
+    N_ = torch.arange(N, device=device)
+    Kp_ = torch.arange(Kp, device=device)
+    V_ = torch.arange(V, device=device)
+    log_probs_t = (N_.view(N, 1, 1) + Kp_.view(Kp, 1) + V_).float()
+    # likewise for log_probs_prev
+    log_probs_prev = (N_.view(N, 1) + Kp_).float()
+
+    max_sum_lpt = (V - 1) + (Kp - 1)
+    max_sum_lpn = max_sum_lpt + (Kp - 1)
+    # the log_probs_prev count and log_probs_t count are the same along the Kp index.
+    # there's a smarter way to do this, but I can't be arsed
+    lpn_num_ties = [0 for _ in range(max_sum_lpn + 1)]
+    for kp in range(Kp):
+        for v in range(V):
+            lpn_num_ties[2 * kp + v] += 1
+    lpn_num_ties = lpn_num_ties[-num_contours:]
+    K = sum(lpn_num_ties)
+    log_probs_next_exp = list(
+        itertools.chain(
+            *(
+                itertools.repeat(max_sum_lpn - i, num)
+                for (i, num) in enumerate(reversed(lpn_num_ties))
+            )
         )
-        logits_t = torch.randn(N, W, C).to(device)
-        for i in range(W - 1):
-            beam_i = y[..., i]
-            for j in range(i + 1, W - 1):
-                beam_j = y[..., j]
-                for k in range(N):
-                    assert not torch.all(beam_i[:, k] == beam_j[:, k])
-    for bt, l in enumerate(lens):
-        for bm in range(W):
-            assert torch.all(y[l.item() :, bt, bm] == eos)
-            assert not torch.any(y[: l.item(), bt, bm] == eos)
+    )
+    assert len(log_probs_next_exp) == K
+    log_probs_next_exp = (
+        2 * torch.arange(N, device=device).view(N, 1)
+        + torch.tensor(log_probs_next_exp, device=device)
+    ).float()
+    # set the length of each path to path idx. idx - 1 is a strict prefix of idx. The
+    # chosen paths are also the longest
+    y_prev = torch.arange(V, device=device).view(V, 1, 1).expand(V, N, Kp)
+    y_prev_lens = torch.arange(Kp, device=device).unsqueeze(0).expand(N, Kp)
+    # the highest probability path is unique; we can compute its expected values
+    y_next_0_exp = torch.arange(Kp, device=device)
+    y_next_0_exp[-1] = V - 1
+    y_next_0_exp = y_next_0_exp.unsqueeze(1).expand(Kp, N)
+    y_next_lens_0_exp = Kp
+    next_src_0_exp = Kp - 1
+    (
+        y_next_act,
+        y_next_lens_act,
+        log_probs_next_act,
+        next_src_act,
+    ) = util.beam_search_advance(log_probs_t, K, log_probs_prev, y_prev, y_prev_lens)
+    assert torch.allclose(log_probs_next_exp, log_probs_next_act)
+    assert (y_next_lens_act[:, 0] == y_next_lens_0_exp).all()
+    assert (next_src_act[:, 0] == next_src_0_exp).all()
+    assert (y_next_act[:Kp, :, 0] == y_next_0_exp).all()
 
 
 @pytest.mark.parametrize("include_eos", [0, 1])
