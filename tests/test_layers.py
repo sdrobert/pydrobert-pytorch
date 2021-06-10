@@ -222,7 +222,7 @@ def test_lookup_language_model_log_probs(device, N):
     lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list)
     lm = lm.to(device)
     for exp, hist in zip(exps, hists):
-        act = lm(hist, None, -1)[0]
+        act = lm(hist, None, torch.tensor(-1, device=device))[0]
         assert torch.allclose(exp, act, atol=1e-5)
 
 
