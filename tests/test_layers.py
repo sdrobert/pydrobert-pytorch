@@ -419,10 +419,7 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction):
         ref[0] = 0
     log_probs = torch.randn(num_batches, samples, device=device)
     loss = layers.MinimumErrorRateLoss(
-        eos=None,
-        sub_avg=sub_avg,
-        batch_first=batch_first,
-        reduction=reduction,
+        eos=None, sub_avg=sub_avg, batch_first=batch_first, reduction=reduction,
     )
     l1 = loss(log_probs, ref, hyp)
     assert l1.ne(0.0).any()
@@ -482,10 +479,7 @@ def test_hard_optimal_completion_distillation_loss(
     inv_len_mask = len_mask.eq(0)
     logits.requires_grad_(True)
     loss = layers.HardOptimalCompletionDistillationLoss(
-        eos=eos,
-        include_eos=include_eos,
-        batch_first=batch_first,
-        reduction=reduction,
+        eos=eos, include_eos=include_eos, batch_first=batch_first, reduction=reduction,
     )
     l1 = loss(logits, ref, hyp)
     assert torch.all(l1 == l1)  # no nans
@@ -587,11 +581,7 @@ def test_ctc_prefix_search(device):
     T, N, K, V = 3, 128, 2, 3
     logits = (
         torch.tensor(
-            [
-                [1 / 2, 1 / 3, 1 / 6],
-                [1 / 3, 1 / 6, 1 / 2],
-                [1 / 6, 1 / 2, 1 / 3],
-            ]
+            [[1 / 2, 1 / 3, 1 / 6], [1 / 3, 1 / 6, 1 / 2], [1 / 6, 1 / 2, 1 / 3],]
         )
         .log()
         .unsqueeze(1)
@@ -660,8 +650,11 @@ def test_ctc_prefix_search_batch(device):
                 x = x.masked_fill(idx_zero, self.vocab_size)
             x = self.embed(x)
             h_1, c_1 = self.cell(x, (in_prev["hidden_state"], in_prev["cell_state"]))
-            x = self.ff(h_1)
-            return x, {"hidden_state": h_1, "cell_state": c_1}
+            logits = self.ff(h_1)
+            return (
+                torch.nn.functional.log_softmax(logits, -1),
+                {"hidden_state": h_1, "cell_state": c_1},
+            )
 
     T, N, V, K = 50, 128, 50, 5
     assert K <= V
@@ -704,6 +697,127 @@ def test_ctc_prefix_search_batch(device):
             probs_n_exp, probs_n_act = probs_n_exp[:1], probs_n_act[:1]
         assert (y_lens_n_exp == y_lens_n_act).all()
         assert torch.allclose(probs_n_exp, probs_n_act)
+        rem = y_n_act.size(0) - y_n_exp.size(0)
+        if rem > 0:
+            y_n_exp = torch.cat([y_n_exp, y_n_exp.new_empty((rem, y_n_exp.size(1)))], 0)
+            assert y_n_exp.shape == y_n_act.shape
+        len_mask = (
+            torch.arange(y_n_exp.size(0), device=device).unsqueeze(1) >= y_lens_n_exp
+        )
+        y_n_exp = y_n_exp.masked_fill_(len_mask, -1)
+        y_n_act = y_n_act.masked_fill_(len_mask, -1)
+        assert (y_n_exp == y_n_act).all()
+
+
+def test_beam_search(device):
+    class MyLM(layers.ExtractableSequentialLanguageModel):
+        def __init__(self, vocab_size):
+            super().__init__(vocab_size)
+            bigram_table = (
+                torch.arange(1, vocab_size + 1, dtype=torch.float)
+                .unsqueeze(0)
+                .expand(vocab_size, vocab_size)
+            )
+            # dist over idx = [0, ..., 0, idx + 1, idx + 2, -(idx - 3), ..., -V]
+            bigram_table = bigram_table - bigram_table.triu(2) - bigram_table.tril(-1)
+            self.register_buffer("bigram_table", bigram_table)
+
+        def update_input(self, in_prev, hist):
+            return in_prev
+
+        def extract_by_src(self, in_prev, src):
+            return in_prev
+
+        def calc_idx_log_probs(self, hist, in_prev, idx):
+            hist = torch.cat(
+                [torch.arange(hist.size(1), device=hist.device).unsqueeze(0), hist], 0
+            )
+            vocab = hist.gather(0, idx.unsqueeze(0)).squeeze(0)
+            return self.bigram_table.index_select(vocab, 0), in_prev
+
+
+def test_beam_search_batch(device):
+    class RNNLM(layers.ExtractableSequentialLanguageModel):
+        def __init__(self, vocab_size, oov=None, embed_size=128, hidden_size=512):
+            super().__init__(vocab_size, oov=oov)
+            self.hidden_size = hidden_size
+            self.embed = torch.nn.Embedding(
+                vocab_size + 1, embed_size, padding_idx=vocab_size
+            )
+            self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
+            self.ff = torch.nn.Linear(hidden_size, vocab_size)
+
+        def extract_by_src(self, in_prev, src):
+            return {
+                "hidden_state": in_prev["hidden_state"].index_select(0, src),
+                "cell_state": in_prev["cell_state"].index_select(0, src),
+            }
+
+        def update_input(self, in_prev, hist):
+            N = hist.size(1)
+            zeros = self.ff.weight.new_zeros((N, self.hidden_size))
+            return {"hidden_state": zeros, "cell_state": zeros}
+
+        def calc_idx_log_probs(self, hist, in_prev, idx):
+            idx_zero = idx == 0
+            if idx_zero.all():
+                x = torch.arange(hist.size(0), device=hist.device).clamp(
+                    max=self.vocab_size
+                )
+            elif not idx.dim():
+                x = hist[idx - 1]
+            else:
+                x = hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(
+                    0
+                )  # (N,)
+                x = x.masked_fill(idx_zero, self.vocab_size)
+            x = self.embed(x)
+            h_1, c_1 = self.cell(x, (in_prev["hidden_state"], in_prev["cell_state"]))
+            logits = self.ff(h_1)
+            return (
+                torch.nn.functional.log_softmax(logits, -1),
+                {"hidden_state": h_1, "cell_state": c_1},
+            )
+
+    T, N, V, K = 256, 64, 128, 8
+    assert K <= V and N <= V
+    lm = RNNLM(V)
+    search = layers.BeamSearch(lm, K, eos=0, max_iters=T).to(device)
+    y_prev = torch.arange(N, device=device)
+
+    exps = []
+    for y_prev_n in y_prev:
+        y_prev_n = y_prev_n.view(1, 1)
+        y_n_exp, y_lens_n_exp, log_probs_n_exp = search(y_prev_n)
+        y_n_exp = y_n_exp.squeeze(1)  # (T_n, K_n)
+        y_lens_n_exp = y_lens_n_exp.squeeze(0)  # (K_n,)
+        log_probs_n_exp = log_probs_n_exp.squeeze(0)  # (K_n,)
+        valid_prefix_mask_n_exp = log_probs_n_exp > -float("inf")
+        if not valid_prefix_mask_n_exp.all():
+            assert y_lens_n_exp[0] == 1
+        exps.append((y_n_exp, y_lens_n_exp, log_probs_n_exp))
+
+    y_act, y_lens_act, log_probs_act = search(y_prev.unsqueeze(0))
+    for (
+        (y_n_exp, y_lens_n_exp, log_probs_n_exp),
+        y_n_act,
+        y_lens_n_act,
+        log_probs_n_act,
+    ) in zip(exps, y_act.transpose(0, 1), y_lens_act, log_probs_act):
+        assert y_n_exp.shape[1:] == y_n_act.shape[1:]
+        assert y_n_exp.size(0) <= y_n_act.size(0)
+        assert y_lens_n_exp.shape == y_lens_n_act.shape
+        assert log_probs_n_exp.shape == log_probs_n_act.shape
+        valid_prefix_mask_n_exp = log_probs_n_exp > -float("inf")
+        valid_prefix_mask_n_act = log_probs_n_act > -float("inf")
+        assert (valid_prefix_mask_n_exp == valid_prefix_mask_n_act).all()
+        if not valid_prefix_mask_n_exp.all():
+            assert valid_prefix_mask_n_exp.sum() == 1  # only one valid path: empty one
+            y_n_exp, y_n_act = y_n_exp[:, :1], y_n_act[:, :1]
+            y_lens_n_exp, y_lens_n_act = y_lens_n_exp[:1], y_lens_n_act[:1]
+            log_probs_n_exp, log_probs_n_act = log_probs_n_exp[:1], log_probs_n_act[:1]
+        assert (y_lens_n_exp == y_lens_n_act).all()
+        assert torch.allclose(log_probs_n_exp, log_probs_n_act)
         rem = y_n_act.size(0) - y_n_exp.size(0)
         if rem > 0:
             y_n_exp = torch.cat([y_n_exp, y_n_exp.new_empty((rem, y_n_exp.size(1)))], 0)

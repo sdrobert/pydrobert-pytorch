@@ -248,7 +248,7 @@ def beam_search_advance(
     K = min(width, Kp * V)
     cand_log_probs = (log_probs_prev.unsqueeze(2) + log_probs_t).flatten(1)
     log_probs_next, next_ind = cand_log_probs.topk(K, 1)
-    next_src = next_ind // V
+    next_src = torch.div(next_ind, V, rounding_mode="trunc")
     next_token = (next_ind % V).unsqueeze(0)  # (1, N, K)
 
     if tm1:
@@ -1404,9 +1404,7 @@ def random_walk_advance(
             raise RuntimeError(
                 "If logits_t of shape {} then y_prev must have shape "
                 "(*, {}, {})".format(
-                    (batch_size, old_samp, num_classes),
-                    batch_size,
-                    old_samp,
+                    (batch_size, old_samp, num_classes), batch_size, old_samp,
                 )
             )
         y_prev = y_prev.expand(-1, -1, num_samp)
@@ -1910,18 +1908,12 @@ def _solve_interpolation(c, f, k, reg, full):
         zeros = torch.zeros(
             (B.shape[0], B.shape[2], B.shape[2]), device=B.device, dtype=B.dtype
         )
-        B0 = torch.cat(
-            [B, zeros],
-            1,
-        )  # (N, T+I+1, I+1)
+        B0 = torch.cat([B, zeros], 1,)  # (N, T+I+1, I+1)
         ABtB0 = torch.cat([ABt, B0], 2)  # (N, T+I+1, T+I+1)
         zeros = torch.zeros(
             (B.shape[0], B.shape[2], f.shape[2]), device=f.device, dtype=f.dtype
         )
-        f0 = torch.cat(
-            [f, zeros],
-            1,
-        )  # (N, T+I+1, O)
+        f0 = torch.cat([f, zeros], 1,)  # (N, T+I+1, O)
         wv, _ = torch.solve(f0, ABtB0)
         w, v = wv[:, : B.shape[1]], wv[:, B.shape[1] :]
     else:

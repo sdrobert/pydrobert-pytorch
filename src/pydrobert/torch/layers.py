@@ -21,11 +21,14 @@ The loss functions :class:`HardOptimalCompletionDistillationLoss` and
 """
 
 import abc
+import math
 from typing import NoReturn, Optional, Sequence, Tuple, Dict
+from attr import astuple
 
 import torch
 
 from pydrobert.torch.util import (
+    beam_search_advance,
     error_rate,
     optimal_completion,
     polyharmonic_spline,
@@ -33,6 +36,7 @@ from pydrobert.torch.util import (
 )
 
 __all__ = [
+    "BeamSearch",
     "ConcatSoftAttention",
     "CTCPrefixSearch",
     "DotProductSoftAttention",
@@ -119,9 +123,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     """
 
     def __init__(
-        self,
-        vocab_size: int,
-        oov: Optional[int] = None,
+        self, vocab_size: int, oov: Optional[int] = None,
     ):
         super(SequentialLanguageModel, self).__init__()
         self.vocab_size = vocab_size
@@ -151,10 +153,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def calc_idx_log_probs(
-        self,
-        hist: torch.Tensor,
-        in_prev: Dict[str, torch.Tensor],
-        idx: torch.Tensor,
+        self, hist: torch.Tensor, in_prev: Dict[str, torch.Tensor], idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Calculates log_prob_idx over types at prefix up to and excluding idx
 
@@ -444,10 +443,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         return in_prev_true
 
     def calc_idx_log_probs(
-        self,
-        hist: torch.Tensor,
-        in_prev: Dict[str, torch.Tensor],
-        idx: torch.Tensor,
+        self, hist: torch.Tensor, in_prev: Dict[str, torch.Tensor], idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         # we produce two tries with the same node ids: one for logp and one for
         # logb. Let N be the maximal n-gram. The children of the root are
@@ -574,16 +570,12 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                     new_backoff = step_mask & next_step.eq(0)
                     # add backoff for newly failed paths
                     out = torch.where(
-                        new_backoff,
-                        out + self.logs[X + G + parents],
-                        out,
+                        new_backoff, out + self.logs[X + G + parents], out,
                     )
                 else:
                     # we're not last. Update children
                     children = torch.where(
-                        matches,
-                        all_children,
-                        torch.zeros_like(all_children),
+                        matches, all_children, torch.zeros_like(all_children),
                     ).sum(1)
                 # this'll be invalid for the last step, so don't re-use!
                 step_mask = next_step
@@ -799,6 +791,321 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         return logs, ids, pointers
 
 
+class BeamSearch(torch.nn.Module):
+    """Perform beam search on the outputs of a SequentialLanguageModel
+
+    Beam search is a heuristic algorithm that keeps track of `width` most promising
+    paths in the beam by probability, distributed by the language model `lm`.
+
+    This module has the following signature:
+
+        search(y_prev, in_prev=dict())
+
+    `y_prev` is long tensor of shape ``(S*, N[, old_width])``. In most cases, `y_prev`
+    should be an empty tensor of shape ``(0, N[, 1])``, though it can be used start the
+    search with different prefixes. `in_prev` is whatever input is initially passed into
+    `lm`.
+
+    A path continues to be extended until it is either pruned or emits an
+    end-of-sequence (`eos`) symbol (if set). The search ends for a batch element when
+    its highest probability path ends with an `eos` or all paths end with an `eos`
+    (depending on the setting of `finish_all_paths`). The search ends for the entire
+    batch either when the search for all batch elements have ended or `max_iters` steps
+    has been reached, whichever comes first. It is therefore necessary to set at least
+    one of `eos` or `max_iters`.
+
+    The call returns a triple of tensors ``y, y_lens, y_log_probs``. ``y`` is a long
+    tensor of shape ``(S, N, width)`` containing the `width` paths per batch element.
+    `y_lens` is a long tensor of shape ``(N, width)`` of the lengths of the
+    corresponding paths including the first instance of `eos`, if it exists. For batch
+    element ``n`` and path ``k``, only the tokens in ``y[:y_lens[n, k], n, k]`` are
+    valid.  `y_log_probs` is of shape ``(N, width)`` and contains the log probabilities
+    of the paths.
+
+    Parameters
+    ----------
+    lm : ExtractableSequentialLanguageModel
+        The language model responsible for producing distributions over the next token
+        type
+    width : int
+        The beam width
+    eos : int or None, optional
+        The end of sequence type. If set, must be in-vocabulary (according to
+        ``lm.vocab_size``). Either `eos` or `max_iters` must be set.
+    max_iters : int or None, optional
+        The maximum number of tokens to generate in the paths before returning. Either
+        `eos` or `max_iters` must be set.
+    finish_all_paths : bool, optional
+        Applicable only when `eos` is set. If :obj:`True`, waits for all paths in all
+        batches' beams to emit an `eos` symbol before stopping. If :obj:`False`, only
+        the highest probability path need end with an `eos` before stopping.
+
+    Warnings
+    --------
+    Return values will always contain `width` prefixes, regardless of whether this is
+    possible. The log probabilities of invalid prefixes will be set to
+    :obj:`-float("inf")` and will populate the latter indices of the beam. Since this
+    cannot be distinguished from a zero-probability path (``log 0 = -inf``), care must
+    be taken by the user to avoid confusing them.
+
+    As soon as a batch element reaches its completion condition the search is frozen for
+    that batch element, even if the search continues for other batch elements. This is
+    in order to produce consistent results across batch sizes.
+
+    Notes
+    -----
+    While the core operations of beam search - extending existing paths and pruning the
+    low scoring ones - are generally constant, the details will vary between
+    implementations. This no-frills implementation is best considered a starting point.
+    """
+
+    __constants__ = ["width", "eos", "max_iters", "finish_all_paths"]
+
+    width: int
+    eos: Optional[int]
+    max_iters: Optional[int]
+    finish_all_paths: bool
+    lm: ExtractableSequentialLanguageModel
+
+    def __init__(
+        self,
+        lm: ExtractableSequentialLanguageModel,
+        width: int,
+        eos: Optional[int] = None,
+        max_iters: Optional[int] = None,
+        finish_all_paths: bool = False,
+    ):
+        super().__init__()
+        if width < 1:
+            raise ValueError("width must be positive")
+        if eos is not None:
+            if eos < -lm.vocab_size or eos > lm.vocab_size - 1:
+                raise ValueError(
+                    f"Expected eos to be in the range [{-lm.vocab_size}, "
+                    f"{lm.vocab_size - 1}], got {eos}"
+                )
+            eos = (eos + lm.vocab_size) % lm.vocab_size
+        if max_iters is not None and max_iters < 0:
+            raise ValueError("max_iters must be non-negative")
+        if eos is None and max_iters is None:
+            raise ValueError("at least one of eos or max_iters must be set")
+        self.lm = lm
+        self.width = width
+        self.eos = eos
+        self.max_iters = max_iters
+        self.finish_all_paths = finish_all_paths
+
+    def reset_parameters(self) -> None:
+        if hasattr(self.lm, "reset_parameters"):
+            self.lm.reset_parameters()
+
+    def update_log_probs_for_step(
+        self,
+        log_probs_prev: torch.Tensor,
+        log_probs_t: torch.Tensor,
+        y_prev: torch.Tensor,
+        y_prev_lens: torch.Tensor,
+        eos_mask: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Update log_probs_prev and log_probs_t for a step of the beam search
+
+        Subclasses may overload this method to modify the log-probabilities of the paths
+        in the beam as well as the log-probabilities of the tokens extending each path.
+
+        Parameters
+        ----------
+        log_probs_prev : torch.Tensor
+            Of shape ``(N, K)`` containing the log probabilities of paths up to the
+            current step.
+        log_probs_t : torch.Tensor
+            Of shape ``(N, K, V)`` containing the log probabilities of extending each
+            path with a token of a given type.
+        y_prev : torch.Tensor
+            Of shape ``(S, N, K)`` containing the paths in the beam up to the current
+            step.
+        y_prev_lens : torch.Tensor
+            Of shape ``(N, K)`` containing the lengths of the paths up to the current
+            step (including the first `eos`, if any). For batch element ``n`` and path
+            ``k``, only the tokens in the range ``y_prev[:y_prev_lens[n, k]]`` are
+            valid.
+        eos_mask : torch.Tensor
+            A boolean tensor of shape ``(N, K)`` which is true when a path has already
+            ended. Will be all :obj:`False` when `eos` is unset or there is no history.
+
+        Returns
+        -------
+        log_probs_prev_new, log_probs_t_new : torch.Tensor, torch.Tensor
+            The modified versions of the associated arguments
+
+        Notes
+        -----
+        Modifications mean that the results will no longer be interpreted as log
+        probabilities, but scores.
+        """
+        return log_probs_prev, log_probs_t
+
+    def _to_width(
+        self,
+        y_prev: torch.Tensor,
+        log_probs_prev: torch.Tensor,
+        y_prev_lens: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        S, N, prev_width = y_prev.shape
+        if prev_width < self.width:
+            # fill with invalid paths
+            rem = self.width - prev_width
+            log_probs_prev = torch.cat(
+                [log_probs_prev, log_probs_prev.new_full((N, rem), -float("inf"))], 1
+            )
+            y_prev = torch.cat([y_prev, y_prev.new_zeros(S, N, rem)], 2)
+            y_prev_lens = torch.cat([y_prev_lens, y_prev_lens.new_zeros(N, rem)], 1)
+        elif prev_width > self.width:
+            # get the highest probability prefixes of what we've got
+            log_probs_prev, src = log_probs_prev.topk(self.width, 1)
+            y_prev = y_prev.gather(2, src.unsqueeze(0).expand(S, N, self.width))
+            y_prev_lens = y_prev_lens.gather(1, src)
+        return y_prev, log_probs_prev, y_prev_lens
+
+    def forward(
+        self, y_prev: torch.Tensor, in_prev: Dict[str, torch.Tensor] = dict()
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if y_prev.dim() == 2:
+            prev_width = 1
+        elif y_prev.dim() == 3:
+            if not y_prev.size(0):
+                raise RuntimeError(
+                    "Cannot start with empty prefix when y_prev is 3 dimensional"
+                )
+            prev_width = y_prev.size(2)
+            if prev_width < 1:
+                raise RuntimeError("dim 3 in y_prev must be positive")
+            y_prev = y_prev.flatten(1)
+        else:
+            raise RuntimeError("y_prev must be 2 or 3 dimensional")
+
+        device = y_prev.device
+        S_prev, N = y_prev.size(0), y_prev.size(1) // prev_width
+        in_prev = self.lm.update_input(in_prev, y_prev)
+        y_prev = y_prev.view(S_prev, N, prev_width)
+
+        if self.eos is not None and S_prev:
+            y_prev_lens = (
+                -((y_prev == self.eos).cumsum(0).clamp(max=1).sum(0) - 1).clamp(min=0)
+                + S_prev
+            )
+
+            len_eq_mask = y_prev_lens.unsqueeze(1) == y_prev_lens.unsqueeze(2)  # NKK
+            tok_ge_len_mask = (
+                torch.arange(S_prev, device=device).view(S_prev, 1, 1) >= y_prev_lens
+            )  # SNK
+            eq_mask = (
+                y_prev.unsqueeze(2) == y_prev.unsqueeze(3)
+            ) | tok_ge_len_mask.unsqueeze(
+                3
+            )  # SNKK
+            eq_mask = (
+                eq_mask.all(0)
+                & len_eq_mask
+                & ~torch.eye(prev_width, dtype=torch.bool, device=device)
+            )  # NKK
+            if eq_mask.any():
+                raise RuntimeError(
+                    "y_prev was equivalent for the following (batch_idx, path_idx) "
+                    f"paths: {torch.nonzero(eq_mask, as_tuple=True)}"
+                )
+        else:
+            y_prev_lens = y_prev.new_full((N, prev_width), S_prev)
+        log_probs_prev = torch.full(
+            (N, prev_width), -math.log(prev_width), device=device
+        )
+
+        if self.max_iters is None:
+            max_iters = 1024 * 1024 * 1024 * 1024
+        else:
+            max_iters = self.max_iters
+        for t in range(S_prev, max_iters + S_prev):
+            t = torch.tensor(t, device=device)
+
+            if self.eos is not None or not S_prev:
+                # determine which paths have already finished (and whether we should
+                # stop)
+                eos_mask = (
+                    y_prev.permute(1, 2, 0)
+                    .gather(2, (y_prev_lens - 1).clamp(min=0).unsqueeze(2))
+                    .squeeze(2)
+                    == self.eos
+                ) & (y_prev_lens > 0)
+                if self.finish_all_paths:
+                    done_mask = eos_mask.all(1, keepdim=True)
+                else:
+                    done_mask = eos_mask[..., :1]
+                if done_mask.all():
+                    break
+            else:
+                eos_mask = torch.full((N, prev_width), False, device=device)
+                done_mask = eos_mask[..., :1]
+
+            # determine extension probabilities
+            log_probs_t, in_next = self.lm(y_prev.flatten(1), in_prev, t)
+            log_probs_t = log_probs_t.reshape(N, prev_width, self.lm.vocab_size)
+
+            # update probabilities if the subclass so desires
+            log_probs_prev, log_probs_t = self.update_log_probs_for_step(
+                log_probs_prev, log_probs_t, y_prev, y_prev_lens, eos_mask
+            )
+
+            if self.eos is not None:
+                # if a path has finished, we allocate the entire probability mass to the
+                # eos token
+                log_probs_t = log_probs_t.masked_fill(
+                    eos_mask.unsqueeze(2), -float("inf")
+                )
+                eos_mask_ = eos_mask.unsqueeze(2).repeat(1, 1, self.lm.vocab_size)
+                eos_mask_[..., : self.eos] = False
+                eos_mask_[..., self.eos + 1 :] = False
+                log_probs_t = log_probs_t.masked_fill(eos_mask_, 0.0)
+
+            # extend + prune
+            (y_next, y_next_lens, log_probs_next, next_src) = beam_search_advance(
+                log_probs_t, self.width, log_probs_prev, y_prev, y_prev_lens
+            )
+
+            if self.eos is not None:
+                # beam_search_advance always increments the length. Decrement for the
+                # paths which had completed before the step
+                y_next_lens = y_next_lens - eos_mask.gather(1, next_src).to(y_next_lens)
+            else:
+                y_next_lens = y_next_lens
+
+            # update lm intermediate values
+            next_src = (
+                torch.arange(
+                    0, prev_width * N, prev_width, device=next_src.device
+                ).unsqueeze(1)
+                + next_src
+            )
+            in_prev = self.lm.extract_by_src(in_next, next_src.flatten())
+
+            if self.eos is not None and done_mask.any():
+                y_prev, log_probs_prev, y_prev_lens = self._to_width(
+                    y_prev, log_probs_prev, y_prev_lens
+                )
+                y_next[:-1] = torch.where(done_mask.unsqueeze(0), y_prev, y_next[:-1])
+                log_probs_next = torch.where(done_mask, log_probs_prev, log_probs_next)
+                y_next_lens = torch.where(done_mask, y_prev_lens, y_next_lens)
+
+            y_prev = y_next
+            y_prev_lens = y_next_lens
+            log_probs_prev = log_probs_next
+            prev_width = self.width
+
+        y_prev, log_probs_prev, y_prev_lens = self._to_width(
+            y_prev, log_probs_prev, y_prev_lens
+        )
+
+        return y_prev, y_prev_lens, log_probs_prev
+
+
 class CTCPrefixSearch(torch.nn.Module):
     r"""Perform a CTC prefix search with optional shallow fusion
 
@@ -930,18 +1237,18 @@ class CTCPrefixSearch(torch.nn.Module):
         prev_is_prefix = torch.full((N, 1, 1), True, device=logits.device)
         if self.lm is not None:
             in_prev = self.lm.update_input(in_prev, y_prev)
-        width_prev = 1
+        prev_width = 1
         for t in range(len_max):
             valid_mask = None if t < len_min else (t < lens).unsqueeze(1)  # (N, 1)
             nonext_probs_t, blank_probs_t = nonext_probs[t], blank_probs[t]
             if self.lm is None or not self.beta:
-                ext_probs_t = nonext_probs_t.unsqueeze(1).expand(N, width_prev, V)
+                ext_probs_t = nonext_probs_t.unsqueeze(1).expand(N, prev_width, V)
                 in_next = dict()
             else:
-                lm_log_probs_t, in_next = self.lm.calc_idx_log_probs(
+                lm_log_probs_t, in_next = self.lm(
                     y_prev.flatten(1), in_prev, y_prev_lens.flatten()
                 )
-                lm_probs_t = (self.beta * lm_log_probs_t).exp().view(N, width_prev, V)
+                lm_probs_t = (self.beta * lm_log_probs_t).exp().view(N, prev_width, V)
                 # note we're no longer in log space, so it's a product
                 ext_probs_t = lm_probs_t * nonext_probs_t.unsqueeze(1)
                 del lm_log_probs_t, lm_probs_t
@@ -966,7 +1273,7 @@ class CTCPrefixSearch(torch.nn.Module):
             if self.lm is not None and self.beta:
                 next_src = (
                     torch.arange(
-                        0, width_prev * N, width_prev, device=next_src.device
+                        0, prev_width * N, prev_width, device=next_src.device
                     ).unsqueeze(1)
                     + next_src
                 )
@@ -982,11 +1289,11 @@ class CTCPrefixSearch(torch.nn.Module):
             else:
                 y_next[:-1] = torch.where(valid_mask.unsqueeze(0), y_next[:-1], y_prev)
                 y_prev_lens = torch.where(valid_mask, y_next_lens, y_prev_lens)
-                if width_prev < self.width:
-                    assert width_prev == 1  # otherwise advance would've padded it
+                if prev_width < self.width:
+                    assert prev_width == 1  # otherwise advance would've padded it
                     # add invalid path probs rather than broadcast the one good one
                     neg_inf = nb_probs_prev.new_full(
-                        (N, self.width - width_prev), -float("inf")
+                        (N, self.width - prev_width), -float("inf")
                     )
                     nb_probs_prev = torch.cat([nb_probs_prev, neg_inf], 1)
                     b_probs_prev = torch.cat([b_probs_prev, neg_inf], 1)
@@ -996,18 +1303,18 @@ class CTCPrefixSearch(torch.nn.Module):
             # we can let y_next_last and next_is_prefix continue spinning after t passes
             # the length
             y_prev_last, prev_is_prefix = y_next_last, next_is_prefix
-            width_prev = self.width
+            prev_width = self.width
 
         probs_prev = nb_probs_prev + b_probs_prev
 
-        if width_prev == 1 != self.width:
+        if prev_width == 1 != self.width:
             # fill the shape, but only the first (empty path is valid)
             y_prev = y_prev.repeat(1, 1, self.width)
             y_prev_lens = y_prev_lens.repeat(1, self.width)
             probs_prev = torch.cat(
                 [
                     probs_prev,
-                    probs_prev.new_full((N, self.width - width_prev), -float("inf")),
+                    probs_prev.new_full((N, self.width - prev_width), -float("inf")),
                 ],
                 1,
             )
@@ -1173,9 +1480,7 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         no_padding_mask = padding_mask.eq(0)
         loss = loss.masked_fill(padding_mask, 0.0).sum(2)
         loss = torch.where(
-            no_padding_mask.any(2),
-            loss / no_padding_mask.float().sum(2),
-            loss,
+            no_padding_mask.any(2), loss / no_padding_mask.float().sum(2), loss,
         )
         if self.reduction == "mean":
             loss = loss.mean()
@@ -2236,16 +2541,14 @@ class SpecAugment(torch.nn.Module):
             lengths = lengths.float()
             max_ = (
                 torch.clamp(
-                    lengths * self.max_time_mask_proportion,
-                    max=self.max_time_mask,
+                    lengths * self.max_time_mask_proportion, max=self.max_time_mask,
                 )
                 .floor()
                 .to(device)
             )
             nums_ = (
                 torch.clamp(
-                    lengths * self.num_time_mask_proportion,
-                    max=self.num_time_mask,
+                    lengths * self.num_time_mask_proportion, max=self.num_time_mask,
                 )
                 .floor()
                 .to(device)
