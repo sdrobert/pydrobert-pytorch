@@ -103,35 +103,27 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     vocab_size : int
         The vocabulary size. Controls the size of the final output dimension,
         as well as what values of `hist` are considered in-vocabulary
-    oov : int, optional
-        An optional out-of-vocabulary token. If any elements of `hist` are not
-        ``[0, vocab_size)``, they will be replaced with this token. `oov` must be
-        in-vocabulary itself
 
-    Warnings
-    --------
+    Notes
+    -----
     This module has changed considerably since version 0.3.0. The primary changes are a)
     to replace the boolean switch `full` with `idx`; b) the inclusion of the `in_prev`
-    argument for shared computations; c) the removal of both the `eos` and `sos`
+    argument for shared computations; c) the removal of `eos`, `sos`, and `oov`
     attributes; and d) replacing the more general signature of `hist`, ``(S, *)``, with
     ``(S, N)``. The former is strictly more powerful: the functionality of ``full=True``
     is replicated by setting ``idx=None`` and ``full=False`` by setting ``idx=-1``. The
     added functionality is intended to facilitate CTC decoding where prefixes stored in
     `hist` may be of different lengths. b) generalizes LMs by allowing additional input
-    while also speeding up iterative computations. The removal of functionality in c) -
-    the `sos` and `eos` - was due to a lack of generalizability.
+    while also speeding up iterative computations. The removal of the `eos` and `sos`
+    was due to a lack of generalizability. `oov` was removed because the user probably
+    has to handle OOVs on her own when computing the loss.
     """
 
-    def __init__(
-        self, vocab_size: int, oov: Optional[int] = None,
-    ):
+    def __init__(self, vocab_size: int):
         super(SequentialLanguageModel, self).__init__()
         self.vocab_size = vocab_size
-        self.oov = oov
         if vocab_size < 1:
             raise ValueError("vocab_size must be positive")
-        if self.oov is not None and (self.oov < 0 or self.oov >= vocab_size):
-            raise ValueError("oov must be within [0, vocab_size)")
 
     def update_input(
         self, in_prev: Dict[str, torch.Tensor], hist: torch.Tensor
@@ -147,8 +139,6 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
 
     def extra_repr(self) -> str:
         s = "vocab_size={}".format(self.vocab_size)
-        if self.oov is not None:
-            s += ", oov={}".format(self.oov)
         return s
 
     @abc.abstractmethod
@@ -198,10 +188,6 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
                 raise RuntimeError(f"All values in idx must be between ({-S - 1}, {S})")
             idx = (idx + S + 1) % (S + 1)
         in_prev = self.update_input(in_prev, hist)
-        if self.oov is not None:
-            oov_mask = hist.ge(self.vocab_size) | hist.lt(0)
-            hist = hist.masked_fill(oov_mask, self.oov)
-            del oov_mask
         if idx is None:
             return self.calc_full_log_probs(hist, in_prev)
         else:
@@ -342,7 +328,6 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     Parameters
     ----------
     vocab_size : int
-    oov : int or None, optional
     sos : int or None, optional
         The start of sequence token. Any prefix with fewer tokens than the maximum order
         of n-grams minus 1 will be prepended up to that length with this token.
@@ -358,20 +343,20 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
 
     Notes
     -----
-    Initializing an instance from an `prob_list` is expensive. `prob_list` is
-    converted to a trie (something like [heafield2011]_) so that it takes up
-    less space in memory, which can take some time.
+    Initializing an instance from an `prob_list` is expensive. `prob_list` is converted
+    to a trie (something like [heafield2011]_) so that it takes up less space in memory,
+    which can take some time.
 
-    Rather than re-initializing repeatedly, it is recommended you save and load
-    this module's state dict. :func:`load_state_dict` as been overridden to
-    support loading different table sizes, avoiding the need for an accurate
-    `prob_list` on initialization:
+    Rather than re-initializing repeatedly, it is recommended you save and load this
+    module's state dict. :func:`load_state_dict` as been overridden to support loading
+    different table sizes, avoiding the need for an accurate `prob_list` on
+    initialization:
 
     >>> # first time
-    >>> lm = LookupLanguageModel(vocab_size, sos, oov, prob_list)  # slow
+    >>> lm = LookupLanguageModel(vocab_size, sos, prob_list)  # slow
     >>> state_dict = lm.state_dict()
     >>> # save state dict, quit, startup, then reload state dict
-    >>> lm = LookupLanguageModel(vocab_size, sos, oov)  # fast!
+    >>> lm = LookupLanguageModel(vocab_size, sos)  # fast!
     >>> lm.load_state_dict(state_dict)
 
     See Also
@@ -384,8 +369,8 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     Warnings
     --------
     After 0.3.0, `sos` became no longer optional. `pad_sos_to_n` was removed as an
-    argument (implicitly true now). `eos` was also removed as part of updated to
-    :obj:`SequentialLanguageModel`
+    argument (implicitly true now). `eos` and `oov` were also removed as part of updates
+    to :obj:`SequentialLanguageModel`
     """
 
     # XXX(sdrobert): as discussed in [heafield2011], we could potentially speed
@@ -395,13 +380,9 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     # not sure it's worth the effort...
 
     def __init__(
-        self,
-        vocab_size: int,
-        sos: int,
-        oov: Optional[int] = None,
-        prob_list: Optional[Sequence[dict]] = None,
+        self, vocab_size: int, sos: int, prob_list: Optional[Sequence[dict]] = None,
     ):
-        super(LookupLanguageModel, self).__init__(vocab_size, oov=oov)
+        super(LookupLanguageModel, self).__init__(vocab_size)
         self.sos = sos
         if sos < 0 or sos > vocab_size:
             # we want sos to refer to an index but it's oov, so we'll shift all

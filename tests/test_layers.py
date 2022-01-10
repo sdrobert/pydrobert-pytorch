@@ -323,7 +323,7 @@ def test_lookup_language_model_republic():
     import pydrobert.torch.util as util
 
     prob_list = util.parse_arpa_lm(arpa_file, token2id=token2id)
-    lm = layers.LookupLanguageModel(vocab_size, sos=sos, oov=oov, prob_list=prob_list)
+    lm = layers.LookupLanguageModel(vocab_size, sos=sos, prob_list=prob_list)
     lm = lm.to(device)
     log_probs = lm(queries)
     queries = torch.cat([queries, torch.full_like(queries[:1], eos)])
@@ -514,8 +514,8 @@ def test_hard_optimal_completion_distillation_loss(
 
 def test_sequential_language_model(device):
     class RNNLM(layers.SequentialLanguageModel):
-        def __init__(self, vocab_size, oov=None, embed_size=128, hidden_size=512):
-            super(RNNLM, self).__init__(vocab_size, oov)
+        def __init__(self, vocab_size, embed_size=128, hidden_size=512):
+            super(RNNLM, self).__init__(vocab_size)
             self.embed = torch.nn.Embedding(
                 vocab_size + 1, embed_size, padding_idx=vocab_size
             )
@@ -536,9 +536,9 @@ def test_sequential_language_model(device):
             logits = self.ff(h_1)
             return torch.nn.functional.log_softmax(logits, -1), (h_1, c_1)
 
-    S, N, Vx, V = 100, 10, 50, 40
-    hist = torch.randint(0, Vx, (S, N), device=device)
-    lm = RNNLM(V, V - 1).to(device)
+    S, N, V = 100, 10, 50
+    hist = torch.randint(0, V, (S, N), device=device)
+    lm = RNNLM(V).to(device)
     log_probs = lm(hist)
     for idx in torch.arange(S, -1, -1, device=device):
         log_probs_idx = lm(hist[:idx], idx=idx)[0]
@@ -613,8 +613,8 @@ def test_ctc_prefix_search(device):
 
 def test_ctc_prefix_search_batch(device):
     class RNNLM(layers.MixableSequentialLanguageModel):
-        def __init__(self, vocab_size, oov=None, embed_size=128, hidden_size=512):
-            super().__init__(vocab_size, oov=oov)
+        def __init__(self, vocab_size, embed_size=128, hidden_size=512):
+            super().__init__(vocab_size)
             self.hidden_size = hidden_size
             self.embed = torch.nn.Embedding(
                 vocab_size + 1, embed_size, padding_idx=vocab_size
@@ -738,8 +738,8 @@ def test_beam_search(device):
 
 def test_beam_search_batch(device):
     class RNNLM(layers.ExtractableSequentialLanguageModel):
-        def __init__(self, vocab_size, oov=None, embed_size=128, hidden_size=512):
-            super().__init__(vocab_size, oov=oov)
+        def __init__(self, vocab_size, embed_size=128, hidden_size=512):
+            super().__init__(vocab_size)
             self.hidden_size = hidden_size
             self.embed = torch.nn.Embedding(
                 vocab_size + 1, embed_size, padding_idx=vocab_size
