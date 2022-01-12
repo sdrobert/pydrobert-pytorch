@@ -12,18 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Common neural layers from the literature not included in pytorch.nn
-
-Notes
------
-The loss functions :class:`HardOptimalCompletionDistillationLoss` and
-:class:`MinimumErrorRateLoss` have been moved here from :mod:`pydrobert.torch.training`
-"""
+"""Common neural layers from the literature not included in pytorch.nn"""
 
 import abc
 import math
-from typing import NoReturn, Optional, Sequence, Tuple, Dict
-from attr import astuple
+from typing import NoReturn, Optional, Sequence, Tuple, Dict, Union
 
 import torch
 
@@ -33,6 +26,7 @@ from pydrobert.torch.util import (
     optimal_completion,
     polyharmonic_spline,
     ctc_prefix_search_advance,
+    pad_variable,
 )
 
 __all__ = [
