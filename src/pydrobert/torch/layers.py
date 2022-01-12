@@ -40,11 +40,13 @@ __all__ = [
     "ConcatSoftAttention",
     "CTCPrefixSearch",
     "DotProductSoftAttention",
+    "ExtractableSequentialLanguageModel",
     "GeneralizedDotProductSoftAttention",
     "GlobalSoftAttention",
     "HardOptimalCompletionDistillationLoss",
     "LookupLanguageModel",
     "MinimumErrorRateLoss",
+    "MixableSequentialLanguageModel",
     "MultiHeadedAttention",
     "SequentialLanguageModel",
     "SpecAugment",
@@ -72,7 +74,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
 
     Subclasses are called with the following signature:
 
-        lm(hist, in_prev=None, idx=None)
+        lm(hist, prev=None, idx=None)
 
     `hist` is a long tensor of shape ``(S, N)`` consisting of prefixes up to length
     ``S``. ``hist[:, n]`` is the n-th prefix :math:`(w^{(n)}_0, w^{(n)}_1, \ldots,
@@ -89,14 +91,14 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     :math:`\log P(w^{(n)}_{idx[n]} = v | w^{(n)}_{idx[n]-1}, \ldots)`. That is, the
     distributions over the next type conditioned on token prefixes up to and excluding
     ``s = idx`` are returned. The second element, `in_next`, is discussed in relation to
-    `in_prev` below.
+    `prev` below.
 
-    The `in_prev` argument is a dictionary of tensors which represents some additional
+    The `prev` argument is a dictionary of tensors which represents some additional
     input used in the computation. It may contain static input (e.g. a tensor of encoder
     output in neural machine translation) and/or dynamic input from prior calls to the
     LM (e.g. the previous hidden state in an RNN-based language model). `in_next`, the
     second element in the return pair, will be fed to the next forward call as the
-    argument `in_prev` (assuming the new value for `idx` is `idx + 1`).
+    argument `prev` (assuming the new value for `idx` is `idx + 1`).
 
     Parameters
     ----------
@@ -107,7 +109,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     Notes
     -----
     This module has changed considerably since version 0.3.0. The primary changes are a)
-    to replace the boolean switch `full` with `idx`; b) the inclusion of the `in_prev`
+    to replace the boolean switch `full` with `idx`; b) the inclusion of the `prev`
     argument for shared computations; c) the removal of `eos`, `sos`, and `oov`
     attributes; and d) replacing the more general signature of `hist`, ``(S, *)``, with
     ``(S, N)``. The former is strictly more powerful: the functionality of ``full=True``
@@ -126,16 +128,16 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
             raise ValueError("vocab_size must be positive")
 
     def update_input(
-        self, in_prev: Dict[str, torch.Tensor], hist: torch.Tensor
+        self, prev: Dict[str, torch.Tensor], hist: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         """Update whatever is passed in as input to the language model
 
-        This method is called in the :func:`forward` method before sequence generation
-        begins. The return value should replace `in_prev` with whatever additional
-        information is necessary before :func:`calc_idx_log_probs`, such as an initial
-        hidden state. The implementation should be robust to repeated calls
+        This method is called in the :func:`forward`. The return value should replace
+        `prev` with whatever additional information is necessary before
+        :func:`calc_idx_log_probs` if it is not already there, such as an initial hidden
+        state. The implementation should be robust to repeated calls.
         """
-        return in_prev
+        return prev
 
     def extra_repr(self) -> str:
         s = "vocab_size={}".format(self.vocab_size)
@@ -143,7 +145,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def calc_idx_log_probs(
-        self, hist: torch.Tensor, in_prev: Dict[str, torch.Tensor], idx: torch.Tensor,
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Calculates log_prob_idx over types at prefix up to and excluding idx
 
@@ -154,7 +156,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         raise NotImplementedError()
 
     def calc_full_log_probs(
-        self, hist: torch.Tensor, in_prev: Dict[str, torch.Tensor]
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor]
     ) -> torch.Tensor:
         """Calculates log_prob over all prefixes and stacks them on the first dim
 
@@ -163,14 +165,14 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         """
         log_probs = []
         for idx in torch.arange(hist.size(0) + 1, device=hist.device):
-            log_probs_idx, in_prev = self.calc_idx_log_probs(hist, in_prev, idx)
+            log_probs_idx, prev = self.calc_idx_log_probs(hist, prev, idx)
             log_probs.append(log_probs_idx)
         return torch.stack(log_probs, 0)
 
     def forward(
         self,
         hist: torch.Tensor,
-        in_prev: Dict[str, torch.Tensor] = dict(),
+        prev: Dict[str, torch.Tensor] = dict(),
         idx: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if hist.dim() != 2:
@@ -187,40 +189,40 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
             if ((idx < -S - 1) | (idx > S)).any():
                 raise RuntimeError(f"All values in idx must be between ({-S - 1}, {S})")
             idx = (idx + S + 1) % (S + 1)
-        in_prev = self.update_input(in_prev, hist)
+        prev = self.update_input(prev, hist)
         if idx is None:
-            return self.calc_full_log_probs(hist, in_prev)
+            return self.calc_full_log_probs(hist, prev)
         else:
-            return self.calc_idx_log_probs(hist, in_prev, idx)
+            return self.calc_idx_log_probs(hist, prev, idx)
 
 
 class ExtractableSequentialLanguageModel(
     SequentialLanguageModel, metaclass=abc.ABCMeta
 ):
-    """A SequentialLanguageModel whose in_prev values can be reordered on the batch idx
+    """A SequentialLanguageModel whose prev values can be reordered on the batch idx
 
     :class:`SequentialLanguageModel` calls are on batched histories of paths `hist`. A
     :class:`SequentialLanguageModel` which is also a
     :class:`ExtractableSequentialLanguageModel` promises that, were we to rearrange
     and/or choose only some of those batch elements in `hist` to continue computations
     with, we can call the model's :func:`extract_by_src` method to rearrange/extract
-    the relevant values in `in_prev` or `in_next` in the same way.
+    the relevant values in `prev` or `in_next` in the same way.
     """
 
     @abc.abstractmethod
     def extract_by_src(
-        self, in_prev: Dict[str, torch.Tensor], src: torch.Tensor
+        self, prev: Dict[str, torch.Tensor], src: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
-        """Replace values in in_prev with those indexed in src
+        """Replace values in prev with those indexed in src
 
         Assume the values in the path history `hist` of shape ``(S, N_old)`` have been
         transformed into `new_hist` of shape ``(S, N_new)`` according to the mapping
         ``new_hist[s, n] = hist[s, src[n]]``. This method should apply the same
-        transformation to the contents of `in_prev` and return that dictionary.
+        transformation to the contents of `prev` and return that dictionary.
 
         Parameters
         ----------
-        in_prev : dict
+        prev : dict
             An input/output value for a step of the lm
         src : torch.Tensor
             A tensor of shape ``(N,)`` containing the indices of the old batch index
@@ -228,17 +230,17 @@ class ExtractableSequentialLanguageModel(
 
         Returns
         -------
-        new_in_prev : dict
+        new_prev : dict
 
         Examples
         --------
-        If we have an LSTM-based model and ``in_prev = {'hidden_state' : h, 'cell_state'
+        If we have an LSTM-based model and ``prev = {'hidden_state' : h, 'cell_state'
         : c}`` for a hidden state tensor `h` and cell state tensor `c` both of shape
         ``(N_old, H)``, then the return value of this method would be computed as
 
         >>> return {
-        ...     'hidden_state': in_prev['hidden_state'].gather(0, src),
-        ...     'cell_state': in_prev['cell_state'].gather(0, src),
+        ...     'hidden_state': prev['hidden_state'].gather(0, src),
+        ...     'cell_state': prev['cell_state'].gather(0, src),
         ... }
         """
         raise NotImplementedError()
@@ -247,43 +249,44 @@ class ExtractableSequentialLanguageModel(
 class MixableSequentialLanguageModel(
     ExtractableSequentialLanguageModel, metaclass=abc.ABCMeta
 ):
-    """An ExtractableSequentialLanguageModel whose in_prev values can be mixed
+    """An ExtractableSequentialLanguageModel whose prev values can be mixed
 
     In addition to the functionality of :class:`ExtractableSequentialLanguageModel`, a
     :class:`MixableSequentialLanguageModel` can also account for transformations from
     pairs of histories `hist_a` and `hist_b` into one `new_hist` such that each path
     in the latter is either from `hist_a` or `hist_b`. :func:`mix_by_mask` accomplishes
-    this for the dictionaries `in_prev` and `in_next`.
+    this for the dictionaries `prev` and `in_next`.
     """
 
     @abc.abstractmethod
     def mix_by_mask(
         self,
-        in_prev_true: Dict[str, torch.Tensor],
-        in_prev_false: Dict[str, torch.Tensor],
+        prev_true: Dict[str, torch.Tensor],
+        prev_false: Dict[str, torch.Tensor],
         mask: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        """Populate a new in_prev by picking values from either of two others
+        """Populate a new prev by picking values from either of two others
 
         Assume we have three batched path history tensors `hist_true`, `hist_false`, and
         `hist_new` each of shape ``(S, N)``. We're also assuming that if the sequences
         in each are of different lengths, we've also padded them appropriately.
         ``hist_new[:, n] = hist_true[:, n]`` when ``mask[n] == True`` and ``hist_new[:,
-        n] = hist_false[:, n]`` otherwise. This method should apply the same transformation
-        between `in_prev_true` and `in_prev_false` to come up with `in_prev_new`.
+        n] = hist_false[:, n]`` otherwise. This method should apply the same
+        transformation between `prev_true` and `prev_false` to come up with
+        `prev_new`.
 
         Parameters
         ----------
-        in_prev_true : dict
+        prev_true : dict
             The input/output dictionary for the true branch of `mask`
-        in_prev_false : dict
+        prev_false : dict
             The input/output dictionary for the false branch of `mask`
         mask : torch.Tensor
             A boolean tensor of shape ``(N,)``
 
         Returns
         -------
-        in_prev_new : dict
+        prev_new : dict
 
         Examples
         --------
@@ -295,12 +298,12 @@ class MixableSequentialLanguageModel(
         >>> return {
         ...     'hidden_state': torch.where(
         ...         mask.unsqueeze(1),
-        ...         in_prev_true['hidden_state'],
-        ...         in_prev_false['hidden_state']),
+        ...         prev_true['hidden_state'],
+        ...         prev_false['hidden_state']),
         ...     'cell_state': torch.where(
         ...         mask.unsqueeze(1),
-        ...         in_prev_true['cell_state'],
-        ...         in_prev_false['cell_state']),
+        ...         prev_true['cell_state'],
+        ...         prev_false['cell_state']),
         ... }
         """
         raise NotImplementedError()
@@ -411,20 +414,20 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         return s
 
     def extract_by_src(
-        self, in_prev: Dict[str, torch.Tensor], src: torch.Tensor
+        self, prev: Dict[str, torch.Tensor], src: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
-        return in_prev
+        return prev
 
     def mix_by_mask(
         self,
-        in_prev_true: Dict[str, torch.Tensor],
-        in_prev_false: Dict[str, torch.Tensor],
+        prev_true: Dict[str, torch.Tensor],
+        prev_false: Dict[str, torch.Tensor],
         mask: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        return in_prev_true
+        return prev_true
 
     def calc_idx_log_probs(
-        self, hist: torch.Tensor, in_prev: Dict[str, torch.Tensor], idx: torch.Tensor,
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         # we produce two tries with the same node ids: one for logp and one for
         # logb. Let N be the maximal n-gram. The children of the root are
@@ -568,7 +571,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                     first_children = parents + offsets.long()
             hist = hist[1:]
             n -= 1
-        return out.view(B, V), in_prev
+        return out.view(B, V), prev
 
     def load_state_dict(self, state_dict: dict, **kwargs) -> None:
         error_prefix = "Error(s) in loading state_dict for {}:\n".format(
@@ -780,11 +783,11 @@ class BeamSearch(torch.nn.Module):
 
     This module has the following signature:
 
-        search(y_prev, in_prev=dict())
+        search(y_prev, prev=dict())
 
     `y_prev` is long tensor of shape ``(S*, N[, old_width])``. In most cases, `y_prev`
     should be an empty tensor of shape ``(0, N[, 1])``, though it can be used start the
-    search with different prefixes. `in_prev` is whatever input is initially passed into
+    search with different prefixes. `prev` is whatever input is initially passed into
     `lm`.
 
     A path continues to be extended until it is either pruned or emits an
@@ -907,7 +910,7 @@ class BeamSearch(torch.nn.Module):
         y_prev_lens : torch.Tensor
             Of shape ``(N, K)`` containing the lengths of the paths up to the current
             step (including the first `eos`, if any). For batch element ``n`` and path
-            ``k``, only the tokens in the range ``y_prev[:y_prev_lens[n, k]]`` are
+            ``k``, only the tokens in the range ``y_prev[:y_prev_lens[n, k], n, k]`` are
             valid.
         eos_mask : torch.Tensor
             A boolean tensor of shape ``(N, K)`` which is true when a path has already
@@ -948,7 +951,7 @@ class BeamSearch(torch.nn.Module):
         return y_prev, log_probs_prev, y_prev_lens
 
     def forward(
-        self, y_prev: torch.Tensor, in_prev: Dict[str, torch.Tensor] = dict()
+        self, y_prev: torch.Tensor, prev: Dict[str, torch.Tensor] = dict()
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if y_prev.dim() == 2:
             prev_width = 1
@@ -966,7 +969,7 @@ class BeamSearch(torch.nn.Module):
 
         device = y_prev.device
         S_prev, N = y_prev.size(0), y_prev.size(1) // prev_width
-        in_prev = self.lm.update_input(in_prev, y_prev)
+        prev = self.lm.update_input(prev, y_prev)
         y_prev = y_prev.view(S_prev, N, prev_width)
 
         if self.eos is not None and S_prev:
@@ -1007,7 +1010,7 @@ class BeamSearch(torch.nn.Module):
         for t in range(S_prev, max_iters + S_prev):
             t = torch.tensor(t, device=device)
 
-            if self.eos is not None or not S_prev:
+            if self.eos is not None and t:
                 # determine which paths have already finished (and whether we should
                 # stop)
                 eos_mask = (
@@ -1027,7 +1030,7 @@ class BeamSearch(torch.nn.Module):
                 done_mask = eos_mask[..., :1]
 
             # determine extension probabilities
-            log_probs_t, in_next = self.lm(y_prev.flatten(1), in_prev, t)
+            log_probs_t, in_next = self.lm(y_prev.flatten(1), prev, t)
             log_probs_t = log_probs_t.reshape(N, prev_width, self.lm.vocab_size)
 
             # update probabilities if the subclass so desires
@@ -1055,8 +1058,6 @@ class BeamSearch(torch.nn.Module):
                 # beam_search_advance always increments the length. Decrement for the
                 # paths which had completed before the step
                 y_next_lens = y_next_lens - eos_mask.gather(1, next_src).to(y_next_lens)
-            else:
-                y_next_lens = y_next_lens
 
             # update lm intermediate values
             next_src = (
@@ -1065,7 +1066,7 @@ class BeamSearch(torch.nn.Module):
                 ).unsqueeze(1)
                 + next_src
             )
-            in_prev = self.lm.extract_by_src(in_next, next_src.flatten())
+            prev = self.lm.extract_by_src(in_next, next_src.flatten())
 
             if self.eos is not None and done_mask.any():
                 y_prev, log_probs_prev, y_prev_lens = self._to_width(
@@ -1096,7 +1097,7 @@ class CTCPrefixSearch(torch.nn.Module):
 
     This module is called with the following signature:
 
-        search(logits, logit_lens=None, in_prev=dict())
+        search(logits, logit_lens=None, prev=dict())
 
     where `logits` is a tensor of shape ``(T, N, V + 1)`` s.t. ``logits[t, n]``
     represents the unnormalized log-probabilities over the extended vocabulary
@@ -1124,7 +1125,7 @@ class CTCPrefixSearch(torch.nn.Module):
                                                 \beta \log P_{lm}(y_t = v|y_{1..t-1})
 
     The resulting value :math:`log S(y_t=v)` is not technically a probability. If the
-    LM needs an initial input, it can be passed with the optional argument `in_prev`.
+    LM needs an initial input, it can be passed with the optional argument `prev`.
 
     Parameters
     ----------
@@ -1132,7 +1133,7 @@ class CTCPrefixSearch(torch.nn.Module):
         The number of prefixes to keep track of per step.
     beta : float, optional
         The mixing coefficient :math:`\beta` used when performing shallow fusion.
-    lm : MixableLanguageModel or None, optional
+    lm : MixableSequentialLanguageModel or None, optional
         If set, the language model used in shallow fusion. Specifying `lm` will
         restrict the extended vocabulary size of `logits` to be one more than that
         of `lm`: ``lm.vocab_size == V``.
@@ -1187,7 +1188,7 @@ class CTCPrefixSearch(torch.nn.Module):
         self,
         logits: torch.Tensor,
         lens: Optional[torch.Tensor] = None,
-        in_prev: Dict[str, torch.Tensor] = dict(),
+        prev: Dict[str, torch.Tensor] = dict(),
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if logits.dim() != 3:
             raise RuntimeError("logits must be 3 dimensional")
@@ -1217,7 +1218,7 @@ class CTCPrefixSearch(torch.nn.Module):
         )
         prev_is_prefix = torch.full((N, 1, 1), True, device=logits.device)
         if self.lm is not None:
-            in_prev = self.lm.update_input(in_prev, y_prev)
+            prev = self.lm.update_input(prev, y_prev)
         prev_width = 1
         for t in range(len_max):
             valid_mask = None if t < len_min else (t < lens).unsqueeze(1)  # (N, 1)
@@ -1227,7 +1228,7 @@ class CTCPrefixSearch(torch.nn.Module):
                 in_next = dict()
             else:
                 lm_log_probs_t, in_next = self.lm(
-                    y_prev.flatten(1), in_prev, y_prev_lens.flatten()
+                    y_prev.flatten(1), prev, y_prev_lens.flatten()
                 )
                 lm_probs_t = (self.beta * lm_log_probs_t).exp().view(N, prev_width, V)
                 # note we're no longer in log space, so it's a product
@@ -1258,11 +1259,9 @@ class CTCPrefixSearch(torch.nn.Module):
                     ).unsqueeze(1)
                     + next_src
                 )
-                in_prev = self.lm.extract_by_src(in_prev, next_src.flatten())
+                prev = self.lm.extract_by_src(prev, next_src.flatten())
                 in_next = self.lm.extract_by_src(in_next, next_src.flatten())
-                in_prev = self.lm.mix_by_mask(
-                    in_prev, in_next, next_is_nonext.flatten()
-                )
+                prev = self.lm.mix_by_mask(prev, in_next, next_is_nonext.flatten())
 
             if valid_mask is None:
                 y_prev_lens = y_next_lens

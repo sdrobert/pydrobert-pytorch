@@ -622,24 +622,26 @@ def test_ctc_prefix_search_batch(device):
             self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
             self.ff = torch.nn.Linear(hidden_size, vocab_size)
 
-        def extract_by_src(self, in_prev, src):
+        def extract_by_src(self, prev, src):
             return {
-                "hidden_state": in_prev["hidden_state"].index_select(0, src),
-                "cell_state": in_prev["cell_state"].index_select(0, src),
+                "hidden_state": prev["hidden_state"].index_select(0, src),
+                "cell_state": prev["cell_state"].index_select(0, src),
             }
 
-        def mix_by_mask(self, in_prev_true, in_prev_false, mask):
+        def mix_by_mask(self, prev_true, prev_false, mask):
             return dict(
-                (k, torch.where(mask.unsqueeze(1), in_prev_true[k], in_prev_false[k]))
-                for k in in_prev_true
+                (k, torch.where(mask.unsqueeze(1), prev_true[k], prev_false[k]))
+                for k in prev_true
             )
 
-        def update_input(self, in_prev, hist):
+        def update_input(self, prev, hist):
+            if len(prev):
+                return prev
             N = hist.size(1)
             zeros = self.ff.weight.new_zeros((N, self.hidden_size))
             return {"hidden_state": zeros, "cell_state": zeros}
 
-        def calc_idx_log_probs(self, hist, in_prev, idx):
+        def calc_idx_log_probs(self, hist, prev, idx):
             idx_zero = idx == 0
             if idx_zero.all():
                 x = hist.new_full((hist.size(1),), self.vocab_size)
@@ -649,7 +651,7 @@ def test_ctc_prefix_search_batch(device):
                 )  # (N,)
                 x = x.masked_fill(idx_zero, self.vocab_size)
             x = self.embed(x)
-            h_1, c_1 = self.cell(x, (in_prev["hidden_state"], in_prev["cell_state"]))
+            h_1, c_1 = self.cell(x, (prev["hidden_state"], prev["cell_state"]))
             logits = self.ff(h_1)
             return (
                 torch.nn.functional.log_softmax(logits, -1),
@@ -737,6 +739,8 @@ def test_beam_search(device):
 
 
 def test_beam_search_batch(device):
+    torch.manual_seed(1029)
+
     class RNNLM(layers.ExtractableSequentialLanguageModel):
         def __init__(self, vocab_size, embed_size=128, hidden_size=512):
             super().__init__(vocab_size)
@@ -747,18 +751,20 @@ def test_beam_search_batch(device):
             self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
             self.ff = torch.nn.Linear(hidden_size, vocab_size)
 
-        def extract_by_src(self, in_prev, src):
+        def extract_by_src(self, prev, src):
             return {
-                "hidden_state": in_prev["hidden_state"].index_select(0, src),
-                "cell_state": in_prev["cell_state"].index_select(0, src),
+                "hidden_state": prev["hidden_state"].index_select(0, src),
+                "cell_state": prev["cell_state"].index_select(0, src),
             }
 
-        def update_input(self, in_prev, hist):
+        def update_input(self, prev, hist):
+            if len(prev):
+                return prev
             N = hist.size(1)
             zeros = self.ff.weight.new_zeros((N, self.hidden_size))
             return {"hidden_state": zeros, "cell_state": zeros}
 
-        def calc_idx_log_probs(self, hist, in_prev, idx):
+        def calc_idx_log_probs(self, hist, prev, idx):
             idx_zero = idx == 0
             if idx_zero.all():
                 x = torch.arange(hist.size(0), device=hist.device).clamp(
@@ -772,14 +778,14 @@ def test_beam_search_batch(device):
                 )  # (N,)
                 x = x.masked_fill(idx_zero, self.vocab_size)
             x = self.embed(x)
-            h_1, c_1 = self.cell(x, (in_prev["hidden_state"], in_prev["cell_state"]))
+            h_1, c_1 = self.cell(x, (prev["hidden_state"], prev["cell_state"]))
             logits = self.ff(h_1)
             return (
                 torch.nn.functional.log_softmax(logits, -1),
                 {"hidden_state": h_1, "cell_state": c_1},
             )
 
-    T, N, V, K = 256, 64, 128, 8
+    T, N, V, K = 64, 16, 32, 8
     assert K <= V and N <= V
     lm = RNNLM(V)
     search = layers.BeamSearch(lm, K, eos=0, max_iters=T).to(device)

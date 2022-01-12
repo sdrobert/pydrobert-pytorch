@@ -14,6 +14,10 @@ References
 .. [heafield2011] K. Heafield, "KenLM: Faster and smaller language model
    queries," in Proceedings of the Sixth Workshop on Statistical Machine
    Translation, Edinburgh, Scotland, 2011, pp. 187-197.
+.. [cho2014] [K. Cho et al., "Learning phrase representations using RNN
+   Encoder-Decoder for Statistical Machine Translation," Doha, Qatar, 2014,
+   pp. 1724--1734. [Online]. Available:
+   https://www.aclweb.org/anthology/D14-1179
 .. [bahdanau2015] D. Bahdanau, K. Cho, and Y. Bengio, "Neural machine
    translation by jointly learning to align and translate.," in 3rd
    International Conference on Learning Representations, ICLR 2015, San Diego,
@@ -25,6 +29,9 @@ References
    attention-based neural machine translation," in Proceedings of the 2015
    Conference on Empirical Methods in Natural Language Processing, Lisbon,
    Portugal, 2015, pp. 1412-1421.
+.. [chan2016] W. Chan, N. Jaitly, Q. V. Le, and O. Vinyals, "Listen, Attend and
+   Spell: A neural network for Large Vocabulary Conversational Speech
+   Recognition," Mar. 2016, pp. 4960-4964. doi: 10.1109/ICASSP.2016.7472621.
 .. [maddison2016] C. J. Maddison, A. Mnih, and Y. W. Teh, "The Concrete
    distribution: A continuous relaxation of discrete random variables," CoRR,
    vol. abs/1611.00712, 2016.
@@ -51,9 +58,13 @@ References
    ASR optimization via reinforcement learning," presented at the 2018 IEEE
    International Conference on Acoustics, Speech and Signal Processing
    (ICASSP), 2018, pp. 5829-5833.
+.. [bert2019] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, "BERT:
+   Pre-training of deep bidirectional Transformers for language understanding,"
+   Minneapolis, USA, 2019, vol. 1, pp. 4171-4186. [Online].
+   Available: https://aclweb.org/anthology/papers/N/N19/N19-1423/
 .. [park2019] D. S. Park et al., "SpecAugment: A simple data augmentation
    method for automatic speech recognition," in Proc. Interspeech, 2019, pp.
-   2613–2617, doi: 10.21437/Interspeech.2019-2680.
+   2613-2617, doi: 10.21437/Interspeech.2019-2680.
 .. [park2020] D. S. Park et al., "Specaugment on large scale datasets," May
-   2020, pp. 6879–6883, doi: 10.1109/ICASSP40776.2020.9053205.
+   2020, pp. 6879-6883, doi: 10.1109/ICASSP40776.2020.9053205.
 
