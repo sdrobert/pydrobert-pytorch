@@ -17,29 +17,33 @@ import os
 import torch
 import pytest
 import pydrobert.torch.training as training
+import numpy as np
 
 
-@pytest.mark.parametrize('opt_class', [
-    torch.optim.Adam,
-    torch.optim.Adagrad,
-    torch.optim.LBFGS,
-    torch.optim.SGD,
-])
+@pytest.mark.parametrize(
+    "opt_class",
+    [
+        torch.optim.Adam,
+        torch.optim.Adagrad,
+        torch.optim.LBFGS,
+        torch.optim.SGD,
+    ],
+)
 def test_controller_stores_and_retrieves(temp_dir, device, opt_class):
     torch.manual_seed(50)
     model = torch.nn.Linear(2, 2).to(device)
     optimizer = opt_class(model.parameters(), lr=20)
     p = training.TrainingStateParams(seed=5, log10_learning_rate=-1)
-    state_csv_path = os.path.join(temp_dir, 'a.csv')
-    state_dir = os.path.join(temp_dir, 'states')
+    state_csv_path = os.path.join(temp_dir, "a.csv")
+    state_dir = os.path.join(temp_dir, "states")
     controller = training.TrainingStateController(
         p,
         state_csv_path=state_csv_path,
         state_dir=state_dir,
     )
-    controller.add_entry('cool_guy_entry', int)
+    controller.add_entry("cool_guy_entry", int)
     controller.load_model_and_optimizer_for_epoch(model, optimizer, 0)
-    assert optimizer.param_groups[0]['lr'] == 10 ** p.log10_learning_rate
+    assert optimizer.param_groups[0]["lr"] == 10 ** p.log10_learning_rate
     inp = torch.randn(5, 2, device=device)
 
     def closure():
@@ -51,15 +55,13 @@ def test_controller_stores_and_retrieves(temp_dir, device, opt_class):
     model_2 = torch.nn.Linear(2, 2).to(device)
     optimizer_2 = opt_class(model_2.parameters(), lr=20)
     controller.load_model_and_optimizer_for_epoch(model_2, optimizer_2, 0)
-    assert optimizer_2.param_groups[0]['lr'] == 10 ** p.log10_learning_rate
-    for parameter_1, parameter_2 in zip(
-            model.parameters(), model_2.parameters()):
+    assert optimizer_2.param_groups[0]["lr"] == 10 ** p.log10_learning_rate
+    for parameter_1, parameter_2 in zip(model.parameters(), model_2.parameters()):
         assert parameter_1.device == device
         assert parameter_2.device == device
         assert torch.allclose(parameter_1, parameter_2)
     optimizer.step(closure)
-    for parameter_1, parameter_2 in zip(
-            model.parameters(), model_2.parameters()):
+    for parameter_1, parameter_2 in zip(model.parameters(), model_2.parameters()):
         assert not torch.allclose(parameter_1, parameter_2)
 
     def closure():
@@ -69,19 +71,18 @@ def test_controller_stores_and_retrieves(temp_dir, device, opt_class):
         return loss
 
     optimizer_2.step(closure)
-    for parameter_1, parameter_2 in zip(
-            model.parameters(), model_2.parameters()):
+    for parameter_1, parameter_2 in zip(model.parameters(), model_2.parameters()):
         assert torch.allclose(parameter_1, parameter_2)
     epoch_info = {
-        'epoch': 10,
-        'es_resume_cd': 3,
-        'es_patience_cd': 4,
-        'rlr_resume_cd': 10,
-        'rlr_patience_cd': 5,
-        'lr': 1e-7,
-        'train_met': 10,
-        'val_met': 4,
-        'cool_guy_entry': 30,
+        "epoch": 10,
+        "es_resume_cd": 3,
+        "es_patience_cd": 4,
+        "rlr_resume_cd": 10,
+        "rlr_patience_cd": 5,
+        "lr": 1e-7,
+        "train_met": 10,
+        "val_met": 4,
+        "cool_guy_entry": 30,
     }
     controller.save_model_and_optimizer_with_info(model, optimizer, epoch_info)
     controller.save_info_to_hist(epoch_info)
@@ -90,30 +91,27 @@ def test_controller_stores_and_retrieves(temp_dir, device, opt_class):
     model_2 = torch.nn.Linear(2, 2).to(device)
     optimizer_2 = opt_class(model_2.parameters(), lr=20)
     controller.load_model_and_optimizer_for_epoch(model_2, optimizer_2, 10)
-    for parameter_1, parameter_2 in zip(
-            model.parameters(), model_2.parameters()):
+    for parameter_1, parameter_2 in zip(model.parameters(), model_2.parameters()):
         assert parameter_1.device == device
         assert parameter_2.device == device
         assert torch.allclose(parameter_1, parameter_2)
     optimizer_2.step(closure)
-    for parameter_1, parameter_2 in zip(
-            model.parameters(), model_2.parameters()):
+    for parameter_1, parameter_2 in zip(model.parameters(), model_2.parameters()):
         assert not torch.allclose(parameter_1, parameter_2)
     controller = training.TrainingStateController(
         p,
         state_csv_path=state_csv_path,
         state_dir=state_dir,
     )
-    assert 'cool_guy_entry' not in controller[10]
-    assert controller[10]['es_resume_cd'] == epoch_info['es_resume_cd']
-    controller.add_entry('cool_guy_entry', int)
+    assert "cool_guy_entry" not in controller[10]
+    assert controller[10]["es_resume_cd"] == epoch_info["es_resume_cd"]
+    controller.add_entry("cool_guy_entry", int)
     assert controller[10] == epoch_info
     model_3 = torch.nn.Linear(2, 2).to(device)
     optimizer_3 = opt_class(model_3.parameters(), lr=20)
     controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 10)
     model_3.to(device)
-    for parameter_1, parameter_3 in zip(
-            model.parameters(), model_3.parameters()):
+    for parameter_1, parameter_3 in zip(model.parameters(), model_3.parameters()):
         assert parameter_3.device == device
         assert torch.allclose(parameter_1, parameter_3)
 
@@ -125,27 +123,29 @@ def test_controller_stores_and_retrieves(temp_dir, device, opt_class):
 
     optimizer_3.step(closure)
     for parameter_1, parameter_2, parameter_3 in zip(
-            model.parameters(), model_2.parameters(), model_3.parameters()):
+        model.parameters(), model_2.parameters(), model_3.parameters()
+    ):
         assert not torch.allclose(parameter_1, parameter_2)
         assert torch.allclose(parameter_2, parameter_3)
     torch.manual_seed(300)
     model_2 = torch.nn.Linear(2, 2).to(device)
     optimizer_2 = opt_class(model_2.parameters(), lr=20)
-    epoch_info['epoch'] = 3
-    epoch_info['val_met'] = 2
-    controller.save_model_and_optimizer_with_info(
-        model_2, optimizer_2, epoch_info)
+    epoch_info["epoch"] = 3
+    epoch_info["val_met"] = 2
+    controller.save_model_and_optimizer_with_info(model_2, optimizer_2, epoch_info)
     controller.save_info_to_hist(epoch_info)
     # by default, load_model_and_optimizer_for_epoch loads last
     controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3)
     for parameter_1, parameter_2, parameter_3 in zip(
-            model.parameters(), model_2.parameters(), model_3.parameters()):
+        model.parameters(), model_2.parameters(), model_3.parameters()
+    ):
         assert torch.allclose(parameter_1, parameter_3)
         assert not torch.allclose(parameter_2, parameter_3)
     # by default, load_model_for_epoch loads best
     controller.load_model_for_epoch(model_3)
     for parameter_1, parameter_2, parameter_3 in zip(
-            model.parameters(), model_2.parameters(), model_3.parameters()):
+        model.parameters(), model_2.parameters(), model_3.parameters()
+    ):
         assert not torch.allclose(parameter_1, parameter_3)
         assert torch.allclose(parameter_2, parameter_3)
 
@@ -156,7 +156,8 @@ def test_controller_stops_at_num_epochs():
     model = torch.nn.Linear(2, 2)
     optimizer = torch.optim.Adam(model.parameters())
     params = training.TrainingStateParams(
-        num_epochs=num_epochs, early_stopping_threshold=0.0)
+        num_epochs=num_epochs, early_stopping_threshold=0.0
+    )
     controller = training.TrainingStateController(params)
     for _ in range(9):
         assert controller.update_for_epoch(model, optimizer, 0.1, 0.1)
@@ -167,9 +168,6 @@ def test_controller_stops_at_num_epochs():
 
 @pytest.mark.cpu
 def test_controller_scheduling():
-
-    def is_close(a, b):
-        return abs(a - b) < 1e-10
     model = torch.nn.Linear(2, 2)
     optimizer = torch.optim.Adam(model.parameters())
     p = training.TrainingStateParams(
@@ -177,41 +175,65 @@ def test_controller_scheduling():
         early_stopping_patience=10,
         early_stopping_burnin=1,
         reduce_lr_threshold=0.2,
-        reduce_lr_factor=.5,
+        reduce_lr_factor=0.5,
         reduce_lr_patience=5,
         reduce_lr_cooldown=2,
         reduce_lr_burnin=4,
     )
     controller = training.TrainingStateController(p)
     controller.load_model_and_optimizer_for_epoch(model, optimizer)
-    init_lr = optimizer.param_groups[0]['lr']
+    init_lr = optimizer.param_groups[0]["lr"]
     for _ in range(8):
         assert controller.update_for_epoch(model, optimizer, 1, 1)
         assert controller.continue_training()
-    assert is_close(optimizer.param_groups[0]['lr'], init_lr)
+    assert np.isclose(optimizer.param_groups[0]["lr"], init_lr)
     assert controller.update_for_epoch(model, optimizer, 1, 1)
-    assert is_close(optimizer.param_groups[0]['lr'], init_lr / 2)
+    assert np.isclose(optimizer.param_groups[0]["lr"], init_lr / 2)
     for _ in range(6):
-        assert controller.update_for_epoch(model, optimizer, .89, .89)
+        assert controller.update_for_epoch(model, optimizer, 0.89, 0.89)
         assert controller.continue_training()
-    assert is_close(optimizer.param_groups[0]['lr'], init_lr / 2)
-    assert controller.update_for_epoch(model, optimizer, .68, .68)
+    assert np.isclose(optimizer.param_groups[0]["lr"], init_lr / 2)
+    assert controller.update_for_epoch(model, optimizer, 0.68, 0.68)
     assert controller.continue_training()
-    assert is_close(optimizer.param_groups[0]['lr'], init_lr / 2)
+    assert np.isclose(optimizer.param_groups[0]["lr"], init_lr / 2)
     for _ in range(9):
-        assert controller.update_for_epoch(model, optimizer, .68, .68)
+        assert controller.update_for_epoch(model, optimizer, 0.68, 0.68)
         assert controller.continue_training()
-    assert not controller.update_for_epoch(model, optimizer, .68, .68)
+    assert not controller.update_for_epoch(model, optimizer, 0.68, 0.68)
     assert not controller.continue_training()
     p.early_stopping_threshold = 0.0
     p.reduce_lr_threshold = 0.0
     controller = training.TrainingStateController(p)
     controller.load_model_and_optimizer_for_epoch(model, optimizer)
-    init_lr = optimizer.param_groups[0]['lr']
+    init_lr = optimizer.param_groups[0]["lr"]
     for _ in range(20):
-        assert controller.update_for_epoch(model, optimizer, 0., 0.)
+        assert controller.update_for_epoch(model, optimizer, 0.0, 0.0)
         assert controller.continue_training()
-    assert is_close(optimizer.param_groups[0]['lr'], init_lr)
+    assert np.isclose(optimizer.param_groups[0]["lr"], init_lr)
+
+
+@pytest.mark.cpu
+def test_controller_slippery_slope():
+    model = torch.nn.Linear(2, 2)
+    optimizer = torch.optim.Adam(model.parameters())
+    p = training.TrainingStateParams(
+        early_stopping_threshold=1.0,
+        early_stopping_patience=5,
+        early_stopping_burnin=0,
+        reduce_lr_threshold=1.0,
+        reduce_lr_patience=2,
+        reduce_lr_factor=0.5,
+        reduce_lr_burnin=0,
+        reduce_lr_cooldown=0,
+    )
+    controller = training.TrainingStateController(p)
+    controller.load_model_and_optimizer_for_epoch(model, optimizer)
+    init_lr = optimizer.param_groups[0]["lr"]
+    for step in range(6):
+        dev = 3.5 - 0.75 * step
+        controller.update_for_epoch(model, optimizer, 1., dev)
+        assert controller.continue_training(), step
+        assert np.isclose(optimizer.param_groups[0]["lr"], init_lr), step
 
 
 @pytest.mark.cpu
@@ -225,9 +247,10 @@ def test_controller_best(temp_dir):
     optimizer_3 = torch.optim.Adam(model_1.parameters(), lr=3)
     training.TrainingStateController.SCIENTIFIC_PRECISION = 5
     controller = training.TrainingStateController(
-        training.TrainingStateParams(), state_dir=temp_dir)
+        training.TrainingStateParams(), state_dir=temp_dir
+    )
     assert controller.get_best_epoch() == 0
-    controller.update_for_epoch(model_1, optimizer_1, .5, .5)
+    controller.update_for_epoch(model_1, optimizer_1, 0.5, 0.5)
     assert controller.get_best_epoch() == 1
     controller.update_for_epoch(model_2, optimizer_2, 1, 1)
     assert controller.get_best_epoch() == 1
@@ -236,23 +259,20 @@ def test_controller_best(temp_dir):
         # neither best nor last
         controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 2)
     controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 1)
-    for parameter_1, parameter_3 in zip(
-            model_1.parameters(), model_3.parameters()):
+    for parameter_1, parameter_3 in zip(model_1.parameters(), model_3.parameters()):
         assert torch.allclose(parameter_1, parameter_3)
-    assert optimizer_3.param_groups[0]['lr'] == 1
+    assert optimizer_3.param_groups[0]["lr"] == 1
     controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 3)
-    for parameter_3, parameter_2 in zip(
-            model_3.parameters(), model_2.parameters()):
+    for parameter_3, parameter_2 in zip(model_3.parameters(), model_2.parameters()):
         assert torch.allclose(parameter_3, parameter_2)
-    assert optimizer_3.param_groups[0]['lr'] == 2
-    controller.update_for_epoch(model_1, optimizer_1, .6, .6)
+    assert optimizer_3.param_groups[0]["lr"] == 2
+    controller.update_for_epoch(model_1, optimizer_1, 0.6, 0.6)
     assert controller.get_best_epoch() == 1
     # round-on-even dictates .400005 will round to .40000
-    controller.update_for_epoch(model_1, optimizer_1, .400005, .400005)
+    controller.update_for_epoch(model_1, optimizer_1, 0.400005, 0.400005)
     assert controller.get_best_epoch() == 5
     controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 5)
-    for parameter_1, parameter_3 in zip(
-            model_1.parameters(), model_3.parameters()):
+    for parameter_1, parameter_3 in zip(model_1.parameters(), model_3.parameters()):
         assert torch.allclose(parameter_1, parameter_3)
     with pytest.raises(IOError):
         # no longer the best
@@ -260,7 +280,7 @@ def test_controller_best(temp_dir):
     # this block ensures that negligible differences in the loss aren't being
     # considered "better." This is necessary to remain consistent
     # with the truncated floats saved to history
-    controller.update_for_epoch(model_1, optimizer_1, .4, .4)
+    controller.update_for_epoch(model_1, optimizer_1, 0.4, 0.4)
     # last
     controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 6)
     # best (because ~ equal and older)
@@ -269,41 +289,37 @@ def test_controller_best(temp_dir):
     # unique
     controller = training.TrainingStateController(
         training.TrainingStateParams(
-            saved_model_fmt='model.pt',
+            saved_model_fmt="model.pt",
         ),
         state_dir=temp_dir,
-        warn=False
+        warn=False,
     )
     model_1.reset_parameters()
     model_2.reset_parameters()
-    controller.update_for_epoch(model_1, optimizer_1, .6, .6)
-    controller.update_for_epoch(model_2, optimizer_2, .4, .4)
+    controller.update_for_epoch(model_1, optimizer_1, 0.6, 0.6)
+    controller.update_for_epoch(model_2, optimizer_2, 0.4, 0.4)
     controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 2)
-    for parameter_2, parameter_3 in zip(
-            model_2.parameters(), model_3.parameters()):
+    for parameter_2, parameter_3 in zip(model_2.parameters(), model_3.parameters()):
         assert torch.allclose(parameter_2, parameter_3)
-    controller.update_for_epoch(model_1, optimizer_1, .5, .5)
+    controller.update_for_epoch(model_1, optimizer_1, 0.5, 0.5)
     controller.load_model_and_optimizer_for_epoch(model_3, optimizer_3, 3)
-    for parameter_1, parameter_3 in zip(
-            model_1.parameters(), model_3.parameters()):
+    for parameter_1, parameter_3 in zip(model_1.parameters(), model_3.parameters()):
         assert torch.allclose(parameter_1, parameter_3)
 
 
 @pytest.mark.cpu
 def test_pydrobert_param_optuna_hooks():
-    poptuna = pytest.importorskip('pydrobert.param.optuna')
-    optuna = pytest.importorskip('optuna')
-    assert issubclass(
-        training.TrainingStateParams, poptuna.TunableParameterized)
-    global_dict = {'training': training.TrainingStateParams()}
-    assert 'training.log10_learning_rate' in poptuna.get_param_dict_tunable(
-        global_dict)
+    poptuna = pytest.importorskip("pydrobert.param.optuna")
+    optuna = pytest.importorskip("optuna")
+    assert issubclass(training.TrainingStateParams, poptuna.TunableParameterized)
+    global_dict = {"training": training.TrainingStateParams()}
+    assert "training.log10_learning_rate" in poptuna.get_param_dict_tunable(global_dict)
 
     def objective(trial):
         param_dict = poptuna.suggest_param_dict(trial, global_dict)
-        return param_dict['training'].log10_learning_rate
+        return param_dict["training"].log10_learning_rate
 
     sampler = optuna.samplers.RandomSampler(seed=5)
     study = optuna.create_study(sampler=sampler)
     study.optimize(objective, n_trials=50)
-    assert study.best_params['training.log10_learning_rate'] < -5
+    assert study.best_params["training.log10_learning_rate"] < -5

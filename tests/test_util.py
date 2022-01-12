@@ -1173,3 +1173,25 @@ def test_sparse_image_warp_matches_tensorflow(
     assert torch.allclose(exp_warped, act_warped, atol=1e-3), (
         (exp_warped - act_warped).abs().max()
     )
+
+
+@pytest.mark.parametrize("mode", ["constant", "reflect", "replicate"])
+@pytest.mark.parametrize("another_dim", [True, False])
+def test_pad_variable(device, mode, another_dim):
+    N, Tmax, Tmin, F = 10, 50, 5, 30 if another_dim else 1
+    x = torch.rand((N, Tmax, F), device=device)
+    lens = torch.randint(Tmin, Tmax + 1, (N,), device=device)
+    pad = torch.randint(Tmin - 1, size=(2, N), device=device)
+    exp_padded = []
+    for x_n, lens_n, pad_n in zip(x, lens, pad.t()):
+        x_n = x_n[:lens_n]
+        padded_n = torch.nn.functional.pad(
+            x_n.unsqueeze(0).unsqueeze(0), [0, 0] + pad_n.tolist(), mode
+        ).view(-1, F)
+        exp_padded.append(padded_n)
+    act_padded = util.pad_variable(x, lens, pad, mode)
+    for exp_padded_n, act_padded_n in zip(exp_padded, act_padded):
+        assert torch.allclose(exp_padded_n, act_padded_n[: len(exp_padded_n)])
+    # quick double-check that other types work
+    for type_ in (torch.long, torch.bool):
+        assert util.pad_variable(x.to(type_), lens, pad, mode).dtype == type_

@@ -12,6 +12,9 @@
   - `ExtractableSequentialLanguageModel`, `MixableSequentialLanguageModel`,
     `BeamSearch`, and `CTCPrefixSearch` modules have been added.
   - A new documentation page on how to deal with all of that.
+- Fixed bug in controller that always compared thresholds against best, not the
+  last point that reset the countdown (#55)
+- Added `util.pad_variable` and `layers.RandomShift` (#54)
 - Modified `error_rate`, `prefix_error_rates` to actually compute error rates
   when non-default costs are used. Old functionality is now in
   `edit_distance` and `prefix_edit_distances` (#51)

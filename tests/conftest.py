@@ -50,6 +50,8 @@ def pytest_runtest_setup(item):
     if any(mark.name == "gpu" for mark in item.iter_markers()):
         if not CUDA_AVAIL:
             pytest.skip("cuda is not available")
+    # implicitly seeds all tests for the sake of reproducibility
+    torch.manual_seed(abs(hash(item.name)))
 
 
 @pytest.fixture(scope="session")
