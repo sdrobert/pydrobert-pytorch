@@ -18,7 +18,7 @@ __license__ = "Apache 2.0"
 __copyright__ = "Copyright 2021 Sean Robertson"
 
 try:
-    from .version import version as __version__  # type: ignore
+    from ._version import version as __version__  # type: ignore
 except ImportError:
     __version__ = "inplace"
 

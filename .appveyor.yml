@@ -3,11 +3,11 @@ image: Visual Studio 2019
 
 environment:
   matrix:
-    - TOXENV: py36
+    - TOXENV: py36-earliest
     - TOXENV: py37
     - TOXENV: py38
     - TOXENV: py39
-    - TOXENV: py310
+    # - TOXENV: py310  # wheel not available yet
 
 build: off
 
@@ -15,11 +15,11 @@ for:
   -
     matrix:
       only:
-        - TOXENV: /py3(7|8|9)/
+        - TOXENV: /py3[7-8]/
     skip_non_tags: true
 
 install:
-  - py -m pip install tox
+  - py -m pip install tox tox-ltt
 
 test_script:
   - py -m tox
