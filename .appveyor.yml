@@ -15,7 +15,7 @@ for:
   -
     matrix:
       only:
-        - TOXENV: /py3[7-9]/
+        - TOXENV: /py3(7|8|9)/
 
     skip_non_tags: true
 
