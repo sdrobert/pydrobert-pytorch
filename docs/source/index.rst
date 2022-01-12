@@ -3,6 +3,7 @@
    :caption: Contents:
 
    advanced_attention
+   lm
    estimators
    references
    modules
