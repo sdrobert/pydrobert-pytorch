@@ -9,9 +9,9 @@ environment:
     - TOXENV: py39
     # - TOXENV: py310  # wheel not available yet
 
-build: off
-
-stack: python 3.7
+branches:
+  except:
+    - /docs/
 
 for:
   -
@@ -20,13 +20,11 @@ for:
         - TOXENV: /py37/
     skip_non_tags: true
 
+build: off
+
 install:
-  - python -m pip install -U pip virtualenv setuptools wheel six
-  - python -m pip install -U tox tox-ltt tox-appveyor
+  - python3.7 -m pip install -U pip virtualenv setuptools wheel six
+  - python3.7 -m pip install -U tox tox-ltt
 
 test_script:
-  - python -m tox
-
-branches:
-  except:
-    - /docs/
+  - python3.7 -m tox
