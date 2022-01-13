@@ -4,13 +4,9 @@ image: Ubuntu
 environment:
   matrix:
     - TOXENV: py36-earliest
-      stack: python 3.6
     - TOXENV: py37
-      stack: python 3.7
     - TOXENV: py38
-      stack: python 3.8
     - TOXENV: py39
-      stack: python 3.9
     # - TOXENV: py310  # wheel not available yet
 
 branches:
@@ -27,8 +23,8 @@ for:
 build: off
 
 install:
-  - python -m pip install -U pip virtualenv setuptools wheel six
-  - python -m pip install -U tox tox-ltt
+  - python3 -m pip install -U pip virtualenv setuptools wheel six
+  - python3 -m pip install -U tox tox-ltt
 
 test_script:
-  - python -m tox
+  - python3 -m tox
