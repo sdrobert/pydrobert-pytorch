@@ -4,10 +4,16 @@ image: Ubuntu
 environment:
   matrix:
     - TOXENV: py36-earliest
+      PYTHON: "3.6"
     - TOXENV: py37
+      PYTHON: "3.7"
     - TOXENV: py38
+      PYTHON: "3.8"
     - TOXENV: py39
+      PYTHON: "3.9"
     # - TOXENV: py310  # wheel not available yet
+
+stack: python %PYTHON%
 
 branches:
   except:
@@ -17,7 +23,8 @@ for:
   -
     matrix:
       only:
-        - TOXENV: /py37/
+        - PYTHON: "3.7"
+        - PYTHON: "3.8"
     skip_non_tags: true
 
 build: off
