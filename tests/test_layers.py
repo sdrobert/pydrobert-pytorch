@@ -767,9 +767,7 @@ def test_beam_search_batch(device):
         def calc_idx_log_probs(self, hist, prev, idx):
             idx_zero = idx == 0
             if idx_zero.all():
-                x = torch.arange(hist.size(0), device=hist.device).clamp(
-                    max=self.vocab_size
-                )
+                x = torch.arange(hist.size(0), device=hist.device)
             elif not idx.dim():
                 x = hist[idx - 1]
             else:
@@ -785,8 +783,8 @@ def test_beam_search_batch(device):
                 {"hidden_state": h_1, "cell_state": c_1},
             )
 
-    T, N, V, K = 64, 16, 32, 8
-    assert K <= V and N <= V
+    T, N, V, K = 64, 16, 128, 8
+    assert K <= V and N * K <= V
     lm = RNNLM(V)
     search = layers.BeamSearch(lm, K, eos=0, max_iters=T).to(device)
     y_prev = torch.arange(N, device=device)

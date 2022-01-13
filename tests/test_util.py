@@ -562,69 +562,18 @@ def test_beam_search_advance(device):
 def test_error_rate_against_known(device, norm, include_eos, batch_first, distance):
     eos = 0
     pairs = (
-        (
-            (1, 2, 3),
-            (1, 2, 3),
-            0,
-        ),
-        (
-            (2, 3),
-            (1, 2, 3),
-            1,
-        ),
-        (
-            (1, 3),
-            (1, 2, 3),
-            1,
-        ),
-        (
-            (3,),
-            (1, 2, 3),
-            2,
-        ),
-        (
-            (1, 2, 3),
-            (1, 3),
-            1,
-        ),
-        (
-            (1, 2, 3),
-            (
-                1,
-                2,
-            ),
-            1,
-        ),
-        (
-            (1, 2, 3),
-            (1,),
-            2,
-        ),
-        (
-            (1, 3, 1, 2, 3),
-            (1, 2, 3),
-            2,
-        ),
-        (
-            (1, 2, 3),
-            (4, 5, 6),
-            3,
-        ),
-        (
-            (2, 2, 2),
-            (2,),
-            2,
-        ),
-        (
-            tuple(),
-            (1,),
-            1,
-        ),
-        (
-            tuple(),
-            tuple(),
-            0,
-        ),
+        ((1, 2, 3), (1, 2, 3), 0,),
+        ((2, 3), (1, 2, 3), 1,),
+        ((1, 3), (1, 2, 3), 1,),
+        ((3,), (1, 2, 3), 2,),
+        ((1, 2, 3), (1, 3), 1,),
+        ((1, 2, 3), (1, 2,), 1,),
+        ((1, 2, 3), (1,), 2,),
+        ((1, 3, 1, 2, 3), (1, 2, 3), 2,),
+        ((1, 2, 3), (4, 5, 6), 3,),
+        ((2, 2, 2), (2,), 2,),
+        (tuple(), (1,), 1,),
+        (tuple(), tuple(), 0,),
     )
     ref_lens = torch.tensor([len(x[0]) + include_eos for x in pairs], device=device)
     hyp_lens = torch.tensor([len(x[1]) + include_eos for x in pairs], device=device)
@@ -658,9 +607,9 @@ def test_error_rate_against_known(device, norm, include_eos, batch_first, distan
     assert torch.allclose(exp, act)
 
 
-@pytest.mark.parametrize("ins_cost", [-0.1, 0.0, 1.0], ids=("i-0.1", "i0.0", "i1.0"))
-@pytest.mark.parametrize("del_cost", [-0.1, 0.0, 1.0], ids=("d-0.1", "d0.0", "d1.0"))
-@pytest.mark.parametrize("sub_cost", [-0.1, 0.0, 1.0], ids=("s-0.1", "s0.0", "s1.0"))
+@pytest.mark.parametrize("ins_cost", [2.0, 0.5, 1.0], ids=("i2.0", "i0.5", "i1.0"))
+@pytest.mark.parametrize("del_cost", [2.0, 0.5, 1.0], ids=("d2.0", "d0.5", "d1.0"))
+@pytest.mark.parametrize("sub_cost", [2.0, 0.5, 1.0], ids=("s2.0", "s0.5", "s1.0"))
 @pytest.mark.parametrize("distance", [True, False], ids=("edit", "rate"))
 @pytest.mark.parametrize("ref_bigger", [True, False])
 def test_error_rate_against_simple_impl(
@@ -687,11 +636,7 @@ def test_error_rate_against_simple_impl(
     edit_matrix[:, 0] = torch.arange(float(hyp_steps + 1), device=device).unsqueeze(-1)
     for hyp_idx in range(1, hyp_steps + 1):
         for ref_idx in range(1, ref_steps + 1):
-            neq_mask = torch.where(
-                ref[ref_idx - 1] == hyp[hyp_idx - 1],
-                torch.tensor(0.0, device=device),
-                torch.tensor(1.0, device=device),
-            )
+            neq_mask = (ref[ref_idx - 1] != hyp[hyp_idx - 1]).float()
             sub_align = cost_matrix[hyp_idx - 1, ref_idx - 1] + sub_cost * neq_mask
             ins_align = cost_matrix[hyp_idx - 1, ref_idx] + ins_cost + eps
             del_align = cost_matrix[hyp_idx, ref_idx - 1] + del_cost + eps
@@ -785,11 +730,7 @@ def test_optimal_completion(device, include_eos, batch_first, exclude_last):
             "saturday#",
             ["s", "u", "un", "und", "n", "nd", "a", "y", "#", ""],
         ),
-        (
-            "sunday#",
-            "satrapy#",
-            ["s", "u", "un", "und", "unda", "y", "y#", "#", ""],
-        ),
+        ("sunday#", "satrapy#", ["s", "u", "un", "und", "unda", "y", "y#", "#", ""],),
         ("abc#", "abc#", ["a", "b", "c", "#", ""]),
         ("foot#", "bot#", ["f", "fo", "o", "ot#", ""]),
         ("abc#", "def#", ["a", "ab", "abc", "abc#", ""]),

@@ -249,7 +249,7 @@ def beam_search_advance(
     K = min(width, Kp * V)
     cand_log_probs = (log_probs_prev.unsqueeze(2) + log_probs_t).flatten(1)
     log_probs_next, next_ind = cand_log_probs.topk(K, 1)
-    next_src = torch.div(next_ind, V, rounding_mode="trunc")
+    next_src = next_ind.floor_divide(V)
     next_token = (next_ind % V).unsqueeze(0)  # (1, N, K)
 
     if tm1:
@@ -578,7 +578,9 @@ def ctc_prefix_search_advance(
     del tot_probs_cand
 
     next_is_nonext = next_ind >= (Kp * V)
-    next_src = torch.where(next_is_nonext, next_ind - (Kp * V), next_ind // V)
+    next_src = torch.where(
+        next_is_nonext, next_ind - (Kp * V), next_ind.floor_divide(V)
+    )
     next_ext = next_ind % V
 
     y_next_prefix_lens = y_prev_lens.gather(1, next_src)  # (N, K)
@@ -1967,7 +1969,7 @@ def pad_variable(
     arange_ = torch.arange(Tp, device=x.device)
     left_mask = (pad[0].unsqueeze(1) > arange_).unsqueeze(2).expand(N, Tp, F)
     if mode == "constant":
-        buff = torch.tensor(value, device=x.device, dtype=x.dtype).view(1)
+        buff = torch.tensor(value, device=x.device).to(x.dtype).view(1)
         left_pad = buff.expand(pad[0].sum() * F)
         right_pad = buff.expand(pad[1].sum() * F)
     elif mode == "reflect":
@@ -2172,8 +2174,11 @@ def _string_matching(
     assert not exclude_last or (return_mask or return_prf_dsts)
     if ref.dim() != 2 or hyp.dim() != 2:
         raise RuntimeError("ref and hyp must be 2 dimensional")
+    mult = 1.0
     if ins_cost == del_cost == sub_cost > 0.0:
         # results are equivalent and faster to return
+        if not return_mistakes:
+            mult = ins_cost
         ins_cost = del_cost = sub_cost = 1.0
         return_mistakes = False
     elif return_mistakes and warn:
@@ -2220,8 +2225,12 @@ def _string_matching(
                 hyp_lens = hyp_lens - hyp_eq_mask.to(hyp_lens.dtype)
             del ref_eq_mask, hyp_eq_mask
     else:
-        ref_lens = torch.full((batch_size,), max_ref_steps, device=ref.device)
-        hyp_lens = torch.full((batch_size,), max_hyp_steps, device=ref.device)
+        ref_lens = torch.full(
+            (batch_size,), max_ref_steps, device=ref.device, dtype=torch.long
+        )
+        hyp_lens = torch.full(
+            (batch_size,), max_hyp_steps, device=ref.device, dtype=torch.long
+        )
     ins_cost = torch.tensor(float(ins_cost), device=device)
     del_cost = torch.tensor(float(del_cost), device=device)
     sub_cost = torch.tensor(float(sub_cost), device=device)
@@ -2345,6 +2354,7 @@ def _string_matching(
         )
         return mask
     elif return_prf_dsts:
+        prefix_ers = prefix_ers * mult
         if norm:
             prefix_ers = prefix_ers / ref_lens.to(row.dtype)
             zero_mask = ref_lens.eq(0).unsqueeze(0)
@@ -2381,6 +2391,7 @@ def _string_matching(
         er = mistakes.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
     else:
         er = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
+    er = er * mult
     if norm:
         er = er / ref_lens.to(er.dtype)
         zero_mask = ref_lens.eq(0)

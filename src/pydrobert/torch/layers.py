@@ -1194,7 +1194,7 @@ class CTCPrefixSearch(torch.nn.Module):
                 f"Expected dim 2 of logits to be {self.lm.vocab_size + 1}, got {Vp1}"
             )
         if lens is None:
-            lens = torch.full((N,), T, device=logits.device)
+            lens = torch.full((N,), T, device=logits.device, dtype=torch.long)
             len_min = len_max = T
         elif lens.dim() != 1:
             raise RuntimeError("lens must be 1 dimensional")
@@ -1211,7 +1211,9 @@ class CTCPrefixSearch(torch.nn.Module):
         y_prev_lens = y_prev_last = torch.zeros(
             (N, 1), dtype=torch.long, device=logits.device
         )
-        prev_is_prefix = torch.full((N, 1, 1), True, device=logits.device)
+        prev_is_prefix = torch.full(
+            (N, 1, 1), True, device=logits.device, dtype=torch.bool
+        )
         if self.lm is not None:
             prev = self.lm.update_input(prev, y_prev)
         prev_width = 1
