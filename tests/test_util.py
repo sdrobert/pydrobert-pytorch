@@ -562,18 +562,18 @@ def test_beam_search_advance(device):
 def test_error_rate_against_known(device, norm, include_eos, batch_first, distance):
     eos = 0
     pairs = (
-        ((1, 2, 3), (1, 2, 3), 0,),
-        ((2, 3), (1, 2, 3), 1,),
-        ((1, 3), (1, 2, 3), 1,),
-        ((3,), (1, 2, 3), 2,),
-        ((1, 2, 3), (1, 3), 1,),
-        ((1, 2, 3), (1, 2,), 1,),
-        ((1, 2, 3), (1,), 2,),
-        ((1, 3, 1, 2, 3), (1, 2, 3), 2,),
-        ((1, 2, 3), (4, 5, 6), 3,),
-        ((2, 2, 2), (2,), 2,),
-        (tuple(), (1,), 1,),
-        (tuple(), tuple(), 0,),
+        ((1, 2, 3), (1, 2, 3), 0),
+        ((2, 3), (1, 2, 3), 1),
+        ((1, 3), (1, 2, 3), 1),
+        ((3,), (1, 2, 3), 2),
+        ((1, 2, 3), (1, 3), 1),
+        ((1, 2, 3), (1, 2,), 1),
+        ((1, 2, 3), (1,), 2),
+        ((1, 3, 1, 2, 3), (1, 2, 3), 2),
+        ((1, 2, 3), (4, 5, 6), 3),
+        ((2, 2, 2), (2,), 2),
+        (tuple(), (1,), 1),
+        (tuple(), tuple(), 0),
     )
     ref_lens = torch.tensor([len(x[0]) + include_eos for x in pairs], device=device)
     hyp_lens = torch.tensor([len(x[1]) + include_eos for x in pairs], device=device)

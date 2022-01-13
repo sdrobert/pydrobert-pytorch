@@ -1,4 +1,6 @@
 version: build.{build}.branch.{branch}
+# FIXME(sdrobert): tox-ltt doesn't work on Windows as of yet, causing a
+# virtualenv error. Until it's fixed we'll use the Ubuntu image.
 image: Ubuntu
 
 environment:
@@ -12,6 +14,7 @@ environment:
     - TOXENV: py39
       PYTHON: "3.9"
     # - TOXENV: py310  # wheel not available yet
+    #   PYTHON: "3.10"
 
 stack: python %PYTHON%
 
