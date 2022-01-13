@@ -19,10 +19,10 @@ for:
     skip_non_tags: true
 
 install:
-  - py -m pip install tox tox-ltt
+  - C:\Python37-x64\python -m pip install tox tox-ltt
 
 test_script:
-  - py -m tox
+  - C:\Python37-x64\python -m tox
 
 branches:
   except:
