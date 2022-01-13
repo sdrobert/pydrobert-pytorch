@@ -1,5 +1,5 @@
 version: build.{build}.branch.{branch}
-image: Visual Studio 2019
+image: Ubuntu
 
 environment:
   matrix:
@@ -11,6 +11,8 @@ environment:
 
 build: off
 
+stack: python 3.7
+
 for:
   -
     matrix:
@@ -18,12 +20,9 @@ for:
         - TOXENV: /py37/
     skip_non_tags: true
 
-init:
-  - cmd: set PATH=C:\Python37-x64;C:\Python37-x64\Scripts;%PATH%
-
 install:
   - python -m pip install -U pip virtualenv setuptools wheel six
-  - python -m pip install -U tox tox-appveyor
+  - python -m pip install -U tox tox-ltt tox-appveyor
 
 test_script:
   - python -m tox
