@@ -28,11 +28,6 @@ import warnings
 
 import torch
 
-try:
-    torch_bool = torch.bool
-except AttributeError:
-    torch_bool = torch.uint8
-
 __all__ = [
     "to_z",
     "to_b",
@@ -425,11 +420,10 @@ def _to_z_tilde(logits, b, dist):
             -torch.log(-log_v / theta - log_v.gather(-1, b[..., None])),
         )
     elif dist in ONEHOT_SYNONYMS:
-        b = b.byte()
         theta = torch.softmax(logits, dim=-1)
         log_v = v.log()
         z_tilde = torch.where(
-            b,
+            b.bool(),
             -torch.log(-log_v),
             -torch.log(-log_v / theta - log_v.gather(-1, b.argmax(-1, keepdim=True))),
         )

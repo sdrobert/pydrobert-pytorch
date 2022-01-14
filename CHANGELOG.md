@@ -2,6 +2,11 @@
 
 ## HEAD
 
+- Removed `setup.py`.
+- Deleted conda recipe in prep for [conda-forge](https://conda-forge.org/).
+- Compatibility/determinism fixes for 1.5.1.
+- Bump minimum PyTorch version to 1.5.1. Actually testing this minimum!
+- `version.py` -> `_version.py`.
 - A number of modifications and additions related to decoding and language
   models, including:
   - `beam_search_advance` has been simplified, with much of the end-of-sequence
