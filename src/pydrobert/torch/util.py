@@ -46,6 +46,8 @@ except ImportError:  # pre 1.8.1
 
 __all__ = [
     "beam_search_advance",
+    "ctc_greedy_search",
+    "ctc_prefix_search_advance",
     "dense_image_warp",
     "edit_distance",
     "error_rate",
@@ -193,279 +195,499 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
 
 @script_if_tracing
 def beam_search_advance(
-    logits_t: torch.Tensor,
+    log_probs_t: torch.Tensor,
     width: int,
-    log_prior: Optional[torch.Tensor] = None,
-    y_prev: Optional[torch.Tensor] = None,
-    eos: int = pydrobert.torch.INDEX_PAD_VALUE,
-    lens: Optional[torch.Tensor] = None,
-    prevent_eos: bool = False,
-    distribution: bool = True,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    r"""Advance a beam search
+    log_probs_prev: torch.Tensor,
+    y_prev: torch.Tensor,
+    y_prev_lens: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    r"""Beam search step function
 
-    Suppose a model outputs a un-normalized log-probability distribution over the next
-    element of a sequence in `logits_t` s.t.
-
-    .. math::
-
-        Pr(y_t = c ; log\_prior) = exp(logits_{t,c}) / \sum_k exp(logits_{t,k})
-
-    We assume :math:`logits_t` is a function of what comes before :math:`logits_t =
-    f(logits_{<t}, y_{<t})`. Alternatively, letting :math:`s_t = (logits_t, y_t)`,
-    :math:`s` is a Markov Chain. A model is auto-regressive if :math:`f` depends on
-    :math:`y_{<t}`, and is not auto-regressive if :math:`logits_t = f(logits_{<t})`.
-
-    Beam search is a heuristic mechanism for determining a best path, i.e. :math:`\arg
-    \max_y Pr(y)` that maximizes the probability of the best path by keeping track of
-    `width` high probability paths called "beams" (the aggregate of which for a given
-    batch element is named, unfortunately, "the beam"). If the model is auto-regressive,
-    beam search is only approximate. However, if the model is not auto-regressive, beam
-    search gives an exact n-best list.
-
-    This function is called at every time step. It updates old beam log-probabilities
-    (`log_prior`) with new ones (`score`) from the conditional derived from `logits_t`,
-    and updates us the class indices emitted between them (`y`). See the examples
-    section for how this might work.
+    The step function of any beam search.
 
     Parameters
     ----------
-    logits_t : torch.Tensor
-        A float tensor of conditional probabilities over class labels for the current
-        time step. Either of shape ``(batch_size, old_width, num_classes)``, where
-        ``old_width`` is the number of beams in the previous time step, or
-        ``(batch_size, num_classes)``, where it is assumed that ``old_width == 1``
+    log_probs_t : torch.Tensor
+        A tensor of shape ``(N, old_width, V)`` containing the probabilities of
+        extending a given path with a token of a given type in the vocabulary.
     width : int
-        The number of beams in the beam to produce for the current time step. ``width
-        <= num_classes``
-    log_prior : torch.Tensor, optional
-        A float tensor of (or proportional to) log prior probabilities of beams up
-        to the previous time step. Either of shape ``(batch_size, old_width)``
-        or ``(batch_size,)``. If unspecified, a uniform log prior will be used
-    y_prev : torch.Tensor, optional
-        A long tensor of shape ``(t - 1, batch_size, old_width)`` or ``(t - 1,
-        batch_size)`` specifying :math:`y_{<t}`. If unspecified, it is assumed that ``t
-        == 1``
-    eos : int, optional
-        A special end-of-sequence symbol indicating that the beam has ended. Can be a
-        class index. If this value occurs in in ``y_prev[-1, bt, bm]`` for some batch
-        ``bt`` and beam ``bm``, that beam will be padded with an `eos` token and the
-        score for that beam won't change
-    lens : torch.Tensor, optional
-        A long tensor of shape ``(batch_size,)``. If ``t > lens[bt]`` for some batch
-        ``bt``, all beams for ``bt`` will be considered finished. All scores will be
-        fixed and `eos` will be appended to `y_prev`
-    prevent_eos : bool, optional
-        Setting this flag to :obj:`True` will keep `eos` targets from entering a beam
-        unless it has finished (either with a prior `eos` or through `lens`). Note that
-        this will only have an effect when ``0 <= eos <= num_classes``
-    distribution : bool, optional
-        If :obj:`False`, a log-softmax will not be applied to `logits_t` prior to
-        calculating the beams. Disabling `distribution` should be avoided when the beam
-        search is being performed directly on model output. Setting `distribution` to
-        :obj:`False` is useful when bootstrapping a language model probability
-        distribution to the search
+        The beam width
+    log_probs_prev : torch.Tensor
+        A tensor of shape ``(N, old_width)`` containing the log probabilities of
+        the paths so far.
+    y_prev : torch.Tensor
+        A tensor of shape ``(S, N, old_width)`` containing the path prefixes.
+    y_prev_lens : torch.Tensor or None, optional
+        A tensor of shape ``(N, old_width)`` specifying the lengths of the prefixes.
+        For batch element ``n``, only the values ``y_prev[:y_prev_lens[n, k], n, k]``
+        are valid. If unspecified, it is assumed ``y_prev_lens[n, k] == S``.
 
     Returns
     -------
-    score : torch.Tensor
-        A float tensor of shape ``(batch_size, width)`` of the log-joint probabilitie
-         of the new beams in the beam
-    y : torch.Tensor
-        A long tensor of shape ``(t, batch_size, width)`` of indices of the class
-        labels generated up to this point
-    s : torch.Tensor
-        A long tensor shape ``(batch_size, width)`` of indices of beams in the old beam
-        which prefix the new beam. Note that beams in the new beam are sorted by
-        descending probability
+    y_next, y_next_lens, log_probs_next, next_src : torch.Tensor, torch.Tensor
+        The ``*next*`` tensors can be interpreted in the same way as their ``*prev*``
+        counterparts, but after the step. The ``old_width`` dimension has been replaced
+        with `width`. ``next_src` is a long tensor of shape ``(N, width)`` such that the
+        value ``k_old = next_src[n, k_new]`` is the index from the previous step (over
+        ``old_width``) that is a prefix of the new path at ``k_new`` (i.e. its source).
 
-    Examples
+    Warnings
     --------
+    This function has been drastically simplified after v0.3.0. The logic for
+    end-of-sequence handling has been punted to the encapsulating search module.
 
-    Auto-regressive decoding with beam search. We assume that all input have the same
-    number of steps
-
-    >>> N, I, C, T, W, H, eos, start = 5, 5, 10, 100, 5, 10, 0, -1
-    >>> cell = torch.nn.RNNCell(I + 1, H)
-    >>> ff = torch.nn.Linear(H, C)
-    >>> inp = torch.rand(T, N, I)
-    >>> y = torch.full((1, N, 1), start, dtype=torch.long)
-    >>> h_t = torch.zeros(N, 1, H)
-    >>> score = None
-    >>> for inp_t in inp:
-    >>>     y_tm1 = y[-1]
-    >>>     old_width = y_tm1.shape[-1]
-    >>>     inp_t = inp_t.unsqueeze(1).expand(N, old_width, I)
-    >>>     x_t = torch.cat([inp_t, y_tm1.unsqueeze(2).float()], -1)
-    >>>     h_t = cell(
-    ...         x_t.view(N * old_width, I + 1),
-    ...         h_t.view(N * old_width, H)
-    ...     ).view(N, old_width, H)
-    >>>     logits_t = ff(h_t)
-    >>>     score, y, s_t = beam_search_advance(logits_t, W, score, y, eos)
-    >>>     h_t = h_t.gather(1, s_t.unsqueeze(-1).expand(N, W, H))
-    >>> bests = []
-    >>> for batch_idx in range(N):
-    >>>     best_beam_path = y[1:, batch_idx, 0]
-    >>>     not_special_mask = best_beam_path.ne(eos)
-    >>>     best_beam_path = best_beam_path.masked_select(not_special_mask)
-    >>>     bests.append(best_beam_path)
-
-    Were we to have a :class:`pydrobert.torch.layers.SequentialLanguageModel`,
-    we could modify `logits_t`, and thus the search, to account for it:
-
-    >>> # ... same as before
-    >>> logits_t = torch.nn.functional.log_softmax(logits_t, -1)
-    >>> logits_t = logits_t + lmb * lm(y)  # lmb is some constant
-    >>> score, y, s_t = beam_search_advance(
-    ...     logits_t, W, score, y, eos, distribution=False)
-    >>> # ... same as before
-
-    Note that `score` would no longer reflect a log-joint probability.
-
-    The following produces a ``W``-best list for non-auto-regressive model. We don't
-    emit an `eos`, instead completing the sequence when we've hit the target length via
-    `lens`
-
-    >>> N, I, C, T, W, H = 5, 5, 10, 100, 5, 10
-    >>> rnn = torch.nn.RNN(I, H)
-    >>> ff = torch.nn.Linear(H, C)
-    >>> inp = torch.rand(T, N, I)
-    >>> lens = torch.randint(1, T + 1, (N,)).sort(descending=True)[0]
-    >>> packed_inp = torch.nn.utils.rnn.pack_padded_sequence(inp, lens)
-    >>> packed_h, _ = rnn(packed_inp)
-    >>> packed_logits = ff(packed_h[0])
-    >>> logits = torch.nn.utils.rnn.pad_packed_sequence(
-    ...     torch.nn.utils.rnn.PackedSequence(
-    ...         packed_logits, batch_sizes=packed_h[1]),
-    ...     total_length=T,
-    ... )[0]
-    >>> y = score = None
-    >>> for t, logits_t in enumerate(logits):
-    >>>     if t:
-    >>>         logits_t = logits_t.unsqueeze(1).expand(-1, W, -1)
-    >>>     score, y, _ = beam_search_advance(logits_t, W, score, y, lens=lens)
+    If there are too few possible extensions to fill the beam, undefined paths will be
+    added to the end of the beam with probability :obj:`-float('inf')`. This means that
+    an invalid path cannot be distibguished from a 0-probability path. Consider using a
+    very negative value as a replacement for ``log 0``, e.g. ``log_probs_t =
+    log_probs_t.clamp(min=torch.finfo(torch.float).min / 2)``.
     """
-    if logits_t.dim() == 2:
-        logits_t = logits_t.unsqueeze(1)
-    elif logits_t.dim() != 3:
-        raise RuntimeError("logits_t must have dimension of either 2 or 3")
-    if distribution:
-        logits_t = torch.nn.functional.log_softmax(logits_t, 2)
-    neg_inf = torch.tensor(-float("inf"), device=logits_t.device)
-    batch_size, old_width, num_classes = logits_t.shape
-    if log_prior is None:
-        log_prior = torch.full(
-            (batch_size, old_width),
-            -torch.log(torch.tensor(float(num_classes))),
-            dtype=logits_t.dtype,
-            device=logits_t.device,
-        )
-    elif log_prior.shape == (batch_size,) and old_width == 1:
-        log_prior = log_prior.unsqueeze(1)
-    elif log_prior.shape != logits_t.shape[:-1]:
+    if log_probs_t.dim() != 3:
+        raise RuntimeError("log_probs_t must be 3 dimensional")
+    N, Kp, V = log_probs_t.shape
+    if width < 1:
+        raise RuntimeError(f"Expected width to be >= 1, got {width}")
+    if log_probs_prev.shape != (N, Kp):
         raise RuntimeError(
-            "If logits_t of shape {} then log_prior must have shape {}".format(
-                (batch_size, old_width, num_classes),
-                (batch_size, old_width),
-            )
+            f"Expected log_probs_prev to be of shape {(N, Kp)}, got "
+            f"{log_probs_prev.shape}"
         )
-    if prevent_eos and 0 <= eos < num_classes:
-        # we have to put this before the num_done check so that it'll be
-        # overwritten for paths that have finished already
-        logits_t[..., eos] = neg_inf
-    eos_set: Optional[torch.Tensor] = None
-    if y_prev is not None:
-        if y_prev.dim() == 2:
-            y_prev = y_prev.unsqueeze(2)
-        if y_prev.shape[1:] != log_prior.shape:
-            raise RuntimeError(
-                "If logits_t of shape {} then y_prev must have shape "
-                "(*, {}, {})".format(
-                    (batch_size, old_width, num_classes),
-                    batch_size,
-                    old_width,
-                )
-            )
-        eos_mask = y_prev[-1].eq(eos)
-        num_done = eos_mask.long().sum(1)
-        if num_done.sum().item():
-            if old_width < width and torch.any(num_done == old_width):
-                raise RuntimeError(
-                    "New beam width ({}) is wider than old beam width "
-                    "({}), but all paths are already done in one or more "
-                    "batch elements".format(width, old_width)
-                )
-            # we're going to treat class 0 as the sentinel for eos (even if
-            # eos is a legit class label)
-            done_classes = torch.full_like(logits_t[0, 0], neg_inf)
-            done_classes[0] = 0.0
-            logits_t = torch.where(
-                eos_mask.unsqueeze(2),
-                done_classes,
-                logits_t,
-            )
-            # If eos_mask looks like this (vertical batch, horizontal beam):
-            #   1 0 0 1 0
-            #   0 1 0 0 0
-            #   0 0 0 0 0
-            # then eos_set will be
-            #    0 -1 -1  3 -1
-            #   -1  1 -1 -1 -1
-            #   -1 -1 -1 -1 -1
-            # s might look like
-            #    1 2 3 3
-            #    2 2 4 1
-            #    1 2 3 4
-            # we'll compare a single value from a row of s to a matched row
-            # of eos_set. Any match means the beam had finished already. The
-            # mask on y will be
-            #    0 0 1 1
-            #    0 0 0 1
-            #    0 0 0 0
-            # pretty funky
-            eos_set = torch.where(
-                eos_mask,
-                torch.arange(old_width, device=logits_t.device),
-                torch.tensor(-1, device=logits_t.device).expand(old_width),
-            )
-        t = y_prev.shape[0] + 1
+    if y_prev.dim() != 3:
+        raise RuntimeError("y_prev must be 3 dimensional")
+    if y_prev.shape[1:] != (N, Kp):
+        raise RuntimeError(
+            f"Expected the last two dimensions of y_prev to be {(N, Kp)}, "
+            f"got {y_prev.shape[1:]}"
+        )
+    tm1 = y_prev.size(0)
+    if y_prev_lens is not None and y_prev_lens.shape != (N, Kp):
+        raise RuntimeError(
+            f"Expected y_prev_lens to have shape {(N, Kp)}, got {y_prev_lens.shape}"
+        )
+
+    K = min(width, Kp * V)
+    cand_log_probs = (log_probs_prev.unsqueeze(2) + log_probs_t).flatten(1)
+    log_probs_next, next_ind = cand_log_probs.topk(K, 1)
+    next_src = next_ind.floor_divide(V)
+    next_token = (next_ind % V).unsqueeze(0)  # (1, N, K)
+
+    if tm1:
+        y_prev_prefix = y_prev.gather(2, next_src.unsqueeze(0).expand(tm1, N, K))
+        y_next = torch.cat([y_prev_prefix, next_token], 0)
+        if y_prev_lens is None:
+            y_next_lens = next_token.new_full((N, K), tm1 + 1)
+        else:
+            y_prev_lens_prefix = y_prev_lens.gather(1, next_src)
+            y_next = y_next.scatter(0, y_prev_lens_prefix.unsqueeze(0), next_token)
+            y_next_lens = y_prev_lens_prefix + 1
+    elif y_prev_lens is not None and (y_prev_lens != 0).any():
+        raise RuntimeError("Invalid lengths for t=0")
     else:
-        t = 1
-    len_mask: Optional[torch.Tensor] = None
-    if lens is not None:
-        if lens.shape != logits_t.shape[:1]:
-            raise RuntimeError("lens must be of shape ({},)".format(batch_size))
-        len_mask = lens.lt(t)
-        if torch.any(len_mask) and old_width < width:
-            raise RuntimeError(
-                "New beam width ({}) is wider than old beam width "
-                "({}), but all paths are already done in one or more "
-                "batch elements".format(width, old_width)
+        y_next = next_token
+        y_next_lens = next_token.new_ones((N, K))
+
+    if K < width:
+        rem = width - K
+        y_next = torch.cat([y_next, y_next.new_empty(tm1 + 1, N, rem)], 2)
+        log_probs_next = torch.cat(
+            [log_probs_next, log_probs_next.new_full((N, rem), -float("inf"))], 1
+        )
+        zeros = y_next_lens.new_zeros(N, rem)
+        y_next_lens = torch.cat([y_next_lens, zeros], 1)
+        next_src = torch.cat([next_src, zeros], 1)
+
+    return y_next, y_next_lens, log_probs_next, next_src
+
+
+def ctc_greedy_search(
+    logits: torch.Tensor,
+    in_lens: Optional[torch.Tensor] = None,
+    blank_idx: int = -1,
+    batch_first: bool = False,
+    is_probs: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """CTC greedy search
+
+    The CTC greedy search picks the path with the highest probability class in
+    `logits` for each element in the sequence. The path (log-)probability is the (sum)
+    product of the chosen type (log-probabilities). The output sequences are the
+    resulting sequence of class labels with blanks and duplicates removed.
+
+    Parameters
+    ----------
+    logits : torch.Tensor
+        A float tensor of shape ``(N, T, V)`` where ``T`` is the sequence dimension,
+        ``N`` is the batch dimension, and ``V`` is the number of classes including the
+        blank label. ``logits[n, t, :]`` represent the unnormalized log-probabilities
+        of the labels at time ``t`` in batch element ``n``.
+    in_lens : torch.Tensor or None, optional
+        If specified, a long tensor of shape ``(N,)`` providing the lengths of the
+        sequence in the batch. For a given batch element ``n``, only the values of
+        `logits` in the slice ``logits[n, :in_lens[n]]`` will be considered valid.
+    blank_idx : int, optional
+        Which index along the class dimension specifices the blank label
+    batch_first : bool, optional
+        If :obj:`False`, `logits` is of shape ``(T, N, V)`` and `paths` is of shape
+        ``(T, N)``.
+    is_probs : bool, optional
+        If :obj:`True`, `logits` will be considered a normalized probability
+        distribution instead of an un-normalized log-probability distribution. The
+        return value `max_` will take the product of sequence probabilities instead of
+        the sum.
+
+    Returns
+    -------
+    max_, paths, out_lens : torch.Tensor, torch.Tensor, torch.Tensor
+        `max_` is a float tensor of shape ``(N,)`` of the total probability of the
+        greedy path. `paths` is a long tensor of shape ``(N, T`` which stores the
+        reduced greedy paths. `out_lens` is a long tensor of shape ``(N,)`` which
+        specifies the lengths of the greedy paths within `paths`: for a given batch
+        element ``n``, the reduced greedy path is the sequence in the range
+        ``paths[n, :out_lens[n]]``. The values of `paths` outside this range are
+        undefined.
+    """
+    if logits.dim() != 3:
+        raise RuntimeError("logits must be 3-dimensional")
+    V = logits.size(2)
+    if blank_idx < -V or blank_idx > (V - 1):
+        raise IndexError(
+            "Blank index out of range (expected to be in the range of "
+            f"[-{V},{V-1}], but got {blank_idx})"
+        )
+    blank_idx = (blank_idx + V) % V
+    if not is_probs:
+        # normalize
+        logits = logits.log_softmax(2)
+    if not batch_first:
+        # the masked_fill/scatter_ logic won't work if it isn't batch_first
+        logits = logits.transpose(0, 1)
+    max_, argmax = logits.max(2)
+    keep_mask = argmax != blank_idx
+    keep_mask[:, 1:] &= argmax[:, 1:] != argmax[:, :-1]
+    seq_size = argmax.size(1)
+    if in_lens is not None:
+        in_len_mask = torch.arange(seq_size, device=argmax.device).unsqueeze(
+            0
+        ) < in_lens.unsqueeze(1)
+        keep_mask = keep_mask & in_len_mask
+        if is_probs:
+            max_ = max_.masked_fill(~in_len_mask, 1.0)
+        else:
+            max_ = max_.masked_fill(~in_len_mask, 0.0)
+        del in_len_mask
+    out_lens = keep_mask.long().sum(1)
+    data = argmax.masked_select(keep_mask)
+    out_len_mask = torch.arange(seq_size, device=argmax.device).unsqueeze(
+        0
+    ) < out_lens.unsqueeze(1)
+    if is_probs:
+        max_ = max_.prod(1)
+    else:
+        max_ = max_.sum(1)
+    argmax = argmax.masked_scatter_(out_len_mask, data)
+    if not batch_first:
+        argmax = argmax.t()
+    return max_, argmax, out_lens
+
+
+def ctc_prefix_search_advance(
+    probs_t: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],  # ((N,K',V), (N,V), (N))
+    width: int,  # K
+    probs_prev: Tuple[torch.Tensor, torch.Tensor],  # (N,K'), (N,K')
+    y_prev: torch.Tensor,  # (t - 1, N, K')
+    y_prev_last: torch.Tensor,  # (N,K')
+    y_prev_lens: torch.Tensor,  # (N, K')
+    prev_is_prefix: torch.Tensor,  # (N, K', K')  # [n, k, k'] iff k prefix of k'
+) -> Tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    Tuple[torch.Tensor, torch.Tensor],
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    """CTC prefix search step function
+
+    The step function of the CTC prefix search.
+
+    Parameters
+    ----------
+    probs_t : (torch.Tensor, torch.Tensor, torch.Tensor)
+        A triple of ``ext_probs_t, nonext_probs_t, blank_probs_t``. `ext_probs_t` is
+        of shape ``(N, old_width, V)`` containing the probabilities of extending a
+        prefix with a token of each type (resulting in a new token being added to the
+        reduced transcription). `nonext_probs_t` has shape ``(N, V)`` and contains the
+        probabilities of adding a token that does not extend a given prefix (i.e. when
+        a token immediately follows another of the same type with no blanks in between).
+        `blank_probs_t` is of shape ``(N)`` and contains the blank label probabilities.
+    width : int
+        The beam width
+    probs_prev : (torch.Tensor, torch.Tensor)
+        A pair of ``nb_probs_prev, b_probs_prev``. Each is a tensor of shape
+        ``(N, old_width)``. `nb_probs_prev` contains the summed mass of the paths
+        reducing to the given prefix which end in a non-blank token. `b_probs_prev`
+        is the summed mass of the paths reducing to the given prefix which end in a
+        blank token. ``nb_probs_prev + b_probs_prev = probs_prev``, the total mass of
+        each prefix.
+    y_prev : torch.Tensor
+        A long tensor of shape ``(S, N, old_width)`` containing the (reduced) prefixes
+        of each path.
+    y_prev_last : torch.Tensor
+        A long tensor of shape ``(N, old_width)`` containing the last token in each
+        prefix. Arbitrary when the prefix is length 0.
+    y_prev_lens: torch.Tensor
+        A long tensor of shape ``(N, old_width)`` specifying the length of each prefix.
+        For batch element ``n`` and prefix ``k``, only the tokens in
+        ``y_prev[:y_prev_lens[n, k], n, k]`` are valid.
+    prev_is_prefix : torch.Tensor
+        A boolean tensor of shape ``(N, old_width, old_width)``. ``prev_is_prefix[n, k,
+        k']`` if and only if prefix ``k`` is a (non-strict) prefix of ``k'``
+
+    Returns
+    -------
+    y_next, y_next_last, y_next_lens, probs_next, next_is_prefix, next_src,
+    next_is_nonext : torch.Tensor, torch.Tensor, torch.Tensor, (torch.Tensor,
+    torch.Tensor), torch.Tensor, torch.Tensor
+        The first five are analogous to the ``*prev*`` arguments, but after the step
+        has completed. `next_src` is a long tensor of shape ``(N, width)`` such that
+        the value ``k_old = next_src[n, k_new]`` is the index from the previous step
+        (over ``old_width``) that is a prefix of the new prefix at ``k_new`` (i.e. its
+        source). `next_is_nonext` is a boolean tensor indicating if the new prefix
+        did _not_ extend its source. If true, the new prefix is identical to the source.
+        If false, it has one token more.
+
+    See Also
+    --------
+    pydrobert.torch.layers.CTCPrefixSearch
+        Performs the entirety of the search.
+
+    Warnings
+    --------
+    This function treats large widths the same as
+    :func:`pydrobert.torch.layers.CTCPrefixSearch`: the beam will be filled to `width`
+    but invalid prefixes will be assigned a total probability of :obj:`-float("inf")`.
+    However, this function will only set the non-blank probabilities of invalid prefixes
+    to negative infinity; blank probabilities of invalid prefixes may be :obj:`0`
+    instead. The total (summed) mass will still be :obj:`-float("inf")`.
+
+    Notes
+    -----
+    If an extending prefix matches a previous nonextending prefix, the former's mass
+    is absorbed into the latter's and the latter's path is invalidated (see warning).
+    """
+
+    if width < 1:
+        raise RuntimeError("width must be positive")
+    ext_probs_t, nonext_probs_t, blank_probs_t = probs_t
+    del probs_t
+    if ext_probs_t.dim() != 3:
+        raise RuntimeError("ext_probs_t must be 3 dimensional")
+    N, Kp, V = ext_probs_t.shape
+    if nonext_probs_t.shape != (N, V):
+        raise RuntimeError(
+            f"expected nonext_probs_t to have shape {(N, V)}, got {nonext_probs_t.shape}"
+        )
+    if blank_probs_t.shape != (N,):
+        raise RuntimeError(
+            f"expected blank_probs_t to have shape {(N,)}, got {blank_probs_t.shape}"
+        )
+    nb_probs_prev, b_probs_prev = probs_prev
+    del probs_prev
+    if nb_probs_prev.shape != (N, Kp):
+        raise RuntimeError(
+            f"expected nb_probs_prev to have shape {(N, Kp)}, got {nb_probs_prev.shape}"
+        )
+    if b_probs_prev.shape != (N, Kp):
+        raise RuntimeError(
+            f"expected b_probs_prev to have shape {(N, Kp)}, got {b_probs_prev.shape}"
+        )
+    if y_prev.dim() != 3:
+        raise RuntimeError("y_prev must be 3 dimensional")
+    if y_prev.shape[1:] != (N, Kp):
+        raise RuntimeError(
+            f"expected last two dimensions of y_prev to be {(N, Kp)}, "
+            f"got {y_prev.shape[1:]}"
+        )
+    tm1 = y_prev.size(0)
+    if y_prev_last.shape != (N, Kp):
+        raise RuntimeError(
+            f"expected y_prev_last to have shape {(N, Kp)}, got {y_prev_last.shape}"
+        )
+    if y_prev_lens.shape != (N, Kp):
+        raise RuntimeError(
+            f"expected y_prev_lens to have shape {(N, Kp)}, got {y_prev_lens.shape}"
+        )
+    if prev_is_prefix.shape != (N, Kp, Kp):
+        raise RuntimeError(
+            f"expected prev_is_prefix to have shape {(N, Kp, Kp)}, "
+            f"got {prev_is_prefix.shape}"
+        )
+    K = min(width, Kp * (V + 1))  # the maximum number of legitimate paths
+
+    tot_probs_prev = nb_probs_prev + b_probs_prev
+    # this is to ensure invalid or empty paths don't mess up our gather/scatter
+    y_prev_last = y_prev_last.clamp(0, V - 1)
+
+    # b_ext_probs_cand is all zeros
+    # nonblank extensions include blank prefix + extension and non-blank, non-matching
+    # prefixes
+    nb_ext_probs_cand = (
+        nb_probs_prev.unsqueeze(2)
+        .expand(N, Kp, V)
+        .scatter(2, y_prev_last.unsqueeze(2), 0.0)
+        + b_probs_prev.unsqueeze(2)
+    ) * ext_probs_t  # (N, K', V)
+    # blank non-extensions are all previous paths plus a blank
+    b_nonext_probs_cand = tot_probs_prev * blank_probs_t.unsqueeze(1)  # (N, K')
+    # nonblank non-extensions are non-blank, matching prefixes and final matching token
+    # (N.B. y_prev_last may be garbage for invalid or empty paths, hence the clamp)
+    nb_nonext_probs_cand = nb_probs_prev * nonext_probs_t.gather(1, y_prev_last)  # N,K'
+    del nb_probs_prev, b_probs_prev, tot_probs_prev
+
+    # An extending candidate can match an existing non-extending candidate.
+    # We'll dump the extending candidate's probability mass into the non-extending
+    # candidate's mass if they're equal.
+    #
+    # let's assume path k is a strict prefix of path k'. What's the token that we'd have
+    # to match if we wanted to extend path k while remaining a prefix of k'?
+    # y_prev[y_prev_lens[n, k], n, k'] = to_match[n, k, k']
+    if tm1:
+        to_match = (
+            y_prev.gather(
+                0,
+                y_prev_lens.clamp(max=tm1 - 1)
+                .unsqueeze(2)
+                .expand(N, Kp, Kp)
+                .transpose(0, 1),
             )
-    joint = log_prior.unsqueeze(2) + logits_t
-    score, idxs = torch.topk(joint.view(batch_size, -1), width, dim=1)
-    s = idxs // num_classes
-    y = (idxs % num_classes).unsqueeze(0)
-    if eos_set is not None:
-        y_mask = (s.unsqueeze(2) == eos_set.unsqueeze(1)).any(2)
-        y = y.masked_fill(y_mask, eos)
-    if len_mask is not None:
-        score = torch.where(
-            len_mask.unsqueeze(1),
-            log_prior[..., :width],
-            score,
+            .transpose(0, 1)
+            .clamp(0, V - 1)
+        )  # (N, K', K')
+        # print(y_prev[:, 0].t(), y_prev_lens[0])
+        # for k in range(Kp):
+        #     for kp in range(Kp):
+        #         print(f"k={k}, k'={kp}, to_match={to_match[0, k, kp].item()}")
+    else:
+        to_match = torch.zeros((N, Kp, Kp), device=y_prev.device, dtype=y_prev.dtype)
+    # if we match to_match, will we be an exact match?
+    ext_is_exact = (
+        (y_prev_lens + 1).unsqueeze(2) == y_prev_lens.unsqueeze(1)
+    ) & prev_is_prefix  # (N, K', K')
+    # gather the extensions that match to_match, multiply with zero if k won't exactly
+    # match k', and sum into k'. Then sum those into the relevant non-extension
+    # candidates
+    nb_nonext_probs_cand = nb_nonext_probs_cand + (
+        nb_ext_probs_cand.gather(2, to_match).masked_fill(~ext_is_exact, 0.0)
+    ).sum(1)
+    # clear the probabilities of extensions k->v that exactly matched some k' for v
+    has_match = (
+        torch.nn.functional.one_hot(to_match, V).bool() & ext_is_exact.unsqueeze(3)
+    ).any(2)
+    nb_ext_probs_cand = nb_ext_probs_cand.masked_fill(has_match, -float("inf"))
+    del has_match, ext_is_exact
+
+    # we can finally determine the top k paths. Put the non-extending candidates after
+    # the extending candidates (the last K' elements of the second dimension)
+    tot_probs_cand = torch.cat(
+        [nb_ext_probs_cand.view(N, Kp * V), nb_nonext_probs_cand + b_nonext_probs_cand],
+        1,
+    )  # (N, K' * (V + 1))
+    next_ind = tot_probs_cand.topk(K, 1)[1]  # (N, K)
+    del tot_probs_cand
+
+    next_is_nonext = next_ind >= (Kp * V)
+    next_src = torch.where(
+        next_is_nonext, next_ind - (Kp * V), next_ind.floor_divide(V)
+    )
+    next_ext = next_ind % V
+
+    y_next_prefix_lens = y_prev_lens.gather(1, next_src)  # (N, K)
+    y_next = torch.cat(
+        [
+            y_prev.gather(2, next_src.unsqueeze(0).expand(tm1, N, K)),
+            torch.empty((1, N, K), device=y_prev.device, dtype=y_prev.dtype),
+        ],
+        0,
+    ).scatter(
+        0, y_next_prefix_lens.unsqueeze(0), next_ext.unsqueeze(0)
+    )  # (t, N, K)
+    y_next_lens = y_next_prefix_lens + (~next_is_nonext)
+    del y_next_prefix_lens
+
+    nb_ext_probs_next = nb_ext_probs_cand.view(N, Kp * V).gather(
+        1, next_ind.clamp(max=Kp * V - 1)
+    )  # (N, K)
+    nb_nonext_probs_next = nb_nonext_probs_cand.gather(1, next_src)  # (N, K)
+    nb_probs_next = torch.where(next_is_nonext, nb_nonext_probs_next, nb_ext_probs_next)
+    del nb_ext_probs_next, nb_nonext_probs_next, nb_nonext_probs_cand, nb_ext_probs_cand
+
+    b_probs_next = b_nonext_probs_cand.gather(1, next_src) * next_is_nonext  # (N, K)
+    del b_nonext_probs_cand
+
+    y_next_last = y_prev_last.gather(1, next_src) * next_is_nonext + next_ext * (
+        ~next_is_nonext
+    )
+    del y_prev_last
+
+    next_prefix_is_prefix = prev_is_prefix.gather(
+        1, next_src.unsqueeze(2).expand(N, K, Kp)
+    ).gather(2, next_src.unsqueeze(1).expand(N, K, K))
+    next_len_leq = y_next_lens.unsqueeze(2) <= y_next_lens.unsqueeze(1)
+    next_to_match = y_next.gather(
+        0, (y_next_lens - 1).clamp(min=0).unsqueeze(2).expand(N, K, K).transpose(0, 1)
+    ).transpose(0, 1)
+    next_ext_matches = next_to_match == next_ext.unsqueeze(2)
+    next_is_prefix = (
+        next_prefix_is_prefix
+        & next_len_leq
+        & (
+            next_is_nonext.unsqueeze(2)
+            | (~next_is_nonext.unsqueeze(2) & next_ext_matches)
         )
-        y = y.masked_fill(len_mask.unsqueeze(1).unsqueeze(0), eos)
-        s = torch.where(
-            len_mask.unsqueeze(1),
-            torch.arange(width, device=logits_t.device),
-            s,
+    )
+    del (
+        next_prefix_is_prefix,
+        next_len_leq,
+        next_to_match,
+        next_ext_matches,
+        next_ext,
+        next_ind,
+    )
+
+    if K < width:
+        # we've exceeded the possible number of legitimate paths. Append up to the
+        # width but set their probabilities to -inf and make sure they aren't
+        # considered a prefix of anything
+        # This should only happen once in a given rollout assuming width stays
+        # constant, so it's ok to be a bit expensive.
+        rem = width - K
+        y_next = torch.cat([y_next, y_next.new_empty(tm1 + 1, N, rem)], 2)
+        zeros = y_next_last.new_zeros(N, rem)
+        y_next_last = torch.cat([y_next_last, zeros], 1)
+        y_next_lens = torch.cat([y_next_lens, zeros], 1)
+        neg_inf = nb_probs_next.new_full((N, rem), -float("inf"))
+        nb_probs_next = torch.cat([nb_probs_next, neg_inf], 1)
+        b_probs_next = torch.cat([b_probs_next, neg_inf], 1)
+        false_ = next_is_prefix.new_full((N, rem), False)
+        next_is_nonext = torch.cat([next_is_nonext, false_], 1)
+        next_is_prefix = torch.cat(
+            [next_is_prefix, false_.unsqueeze(1).expand(N, K, rem)], 2
         )
-    if y_prev is not None:
-        y_prev = y_prev.gather(2, s.unsqueeze(0).expand(t - 1, batch_size, width))
-        y = torch.cat([y_prev, y], 0)
-    return score, y, s
+        next_is_prefix = torch.cat(
+            [next_is_prefix, false_.unsqueeze(2).expand(N, rem, width)], 1
+        )
+        next_src = torch.cat([next_src, zeros], 1)
+
+    return (
+        y_next,  # (t, N, K)
+        y_next_last,  # (N, K)
+        y_next_lens,  # (N, K)
+        (nb_probs_next, b_probs_next),  # (N, K), (N, K)
+        next_is_prefix,  # (N, K, K)
+        next_src,  # (N, K)
+        next_is_nonext,  # (N, K)
+    )
 
 
 @script_if_tracing
@@ -1463,9 +1685,7 @@ def random_walk_advance(
             raise RuntimeError(
                 "If logits_t of shape {} then y_prev must have shape "
                 "(*, {}, {})".format(
-                    (batch_size, old_samp, num_classes),
-                    batch_size,
-                    old_samp,
+                    (batch_size, old_samp, num_classes), batch_size, old_samp,
                 )
             )
         y_prev = y_prev.expand(-1, -1, num_samp)
@@ -1684,18 +1904,12 @@ def _solve_interpolation(
         zeros = torch.zeros(
             (B.shape[0], B.shape[2], B.shape[2]), device=B.device, dtype=B.dtype
         )
-        B0 = torch.cat(
-            [B, zeros],
-            1,
-        )  # (N, T+I+1, I+1)
+        B0 = torch.cat([B, zeros], 1,)  # (N, T+I+1, I+1)
         ABtB0 = torch.cat([ABt, B0], 2)  # (N, T+I+1, T+I+1)
         zeros = torch.zeros(
             (B.shape[0], B.shape[2], f.shape[2]), device=f.device, dtype=f.dtype
         )
-        f0 = torch.cat(
-            [f, zeros],
-            1,
-        )  # (N, T+I+1, O)
+        f0 = torch.cat([f, zeros], 1,)  # (N, T+I+1, O)
         wv, _ = torch.solve(f0, ABtB0)
         w, v = wv[:, : B.shape[1]], wv[:, B.shape[1] :]
     else:
@@ -2220,7 +2434,7 @@ def pad_variable(
     arange_ = torch.arange(Tp, device=x.device)
     left_mask = (pad[0].unsqueeze(1) > arange_).unsqueeze(2).expand(N, Tp, F)
     if mode == "constant":
-        buff = torch.tensor(value, device=x.device, dtype=x.dtype).view(1)
+        buff = torch.tensor(value, device=x.device).to(x.dtype).view(1)
         left_pad = buff.expand(pad[0].sum() * F)
         right_pad = buff.expand(pad[1].sum() * F)
     elif mode == "reflect":
@@ -2304,3 +2518,256 @@ def _sequence_log_probs_packed(logits, hyp):
     logits = logits.masked_fill(not_class_mask, 0.0)
     logits_split = logits.split(logits_lens.tolist(), 0)
     return torch.stack(tuple(x.sum(0) for x in logits_split), 0)
+
+
+def _string_matching(
+    ref,
+    hyp,
+    eos,
+    include_eos,
+    batch_first,
+    ins_cost,
+    del_cost,
+    sub_cost,
+    warn,
+    norm=False,
+    return_mask=False,
+    return_prf_dsts=False,
+    exclude_last=False,
+    padding=None,
+    return_mistakes=False,
+):
+    assert not return_mask or not return_prf_dsts
+    assert not exclude_last or (return_mask or return_prf_dsts)
+    if ref.dim() != 2 or hyp.dim() != 2:
+        raise RuntimeError("ref and hyp must be 2 dimensional")
+    mult = 1.0
+    if ins_cost == del_cost == sub_cost > 0.0:
+        # results are equivalent and faster to return
+        if not return_mistakes:
+            mult = ins_cost
+        ins_cost = del_cost = sub_cost = 1.0
+        return_mistakes = False
+    elif return_mistakes and warn:
+        warnings.warn(
+            "The behaviour for non-uniform error rates has changed after v0.3.0. "
+            "Please switch to edit_distance functions for old behaviour. Set "
+            "warn=False to suppress this warning"
+        )
+    if batch_first:
+        ref = ref.t()
+        hyp = hyp.t()
+    ref = ref.detach()
+    hyp = hyp.detach()
+    max_ref_steps, batch_size = ref.shape
+    max_hyp_steps, batch_size_ = hyp.shape
+    device = ref.device
+    if batch_size != batch_size_:
+        raise RuntimeError(
+            "ref has batch size {}, but hyp has {}".format(batch_size, batch_size_)
+        )
+    if eos is not None:
+        ref_lens = _lens_from_eos(ref, eos, 0)
+        hyp_lens = _lens_from_eos(hyp, eos, 0)
+        if include_eos:
+            ref_eq_mask = ref_lens == max_ref_steps
+            ref_lens = ref_lens + 1
+            if ref_eq_mask.any():
+                if warn:
+                    warnings.warn(
+                        "include_eos=True, but a transcription in ref did not "
+                        "contain the eos symbol ({}). To suppress this "
+                        "warning, set warn=False".format(eos)
+                    )
+                ref_lens = ref_lens - ref_eq_mask.to(ref_lens.dtype)
+            hyp_eq_mask = hyp_lens == max_hyp_steps
+            hyp_lens = hyp_lens + 1
+            if hyp_eq_mask.any():
+                if warn:
+                    warnings.warn(
+                        "include_eos=True, but a transcription in hyp did not "
+                        "contain the eos symbol ({}). To suppress this "
+                        "warning, set warn=False".format(eos)
+                    )
+                hyp_lens = hyp_lens - hyp_eq_mask.to(hyp_lens.dtype)
+            del ref_eq_mask, hyp_eq_mask
+    else:
+        ref_lens = torch.full(
+            (batch_size,), max_ref_steps, device=ref.device, dtype=torch.long
+        )
+        hyp_lens = torch.full(
+            (batch_size,), max_hyp_steps, device=ref.device, dtype=torch.long
+        )
+    ins_cost = torch.tensor(float(ins_cost), device=device)
+    del_cost = torch.tensor(float(del_cost), device=device)
+    sub_cost = torch.tensor(float(sub_cost), device=device)
+    if return_mask:
+        # this dtype business is a workaround for different default mask
+        # types < 1.2.0 and > 1.2.0
+        mask = torch.empty(
+            (max_hyp_steps + (0 if exclude_last else 1), max_ref_steps, batch_size),
+            device=device,
+            dtype=ins_cost.eq(ins_cost).dtype,
+        )
+        mask[0, 0] = 1
+        mask[0, 1:] = 0
+    elif return_prf_dsts:
+        assert padding is not None
+        prefix_ers = torch.empty(
+            (max_hyp_steps + (0 if exclude_last else 1), batch_size),
+            device=device,
+            dtype=torch.float,
+        )
+        prefix_ers[0] = ref_lens * (1.0 if return_mistakes else del_cost)
+    # direct row down corresponds to insertion
+    # direct col right corresponds to a deletion
+    #
+    # we vectorize as much as we can. Neither substitutions nor insertions require
+    # values from the current row to be computed, and since the last row can't be
+    # altered, we can easily vectorize there. To vectorize deletions, we use del_matrix.
+    # It has entries
+    #
+    # 0   inf inf inf ...
+    # d   0   inf inf ...
+    # 2d  d   0   inf ...
+    # ...
+    #
+    # Where "d" is del_cost. When we sum with the intermediate values of the next row
+    # "v" (containing the minimum of insertion and subs costs), we get
+    #
+    # v[0]    inf     inf     inf ...
+    # v[0]+d  v[1]    inf     inf ...
+    # v[0]+2d v[1]+d  v[2]    inf ...
+    # ...
+    #
+    # And we take the minimum of each row. The dynamic programming algorithm for
+    # levenshtein would usually handle deletions as:
+    #
+    # for i=1..|v|:
+    #     v[i] = min(v[i], v[i-1]+d)
+    #
+    # if we unroll the loop, we get the minimum of the elements of each row of the above
+    # matrix
+    row = torch.arange(max_ref_steps + 1, device=device, dtype=torch.float)  # (R+1, N)
+    if return_mistakes:
+        mistakes = row.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
+        row = row * del_cost
+    else:
+        row *= del_cost
+        del_mat = row.unsqueeze(1) - row
+        del_mat = del_mat + torch.full_like(del_mat, float("inf")).triu(1)
+        del_mat = del_mat.unsqueeze(-1)  # (R + 1, R + 1, 1)
+    row = row.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
+    for hyp_idx in range(1, max_hyp_steps + (0 if exclude_last else 1)):
+        not_done = (hyp_idx - (0 if exclude_last else 1)) < hyp_lens
+        last_row = row
+        ins_mask = (hyp_lens >= hyp_idx).float()  # (N,)
+        neq_mask = (ref != hyp[hyp_idx - 1]).float()  # (R + 1, N)
+        row = last_row + ins_cost * ins_mask
+        sub_row = last_row[:-1] + sub_cost * neq_mask
+        if return_mistakes:
+            # The kicker is substitutions over insertions or deletions.
+            pick_sub = row[1:] >= sub_row
+            row[1:] = torch.where(pick_sub, sub_row, row[1:])
+            last_mistakes = mistakes
+            mistakes = last_mistakes + ins_mask
+            msub_row = last_mistakes[:-1] + neq_mask
+            mistakes[1:] = torch.where(pick_sub, msub_row, mistakes[1:])
+            # FIXME(sdrobert): the min function behaves non-determinically r.n.
+            # (regardless of what the 1.7.0 docs say!) so techniques for extracting
+            # indices from the min are a wash. If we can get determinism, we can flip
+            # the 1 dimension if (del_mat + row) before the min and get the least idx
+            # min, which should have the fewest number of deletions.
+            for ref_idx in range(1, max_ref_steps + 1):
+                del_ = row[ref_idx - 1] + del_cost
+                pick_sub = del_ >= row[ref_idx]
+                row[ref_idx] = torch.where(pick_sub, row[ref_idx], del_)
+                mistakes[ref_idx] = torch.where(
+                    pick_sub, mistakes[ref_idx], mistakes[ref_idx - 1] + 1.0
+                )
+            mistakes = torch.where(not_done, mistakes, last_mistakes)
+        else:
+            row[1:] = torch.min(row[1:], sub_row)
+            row, _ = (del_mat + row).min(1)
+        row = torch.where(not_done, row, last_row)
+        if return_mask:
+            # As proven in the OCD paper, the optimal targets are always the first
+            # character of a suffix of the reference transcript that remains to be
+            # aligned. The levenshtein operation corresponding to what we do with that
+            # target would be a matched substitution (i.e. hyp's next token is the OCD
+            # target, resulting in no change in cost from the prefix). Thus, given a
+            # levenshtein matrix for one of these OCD targets (which is this matrix,
+            # except for the final row), the minimal values on the final row sit on a
+            # diagonal from the minimal values of the current row.
+            mins = row.min(0, keepdim=True)[0]
+            row_mask = row[:-1] == mins
+            row_mask &= not_done
+            mask[hyp_idx] = row_mask
+        elif return_prf_dsts:
+            if return_mistakes:
+                prefix_ers[hyp_idx] = mistakes.gather(0, ref_lens.unsqueeze(0)).squeeze(
+                    0
+                )
+            else:
+                prefix_ers[hyp_idx] = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
+    if return_mask:
+        mask = mask & (
+            (
+                torch.arange(max_ref_steps, device=device)
+                .unsqueeze(1)
+                .expand(max_ref_steps, batch_size)
+                < ref_lens
+            ).unsqueeze(0)
+        )
+        return mask
+    elif return_prf_dsts:
+        prefix_ers = prefix_ers * mult
+        if norm:
+            prefix_ers = prefix_ers / ref_lens.to(row.dtype)
+            zero_mask = ref_lens.eq(0).unsqueeze(0)
+            if zero_mask.any():
+                if warn:
+                    warnings.warn(
+                        "ref contains empty transcripts. Error rates will be "
+                        "0 for prefixes of length 0, 1 otherwise. To suppress "
+                        "this warning, set warn=False"
+                    )
+                prefix_ers = torch.where(
+                    zero_mask,
+                    (
+                        torch.arange(prefix_ers.size(0), device=device)
+                        .gt(0)
+                        .to(row.dtype)
+                        .unsqueeze(1)
+                        .expand_as(prefix_ers)
+                    ),
+                    prefix_ers,
+                )
+        prefix_ers = prefix_ers.masked_fill(
+            (
+                torch.arange(prefix_ers.size(0), device=device)
+                .unsqueeze(1)
+                .ge(hyp_lens + (0 if exclude_last else 1))
+            ),
+            padding,
+        )
+        if batch_first:
+            prefix_ers = prefix_ers.t()
+        return prefix_ers
+    if return_mistakes:
+        er = mistakes.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
+    else:
+        er = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
+    er = er * mult
+    if norm:
+        er = er / ref_lens.to(er.dtype)
+        zero_mask = ref_lens.eq(0)
+        if zero_mask.any():
+            if warn:
+                warnings.warn(
+                    "ref contains empty transcripts. Error rates for entries "
+                    "will be 1 if any insertion and 0 otherwise. To suppress "
+                    "this warning, set warn=False"
+                )
+            er = torch.where(zero_mask, hyp_lens.gt(0).to(er.dtype), er)
+    return er

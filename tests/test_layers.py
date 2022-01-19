@@ -136,7 +136,7 @@ NAN = float("nan")
 )
 def test_lookup_language_model_builds_trie(prob_list, pointers, ids, logs):
     vocab_size = 5
-    lm = layers.LookupLanguageModel(vocab_size, prob_list=prob_list)
+    lm = layers.LookupLanguageModel(vocab_size, 0, prob_list=prob_list)
     assert lm.pointers.shape == pointers.shape
     assert lm.ids.shape == ids.shape
     assert lm.logs.shape == logs.shape
@@ -150,10 +150,9 @@ def test_lookup_language_model_builds_trie(prob_list, pointers, ids, logs):
 
 
 @pytest.mark.parametrize("N", [1, 2, 5])
-@pytest.mark.parametrize("sos", [-2, None])
-def test_lookup_language_model_log_probs(device, N, sos):
+def test_lookup_language_model_log_probs(device, N):
     torch.manual_seed(1900)
-    vocab_size, eos = 10, -1
+    vocab_size, sos = 10, -1
     prob_list = []
     for n in range(1, N + 1):
         max_ngrams = vocab_size ** n
@@ -220,20 +219,47 @@ def test_lookup_language_model_log_probs(device, N, sos):
     # the sos shouldn't matter -- it isn't in the lookup table. The lm will
     # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
     # be 0
-    lm = layers.LookupLanguageModel(vocab_size, sos=sos, eos=eos, prob_list=prob_list)
+    lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list)
     lm = lm.to(device)
     for exp, hist in zip(exps, hists):
-        act = lm(hist)
+        act = lm(hist, None, torch.tensor(-1, device=device))[0]
         assert torch.allclose(exp, act, atol=1e-5)
-        hist = torch.cat(
-            [
-                hist,
-                torch.full((1,) + hist.shape[1:], eos, dtype=torch.long, device=device),
-            ]
-        )
-        act = lm(hist, full=True)
-        assert torch.allclose(exp, act[-2], atol=1e-5)
-        assert torch.allclose(torch.zeros_like(exp), act[-1])
+
+
+def test_lookup_language_model_nonuniform_idx(device):
+    S, N, B = 100, 5, 30
+    prob_list = []
+    vocab_size, sos = 10, -1
+    prob_list = []
+    for n in range(1, N + 1):
+        max_ngrams = vocab_size ** n
+        has_ngram = torch.randint(2, (max_ngrams,), device=device).eq(1)
+        dict_ = dict()
+        last = n == N
+        for idx, has in enumerate(has_ngram):
+            if not has:
+                continue
+            key = []
+            for _ in range(n):
+                key.append(idx % vocab_size)
+                idx //= vocab_size
+            if n == 1:
+                key = key[0]
+            else:
+                key = tuple(key)
+            if last:
+                dict_[key] = torch.randn((1,), device=device).item()
+            else:
+                dict_[key] = torch.randn((2,), device=device).tolist()
+        prob_list.append(dict_)
+    prob_list[0][sos] = (-99, 0)
+    lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list).to(device)
+    hist = torch.randint(0, vocab_size, (S, B), device=device)
+    exp = lm(hist)
+    idx = torch.randint(0, S + 1, (B,), device=device)
+    exp = exp.gather(0, idx.view(1, B, 1).expand(1, B, vocab_size)).squeeze(0)
+    act, _ = lm(hist, idx=idx)
+    assert torch.allclose(exp, act, atol=1e-5)
 
 
 def test_lookup_language_model_sos_context(device):
@@ -245,21 +271,12 @@ def test_lookup_language_model_sos_context(device):
     ]
     lm = layers.LookupLanguageModel(4, sos=0, prob_list=prob_list)
     lm.to(device)
-    # with pad_sos_to_n = True
+    # XXX(sdrobert): pad_sos_to_n has been removed now - it's always true
     # P(0|0, 0) = P(0) = -99
     # P(1|0, 0) = 0.001
     # P(2|0, 0) = P(2|0) = 0.02
     # P(3|0, 0) = P(3) = 0.3
     exp = torch.tensor([[[-99.0, 0.001, 0.02, 0.3]]], device=device)
-    act = lm(torch.empty((0, 1), device=device, dtype=torch.long))
-    assert torch.allclose(exp, act, atol=1e-5)
-    lm.pad_sos_to_n = False
-    # with pad_sos_to_n = False
-    # P(0|0) = P(0) = -99
-    # P(1|0) = 0.01
-    # P(2|0) = 0.02
-    # P(3|0) = P(3) = 0.3
-    exp[..., 1] = 0.01
     act = lm(torch.empty((0, 1), device=device, dtype=torch.long))
     assert torch.allclose(exp, act, atol=1e-5)
 
@@ -306,23 +323,25 @@ def test_lookup_language_model_republic():
     import pydrobert.torch.util as util
 
     prob_list = util.parse_arpa_lm(arpa_file, token2id=token2id)
-    lm = layers.LookupLanguageModel(
-        vocab_size, sos=sos, eos=eos, oov=oov, prob_list=prob_list
-    )
+    lm = layers.LookupLanguageModel(vocab_size, sos=sos, prob_list=prob_list)
     lm = lm.to(device)
-    log_probs = lm(queries, full=True)
+    log_probs = lm(queries)
     queries = torch.cat([queries, torch.full_like(queries[:1], eos)])
     assert log_probs.shape[:-1] == queries.shape
     log_probs = log_probs.gather(2, queries.unsqueeze(2)).squeeze(2)
+    # determine the first location of eos and zero everything afterwards
+    eos_mask = queries[:-1].eq(eos).cumsum(0).bool()
+    eos_mask = torch.cat([eos_mask.new_full((1, queries.size(1)), False), eos_mask], 0)
+    log_probs.masked_fill_(eos_mask, 0.0)
     assert torch.allclose(log_probs.sum(0), exp, atol=1e-5)
 
 
 @pytest.mark.cpu
 def test_lookup_language_model_state_dict():
-    vocab_size, sos, eos = 10, -1, 0
+    vocab_size, sos = 10, -1
     uni_list = [{0: 0.0, 1: 0.1, 2: 0.2}]
-    lm_a = layers.LookupLanguageModel(vocab_size, sos=sos, eos=eos, prob_list=uni_list)
-    lm_b = layers.LookupLanguageModel(vocab_size, sos=sos, eos=eos)
+    lm_a = layers.LookupLanguageModel(vocab_size, sos, prob_list=uni_list)
+    lm_b = layers.LookupLanguageModel(vocab_size, sos)
 
     def compare(assert_same):
         same_max_ngram = lm_a.max_ngram == lm_b.max_ngram
@@ -361,7 +380,7 @@ def test_lookup_language_model_state_dict():
     lm_b.load_state_dict(lm_a.state_dict())
     compare(True)
     bi_list = [{2: (0.2, -0.2), 3: (0.3, -0.3)}, {(0, 3): 0.03, (2, 4): 0.24}]
-    lm_a = layers.LookupLanguageModel(vocab_size, sos=sos, eos=eos, prob_list=bi_list)
+    lm_a = layers.LookupLanguageModel(vocab_size, sos=sos, prob_list=bi_list)
     compare(False)
     lm_b.load_state_dict(lm_a.state_dict())
     compare(True)
@@ -370,7 +389,7 @@ def test_lookup_language_model_state_dict():
         dict(),
         {(0, 0, 0): 0.0, (4, 4, 4): 0.444, (2, 3, 2): 0.232},
     ]
-    lm_a = layers.LookupLanguageModel(vocab_size, sos=sos, eos=eos, prob_list=tri_list)
+    lm_a = layers.LookupLanguageModel(vocab_size, sos=sos, prob_list=tri_list)
     compare(False)
     lm_b.load_state_dict(lm_a.state_dict())
     compare(True)
@@ -400,10 +419,7 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction, trace)
         ref[0] = 0
     log_probs = torch.randn(num_batches, samples, device=device)
     loss = layers.MinimumErrorRateLoss(
-        eos=None,
-        sub_avg=sub_avg,
-        batch_first=batch_first,
-        reduction=reduction,
+        eos=None, sub_avg=sub_avg, batch_first=batch_first, reduction=reduction,
     )
     if trace:
         loss = torch.jit.trace(loss, (log_probs, ref, hyp))
@@ -412,10 +428,7 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction, trace)
     l2 = loss(log_probs, ref, hyp)
     assert torch.allclose(l1, l2)
     loss = layers.MinimumErrorRateLoss(
-        eos=0,
-        sub_avg=sub_avg,
-        batch_first=batch_first,
-        reduction=reduction,
+        eos=0, sub_avg=sub_avg, batch_first=batch_first, reduction=reduction,
     )
     if trace:
         loss = torch.jit.trace(loss, (log_probs, ref, hyp))
@@ -472,10 +485,7 @@ def test_hard_optimal_completion_distillation_loss(
     inv_len_mask = len_mask.eq(0)
     logits.requires_grad_(True)
     loss = layers.HardOptimalCompletionDistillationLoss(
-        eos=eos,
-        include_eos=include_eos,
-        batch_first=batch_first,
-        reduction=reduction,
+        eos=eos, include_eos=include_eos, batch_first=batch_first, reduction=reduction,
     )
     if trace:
         loss = torch.jit.trace(loss, (logits, ref, hyp))
@@ -510,57 +520,326 @@ def test_hard_optimal_completion_distillation_loss(
     assert not torch.all(g.eq(0.0))
 
 
-@pytest.mark.parametrize("sos", [None, 0])
-def test_sequential_language_model(device, sos):
-    class LM(layers.SequentialLanguageModel):
-        def __init__(self, vocab_size, sos=None, eos=None, oov=None):
-            super(LM, self).__init__(vocab_size, eos=eos, oov=oov)
-            self.embed = torch.nn.Embedding(vocab_size, vocab_size)
+def test_sequential_language_model(device):
+    class RNNLM(layers.SequentialLanguageModel):
+        def __init__(self, vocab_size, embed_size=128, hidden_size=512):
+            super(RNNLM, self).__init__(vocab_size)
+            self.embed = torch.nn.Embedding(
+                vocab_size + 1, embed_size, padding_idx=vocab_size
+            )
+            self.rnn = torch.nn.LSTMCell(embed_size, hidden_size)
+            self.ff = torch.nn.Linear(hidden_size, vocab_size)
 
-        def calc_last_log_probs(self, hist, eos_mask):
-            if hist.shape[0]:
-                out = torch.nn.functional.log_softmax(self.embed(hist[-1]), dim=-1)
+        def calc_idx_log_probs(self, hist, prev, idx):
+            N = hist.size(1)
+            if idx == 0:
+                in_ = hist.new_full((N,), self.vocab_size)
+                prev = [self.rnn.weight_hh.new_zeros((N, self.rnn.hidden_size))] * 2
             else:
-                assert self.sos is None
-                out = -torch.full(
-                    (
-                        hist.shape[1],
-                        self.vocab_size,
-                    ),
-                    self.vocab_size,
-                    device=device,
-                    dtype=torch.float,
-                ).log()
-            return out
+                if not prev:
+                    prev = self.calc_idx_log_probs(hist, None, idx - 1)[1]
+                in_ = hist[idx - 1]
+            embedding = self.embed(in_)
+            h_1, c_1 = self.rnn(embedding, prev)
+            logits = self.ff(h_1)
+            return torch.nn.functional.log_softmax(logits, -1), (h_1, c_1)
 
-    torch.manual_seed(61094)
-    S, vocab_size, max_dim, max_dim_size = 30, 20, 10, 5
-    eos, oov = vocab_size - 2, vocab_size - 1
-    num_dim = torch.randint(2, max_dim + 1, (1,), device=device).item()
-    hist_shape = [S] + torch.randint(
-        1, max_dim_size, (num_dim,), device=device
-    ).tolist()
-    hist = torch.randint(
-        -vocab_size // 5, (vocab_size * 6) // 5, hist_shape, device=device
+    S, N, V = 100, 10, 50
+    hist = torch.randint(0, V, (S, N), device=device)
+    lm = RNNLM(V).to(device)
+    log_probs = lm(hist)
+    for idx in torch.arange(S, -1, -1, device=device):
+        log_probs_idx = lm(hist[:idx], idx=idx)[0]
+        assert torch.allclose(log_probs[idx], log_probs_idx)
+
+
+def test_ctc_prefix_search(device):
+    class MyLM(layers.MixableSequentialLanguageModel):
+        def __init__(self):
+            super().__init__(2)
+            self.register_buffer(
+                "bigram_table",
+                torch.tensor(
+                    [
+                        [1.0, 0.0],  # P(0|<s>), P(1|<s>)
+                        [0.5, 0.5],  # P(0|0), P(1|0)
+                        [0.0, 1.0],  # P(0|1), P(1|1)
+                    ]
+                ).log(),
+            )
+
+        def extract_by_src(self, in_prev, src):
+            return in_prev
+
+        def mix_by_mask(self, in_prev_true, in_prev_false, mask):
+            return in_prev_true
+
+        def calc_idx_log_probs(self, hist, prev, idx):
+            # note we shift + 1 to make room for <s>
+            idx_zero = idx == 0
+            if idx_zero.all():
+                x = hist.new_full((hist.size(1),), 0)
+            else:
+                x = (
+                    hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(0) + 1
+                )  # (N,)
+                x = x.masked_fill(idx_zero, 0)
+            return self.bigram_table.gather(0, x.unsqueeze(1).expand(-1, 2)), None
+
+    T, N, K, V = 3, 128, 2, 3
+    logits = (
+        torch.tensor(
+            [[1 / 2, 1 / 3, 1 / 6], [1 / 3, 1 / 6, 1 / 2], [1 / 6, 1 / 2, 1 / 3],]
+        )
+        .log()
+        .unsqueeze(1)
+        .expand(T, N, V)
+        .to(device)
     )
-    hist = hist.masked_fill(hist.eq(eos), vocab_size + 1)
-    N = torch.tensor(hist_shape[1:]).prod().item()
-    first_eos_locs = torch.randint(1, hist_shape[0], (N,), device=device)
-    hist.view(-1, N)[first_eos_locs, range(N)] = eos
-    lm = LM(vocab_size, sos, eos, oov).to(device)
-    log_probs = lm(hist, full=True)
-    assert list(log_probs.shape) == [hist_shape[0] + 1] + hist_shape[1:] + [vocab_size]
-    for log_probs_n, first_eos_n in zip(
-        log_probs.view(-1, N, vocab_size).transpose(0, 1), first_eos_locs.tolist()
+    exps = [
+        (0.0, [[0, 1], [0]], [5 / 24, 1 / 6]),
+        (1.0, [[0], [0, 1]], [5 / 24, 17 / 144]),
+    ]
+    lm = MyLM().to(device)
+    for beta, y_exp, probs_exp in exps:
+        search = layers.CTCPrefixSearch(K, beta, lm)
+        y_act, y_lens_act, probs_act = search(logits)
+        assert y_act.shape == (T, N, K)
+        assert y_lens_act.shape == (N, K)
+        assert probs_act.shape == (N, K)
+        for y_k_exp, probs_k_exp, y_k_act, y_lens_k_act, probs_k_act in zip(
+            y_exp, probs_exp, y_act.transpose(0, 2), y_lens_act.t(), probs_act.t()
+        ):
+            Tp = len(y_k_exp)
+            assert (y_lens_k_act == Tp).all()
+            y_k_exp = torch.tensor(y_k_exp, device=device).unsqueeze(0)  # (1, Tp)
+            y_k_act = y_k_act[:, :Tp]  # (N, Tp)
+            assert (y_k_act == y_k_exp).all()
+            probs_k_exp = torch.tensor(probs_k_exp, device=device).unsqueeze(0)
+            assert torch.allclose(probs_k_exp, probs_k_act)
+
+
+def test_ctc_prefix_search_batch(device):
+    class RNNLM(layers.MixableSequentialLanguageModel):
+        def __init__(self, vocab_size, embed_size=128, hidden_size=512):
+            super().__init__(vocab_size)
+            self.hidden_size = hidden_size
+            self.embed = torch.nn.Embedding(
+                vocab_size + 1, embed_size, padding_idx=vocab_size
+            )
+            self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
+            self.ff = torch.nn.Linear(hidden_size, vocab_size)
+
+        def extract_by_src(self, prev, src):
+            return {
+                "hidden_state": prev["hidden_state"].index_select(0, src),
+                "cell_state": prev["cell_state"].index_select(0, src),
+            }
+
+        def mix_by_mask(self, prev_true, prev_false, mask):
+            return dict(
+                (k, torch.where(mask.unsqueeze(1), prev_true[k], prev_false[k]))
+                for k in prev_true
+            )
+
+        def update_input(self, prev, hist):
+            if len(prev):
+                return prev
+            N = hist.size(1)
+            zeros = self.ff.weight.new_zeros((N, self.hidden_size))
+            return {"hidden_state": zeros, "cell_state": zeros}
+
+        def calc_idx_log_probs(self, hist, prev, idx):
+            idx_zero = idx == 0
+            if idx_zero.all():
+                x = hist.new_full((hist.size(1),), self.vocab_size)
+            else:
+                x = hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(
+                    0
+                )  # (N,)
+                x = x.masked_fill(idx_zero, self.vocab_size)
+            x = self.embed(x)
+            h_1, c_1 = self.cell(x, (prev["hidden_state"], prev["cell_state"]))
+            logits = self.ff(h_1)
+            return (
+                torch.nn.functional.log_softmax(logits, -1),
+                {"hidden_state": h_1, "cell_state": c_1},
+            )
+
+    T, N, V, K = 50, 128, 50, 5
+    assert K <= V
+    lm = RNNLM(V)
+    search = layers.CTCPrefixSearch(K, lm=lm).to(device)
+    logits = torch.randn((T, N, V + 1), device=device)
+    lens = torch.randint(0, T, (N,), device=device)
+
+    exps = []
+    for logits_n, lens_n in zip(logits.transpose(0, 1), lens):
+        logits_n = logits_n[:lens_n].unsqueeze(1)
+        lens_n = lens_n.view(1)
+        y_n_exp, y_lens_n_exp, probs_n_exp = search(logits_n, lens_n)
+        y_n_exp = y_n_exp.squeeze(1)  # (T_n, K_n)
+        y_lens_n_exp = y_lens_n_exp.squeeze(0)  # (K_n,)
+        probs_n_exp = probs_n_exp.squeeze(0)  # (K_n,)
+        valid_prefix_mask_n_exp = probs_n_exp >= 0.0
+        if not valid_prefix_mask_n_exp.all():
+            assert not lens_n
+            assert y_lens_n_exp[0] == 0
+        else:
+            assert (y_lens_n_exp <= lens_n).all()
+        exps.append((y_n_exp, y_lens_n_exp, probs_n_exp))
+
+    y_act, y_lens_act, probs_act = search(logits, lens)
+    for (y_n_exp, y_lens_n_exp, probs_n_exp), y_n_act, y_lens_n_act, probs_n_act in zip(
+        exps, y_act.transpose(0, 1), y_lens_act, probs_act
     ):
-        # the index first_eos_n in log_probs refers to the probabilties of the
-        # current token being whatever given the history first_eos_n - 1, so
-        # we haven't yet stored the eos in history.
-        assert not log_probs_n[: first_eos_n + 1].eq(0.0).any()
-        assert log_probs_n[first_eos_n + 1 :].eq(0.0).all()
-    for s in range(log_probs.shape[0]):
-        assert torch.allclose(log_probs[s], lm(hist[:s]))
-    assert torch.allclose(lm(hist[:0], full=True).squeeze(0), log_probs[0])
+        assert y_n_exp.shape[1:] == y_n_act.shape[1:]
+        assert y_n_exp.size(0) <= y_n_act.size(0)
+        assert y_lens_n_exp.shape == y_lens_n_act.shape
+        assert probs_n_exp.shape == probs_n_act.shape
+        valid_prefix_mask_n_exp = probs_n_exp >= 0.0
+        valid_prefix_mask_n_act = probs_n_act >= 0.0
+        assert (valid_prefix_mask_n_exp == valid_prefix_mask_n_act).all()
+        if not valid_prefix_mask_n_exp.all():
+            assert valid_prefix_mask_n_exp.sum() == 1  # only one valid path: empty one
+            y_n_exp, y_n_act = y_n_exp[:, :1], y_n_act[:, :1]
+            y_lens_n_exp, y_lens_n_act = y_lens_n_exp[:1], y_lens_n_act[:1]
+            probs_n_exp, probs_n_act = probs_n_exp[:1], probs_n_act[:1]
+        assert (y_lens_n_exp == y_lens_n_act).all()
+        assert torch.allclose(probs_n_exp, probs_n_act)
+        rem = y_n_act.size(0) - y_n_exp.size(0)
+        if rem > 0:
+            y_n_exp = torch.cat([y_n_exp, y_n_exp.new_empty((rem, y_n_exp.size(1)))], 0)
+            assert y_n_exp.shape == y_n_act.shape
+        len_mask = (
+            torch.arange(y_n_exp.size(0), device=device).unsqueeze(1) >= y_lens_n_exp
+        )
+        y_n_exp = y_n_exp.masked_fill_(len_mask, -1)
+        y_n_act = y_n_act.masked_fill_(len_mask, -1)
+        assert (y_n_exp == y_n_act).all()
+
+
+def test_beam_search(device):
+    class MyLM(layers.ExtractableSequentialLanguageModel):
+        def __init__(self, vocab_size):
+            super().__init__(vocab_size)
+            bigram_table = (
+                torch.arange(1, vocab_size + 1, dtype=torch.float)
+                .unsqueeze(0)
+                .expand(vocab_size, vocab_size)
+            )
+            # dist over idx = [0, ..., 0, idx + 1, idx + 2, -(idx - 3), ..., -V]
+            bigram_table = bigram_table - bigram_table.triu(2) - bigram_table.tril(-1)
+            self.register_buffer("bigram_table", bigram_table)
+
+        def update_input(self, in_prev, hist):
+            return in_prev
+
+        def extract_by_src(self, in_prev, src):
+            return in_prev
+
+        def calc_idx_log_probs(self, hist, in_prev, idx):
+            hist = torch.cat(
+                [torch.arange(hist.size(1), device=hist.device).unsqueeze(0), hist], 0
+            )
+            vocab = hist.gather(0, idx.unsqueeze(0)).squeeze(0)
+            return self.bigram_table.index_select(vocab, 0), in_prev
+
+
+def test_beam_search_batch(device):
+    torch.manual_seed(1029)
+
+    class RNNLM(layers.ExtractableSequentialLanguageModel):
+        def __init__(self, vocab_size, embed_size=128, hidden_size=512):
+            super().__init__(vocab_size)
+            self.hidden_size = hidden_size
+            self.embed = torch.nn.Embedding(
+                vocab_size + 1, embed_size, padding_idx=vocab_size
+            )
+            self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
+            self.ff = torch.nn.Linear(hidden_size, vocab_size)
+
+        def extract_by_src(self, prev, src):
+            return {
+                "hidden_state": prev["hidden_state"].index_select(0, src),
+                "cell_state": prev["cell_state"].index_select(0, src),
+            }
+
+        def update_input(self, prev, hist):
+            if len(prev):
+                return prev
+            N = hist.size(1)
+            zeros = self.ff.weight.new_zeros((N, self.hidden_size))
+            return {"hidden_state": zeros, "cell_state": zeros}
+
+        def calc_idx_log_probs(self, hist, prev, idx):
+            idx_zero = idx == 0
+            if idx_zero.all():
+                x = torch.arange(hist.size(0), device=hist.device)
+            elif not idx.dim():
+                x = hist[idx - 1]
+            else:
+                x = hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(
+                    0
+                )  # (N,)
+                x = x.masked_fill(idx_zero, self.vocab_size)
+            x = self.embed(x)
+            h_1, c_1 = self.cell(x, (prev["hidden_state"], prev["cell_state"]))
+            logits = self.ff(h_1)
+            return (
+                torch.nn.functional.log_softmax(logits, -1),
+                {"hidden_state": h_1, "cell_state": c_1},
+            )
+
+    T, N, V, K = 64, 16, 128, 8
+    assert K <= V and N * K <= V
+    lm = RNNLM(V)
+    search = layers.BeamSearch(lm, K, eos=0, max_iters=T).to(device)
+    y_prev = torch.arange(N, device=device)
+
+    exps = []
+    for y_prev_n in y_prev:
+        y_prev_n = y_prev_n.view(1, 1)
+        y_n_exp, y_lens_n_exp, log_probs_n_exp = search(y_prev_n)
+        y_n_exp = y_n_exp.squeeze(1)  # (T_n, K_n)
+        y_lens_n_exp = y_lens_n_exp.squeeze(0)  # (K_n,)
+        log_probs_n_exp = log_probs_n_exp.squeeze(0)  # (K_n,)
+        valid_prefix_mask_n_exp = log_probs_n_exp > -float("inf")
+        if not valid_prefix_mask_n_exp.all():
+            assert y_lens_n_exp[0] == 1
+        exps.append((y_n_exp, y_lens_n_exp, log_probs_n_exp))
+
+    y_act, y_lens_act, log_probs_act = search(y_prev.unsqueeze(0))
+    for (
+        (y_n_exp, y_lens_n_exp, log_probs_n_exp),
+        y_n_act,
+        y_lens_n_act,
+        log_probs_n_act,
+    ) in zip(exps, y_act.transpose(0, 1), y_lens_act, log_probs_act):
+        assert y_n_exp.shape[1:] == y_n_act.shape[1:]
+        assert y_n_exp.size(0) <= y_n_act.size(0)
+        assert y_lens_n_exp.shape == y_lens_n_act.shape
+        assert log_probs_n_exp.shape == log_probs_n_act.shape
+        valid_prefix_mask_n_exp = log_probs_n_exp > -float("inf")
+        valid_prefix_mask_n_act = log_probs_n_act > -float("inf")
+        assert (valid_prefix_mask_n_exp == valid_prefix_mask_n_act).all()
+        if not valid_prefix_mask_n_exp.all():
+            assert valid_prefix_mask_n_exp.sum() == 1  # only one valid path: empty one
+            y_n_exp, y_n_act = y_n_exp[:, :1], y_n_act[:, :1]
+            y_lens_n_exp, y_lens_n_act = y_lens_n_exp[:1], y_lens_n_act[:1]
+            log_probs_n_exp, log_probs_n_act = log_probs_n_exp[:1], log_probs_n_act[:1]
+        assert (y_lens_n_exp == y_lens_n_act).all()
+        assert torch.allclose(log_probs_n_exp, log_probs_n_act)
+        rem = y_n_act.size(0) - y_n_exp.size(0)
+        if rem > 0:
+            y_n_exp = torch.cat([y_n_exp, y_n_exp.new_empty((rem, y_n_exp.size(1)))], 0)
+            assert y_n_exp.shape == y_n_act.shape
+        len_mask = (
+            torch.arange(y_n_exp.size(0), device=device).unsqueeze(1) >= y_lens_n_exp
+        )
+        y_n_exp = y_n_exp.masked_fill_(len_mask, -1)
+        y_n_act = y_n_act.masked_fill_(len_mask, -1)
+        assert (y_n_exp == y_n_act).all()
 
 
 @pytest.mark.parametrize("dim", [0, 1])
