@@ -1100,7 +1100,6 @@ def error_rate(
     return er
 
 
-@script_if_tracing
 def edit_distance(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -2520,22 +2519,23 @@ def _sequence_log_probs_packed(logits, hyp):
     return torch.stack(tuple(x.sum(0) for x in logits_split), 0)
 
 
+@script_if_tracing
 def _string_matching(
-    ref,
-    hyp,
-    eos,
-    include_eos,
-    batch_first,
-    ins_cost,
-    del_cost,
-    sub_cost,
-    warn,
-    norm=False,
-    return_mask=False,
-    return_prf_dsts=False,
-    exclude_last=False,
-    padding=None,
-    return_mistakes=False,
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int],
+    include_eos: bool,
+    batch_first: bool,
+    ins_cost: float,
+    del_cost: float,
+    sub_cost: float,
+    warn: bool,
+    norm: bool = False,
+    return_mask: bool = False,
+    return_prf_dsts: bool = False,
+    exclude_last: bool = False,
+    padding: int = pydrobert.torch.INDEX_PAD_VALUE,
+    return_mistakes: bool = False,
 ):
     assert not return_mask or not return_prf_dsts
     assert not exclude_last or (return_mask or return_prf_dsts)
@@ -2557,6 +2557,7 @@ def _string_matching(
     if batch_first:
         ref = ref.t()
         hyp = hyp.t()
+    mistakes = del_mat = mask = prefix_ers = torch.empty(0)
     ref = ref.detach()
     hyp = hyp.detach()
     max_ref_steps, batch_size = ref.shape
@@ -2590,7 +2591,6 @@ def _string_matching(
                         "warning, set warn=False".format(eos)
                     )
                 hyp_lens = hyp_lens - hyp_eq_mask.to(hyp_lens.dtype)
-            del ref_eq_mask, hyp_eq_mask
     else:
         ref_lens = torch.full(
             (batch_size,), max_ref_steps, device=ref.device, dtype=torch.long
@@ -2598,21 +2598,17 @@ def _string_matching(
         hyp_lens = torch.full(
             (batch_size,), max_hyp_steps, device=ref.device, dtype=torch.long
         )
-    ins_cost = torch.tensor(float(ins_cost), device=device)
-    del_cost = torch.tensor(float(del_cost), device=device)
-    sub_cost = torch.tensor(float(sub_cost), device=device)
     if return_mask:
         # this dtype business is a workaround for different default mask
         # types < 1.2.0 and > 1.2.0
         mask = torch.empty(
             (max_hyp_steps + (0 if exclude_last else 1), max_ref_steps, batch_size),
             device=device,
-            dtype=ins_cost.eq(ins_cost).dtype,
+            dtype=torch.bool,
         )
         mask[0, 0] = 1
         mask[0, 1:] = 0
     elif return_prf_dsts:
-        assert padding is not None
         prefix_ers = torch.empty(
             (max_hyp_steps + (0 if exclude_last else 1), batch_size),
             device=device,
