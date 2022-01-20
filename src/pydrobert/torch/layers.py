@@ -37,7 +37,6 @@ from pydrobert.torch.util import (
     beam_search_advance,
     error_rate,
     optimal_completion,
-    polyharmonic_spline,
     ctc_prefix_search_advance,
     pad_variable,
     warp_1d_grid,

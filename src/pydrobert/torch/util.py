@@ -36,7 +36,7 @@ from typing import Optional, TextIO, Tuple, Union
 import warnings
 
 import torch
-import pydrobert.torch
+import pydrobert.torch.config as config
 
 try:
     import torch.jit.script_if_tracing as script_if_tracing  # type: ignore
@@ -284,7 +284,9 @@ def beam_search_advance(
         raise RuntimeError("Invalid lengths for t=0")
     else:
         y_next = next_token
-        y_next_lens = next_token.new_ones((N, K))
+        y_next_lens = torch.ones(
+            (N, K), dtype=next_token.dtype, device=next_token.device
+        )
 
     if K < width:
         rem = width - K
@@ -770,7 +772,7 @@ def _string_matching(
     return_mask: bool = False,
     return_prf_dsts: bool = False,
     exclude_last: bool = False,
-    padding: int = pydrobert.torch.INDEX_PAD_VALUE,
+    padding: int = config.INDEX_PAD_VALUE,
     return_mistakes: bool = False,
 ) -> torch.Tensor:
     assert not return_mask or not return_prf_dsts
@@ -994,7 +996,6 @@ def _string_matching(
     return er
 
 
-@script_if_tracing
 def error_rate(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -1084,7 +1085,7 @@ def error_rate(
     lower, the underlying algorithm is more likely to align with substitutions,
     increasing the contribution of substitutions to the error rate.
     """
-    er = _string_matching(
+    return _string_matching(
         ref,
         hyp,
         eos,
@@ -1097,7 +1098,6 @@ def error_rate(
         norm=norm,
         return_mistakes=True,
     )
-    return er
 
 
 def edit_distance(
@@ -1172,7 +1172,7 @@ def edit_distance(
     details on the distinction between this function and the new :func:`error_rate`,
     please see that function's documentation.
     """
-    ed = _string_matching(
+    return _string_matching(
         ref,
         hyp,
         eos,
@@ -1184,7 +1184,6 @@ def edit_distance(
         warn,
         norm=norm,
     )
-    return ed
 
 
 @script_if_tracing
@@ -1197,7 +1196,7 @@ def optimal_completion(
     ins_cost: float = 1.0,
     del_cost: float = 1.0,
     sub_cost: float = 1.0,
-    padding: int = pydrobert.torch.INDEX_PAD_VALUE,
+    padding: int = config.INDEX_PAD_VALUE,
     exclude_last: bool = False,
     warn: bool = True,
 ) -> torch.Tensor:
@@ -1326,7 +1325,6 @@ def optimal_completion(
     return targets
 
 
-@script_if_tracing
 def prefix_error_rates(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -1337,7 +1335,7 @@ def prefix_error_rates(
     ins_cost: float = 1.0,
     del_cost: float = 1.0,
     sub_cost: float = 1.0,
-    padding: int = pydrobert.torch.INDEX_PAD_VALUE,
+    padding: int = config.INDEX_PAD_VALUE,
     exclude_last: bool = False,
     warn: bool = True,
 ) -> torch.Tensor:
@@ -1408,7 +1406,7 @@ def prefix_error_rates(
     can be found in :func:`prefix_edit_distances` (though with `norm` defaulting to
     :obj:`False`). Consult the warning in :func:`error_rate` for more info.
     """
-    prefix_ers = _string_matching(
+    return _string_matching(
         ref,
         hyp,
         eos,
@@ -1424,10 +1422,8 @@ def prefix_error_rates(
         padding=padding,
         return_mistakes=True,
     )
-    return prefix_ers
 
 
-@script_if_tracing
 def prefix_edit_distances(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -1438,7 +1434,7 @@ def prefix_edit_distances(
     ins_cost: float = 1.0,
     del_cost: float = 1.0,
     sub_cost: float = 1.0,
-    padding: int = pydrobert.torch.INDEX_PAD_VALUE,
+    padding: int = config.INDEX_PAD_VALUE,
     exclude_last: bool = False,
     warn: bool = True,
 ) -> torch.Tensor:
@@ -1502,7 +1498,7 @@ def prefix_edit_distances(
     new :func:`prefix_error_rates`, please consult the documentation of
     :func:`error_rate`.
     """
-    prefix_eds = _string_matching(
+    return _string_matching(
         ref,
         hyp,
         eos,
@@ -1518,14 +1514,13 @@ def prefix_edit_distances(
         padding=padding,
         return_mistakes=False,
     )
-    return prefix_eds
 
 
 def random_walk_advance(
     logits_t: torch.Tensor,
     num_samp: int,
     y_prev: Optional[torch.Tensor] = None,
-    eos: int = pydrobert.torch.INDEX_PAD_VALUE,
+    eos: int = config.INDEX_PAD_VALUE,
     lens: Optional[torch.Tensor] = None,
     prevent_eos: bool = False,
     include_relaxation: bool = False,
@@ -2534,7 +2529,7 @@ def _string_matching(
     return_mask: bool = False,
     return_prf_dsts: bool = False,
     exclude_last: bool = False,
-    padding: int = pydrobert.torch.INDEX_PAD_VALUE,
+    padding: int = config.INDEX_PAD_VALUE,
     return_mistakes: bool = False,
 ):
     assert not return_mask or not return_prf_dsts

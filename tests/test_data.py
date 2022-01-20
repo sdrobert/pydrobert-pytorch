@@ -23,7 +23,7 @@ import torch
 import torch.utils.data
 import pydrobert.torch.data as data
 
-from pydrobert.torch import INDEX_PAD_VALUE
+from pydrobert.torch.config import INDEX_PAD_VALUE
 
 
 @pytest.mark.cpu
