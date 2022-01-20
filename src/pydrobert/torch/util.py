@@ -391,7 +391,7 @@ def ctc_greedy_search(
         logits = logits.transpose(0, 1)
     max_, argmax = logits.max(2)
     keep_mask = argmax != blank_idx
-    keep_mask[:, 1:] &= argmax[:, 1:] != argmax[:, :-1]
+    keep_mask[:, 1:] = keep_mask[:, 1:] & (argmax[:, 1:] != argmax[:, :-1])
     seq_size = argmax.size(1)
     if in_lens is not None:
         in_len_mask = torch.arange(seq_size, device=argmax.device).unsqueeze(
@@ -2715,8 +2715,7 @@ def _string_matching(
             # except for the final row), the minimal values on the final row sit on a
             # diagonal from the minimal values of the current row.
             mins = row.min(0, keepdim=True)[0]
-            row_mask = row[:-1] == mins
-            row_mask &= not_done
+            row_mask = (row[:-1] == mins) & not_done
             mask[hyp_idx] = row_mask
         elif return_prf_dsts:
             if return_mistakes:
