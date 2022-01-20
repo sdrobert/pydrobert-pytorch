@@ -32,7 +32,7 @@ which makes them safe to use in a traced module.
 """
 
 import re
-from typing import Optional, TextIO, Tuple, Union
+from typing import List, Optional, TextIO, Tuple, Union
 import warnings
 
 import torch
@@ -40,8 +40,34 @@ import pydrobert.torch.config as config
 
 try:
     import torch.jit.script_if_tracing as script_if_tracing  # type: ignore
+
+    _pad_sequence = torch.nn.utils.rnn.pad_sequence
+
 except ImportError:  # pre 1.8.1
     script_if_tracing = torch.jit.script
+
+    @torch.jit.script
+    def _pad_sequence(
+        sequences: List[torch.Tensor],
+        batch_first: bool = False,
+        padding_value: float = 0.0,
+    ) -> torch.Tensor:
+        shape = sequences[0].size()
+        shape_rest = shape[1:]
+        lens = [x.size(0) for x in sequences]
+        max_len = max(lens)
+        pad_shapes = [(max_len - x,) + shape_rest for x in lens]
+        sequences = [
+            torch.cat(
+                [
+                    seq,
+                    torch.full(ps, padding_value, device=seq.device, dtype=seq.dtype),
+                ],
+                0,
+            )
+            for seq, ps in zip(sequences, pad_shapes)
+        ]
+        return torch.stack(sequences, 0 if batch_first else 1)
 
 
 __all__ = [
@@ -1315,9 +1341,7 @@ def optimal_completion(
             for mask_hyp_bt, ref_bt in zip(mask_hyp.t(), ref.t()):
                 targets.append(torch.unique(ref_bt.masked_select(mask_hyp_bt)))
     # the cast to float is a concession for scripting
-    targets = torch.nn.utils.rnn.pad_sequence(
-        targets, padding_value=float(padding), batch_first=True
-    )
+    targets = _pad_sequence(targets, padding_value=float(padding), batch_first=True)
     if batch_first:
         targets = targets.view(batch_size, max_hyp_steps_p1, -1)
     else:
