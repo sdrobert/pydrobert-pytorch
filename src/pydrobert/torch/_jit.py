@@ -22,7 +22,7 @@ if config.USE_JIT:
 else:
     try:
         script = torch.jit.script_if_tracing
-    except NameError:
+    except AttributeError:
 
         def script(obj, *args, **kwargs):
             return obj
