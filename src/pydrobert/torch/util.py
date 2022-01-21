@@ -440,8 +440,8 @@ def ctc_prefix_search_advance(
     Returns
     -------
     y_next, y_next_last, y_next_lens, probs_next, next_is_prefix, next_src,
-    next_is_nonext : torch.Tensor, torch.Tensor, torch.Tensor, (torch.Tensor,
-    torch.Tensor), torch.Tensor, torch.Tensor
+    next_is_nonext : torch.Tensor, torch.Tensor, torch.Tensor,
+                     (torch.Tensor, torch.Tensor), torch.Tensor, torch.Tensor
         The first five are analogous to the ``*prev*`` arguments, but after the step
         has completed. `next_src` is a long tensor of shape ``(N, width)`` such that
         the value ``k_old = next_src[n, k_new]`` is the index from the previous step
@@ -2513,17 +2513,19 @@ def pad_variable(
     return padded.view(old_shape)
 
 
+@script
 def _sequence_log_probs_packed(
     logits: torch.Tensor, batch_sizes: torch.Tensor, hyp: torch.Tensor,
 ) -> torch.Tensor:
-    num_classes = logits.shape[-1]
+    num_classes = logits.shape[1]
     logits = torch.nn.functional.log_softmax(logits, -1)
     not_class_mask = hyp.lt(0) | hyp.ge(num_classes)
     hyp = hyp.masked_fill(not_class_mask, 0)
-    logits = logits.gather(-1, hyp.unsqueeze(-1)).squeeze(-1)
+    logits = logits.gather(1, hyp.unsqueeze(1)).squeeze(1)
     logits = logits.masked_fill(not_class_mask, 0.0)
     logits = torch.nn.utils.rnn.pad_packed_sequence(
-        torch.nn.utils.rnn.PackedSequence(logits, batch_sizes), batch_first=True
+        torch.nn.utils.rnn.PackedSequence(logits, batch_sizes, None, None),
+        batch_first=True,
     )[0].sum(1)
     return logits
 

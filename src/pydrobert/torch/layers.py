@@ -32,6 +32,7 @@ from pydrobert.torch.util import (
     optimal_completion,
     ctc_prefix_search_advance,
     pad_variable,
+    sequence_log_probs,
     warp_1d_grid,
     _get_tensor_eps,
 )
@@ -56,11 +57,37 @@ __all__ = [
     "random_shift",
     "RandomShift",
     "SequentialLanguageModel",
+    "SequentialLogProbabilities",
     "spec_augment_apply_parameters",
     "spec_augment_draw_parameters",
     "spec_augment",
     "SpecAugment",
 ]
+
+
+class SequentialLogProbabilities(torch.nn.Module):
+
+    __constants__ = ["dim", "eos"]
+    dim: int
+    eos: Optional[int]
+
+    def __init__(self, dim: int = 0, eos: Optional[int] = None):
+        super(SequentialLogProbabilities, self).__init__()
+        self.dim = dim
+        self.eos = eos
+
+    def extra_repr(self) -> str:
+        s = f"dim={self.dim}"
+        if self.eos is not None:
+            s += f", eos={self.eos}"
+        return s
+
+    def forward(
+        self,
+        logits: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
+        hyp: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
+    ) -> torch.Tensor:
+        return sequence_log_probs(logits, hyp, self.dim, self.eos)
 
 
 class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
