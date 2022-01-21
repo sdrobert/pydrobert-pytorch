@@ -913,7 +913,7 @@ def test_prefix_error_rates(
 def test_sequence_log_probs(device, dim):
     torch.manual_seed(24519)
     max_steps, num_classes, eos = 30, 10, 0
-    dim1, dim2, dim3, dim4 = 5, 2, 1, 3
+    dim1, dim2, dim3, dim4 = 5, 2, 1, 4
     logits = torch.full(
         (max_steps, dim1, dim2, dim3, dim4, num_classes), -float("inf"), device=device
     )
@@ -924,10 +924,9 @@ def test_sequence_log_probs(device, dim):
     len_mask = torch.arange(max_steps, device=device).unsqueeze(-1)
     if dim is None:
         # hyp_lens must be 1d for packed sequences, so we get rid of dim1..dim4
-        hyp_lens = hyp_lens.view(-1)
-        hyp = hyp.view(max_steps, -1)
+        hyp_lens = hyp_lens.flatten()
+        hyp = hyp.flatten(1)
         logits = logits.view(max_steps, -1, num_classes)
-        hyp_lens, _ = hyp_lens.sort(descending=True)
     else:
         len_mask = len_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
     hyp = hyp.masked_fill(len_mask == hyp_lens, eos)
@@ -939,8 +938,12 @@ def test_sequence_log_probs(device, dim):
     padding_mask = (len_mask > hyp_lens) | rand_mask
     logits = logits.masked_fill(padding_mask.unsqueeze(-1), -float("inf"))
     if dim is None:
-        hyp = torch.nn.utils.rnn.pack_padded_sequence(hyp, hyp_lens.cpu())
-        logits = torch.nn.utils.rnn.pack_padded_sequence(logits, hyp_lens.cpu())
+        hyp = torch.nn.utils.rnn.pack_padded_sequence(
+            hyp, hyp_lens.cpu(), enforce_sorted=False
+        )
+        logits = torch.nn.utils.rnn.pack_padded_sequence(
+            logits, hyp_lens.cpu(), enforce_sorted=False
+        )
     elif dim:
         hyp_dim = (dim + 5) % 5
         hyp = hyp.transpose(0, hyp_dim).contiguous()
@@ -949,12 +952,39 @@ def test_sequence_log_probs(device, dim):
     assert log_probs.eq(0.0).all()
     if dim is None:
         logits = torch.nn.utils.rnn.PackedSequence(
-            torch.randn_like(logits[0]), logits[1]
+            torch.randn_like(logits.data),
+            logits.batch_sizes,
+            logits.sorted_indices,
+            logits.unsorted_indices,
         )
     else:
         logits = torch.randn_like(logits)
-    log_probs = util.sequence_log_probs(logits, hyp, dim=dim, eos=eos)
-    assert log_probs.ne(0.0).any()
+    log_probs_1 = util.sequence_log_probs(logits, hyp, dim=dim, eos=eos)
+    assert log_probs_1.ne(0.0).any()
+    # this is mostly a test to ensure the packed sequences are being properly
+    # sorted/unsorted
+    log_probs_1 = log_probs_1[::2]
+    if dim is None:
+        logits, _ = torch.nn.utils.rnn.pad_packed_sequence(logits)
+        hyp, _ = torch.nn.utils.rnn.pad_packed_sequence(hyp)
+        logits = logits[:, ::2]
+        hyp = hyp[:, ::2]
+        hyp_lens = hyp_lens[::2]
+        hyp = torch.nn.utils.rnn.pack_padded_sequence(
+            hyp, hyp_lens.cpu(), enforce_sorted=False
+        )
+        logits = torch.nn.utils.rnn.pack_padded_sequence(
+            logits, hyp_lens.cpu(), enforce_sorted=False
+        )
+    elif dim == 0:
+        logits = logits[:, ::2]
+        hyp = hyp[:, ::2]
+    else:
+        logits = logits[::2]
+        hyp = hyp[::2]
+    log_probs_2 = util.sequence_log_probs(logits, hyp, dim=dim, eos=eos)
+    assert log_probs_1.shape == log_probs_2.shape
+    assert torch.allclose(log_probs_1, log_probs_2)
 
 
 @pytest.mark.parametrize("batch_first", [True, False])

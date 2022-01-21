@@ -1700,7 +1700,10 @@ def random_walk_advance(
 
 
 def sequence_log_probs(
-    logits: torch.Tensor, hyp: torch.Tensor, dim: int = 0, eos: Optional[int] = None
+    logits: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
+    hyp: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
+    dim: int = 0,
+    eos: Optional[int] = None,
 ) -> torch.Tensor:
     r"""Calculate joint log probability of sequences
 
@@ -1760,12 +1763,43 @@ def sequence_log_probs(
         An example training regime that uses this function
     """
     if isinstance(logits, torch.nn.utils.rnn.PackedSequence):
-        return _sequence_log_probs_packed(logits, hyp)
-    if isinstance(hyp, torch.nn.utils.rnn.PackedSequence):
+        if not isinstance(hyp, torch.nn.utils.rnn.PackedSequence):
+            raise RuntimeError(
+                "both hyp and logits must be packed sequences, or neither"
+            )
+        uidxs = logits.unsorted_indices
+        uidxs_equal = hyp.unsorted_indices == uidxs
+        if isinstance(uidxs_equal, torch.Tensor):
+            uidxs_equal = uidxs_equal.all()
+        if uidxs_equal:
+            logits, logits_lens = logits.data, logits.batch_sizes
+            hyp, hyp_lens, uidxs = hyp.data, hyp.batch_sizes, hyp.unsorted_indices
+            if (hyp_lens != logits_lens).any():
+                raise RuntimeError("hyp and logits must have the same sequence lengths")
+            if logits.shape[:-1] != hyp.shape:
+                raise RuntimeError(
+                    "logits and hyp must have same shape (minus last dim of logits)"
+                )
+            log_probs = _sequence_log_probs_packed(logits, logits_lens, hyp)
+            if uidxs is not None:
+                log_probs = log_probs.index_select(0, uidxs)
+            return log_probs
+        else:
+            # they're both packed sequences, but they weren't sorted the same way. This
+            # could be because of some nondeterminism from equal lengths. Unpack and
+            # try again
+            if eos is None:
+                eos = hyp.min().item() - 1
+            dim = 0
+            logits, _ = torch.nn.utils.rnn.pad_packed_sequence(logits)
+            hyp, _ = torch.nn.utils.rnn.pad_packed_sequence(
+                hyp, padding_value=float(eos)
+            )
+    elif isinstance(hyp, torch.nn.utils.rnn.PackedSequence):
         raise RuntimeError("both hyp and logits must be packed sequences, or neither")
     if logits.shape[:-1] != hyp.shape:
         raise RuntimeError(
-            "logits and hyp must have same shape (minus last dimension of " "logits)"
+            "logits and hyp must have same shape (minus last dim of logits)"
         )
     hyp_dim = hyp.dim()
     if dim < -hyp_dim or dim > hyp_dim - 1:
@@ -2479,25 +2513,19 @@ def pad_variable(
     return padded.view(old_shape)
 
 
-def _sequence_log_probs_packed(logits, hyp):
-    if not isinstance(hyp, torch.nn.utils.rnn.PackedSequence):
-        raise RuntimeError("both hyp and logits must be packed sequences, or neither")
-    logits, logits_lens = logits.data, logits.batch_sizes
-    hyp, hyp_lens = hyp.data, hyp.batch_sizes
-    if (hyp_lens != logits_lens).any():
-        raise RuntimeError("hyp and logits must have the same sequence lengths")
-    if logits.shape[:-1] != hyp.shape:
-        raise RuntimeError(
-            "logits and hyp must have same shape (minus last dimension of logits)"
-        )
+def _sequence_log_probs_packed(
+    logits: torch.Tensor, batch_sizes: torch.Tensor, hyp: torch.Tensor,
+) -> torch.Tensor:
     num_classes = logits.shape[-1]
     logits = torch.nn.functional.log_softmax(logits, -1)
     not_class_mask = hyp.lt(0) | hyp.ge(num_classes)
     hyp = hyp.masked_fill(not_class_mask, 0)
     logits = logits.gather(-1, hyp.unsqueeze(-1)).squeeze(-1)
     logits = logits.masked_fill(not_class_mask, 0.0)
-    logits_split = logits.split(logits_lens.tolist(), 0)
-    return torch.stack(tuple(x.sum(0) for x in logits_split), 0)
+    logits = torch.nn.utils.rnn.pad_packed_sequence(
+        torch.nn.utils.rnn.PackedSequence(logits, batch_sizes), batch_first=True
+    )[0].sum(1)
+    return logits
 
 
 @script
