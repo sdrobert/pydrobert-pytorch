@@ -418,6 +418,7 @@ def ctc_greedy_search(
     return max_, argmax, out_lens
 
 
+@script_if_tracing
 def ctc_prefix_search_advance(
     probs_t: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],  # ((N,K',V), (N,V), (N))
     width: int,  # K
@@ -508,6 +509,8 @@ def ctc_prefix_search_advance(
     if width < 1:
         raise RuntimeError("width must be positive")
     ext_probs_t, nonext_probs_t, blank_probs_t = probs_t
+    device = ext_probs_t.device
+    dtype = ext_probs_t.dtype
     del probs_t
     if ext_probs_t.dim() != 3:
         raise RuntimeError("ext_probs_t must be 3 dimensional")
@@ -610,7 +613,8 @@ def ctc_prefix_search_advance(
     ).sum(1)
     # clear the probabilities of extensions k->v that exactly matched some k' for v
     has_match = (
-        torch.nn.functional.one_hot(to_match, V).bool() & ext_is_exact.unsqueeze(3)
+        torch.nn.functional.one_hot(to_match, V).to(torch.bool)
+        & ext_is_exact.unsqueeze(3)
     ).any(2)
     nb_ext_probs_cand = nb_ext_probs_cand.masked_fill(has_match, -float("inf"))
     del has_match, ext_is_exact
@@ -674,14 +678,8 @@ def ctc_prefix_search_advance(
             | (~next_is_nonext.unsqueeze(2) & next_ext_matches)
         )
     )
-    del (
-        next_prefix_is_prefix,
-        next_len_leq,
-        next_to_match,
-        next_ext_matches,
-        next_ext,
-        next_ind,
-    )
+    del next_prefix_is_prefix, next_len_leq, next_to_match, next_ext_matches
+    del next_ext, next_ind
 
     if K < width:
         # we've exceeded the possible number of legitimate paths. Append up to the
@@ -691,13 +689,13 @@ def ctc_prefix_search_advance(
         # constant, so it's ok to be a bit expensive.
         rem = width - K
         y_next = torch.cat([y_next, y_next.new_empty(tm1 + 1, N, rem)], 2)
-        zeros = y_next_last.new_zeros(N, rem)
+        zeros = torch.zeros((N, rem), device=device, dtype=y_next_last.dtype)
         y_next_last = torch.cat([y_next_last, zeros], 1)
         y_next_lens = torch.cat([y_next_lens, zeros], 1)
-        neg_inf = nb_probs_next.new_full((N, rem), -float("inf"))
+        neg_inf = torch.full((N, rem), -float("inf"), device=device, dtype=dtype)
         nb_probs_next = torch.cat([nb_probs_next, neg_inf], 1)
         b_probs_next = torch.cat([b_probs_next, neg_inf], 1)
-        false_ = next_is_prefix.new_full((N, rem), False)
+        false_ = torch.zeros((N, rem), device=device, dtype=torch.bool)
         next_is_nonext = torch.cat([next_is_nonext, false_], 1)
         next_is_prefix = torch.cat(
             [next_is_prefix, false_.unsqueeze(1).expand(N, K, rem)], 2
