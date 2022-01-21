@@ -22,53 +22,17 @@
 # limitations under the License.
 
 
-"""Utility functions
-
-If using PyTorch < 1.8.0, all of the functions in this submodule are compiled with
-[TorchScript](https://pytorch.org/docs/master/jit_language_reference.html#language-reference)
-unless explicitly stated in the function docstring. If using PyTorch >= 1.8.0, those
-same functions have been decorated with :func:`torch.jit.script_if_tracing` instead,
-which makes them safe to use in a traced module.
-"""
+"""Utility functions"""
 
 import re
-from typing import List, Optional, TextIO, Tuple, Union
+from typing import Optional, TextIO, Tuple, Union
 import warnings
 
 import torch
 import pydrobert.torch.config as config
 
-try:
-    import torch.jit.script_if_tracing as script_if_tracing  # type: ignore
-
-    _pad_sequence = torch.nn.utils.rnn.pad_sequence
-
-except ImportError:  # pre 1.8.1
-    script_if_tracing = torch.jit.script
-
-    @torch.jit.script
-    def _pad_sequence(
-        sequences: List[torch.Tensor],
-        batch_first: bool = False,
-        padding_value: float = 0.0,
-    ) -> torch.Tensor:
-        shape = sequences[0].size()
-        shape_rest = shape[1:]
-        lens = [x.size(0) for x in sequences]
-        max_len = max(lens)
-        pad_shapes = [(max_len - x,) + shape_rest for x in lens]
-        sequences = [
-            torch.cat(
-                [
-                    seq,
-                    torch.full(ps, padding_value, device=seq.device, dtype=seq.dtype),
-                ],
-                0,
-            )
-            for seq, ps in zip(sequences, pad_shapes)
-        ]
-        return torch.stack(sequences, 0 if batch_first else 1)
-
+from ._jit import script
+from ._compat import pad_sequence
 
 __all__ = [
     "beam_search_advance",
@@ -219,7 +183,7 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
     return prob_list
 
 
-@script_if_tracing
+@script
 def beam_search_advance(
     log_probs_t: torch.Tensor,
     width: int,
@@ -418,7 +382,7 @@ def ctc_greedy_search(
     return max_, argmax, out_lens
 
 
-@script_if_tracing
+@script
 def ctc_prefix_search_advance(
     probs_t: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],  # ((N,K',V), (N,V), (N))
     width: int,  # K
@@ -716,7 +680,7 @@ def ctc_prefix_search_advance(
     )
 
 
-@script_if_tracing
+@script
 def time_distributed_return(
     r: torch.Tensor, gamma: float, batch_first: bool = False
 ) -> torch.Tensor:
@@ -772,7 +736,7 @@ def time_distributed_return(
     return R
 
 
-@script_if_tracing
+@script
 def _lens_from_eos(tok: torch.Tensor, eos: int, dim: int) -> torch.Tensor:
     # length to first eos (exclusive)
     mask = tok.eq(eos)
@@ -781,7 +745,7 @@ def _lens_from_eos(tok: torch.Tensor, eos: int, dim: int) -> torch.Tensor:
     return argmax.masked_fill(max_.eq(0), tok.shape[dim])
 
 
-@script_if_tracing
+@script
 def _string_matching(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -1210,7 +1174,7 @@ def edit_distance(
     )
 
 
-@script_if_tracing
+@script
 def optimal_completion(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -1339,7 +1303,7 @@ def optimal_completion(
             for mask_hyp_bt, ref_bt in zip(mask_hyp.t(), ref.t()):
                 targets.append(torch.unique(ref_bt.masked_select(mask_hyp_bt)))
     # the cast to float is a concession for scripting
-    targets = _pad_sequence(targets, padding_value=float(padding), batch_first=True)
+    targets = pad_sequence(targets, padding_value=float(padding), batch_first=True)
     if batch_first:
         targets = targets.view(batch_size, max_hyp_steps_p1, -1)
     else:
@@ -1834,7 +1798,7 @@ def sequence_log_probs(
     return logits.sum(dim)
 
 
-@script_if_tracing
+@script
 def _deterimine_pinned_points(k: int, sizes: torch.Tensor) -> torch.Tensor:
 
     w_max = (sizes[:, :1] - 1).expand(-1, k + 1)  # (N, k+1)
@@ -1858,7 +1822,7 @@ def _deterimine_pinned_points(k: int, sizes: torch.Tensor) -> torch.Tensor:
     return torch.cat([bottom_edge, left_edge, top_edge, right_edge], 1)  # (N, 4k, 2)
 
 
-@script_if_tracing
+@script
 def _get_tensor_eps(
     x: torch.Tensor,
     eps16: float = torch.finfo(torch.float16).eps,
@@ -1875,7 +1839,7 @@ def _get_tensor_eps(
         raise RuntimeError(f"Expected x to be floating-point, got {x.dtype}")
 
 
-@script_if_tracing
+@script
 def _phi(r: torch.Tensor, k: int) -> torch.Tensor:
     if k % 2:
         return r ** k
@@ -1883,7 +1847,7 @@ def _phi(r: torch.Tensor, k: int) -> torch.Tensor:
         return (r ** k) * (torch.clamp(r, min=_get_tensor_eps(r))).log()
 
 
-@script_if_tracing
+@script
 def _apply_interpolation(
     w: torch.Tensor, v: torch.Tensor, c: torch.Tensor, x: torch.Tensor, k: int
 ) -> torch.Tensor:
@@ -1895,7 +1859,7 @@ def _apply_interpolation(
     return phi_r_w + x1_v
 
 
-@script_if_tracing
+@script
 def _solve_interpolation(
     c: torch.Tensor, f: torch.Tensor, k: int, reg: float, full: bool
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -1949,7 +1913,7 @@ def _solve_interpolation(
     return w, v
 
 
-@script_if_tracing
+@script
 def polyharmonic_spline(
     train_points: torch.Tensor,
     train_values: torch.Tensor,
@@ -2018,7 +1982,7 @@ def polyharmonic_spline(
     return query_values
 
 
-@script_if_tracing
+@script
 def dense_image_warp(
     image: torch.Tensor,
     flow: torch.Tensor,
@@ -2283,7 +2247,7 @@ def sparse_image_warp(
         return warped
 
 
-@script_if_tracing
+@script
 def warp_1d_grid(
     src: torch.Tensor,
     flow: torch.Tensor,
@@ -2346,7 +2310,7 @@ def warp_1d_grid(
     return grid
 
 
-@script_if_tracing
+@script
 def pad_variable(
     x: torch.Tensor,
     lens: torch.Tensor,
@@ -2536,7 +2500,7 @@ def _sequence_log_probs_packed(logits, hyp):
     return torch.stack(tuple(x.sum(0) for x in logits_split), 0)
 
 
-@script_if_tracing
+@script
 def _string_matching(
     ref: torch.Tensor,
     hyp: torch.Tensor,

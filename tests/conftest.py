@@ -21,6 +21,11 @@ from shutil import rmtree
 
 import torch
 
+import pydrobert.torch.config as config
+
+if torch.__version__ < "1.8.0":
+    config.USE_JIT = True  # "trace" tests won't work otherwise
+
 
 @pytest.fixture
 def temp_dir():

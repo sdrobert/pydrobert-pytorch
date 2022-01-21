@@ -14,13 +14,6 @@
 
 """Common neural layers from the literature not included in pytorch.nn
 
-If using PyTorch < 1.8.0, all of the functions/layers in this submodule are compiled
-with
-[TorchScript](https://pytorch.org/docs/master/jit_language_reference.html#language-reference)
-unless explicitly stated in the function docstring. If using PyTorch >= 1.8.0, those
-same functions have been decorated with :func:`torch.jit.script_if_tracing` instead,
-which makes them safe to use in a traced module.
-
 Notes
 -----
 The loss functions :class:`HardOptimalCompletionDistillationLoss` and
@@ -43,10 +36,7 @@ from pydrobert.torch.util import (
     _get_tensor_eps,
 )
 
-try:
-    import torch.jit.script_if_tracing as script_if_tracing  # type: ignore
-except ImportError:  # pre 1.8.1
-    script_if_tracing = torch.jit.script
+from ._jit import script
 
 __all__ = [
     "BeamSearch",
@@ -138,6 +128,10 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     has to handle OOVs on her own when computing the loss.
     """
 
+    __constants__ = ["vocab_size"]
+
+    vocab_size: int
+
     def __init__(self, vocab_size: int):
         super(SequentialLanguageModel, self).__init__()
         self.vocab_size = vocab_size
@@ -191,7 +185,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         hist: torch.Tensor,
         prev: Dict[str, torch.Tensor] = dict(),
         idx: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         if hist.dim() != 2:
             raise RuntimeError("hist must be 2 dimensional")
         S, N = hist.shape
@@ -792,78 +786,6 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         return logs, ids, pointers
 
 
-@script_if_tracing
-def hard_optimal_completion_distillation_loss(
-    logits: torch.Tensor,
-    ref: torch.Tensor,
-    hyp: torch.Tensor,
-    eos: Optional[int] = None,
-    include_eos: bool = True,
-    batch_first: bool = False,
-    ins_cost: float = 1.0,
-    del_cost: float = 1.0,
-    sub_cost: float = 1.0,
-    weight: Optional[torch.Tensor] = None,
-    reduction: str = "mean",
-    ignore_index: int = -2,
-    warn: bool = True,
-) -> torch.Tensor:
-    """Functional version of HardOptimalCompletionDistillationLoss
-
-    See Also
-    --------
-    HardOptimalCompletionDistillationLoss
-        The :class:`torch.nn.Module` version. Describes the arguments.
-    """
-    if logits.dim() != 3:
-        raise RuntimeError("logits must be 3 dimensional")
-    if logits.shape[:-1] != hyp.shape:
-        raise RuntimeError("first two dims of logits must match hyp shape")
-    if include_eos:
-        if eos is not None and ((eos < 0) or (eos >= logits.size(-1))):
-            raise RuntimeError(f"If include_eos=True, eos ({eos}) must be a class idx")
-        if eos is not None and eos == ignore_index:
-            raise RuntimeError(
-                f"If include_eos=True, eos cannot equal ignore_index ({eos}"
-            )
-    optimals = optimal_completion(
-        ref,
-        hyp,
-        eos=eos,
-        include_eos=include_eos,
-        batch_first=batch_first,
-        ins_cost=ins_cost,
-        del_cost=del_cost,
-        sub_cost=sub_cost,
-        padding=ignore_index,
-        exclude_last=True,
-        warn=warn,
-    )
-    max_unique_next = optimals.shape[-1]
-    logits = logits.unsqueeze(2).expand(-1, -1, max_unique_next, -1)
-    logits = logits.contiguous()
-    loss = torch.nn.functional.cross_entropy(
-        logits.view(-1, logits.size(-1)),
-        optimals.flatten(),
-        weight=weight,
-        ignore_index=ignore_index,
-        reduction="none",
-    ).view_as(optimals)
-    padding_mask = optimals.eq(ignore_index)
-    no_padding_mask = padding_mask.eq(0)
-    loss = loss.masked_fill(padding_mask, 0.0).sum(2)
-    loss = torch.where(
-        no_padding_mask.any(2), loss / no_padding_mask.float().sum(2), loss,
-    )
-    if reduction == "mean":
-        loss = loss.mean()
-    elif reduction == "sum":
-        loss = loss.sum()
-    elif reduction != "none":
-        raise RuntimeError(f"'{reduction}' is not a valid value for reduction")
-    return loss
-
-
 class BeamSearch(torch.nn.Module):
     """Perform beam search on the outputs of a SequentialLanguageModel
 
@@ -1393,6 +1315,78 @@ class CTCPrefixSearch(torch.nn.Module):
         return y_prev, y_prev_lens, probs_prev
 
 
+@script
+def hard_optimal_completion_distillation_loss(
+    logits: torch.Tensor,
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    batch_first: bool = False,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    weight: Optional[torch.Tensor] = None,
+    reduction: str = "mean",
+    ignore_index: int = -2,
+    warn: bool = True,
+) -> torch.Tensor:
+    """Functional version of HardOptimalCompletionDistillationLoss
+
+    See Also
+    --------
+    HardOptimalCompletionDistillationLoss
+        The :class:`torch.nn.Module` version. Describes the arguments.
+    """
+    if logits.dim() != 3:
+        raise RuntimeError("logits must be 3 dimensional")
+    if logits.shape[:-1] != hyp.shape:
+        raise RuntimeError("first two dims of logits must match hyp shape")
+    if include_eos:
+        if eos is not None and ((eos < 0) or (eos >= logits.size(-1))):
+            raise RuntimeError(f"If include_eos=True, eos ({eos}) must be a class idx")
+        if eos is not None and eos == ignore_index:
+            raise RuntimeError(
+                f"If include_eos=True, eos cannot equal ignore_index ({eos}"
+            )
+    optimals = optimal_completion(
+        ref,
+        hyp,
+        eos=eos,
+        include_eos=include_eos,
+        batch_first=batch_first,
+        ins_cost=ins_cost,
+        del_cost=del_cost,
+        sub_cost=sub_cost,
+        padding=ignore_index,
+        exclude_last=True,
+        warn=warn,
+    )
+    max_unique_next = optimals.shape[-1]
+    logits = logits.unsqueeze(2).expand(-1, -1, max_unique_next, -1)
+    logits = logits.contiguous()
+    loss = torch.nn.functional.cross_entropy(
+        logits.view(-1, logits.size(-1)),
+        optimals.flatten(),
+        weight=weight,
+        ignore_index=ignore_index,
+        reduction="none",
+    ).view_as(optimals)
+    padding_mask = optimals.eq(ignore_index)
+    no_padding_mask = padding_mask.eq(0)
+    loss = loss.masked_fill(padding_mask, 0.0).sum(2)
+    loss = torch.where(
+        no_padding_mask.any(2), loss / no_padding_mask.float().sum(2), loss,
+    )
+    if reduction == "mean":
+        loss = loss.mean()
+    elif reduction == "sum":
+        loss = loss.sum()
+    elif reduction != "none":
+        raise RuntimeError(f"'{reduction}' is not a valid value for reduction")
+    return loss
+
+
 class HardOptimalCompletionDistillationLoss(torch.nn.Module):
     r"""A categorical loss function over optimal next tokens
 
@@ -1530,7 +1524,7 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         )
 
 
-@script_if_tracing
+@script
 def minimum_error_rate_loss(
     log_probs: torch.Tensor,
     ref: torch.Tensor,
@@ -1812,7 +1806,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
 # FIXME(sdrobert): jit scripting doesn't allow calls to super(), so I've offloaded
 # the common code between MultiHeadedAttention and regular-old attention here
-@script_if_tracing
+@script
 def _attention_check_input(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -2386,7 +2380,7 @@ class MultiHeadedAttention(GlobalSoftAttention):
         return s
 
 
-@script_if_tracing
+@script
 def spec_augment_draw_parameters(
     feats: torch.Tensor,
     max_time_warp: float,
@@ -2484,7 +2478,7 @@ def spec_augment_draw_parameters(
     return w_0, w, v_0, v, t_0, t, f_0, f
 
 
-@script_if_tracing
+@script
 def spec_augment_apply_parameters(
     feats: torch.Tensor,
     params: Tuple[
@@ -2562,7 +2556,7 @@ def spec_augment_apply_parameters(
     return new_feats
 
 
-@script_if_tracing
+@script
 def spec_augment(
     feats: torch.Tensor,
     max_time_warp: float,
@@ -2926,7 +2920,7 @@ class SpecAugment(torch.nn.Module):
         )
 
 
-@script_if_tracing
+@script
 def random_shift(
     in_: torch.Tensor,
     in_lens: torch.Tensor,
