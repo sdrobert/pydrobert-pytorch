@@ -366,7 +366,7 @@ def ctc_greedy_search(
             max_ = max_.masked_fill(~in_len_mask, 1.0)
         else:
             max_ = max_.masked_fill(~in_len_mask, 0.0)
-        del in_len_mask
+        # del in_len_mask
     out_lens = keep_mask.long().sum(1)
     data = argmax.masked_select(keep_mask)
     out_len_mask = torch.arange(seq_size, device=argmax.device).unsqueeze(
@@ -475,7 +475,7 @@ def ctc_prefix_search_advance(
     ext_probs_t, nonext_probs_t, blank_probs_t = probs_t
     device = ext_probs_t.device
     dtype = ext_probs_t.dtype
-    del probs_t
+    # del probs_t
     if ext_probs_t.dim() != 3:
         raise RuntimeError("ext_probs_t must be 3 dimensional")
     N, Kp, V = ext_probs_t.shape
@@ -488,7 +488,7 @@ def ctc_prefix_search_advance(
             f"expected blank_probs_t to have shape {(N,)}, got {blank_probs_t.shape}"
         )
     nb_probs_prev, b_probs_prev = probs_prev
-    del probs_prev
+    # del probs_prev
     if nb_probs_prev.shape != (N, Kp):
         raise RuntimeError(
             f"expected nb_probs_prev to have shape {(N, Kp)}, got {nb_probs_prev.shape}"
@@ -538,7 +538,7 @@ def ctc_prefix_search_advance(
     # nonblank non-extensions are non-blank, matching prefixes and final matching token
     # (N.B. y_prev_last may be garbage for invalid or empty paths, hence the clamp)
     nb_nonext_probs_cand = nb_probs_prev * nonext_probs_t.gather(1, y_prev_last)  # N,K'
-    del nb_probs_prev, b_probs_prev, tot_probs_prev
+    # del nb_probs_prev, b_probs_prev, tot_probs_prev
 
     # An extending candidate can match an existing non-extending candidate.
     # We'll dump the extending candidate's probability mass into the non-extending
@@ -581,7 +581,7 @@ def ctc_prefix_search_advance(
         & ext_is_exact.unsqueeze(3)
     ).any(2)
     nb_ext_probs_cand = nb_ext_probs_cand.masked_fill(has_match, -float("inf"))
-    del has_match, ext_is_exact
+    # del has_match, ext_is_exact
 
     # we can finally determine the top k paths. Put the non-extending candidates after
     # the extending candidates (the last K' elements of the second dimension)
@@ -590,7 +590,7 @@ def ctc_prefix_search_advance(
         1,
     )  # (N, K' * (V + 1))
     next_ind = tot_probs_cand.topk(K, 1)[1]  # (N, K)
-    del tot_probs_cand
+    # del tot_probs_cand
 
     next_is_nonext = next_ind >= (Kp * V)
     next_src = torch.where(
@@ -609,22 +609,22 @@ def ctc_prefix_search_advance(
         0, y_next_prefix_lens.unsqueeze(0), next_ext.unsqueeze(0)
     )  # (t, N, K)
     y_next_lens = y_next_prefix_lens + (~next_is_nonext)
-    del y_next_prefix_lens
+    # del y_next_prefix_lens
 
     nb_ext_probs_next = nb_ext_probs_cand.view(N, Kp * V).gather(
         1, next_ind.clamp(max=Kp * V - 1)
     )  # (N, K)
     nb_nonext_probs_next = nb_nonext_probs_cand.gather(1, next_src)  # (N, K)
     nb_probs_next = torch.where(next_is_nonext, nb_nonext_probs_next, nb_ext_probs_next)
-    del nb_ext_probs_next, nb_nonext_probs_next, nb_nonext_probs_cand, nb_ext_probs_cand
+    # del nb_ext_probs_next, nb_nonext_probs_next, nb_nonext_probs_cand, nb_ext_probs_cand
 
     b_probs_next = b_nonext_probs_cand.gather(1, next_src) * next_is_nonext  # (N, K)
-    del b_nonext_probs_cand
+    # del b_nonext_probs_cand
 
     y_next_last = y_prev_last.gather(1, next_src) * next_is_nonext + next_ext * (
         ~next_is_nonext
     )
-    del y_prev_last
+    # del y_prev_last
 
     next_prefix_is_prefix = prev_is_prefix.gather(
         1, next_src.unsqueeze(2).expand(N, K, Kp)
@@ -642,8 +642,8 @@ def ctc_prefix_search_advance(
             | (~next_is_nonext.unsqueeze(2) & next_ext_matches)
         )
     )
-    del next_prefix_is_prefix, next_len_leq, next_to_match, next_ext_matches
-    del next_ext, next_ind
+    # del next_prefix_is_prefix, next_len_leq, next_to_match, next_ext_matches
+    # del next_ext, next_ind
 
     if K < width:
         # we've exceeded the possible number of legitimate paths. Append up to the
