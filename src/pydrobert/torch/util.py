@@ -1751,7 +1751,9 @@ def sequence_log_probs(
     `dim` is relative to ``hyp.shape``, not ``logits.shape``.
 
     :class:`PackedSequence` instances with ``enforce_sorted=False`` first sort sequences
-    by length. The sort is not guaranteed to be deterministic by length, 
+    by length. The sort is not guaranteed to be deterministic if some entries have equal
+    length. To avoid the possibility that `logits` and `hyp` are sorted differently,
+    we require `hyp` to always be a :class:`torch.Tensor`.
 
     See Also
     --------

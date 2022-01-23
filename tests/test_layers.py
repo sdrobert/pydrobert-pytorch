@@ -14,6 +14,7 @@
 
 import os
 import itertools
+import warnings
 
 import pytest
 import torch
@@ -1290,7 +1291,12 @@ def test_sequence_log_probs(device, dim, trace):
         0 if dim is None else dim, eos
     )
     if trace:
-        sequence_log_probs = torch.jit.trace(sequence_log_probs, (logits, hyp))
+        with warnings.catch_warnings():
+            # FIXME(sdrobert): there's an irritating warning caused by
+            # torch.as_tensor being called in pack_padded_sequence. Since the input is
+            # always a tensor already, it should be a harmless call.
+            warnings.simplefilter("ignore")
+            sequence_log_probs = torch.jit.trace(sequence_log_probs, (logits, hyp))
     log_probs = sequence_log_probs(logits, hyp)
     assert log_probs.eq(0.0).all()
     if dim is None:
