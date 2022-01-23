@@ -12,10 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections import namedtuple
 from typing import List
 import torch
 
-__all__ = ["pad_sequence"]
+__all__ = ["pad_sequence", "SpoofPackedSequence"]
+
+# to avoid some scripting issues with torch.utils.nn.PackedSequence
+SpoofPackedSequence = namedtuple(
+    "SpoofPackedSequence", ["data", "batch_sizes", "sorted_indices", "unsorted_indices"]
+)
 
 if torch.__version__ < "1.8.0":
     from ._jit import script

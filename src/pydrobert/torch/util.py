@@ -32,7 +32,7 @@ import torch
 import pydrobert.torch.config as config
 
 from ._jit import script
-from ._compat import pad_sequence
+from ._compat import pad_sequence, SpoofPackedSequence
 
 __all__ = [
     "beam_search_advance",
@@ -1701,7 +1701,7 @@ def random_walk_advance(
 
 def sequence_log_probs(
     logits: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
-    hyp: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
+    hyp: torch.Tensor,
     dim: int = 0,
     eos: Optional[int] = None,
 ) -> torch.Tensor:
@@ -1726,22 +1726,19 @@ def sequence_log_probs(
     The resulting tensor `log_probs` is matches the shape of `logits` or
     `hyp` without the ``step`` and ``num_classes`` dimensions.
 
-    This function can handle variable-length sequences in three ways:
+    Any values of `hyp` not in ``[0, num_classes)`` will be considered padding and
+    ignored.
 
-    1. Any values of `hyp` not in ``[0, num_classes)`` will be considered
-       padding and ignored.
-    2. If `eos` (end-of-sentence) is set, the first occurrence at :math:`b,t`
-       is included in the sequence, but all :math:`b,>t` are ignored. This is
-       in addition to 1.
-    3. `logits` and `hyp` may be :class:`torch.nn.utils.rnn.PackedSequence`
-       objects. In this case, the packed sequence dimension is assumed to
-       index ``steps`` (`dim` is ignored). The remaining batch dimension will
-       always be stacked into dimension 0. This is also in addition to 1.
+    If `eos` (end-of-sentence) is set, the first occurrence at :math:`b,t` is included
+    in the sequence, but all :math:`b,>t` are ignored.
+    
+    `logits` may instead be a :class:`torch.nn.utils.rnn.PackedSequence`, though `hyp`
+    must remain a tensor. `eos` is ignored in this case.
 
     Parameters
     ----------
     logits : torch.Tensor or torch.nn.utils.rnn.PackedSequence
-    hyp : torch.Tensor or torch.nn.utils.rnn.PackedSequence
+    hyp : torch.Tensor
     dim : int, optional
     eos : int or :obj:`None`, optional
 
@@ -1749,64 +1746,49 @@ def sequence_log_probs(
     -------
     log_prob : torch.Tensor
 
-    Warnings
-    --------
-    This function is not safe for JIT tracing or scripting.
-
     Notes
     -----
-    `dim` is relative to ``hyp.shape``, not ``logits.shape``
+    `dim` is relative to ``hyp.shape``, not ``logits.shape``.
+
+    :class:`PackedSequence` instances with ``enforce_sorted=False`` first sort sequences
+    by length. The sort is not guaranteed to be deterministic by length, 
 
     See Also
     --------
     pydrobert.torch.layers.MinimumErrorRateLoss
         An example training regime that uses this function
     """
-    if isinstance(logits, torch.nn.utils.rnn.PackedSequence):
-        if not isinstance(hyp, torch.nn.utils.rnn.PackedSequence):
-            raise RuntimeError(
-                "both hyp and logits must be packed sequences, or neither"
-            )
-        uidxs = logits.unsorted_indices
-        uidxs_equal = hyp.unsorted_indices == uidxs
-        if isinstance(uidxs_equal, torch.Tensor):
-            uidxs_equal = uidxs_equal.all()
-        if uidxs_equal:
-            logits, logits_lens = logits.data, logits.batch_sizes
-            hyp, hyp_lens, uidxs = hyp.data, hyp.batch_sizes, hyp.unsorted_indices
-            if (hyp_lens != logits_lens).any():
-                raise RuntimeError("hyp and logits must have the same sequence lengths")
-            if logits.shape[:-1] != hyp.shape:
-                raise RuntimeError(
-                    "logits and hyp must have same shape (minus last dim of logits)"
-                )
-            log_probs = _sequence_log_probs_packed(logits, logits_lens, hyp)
-            if uidxs is not None:
-                log_probs = log_probs.index_select(0, uidxs)
-            return log_probs
-        else:
-            # they're both packed sequences, but they weren't sorted the same way. This
-            # could be because of some nondeterminism from equal lengths. Unpack and
-            # try again
-            if eos is None:
-                eos = hyp.min().item() - 1
-            dim = 0
-            logits, _ = torch.nn.utils.rnn.pad_packed_sequence(logits)
-            hyp, _ = torch.nn.utils.rnn.pad_packed_sequence(
-                hyp, padding_value=float(eos)
-            )
-    elif isinstance(hyp, torch.nn.utils.rnn.PackedSequence):
-        raise RuntimeError("both hyp and logits must be packed sequences, or neither")
-    if logits.shape[:-1] != hyp.shape:
-        raise RuntimeError(
-            "logits and hyp must have same shape (minus last dim of logits)"
-        )
     hyp_dim = hyp.dim()
     if dim < -hyp_dim or dim > hyp_dim - 1:
         raise RuntimeError(
             "Dimension out of range (expected to be in range of [{}, {}], but "
             "got {})".format(-hyp_dim, hyp_dim - 1, dim)
         )
+    if not isinstance(logits, torch.Tensor):
+        logits, batch_sizes, sidxs, uidxs = logits
+        if sidxs is not None:
+            hyp = torch.index_select(hyp, 1 - dim, sidxs)  # sort hyp
+        lens = (
+            (torch.arange(hyp.size(1 - dim)).unsqueeze(1) < batch_sizes)
+            .to(torch.long)
+            .sum(1)
+        )
+        hyp = torch.nn.utils.rnn.pack_padded_sequence(hyp, lens, batch_first=bool(dim))[
+            0
+        ]
+        num_classes = logits.shape[1]
+        logits = torch.nn.functional.log_softmax(logits, -1)
+        mask = hyp.lt(0) | hyp.ge(num_classes)
+        hyp = hyp.masked_fill(mask, 0)
+        logits = logits.gather(1, hyp.unsqueeze(1)).squeeze(1)
+        logits = logits.masked_fill(mask, 0.0)
+        logits = torch.nn.utils.rnn.pad_packed_sequence(
+            SpoofPackedSequence(logits, batch_sizes, None, None), batch_first=True,
+        )[0].sum(1)
+        if uidxs is not None:
+            logits = logits[uidxs]
+        return logits
+
     dim = (hyp_dim + dim) % hyp_dim
     steps = hyp.shape[dim]
     num_classes = logits.shape[-1]
@@ -2511,23 +2493,6 @@ def pad_variable(
     old_shape = list(old_shape)
     old_shape[1] = Tp
     return padded.view(old_shape)
-
-
-@script
-def _sequence_log_probs_packed(
-    logits: torch.Tensor, batch_sizes: torch.Tensor, hyp: torch.Tensor,
-) -> torch.Tensor:
-    num_classes = logits.shape[1]
-    logits = torch.nn.functional.log_softmax(logits, -1)
-    not_class_mask = hyp.lt(0) | hyp.ge(num_classes)
-    hyp = hyp.masked_fill(not_class_mask, 0)
-    logits = logits.gather(1, hyp.unsqueeze(1)).squeeze(1)
-    logits = logits.masked_fill(not_class_mask, 0.0)
-    logits = torch.nn.utils.rnn.pad_packed_sequence(
-        torch.nn.utils.rnn.PackedSequence(logits, batch_sizes, None, None),
-        batch_first=True,
-    )[0].sum(1)
-    return logits
 
 
 @script
