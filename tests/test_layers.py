@@ -1207,13 +1207,15 @@ def test_spec_augment_masking(device):
     assert torch.all(act_masked_f == exp_masked_f)
 
 
-def test_spec_augment_call(device, trace):
+@pytest.mark.parametrize("use_lengths", [True, False], ids=["lengths", "nolengths"])
+def test_spec_augment_call(device, use_lengths, trace):
     N, T, F = 30, 2048, 80
     max_time_warp, max_freq_warp = 15, 20
     max_time_mask, max_freq_mask = 30, 7
     num_time_mask, num_freq_mask = 2, 3
     max_time_mask_proportion = 0.2
-    lengths = torch.randint(1, T + 1, (N,), device=device)
+    if use_lengths:
+        lengths = torch.randint(1, T + 1, (N,), device=device)
     feats = torch.rand(N, T, F, device=device)
     spec_augment = layers.SpecAugment(
         max_time_warp=max_time_warp,
@@ -1224,12 +1226,14 @@ def test_spec_augment_call(device, trace):
         num_time_mask=num_time_mask,
         num_freq_mask=num_freq_mask,
     ).to(device)
+    if use_lengths:
+        args = (feats, lengths)
+    else:
+        args = (feats,)
     if trace:
         # spec_augment is nondeterministic, so we don't check repeat return values
-        spec_augment = torch.jit.trace(
-            spec_augment, (feats, lengths), check_trace=False
-        )
-    spec_augment(feats, lengths)
+        spec_augment = torch.jit.trace(spec_augment, args, check_trace=False)
+    spec_augment(*args)
 
 
 @pytest.mark.parametrize("mode", ["reflect", "constant", "replicate"])

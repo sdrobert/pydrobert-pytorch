@@ -2007,7 +2007,7 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
         value: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if mask is None and torch.jit.is_tracing():
+        if mask is None:
             # tracing can't handle calls with None arguments, so we make a
             # non-threatening mask to call with
             mask_ = torch.ones(
@@ -2357,7 +2357,7 @@ class MultiHeadedAttention(GlobalSoftAttention):
         value: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if mask is None and torch.jit.is_tracing():
+        if mask is None:
             # avoid issues with calls with None
             # if the dimension is correct, a tensor of shape (1, ...) should always
             # broadcast
@@ -2714,12 +2714,6 @@ class SpecAugment(torch.nn.Module):
         Controls order of interpolation of warping. 1 = linear (default for
         [park2020]_). 2 = thin plate (default for [park2019]_). Higher orders are
         possible at increased computational cost.
-
-    Warnings
-    --------
-    JIT tracing this function is only possible when `lengths` is always specified. You
-    can reproduce the behaviour of a :obj:`None` argument by setting
-    ``lengths = torch.tensor([feats.size(0)] * feats.size(1))``.
 
     Notes
     -----
