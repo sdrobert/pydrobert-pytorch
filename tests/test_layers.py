@@ -910,8 +910,9 @@ def test_dot_product_soft_attention(device, dim, trace):
     exp = exp.sum(dim)
     attention = layers.DotProductSoftAttention(dim4, dim, scale_factor=0.5)
     if trace:
-        pytest.xfail("Trace doesn't work for attention")
-        attention = torch.jit.trace(attention, (query, key, key))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            attention = torch.jit.trace(attention, (query, key, key))
     act = attention(query, key, key)
     assert torch.allclose(exp, act)
 
@@ -963,15 +964,13 @@ def test_dot_product_soft_attention_on_transformer_input():
     assert torch.allclose(g_q1, g_q2, atol=1e-5)
     assert torch.allclose(g_k1, g_k2, atol=1e-5)
     assert torch.allclose(g_v1, g_v2, atol=1e-5)
-    mask = torch.randint(2, (num_batch, len_q, len_k)).eq(1)
+    mask = torch.randint(2, (num_batch, len_q, len_k), dtype=torch.bool)
     out1 = matrix_attention(query, key, value, mask)
-    # the "contiguous" is necessary for 1.3.0
-    # https://github.com/pytorch/pytorch/issues/28502
     out2 = our_attention(
         query,
         key.unsqueeze(2),
         value.unsqueeze(2),
-        mask.transpose(1, 2).contiguous().eq(0),  # we use the inverse of mask
+        ~mask.transpose(1, 2),  # we use the inverse of mask
     )
     assert torch.allclose(out1, out2, atol=1e-5)
 
@@ -1031,8 +1030,9 @@ def test_learnable_soft_attention(device, dim, bias, layer, trace):
     optim = torch.optim.Adam(attention.parameters(), lr=1.0)
     optim.zero_grad()
     if trace:
-        pytest.xfail("Trace doesn't work for attention")
-        attention_trace = torch.jit.trace(attention, (query, key, key))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            attention_trace = torch.jit.trace(attention, (query, key, key))
     else:
         attention_trace = attention
     out1 = attention_trace(query, key, key)
@@ -1292,9 +1292,6 @@ def test_sequence_log_probs(device, dim, trace):
     )
     if trace:
         with warnings.catch_warnings():
-            # FIXME(sdrobert): there's an irritating warning caused by
-            # torch.as_tensor being called in pack_padded_sequence. Since the input is
-            # always a tensor already, it should be a harmless call.
             warnings.simplefilter("ignore")
             sequence_log_probs = torch.jit.trace(sequence_log_probs, (logits, hyp))
     log_probs = sequence_log_probs(logits, hyp)
