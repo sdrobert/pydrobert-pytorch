@@ -38,6 +38,7 @@ from pydrobert.torch.util import (
 )
 
 from ._jit import script
+from ._compat import broadcast_shapes
 
 __all__ = [
     "BeamSearch",
@@ -1985,18 +1986,18 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
                 f"dim must be in the range [{-key_dim + 1}, {key_dim - 2}] and not -1"
             )
         try:
-            e_shape = torch.broadcast_shapes(
+            e_shape = broadcast_shapes(
                 query.unsqueeze(self.dim).shape[:-1], key.shape[:-1]
             )
         except RuntimeError:
             raise RuntimeError("unsqueezed query and key do not broadcast")
         if mask is not None:
             try:
-                torch.broadcast_shapes(e_shape, mask.shape)
+                broadcast_shapes(e_shape, mask.shape)
             except RuntimeError:
                 raise RuntimeError("e and mask do not broadcast")
         try:
-            torch.broadcast_shapes(e_shape + (1,), value.shape)
+            broadcast_shapes(e_shape + (1,), value.shape)
         except RuntimeError:
             raise RuntimeError("unsqueezed e and value do not broadcast")
 

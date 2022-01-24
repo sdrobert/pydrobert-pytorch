@@ -1,4 +1,8 @@
 # Copyright 2022 Sean Robertson
+#
+# Code for broadcast_shapes was minimally adapted from PyTorch
+# https://github.com/pytorch/pytorch/blob/2367face24afb159f73ebf40dc6f23e46132b770/torch/functional.py
+# See LICENSE_pytorch in project root directory for PyTorch license.
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +20,8 @@ from collections import namedtuple
 from typing import List
 import torch
 
-__all__ = ["pad_sequence", "SpoofPackedSequence"]
+__all__ = ["pad_sequence", "SpoofPackedSequence", "broadcast_shapes"]
+
 
 # to avoid some scripting issues with torch.utils.nn.PackedSequence
 SpoofPackedSequence = namedtuple(
@@ -49,7 +54,15 @@ if torch.__version__ < "1.8.0":
         ]
         return torch.stack(sequences, 0 if batch_first else 1)
 
+    def broadcast_shapes(*shapes):
+        with torch.no_grad():
+            scalar = torch.zeros((), device="cpu")
+            tensors = [scalar.expand(shape) for shape in shapes]
+            tensors = torch.broadcast_tensors(*tensors)
+            return tensors[0].shape
+
 
 else:
+    broadcast_shapes = torch.broadcast_shapes
     pad_sequence = torch.nn.utils.rnn.pad_sequence
 

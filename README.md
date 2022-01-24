@@ -37,3 +37,7 @@ details.
 Implementations of `pydrobert.torch.util.polyharmonic_spline` and
 `pydrobert.torch.util.sparse_image_warp` are based off Tensorflow's codebase,
 which is Apache 2.0 licensed.
+
+Implementation of `pydrobert.torch._compat.broadcast_shapes` was directly
+taken from the Pytorch codebase, which has a BSD-style license, found in
+the file `LICENSE_pytorch`.
