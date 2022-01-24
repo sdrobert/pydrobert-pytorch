@@ -22,7 +22,7 @@ The loss functions :class:`HardOptimalCompletionDistillationLoss` and
 
 import abc
 import math
-from typing import NoReturn, Optional, Sequence, Tuple, Dict, Union
+from typing import Any, NoReturn, Optional, Sequence, Tuple, Dict, Union, TYPE_CHECKING
 
 import torch
 
@@ -166,6 +166,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         if vocab_size < 1:
             raise ValueError("vocab_size must be positive")
 
+    @torch.jit.export
     def update_input(
         self, prev: Dict[str, torch.Tensor], hist: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
@@ -194,6 +195,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         """
         raise NotImplementedError()
 
+    @torch.jit.export
     def calc_full_log_probs(
         self, hist: torch.Tensor, prev: Dict[str, torch.Tensor]
     ) -> torch.Tensor:
@@ -208,31 +210,48 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
             log_probs.append(log_probs_idx)
         return torch.stack(log_probs, 0)
 
-    def forward(
-        self,
-        hist: torch.Tensor,
-        prev: Dict[str, torch.Tensor] = dict(),
-        idx: Optional[torch.Tensor] = None,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
-        if hist.dim() != 2:
-            raise RuntimeError("hist must be 2 dimensional")
-        S, N = hist.shape
-        if idx is not None:
-            if idx.dim() == 1:
-                if idx.size(0) == 1:
-                    idx = idx.squeeze(0)
-                elif idx.size(0) != N:
+    if TYPE_CHECKING:
+
+        def forward(
+            self,
+            hist: torch.Tensor,
+            prev: Optional[Dict[str, torch.Tensor]] = None,
+            idx: Optional[torch.Tensor] = None,
+        ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
+            pass
+
+    else:
+
+        @script
+        def forward(
+            self,
+            hist: torch.Tensor,
+            prev: Optional[Dict[str, torch.Tensor]] = None,
+            idx: Optional[torch.Tensor] = None,
+        ) -> Any:
+            if prev is None:
+                prev = dict()
+            if hist.dim() != 2:
+                raise RuntimeError("hist must be 2 dimensional")
+            S, N = hist.shape
+            if idx is not None:
+                if idx.dim() == 1:
+                    if idx.size(0) == 1:
+                        idx = idx.squeeze(0)
+                    elif idx.size(0) != N:
+                        raise RuntimeError(
+                            f"Expected dim 0 of idx to be of size {N}, got {idx.size(0)}"
+                        )
+                if ((idx < -S - 1) | (idx > S)).any():
                     raise RuntimeError(
-                        f"Expected dim 0 of idx to be of size {N}, got {idx.size(0)}"
+                        f"All values in idx must be between ({-S - 1}, {S})"
                     )
-            if ((idx < -S - 1) | (idx > S)).any():
-                raise RuntimeError(f"All values in idx must be between ({-S - 1}, {S})")
-            idx = (idx + S + 1) % (S + 1)
-        prev = self.update_input(prev, hist)
-        if idx is None:
-            return self.calc_full_log_probs(hist, prev)
-        else:
-            return self.calc_idx_log_probs(hist, prev, idx)
+                idx = (idx + S + 1) % (S + 1)
+            prev = self.update_input(prev, hist)
+            if idx is None:
+                return self.calc_full_log_probs(hist, prev)
+            else:
+                return self.calc_idx_log_probs(hist, prev, idx)
 
 
 class ExtractableSequentialLanguageModel(
@@ -415,6 +434,15 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     to :obj:`SequentialLanguageModel`
     """
 
+    __constants__ = ["vocab_size", "sos", "max_ngram", "max_ngram_nodes", "shift"]
+
+    sos : int
+    max_ngram : int
+    max_ngram_nodes : int
+    logs : torch.Tensor
+    ids : torch.Tensor
+    pointers : torch.Tensor
+
     # XXX(sdrobert): as discussed in [heafield2011], we could potentially speed
     # up computations by keeping track of prefix probs and storing them in
     # case of backoff. This makes sense in a serial case, when we can choose to
@@ -441,7 +469,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             self.max_ngram_nodes = self.shift + vocab_size
         else:
             self.max_ngram = len(prob_list)
-            self.max_ngram_nodes = None  # changed by build_trie
+            self.max_ngram_nodes = -1  # changed by build_trie
             logs, ids, pointers = self._build_trie(prob_list)
         self.register_buffer("logs", logs)
         self.register_buffer("ids", ids)
@@ -452,11 +480,13 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         s += ", max_ngram={}, sos={}".format(self.max_ngram, self.sos)
         return s
 
+    @torch.jit.export
     def extract_by_src(
         self, prev: Dict[str, torch.Tensor], src: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         return prev
 
+    @torch.jit.export
     def mix_by_mask(
         self,
         prev_true: Dict[str, torch.Tensor],
@@ -465,6 +495,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     ) -> Dict[str, torch.Tensor]:
         return prev_true
 
+    @torch.jit.export
     def calc_idx_log_probs(
         self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
@@ -510,13 +541,31 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                 hist = hist[hist.size(0) - (N - 1) :]
             else:
                 hist = torch.cat(
-                    [hist.new_full((N - 1 - hist.size(0), B), self.sos), hist], 0
+                    [
+                        torch.full(
+                            (N - 1 - hist.size(0), B),
+                            self.sos,
+                            dtype=torch.long,
+                            device=device,
+                        ),
+                        hist,
+                    ],
+                    0,
                 )
         else:
-            min_idx = idx.min().item()  # SequentialLanguageModel ensures min_idx >=0
+            min_idx = int(idx.min().item())  # parent ensures min_idx >=0
             if min_idx < N - 1:
                 hist = torch.cat(
-                    [hist.new_full((N - 1 - min_idx, B), self.sos), hist], 0
+                    [
+                        torch.full(
+                            (N - 1 - min_idx, B),
+                            self.sos,
+                            dtype=torch.long,
+                            device=device,
+                        ),
+                        hist,
+                    ],
+                    0,
                 )
                 idx = idx + N - 1 - min_idx
             idx = torch.arange(-N + 1, 0, 1, device=idx.device).unsqueeze(1) + idx
@@ -537,7 +586,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             # we're a unigram model, or we've only got unigram history
             hist = hist[-1]  # (B, V)
             logs = self.logs[:G].unsqueeze(0).expand(B, G)
-            return logs.gather(1, hist), None  # (B, V)
+            return logs.gather(1, hist), prev  # (B, V)
 
         # we're now definitely not a unigram model w/ non-empty history
         assert X and K

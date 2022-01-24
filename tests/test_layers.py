@@ -151,7 +151,7 @@ def test_lookup_language_model_builds_trie(prob_list, pointers, ids, logs):
 
 
 @pytest.mark.parametrize("N", [1, 2, 5])
-def test_lookup_language_model_log_probs(device, N):
+def test_lookup_language_model_log_probs(device, N, script):
     torch.manual_seed(1900)
     vocab_size, sos = 10, -1
     prob_list = []
@@ -221,9 +221,11 @@ def test_lookup_language_model_log_probs(device, N):
     # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
     # be 0
     lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list)
+    if script:
+        lm = torch.jit.script(lm)
     lm = lm.to(device)
     for exp, hist in zip(exps, hists):
-        act = lm(hist, None, torch.tensor(-1, device=device))[0]
+        act = lm(hist, dict(), torch.tensor(-1, device=device))[0]
         assert torch.allclose(exp, act, atol=1e-5)
 
 

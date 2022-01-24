@@ -23,7 +23,9 @@ import torch
 
 import pydrobert.torch.config as config
 
-if torch.__version__ < "1.8.0":
+from pydrobert.torch._compat import _v
+
+if _v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
 
 
@@ -133,3 +135,8 @@ def populate_torch_dir():
 @pytest.fixture(params=[pytest.param("trace", marks=pytest.mark.trace), "notrace"])
 def trace(request):
     return request.param == "trace"
+
+
+@pytest.fixture(params=[pytest.param("script", marks=pytest.mark.script), "noscript"])
+def script(request):
+    return request.param == "script"
