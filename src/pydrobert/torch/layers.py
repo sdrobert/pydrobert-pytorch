@@ -432,16 +432,19 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     After 0.3.0, `sos` became no longer optional. `pad_sos_to_n` was removed as an
     argument (implicitly true now). `eos` and `oov` were also removed as part of updates
     to :obj:`SequentialLanguageModel`
+
+    When testing with PyTorch v 1.5.1, scripting this module lead to a fatal Python
+    error.
     """
 
     __constants__ = ["vocab_size", "sos", "max_ngram", "max_ngram_nodes", "shift"]
 
-    sos : int
-    max_ngram : int
-    max_ngram_nodes : int
-    logs : torch.Tensor
-    ids : torch.Tensor
-    pointers : torch.Tensor
+    sos: int
+    max_ngram: int
+    max_ngram_nodes: int
+    logs: torch.Tensor
+    ids: torch.Tensor
+    pointers: torch.Tensor
 
     # XXX(sdrobert): as discussed in [heafield2011], we could potentially speed
     # up computations by keeping track of prefix probs and storing them in

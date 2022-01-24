@@ -21,6 +21,8 @@ import torch
 import pydrobert.torch.layers as layers
 import pydrobert.torch.util as util
 
+from pydrobert.torch._compat import _v
+
 INF = float("inf")
 NAN = float("nan")
 
@@ -222,6 +224,8 @@ def test_lookup_language_model_log_probs(device, N, script):
     # be 0
     lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list)
     if script:
+        if _v < "1.8.1":
+            pytest.skip("_recursive.py throws error")
         lm = torch.jit.script(lm)
     lm = lm.to(device)
     for exp, hist in zip(exps, hists):
