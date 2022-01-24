@@ -1401,7 +1401,7 @@ def hard_optimal_completion_distillation_loss(
         reduction="none",
     ).view_as(optimals)
     padding_mask = optimals.eq(ignore_index)
-    no_padding_mask = padding_mask.eq(0)
+    no_padding_mask = ~padding_mask
     loss = loss.masked_fill(padding_mask, 0.0).sum(2)
     loss = torch.where(
         no_padding_mask.any(2), loss / no_padding_mask.float().sum(2), loss,

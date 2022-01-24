@@ -32,7 +32,7 @@ import torch
 import pydrobert.torch.config as config
 
 from ._jit import script
-from ._compat import pad_sequence, SpoofPackedSequence
+from ._compat import pad_sequence, SpoofPackedSequence, trunc_divide, meshgrid
 
 __all__ = [
     "beam_search_advance",
@@ -258,7 +258,7 @@ def beam_search_advance(
     K = min(width, Kp * V)
     cand_log_probs = (log_probs_prev.unsqueeze(2) + log_probs_t).flatten(1)
     log_probs_next, next_ind = cand_log_probs.topk(K, 1)
-    next_src = next_ind.floor_divide(V)
+    next_src = trunc_divide(next_ind, V)
     next_token = (next_ind % V).unsqueeze(0)  # (1, N, K)
 
     if tm1:
@@ -594,7 +594,7 @@ def ctc_prefix_search_advance(
 
     next_is_nonext = next_ind >= (Kp * V)
     next_src = torch.where(
-        next_is_nonext, next_ind - (Kp * V), next_ind.floor_divide(V)
+        next_is_nonext, next_ind - (Kp * V), trunc_divide(next_ind, V)
     )
     next_ext = next_ind % V
 
@@ -815,8 +815,12 @@ def _string_matching(
                     )
                 hyp_lens = hyp_lens - hyp_eq_mask.to(hyp_lens.dtype)
     else:
-        ref_lens = torch.full((batch_size,), max_ref_steps, device=ref.device)
-        hyp_lens = torch.full((batch_size,), max_hyp_steps, device=ref.device)
+        ref_lens = torch.full(
+            (batch_size,), max_ref_steps, dtype=torch.long, device=ref.device
+        )
+        hyp_lens = torch.full(
+            (batch_size,), max_hyp_steps, dtype=torch.long, device=ref.device
+        )
     if return_mask:
         mask = torch.empty(
             (max_hyp_steps + (0 if exclude_last else 1), max_ref_steps, batch_size),
@@ -2078,7 +2082,7 @@ def dense_image_warp(
     N, C, H, W = image.shape
     h = torch.arange(H, dtype=image.dtype, device=image.device)  # (H,)
     w = torch.arange(W, dtype=image.dtype, device=image.device)  # (W,)
-    h, w = torch.meshgrid(h, w)  # (H, W), (H, W)
+    h, w = meshgrid(h, w)  # (H, W), (H, W)
     if indexing == "hw":
         # grid_sample uses wh sampling, so we flip both the flow and hw along final axis
         hw = torch.stack((w, h), 2).unsqueeze(0)  # (1, H, W, 2)
@@ -2205,7 +2209,7 @@ def sparse_image_warp(
 
     H_range = torch.arange(H, dtype=image.dtype, device=image.device)  # (H,)
     W_range = torch.arange(W, dtype=image.dtype, device=image.device)  # (W,)
-    h, w = torch.meshgrid(H_range, W_range)  # (H, W), (H, W)
+    h, w = meshgrid(H_range, W_range)  # (H, W), (H, W)
     query_points = torch.stack([w.flatten(), h.flatten()], 1)  # (H * W, 2)
 
     if include_flow:
