@@ -32,7 +32,13 @@ import torch
 import pydrobert.torch.config as config
 
 from ._jit import script
-from ._compat import pad_sequence, SpoofPackedSequence, trunc_divide, meshgrid
+from ._compat import (
+    pad_sequence,
+    SpoofPackedSequence,
+    trunc_divide,
+    meshgrid,
+    linalg_solve,
+)
 
 __all__ = [
     "beam_search_advance",
@@ -1912,7 +1918,7 @@ def _solve_interpolation(
             (B.shape[0], B.shape[2], f.shape[2]), device=f.device, dtype=f.dtype
         )
         f0 = torch.cat([f, zeros], 1,)  # (N, T+I+1, O)
-        wv, _ = torch.solve(f0, ABtB0)
+        wv = linalg_solve(ABtB0, f0)
         w, v = wv[:, : B.shape[1]], wv[:, B.shape[1] :]
     else:
         # block decomposition
@@ -1922,7 +1928,7 @@ def _solve_interpolation(
         Bt = B.transpose(1, 2)  # (N, I+1, T)
         Bt_Ainv_B = torch.bmm(Bt, Ainv_B)  # (N, I+1, I+1)
         Bt_Ainv_f = torch.bmm(Bt, Ainv_f)  # (N, I+1, O)
-        v, _ = torch.solve(Bt_Ainv_f, Bt_Ainv_B)  # (N, I+1, O)
+        v = linalg_solve(Bt_Ainv_B, Bt_Ainv_f)
         Ainv_B_v = torch.bmm(Ainv_B, v)  # (N, T, O)
         w = Ainv_f - Ainv_B_v  # (N, T, O)
 

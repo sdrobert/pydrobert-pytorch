@@ -21,6 +21,8 @@ import pytest
 import pydrobert.torch.util as util
 import numpy as np
 
+from pydrobert.torch._compat import meshgrid
+
 
 @pytest.mark.cpu
 def test_parse_arpa_lm():
@@ -981,7 +983,7 @@ def test_dense_image_warp_flow_flips(device, flip_h, flip_w):
     else:
         w = torch.zeros((W,), dtype=torch.float32, device=device)
     exp = exp.flatten()
-    flow = torch.stack(torch.meshgrid(h, w), 2)
+    flow = torch.stack(meshgrid(h, w), 2)
     act = util.dense_image_warp(img, flow).flatten()
     assert torch.allclose(exp, act, atol=1e-4), (exp - act).abs().max()
     act = util.dense_image_warp(img, flow, mode="nearest").flatten()

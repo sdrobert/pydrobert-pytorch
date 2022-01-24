@@ -19,11 +19,12 @@
 # limitations under the License.
 
 from collections import namedtuple
-from typing import Any, Iterable, List, Tuple, Union
+from typing import Iterable, List, Tuple, Union
 import torch
 
 __all__ = [
     "broadcast_shapes",
+    "linalg_solve",
     "meshgrid",
     "pad_sequence",
     "SpoofPackedSequence",
@@ -159,9 +160,14 @@ if _v < "1.8.0":
 
     trunc_divide = torch.floor_divide
 
+    def linalg_solve(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+        return torch.solve(B, A)[0]
+
+
 else:
     broadcast_shapes = torch.broadcast_shapes
     pad_sequence = torch.nn.utils.rnn.pad_sequence
+    linalg_solve = torch.linalg.solve
 
     def trunc_divide(input: torch.Tensor, other) -> torch.Tensor:
         return input.div(other, rounding_mode="trunc")
