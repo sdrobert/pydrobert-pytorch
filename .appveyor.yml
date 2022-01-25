@@ -5,9 +5,11 @@ image: Ubuntu
 
 environment:
   matrix:
-    - TOXENV: py36-earliest
+    - TOXENV: py36-t151
       PYTHON: "3.6"
-    - TOXENV: py37
+    - TOXENV: py36-t181
+      PYTHON: "3.6"
+    - TOXENV: py37-t181
       PYTHON: "3.7"
     - TOXENV: py38
       PYTHON: "3.8"

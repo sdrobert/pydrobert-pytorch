@@ -21,8 +21,6 @@ import torch
 import pydrobert.torch.layers as layers
 import pydrobert.torch.util as util
 
-from pydrobert.torch._compat import _v
-
 INF = float("inf")
 NAN = float("nan")
 
@@ -153,7 +151,7 @@ def test_lookup_language_model_builds_trie(prob_list, pointers, ids, logs):
 
 
 @pytest.mark.parametrize("N", [1, 2, 5])
-def test_lookup_language_model_log_probs(device, N, script):
+def test_lookup_language_model_log_probs(device, N, jit_type):
     torch.manual_seed(1900)
     vocab_size, sos = 10, -1
     prob_list = []
@@ -223,10 +221,11 @@ def test_lookup_language_model_log_probs(device, N, script):
     # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
     # be 0
     lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list)
-    if script:
-        if _v < "1.8.1":
-            pytest.skip("_recursive.py throws error")
+    if jit_type == "script":
         lm = torch.jit.script(lm)
+    elif jit_type == "trace":
+        pytest.xfail("lookup_language_model trace unsupported")
+        lm = torch.jit.trace(lm, (hists[0], dict(), torch.tensor(-1, device=device)))
     lm = lm.to(device)
     for exp, hist in zip(exps, hists):
         act = lm(hist, dict(), torch.tensor(-1, device=device))[0]
@@ -405,7 +404,7 @@ def test_lookup_language_model_state_dict():
 @pytest.mark.parametrize("batch_first", [True, False])
 @pytest.mark.parametrize("sub_avg", [True, False])
 @pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
-def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction, trace):
+def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction, jit_type):
     torch.manual_seed(100)
     num_batches, samples, num_classes = 5, 5, 30
     max_ref_steps, max_hyp_steps = 10, 5
@@ -428,8 +427,10 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction, trace)
     loss = layers.MinimumErrorRateLoss(
         eos=None, sub_avg=sub_avg, batch_first=batch_first, reduction=reduction,
     )
-    if trace:
+    if jit_type == "trace":
         loss = torch.jit.trace(loss, (log_probs, ref, hyp))
+    elif jit_type == "script":
+        loss = torch.jit.script(loss)
     l1 = loss(log_probs, ref, hyp)
     assert l1.ne(0.0).any()
     l2 = loss(log_probs, ref, hyp)
@@ -437,8 +438,10 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction, trace)
     loss = layers.MinimumErrorRateLoss(
         eos=0, sub_avg=sub_avg, batch_first=batch_first, reduction=reduction,
     )
-    if trace:
+    if jit_type == "trace":
         loss = torch.jit.trace(loss, (log_probs, ref, hyp))
+    elif jit_type == "script":
+        loss = torch.jit.script(loss)
     l3 = loss(log_probs, ref, hyp)
     assert l3.eq(0.0).all()
 
@@ -449,7 +452,7 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction, trace)
 @pytest.mark.parametrize("reduction", ["mean", "none"])
 @pytest.mark.parametrize("include_eos", [True, False])
 def test_hard_optimal_completion_distillation_loss(
-    device, batch_first, eos, ref_steps_times, reduction, include_eos, trace
+    device, batch_first, eos, ref_steps_times, reduction, include_eos, jit_type
 ):
     torch.manual_seed(209384)
     num_batches, max_steps, num_classes = 20, 41, 10
@@ -494,7 +497,9 @@ def test_hard_optimal_completion_distillation_loss(
     loss = layers.HardOptimalCompletionDistillationLoss(
         eos=eos, include_eos=include_eos, batch_first=batch_first, reduction=reduction,
     )
-    if trace:
+    if jit_type == "script":
+        loss = torch.jit.script(loss)
+    elif jit_type == "trace":
         loss = torch.jit.trace(loss, (logits, ref, hyp))
     l1 = loss(logits, ref, hyp)
     assert torch.all(l1 == l1)  # no nans
@@ -904,7 +909,7 @@ def test_global_soft_attention(device, dim):
 
 
 @pytest.mark.parametrize("dim", [0, 1, 2])
-def test_dot_product_soft_attention(device, dim, trace):
+def test_dot_product_soft_attention(device, dim, jit_type):
     torch.manual_seed(387420)
     dim1, dim2, dim3, dim4 = 50, 30, 12, 100
     key_shape = (dim1, dim2, dim3, dim4)
@@ -915,7 +920,9 @@ def test_dot_product_soft_attention(device, dim, trace):
     exp = torch.nn.functional.softmax(key[..., 0], dim).unsqueeze(-1) * key
     exp = exp.sum(dim)
     attention = layers.DotProductSoftAttention(dim4, dim, scale_factor=0.5)
-    if trace:
+    if jit_type == "script":
+        attention = torch.jit.script(attention)
+    elif jit_type == "trace":
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             attention = torch.jit.trace(attention, (query, key, key))
@@ -986,7 +993,7 @@ def test_dot_product_soft_attention_on_transformer_input():
 @pytest.mark.parametrize(
     "layer", ["general", "concat", "multihead_general", "multihead_concat"]
 )
-def test_learnable_soft_attention(device, dim, bias, layer, trace):
+def test_learnable_soft_attention(device, dim, bias, layer, jit_type):
     torch.manual_seed(347201)
     max_dim, max_dim_size, max_num_heads = 5, 30, 10
     num_dim = torch.randint(dim + 2, max_dim + 1, (1,), device=device).item()
@@ -1035,10 +1042,12 @@ def test_learnable_soft_attention(device, dim, bias, layer, trace):
     attention.reset_parameters()
     optim = torch.optim.Adam(attention.parameters(), lr=1.0)
     optim.zero_grad()
-    if trace:
+    if jit_type == "trace":
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             attention_trace = torch.jit.trace(attention, (query, key, key))
+    elif jit_type == "script":
+        attention_trace = torch.jit.script(attention)
     else:
         attention_trace = attention
     out1 = attention_trace(query, key, key)
@@ -1214,7 +1223,7 @@ def test_spec_augment_masking(device):
 
 
 @pytest.mark.parametrize("use_lengths", [True, False], ids=["lengths", "nolengths"])
-def test_spec_augment_call(device, use_lengths, trace):
+def test_spec_augment_call(device, use_lengths, jit_type):
     N, T, F = 30, 2048, 80
     max_time_warp, max_freq_warp = 15, 20
     max_time_mask, max_freq_mask = 30, 7
@@ -1226,7 +1235,7 @@ def test_spec_augment_call(device, use_lengths, trace):
     spec_augment = layers.SpecAugment(
         max_time_warp=max_time_warp,
         max_freq_warp=max_freq_warp,
-        max_time_mask=max_time_mask,
+        max_time_mask=max_time_mask if jit_type != "trace" else 0,
         max_freq_mask=max_freq_mask,
         max_time_mask_proportion=max_time_mask_proportion,
         num_time_mask=num_time_mask,
@@ -1236,22 +1245,26 @@ def test_spec_augment_call(device, use_lengths, trace):
         args = (feats, lengths)
     else:
         args = (feats,)
-    if trace:
+    if jit_type == "trace":
         # spec_augment is nondeterministic, so we don't check repeat return values
         spec_augment = torch.jit.trace(spec_augment, args, check_trace=False)
+    elif jit_type == "script":
+        spec_augment = torch.jit.script(spec_augment)
     spec_augment(*args)
 
 
 @pytest.mark.parametrize("mode", ["reflect", "constant", "replicate"])
-def test_random_shift_call(device, mode, trace):
+def test_random_shift_call(device, mode, jit_type):
     torch.manual_seed(50)
     N, T, A, B = 50, 300, 13, 11
     in_ = torch.rand(N, T, A, B, device=device)
     in_lens = torch.randint(1, T + 1, (N,), device=device)
     rand_shift = layers.RandomShift(1.0, mode).to(device)
-    if trace:
+    if jit_type == "trace":
         # random_shift is nondeterministic, so we don't check repeat return values
         rand_shift = torch.jit.trace(rand_shift, (in_, in_lens), check_trace=False)
+    elif jit_type == "script":
+        rand_shift = torch.jit.script(rand_shift)
     out, out_lens = rand_shift(in_, in_lens)
     assert out.dim() == 4
     assert (out_lens >= in_lens).all()
@@ -1262,7 +1275,7 @@ def test_random_shift_call(device, mode, trace):
 
 
 @pytest.mark.parametrize("dim", [0, 2, -1, None])
-def test_sequence_log_probs(device, dim, trace):
+def test_sequence_log_probs(device, dim, jit_type):
     torch.manual_seed(24519)
     max_steps, num_classes, eos = 30, 10, 0
     dim1, dim2, dim3, dim4 = 5, 2, 1, 4
@@ -1300,10 +1313,12 @@ def test_sequence_log_probs(device, dim, trace):
     sequence_log_probs = layers.SequentialLogProbabilities(
         0 if dim is None else dim, eos
     )
-    if trace:
+    if jit_type == "trace":
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             sequence_log_probs = torch.jit.trace(sequence_log_probs, (logits, hyp))
+    elif jit_type == "script":
+        sequence_log_probs = torch.jit.script(sequence_log_probs)
     log_probs = sequence_log_probs(logits, hyp)
     assert log_probs.eq(0.0).all()
     if dim is None:

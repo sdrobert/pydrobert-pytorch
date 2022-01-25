@@ -1,6 +1,6 @@
 # Copyright 2022 Sean Robertson
 #
-# Code for broadcast_shapes was minimally adapted from PyTorch
+# Code for broadcast_shapes was adapted from PyTorch
 # https://github.com/pytorch/pytorch/blob/2367face24afb159f73ebf40dc6f23e46132b770/torch/functional.py
 # Code for TorchVersion was taken directly from PyTorch
 # https://github.com/pytorch/pytorch/blob/b737e09f60dd56dbae520e436648e1f3ebc1f937/torch/torch_version.py
@@ -18,8 +18,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections import namedtuple
-from typing import Iterable, List, Tuple, Union
+from typing import Iterable, List, Optional, Tuple, Union, NamedTuple
 import torch
 
 __all__ = [
@@ -29,13 +28,17 @@ __all__ = [
     "pad_sequence",
     "SpoofPackedSequence",
     "trunc_divide",
+    "jit_isinstance",
 ]
 
 
 # to avoid some scripting issues with torch.utils.nn.PackedSequence
-SpoofPackedSequence = namedtuple(
-    "SpoofPackedSequence", ["data", "batch_sizes", "sorted_indices", "unsorted_indices"]
-)
+class SpoofPackedSequence(NamedTuple):
+    data: torch.Tensor
+    batch_sizes: torch.Tensor
+    sorted_indices: Optional[torch.Tensor]
+    unsorted_indices: Optional[torch.Tensor]
+
 
 try:
     from torch.torch_version import __version__ as _v  # type: ignore
@@ -151,26 +154,29 @@ if _v < "1.8.0":
         ]
         return torch.stack(sequences, 0 if batch_first else 1)
 
-    def broadcast_shapes(*shapes):
-        with torch.no_grad():
-            scalar = torch.zeros((), device="cpu")
-            tensors = [scalar.expand(shape) for shape in shapes]
-            tensors = torch.broadcast_tensors(*tensors)
-            return tensors[0].shape
-
     trunc_divide = torch.floor_divide
 
     def linalg_solve(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
         return torch.solve(B, A)[0]
 
+    jit_isinstance = isinstance
 
 else:
-    broadcast_shapes = torch.broadcast_shapes
     pad_sequence = torch.nn.utils.rnn.pad_sequence
     linalg_solve = torch.linalg.solve
+    jit_isinstance = torch.jit.isinstance
 
     def trunc_divide(input: torch.Tensor, other) -> torch.Tensor:
         return input.div(other, rounding_mode="trunc")
+
+
+def broadcast_shapes(a: List[int], b: List[int]) -> List[int]:
+    with torch.no_grad():
+        scalar = torch.zeros((), device="cpu")
+        tensor_a = scalar.expand(a)
+        tensor_b = scalar.expand(b)
+        tensor_a, tensor_b = torch.broadcast_tensors(tensor_a, tensor_b)
+        return tensor_a.shape
 
 
 if _v < "1.10.0":

@@ -22,7 +22,16 @@ The loss functions :class:`HardOptimalCompletionDistillationLoss` and
 
 import abc
 import math
-from typing import Any, NoReturn, Optional, Sequence, Tuple, Dict, Union, TYPE_CHECKING
+from typing import (
+    Any,
+    NoReturn,
+    Optional,
+    Sequence,
+    Tuple,
+    Dict,
+    Union,
+    TYPE_CHECKING,
+)
 
 import torch
 
@@ -83,12 +92,17 @@ class SequentialLogProbabilities(torch.nn.Module):
             s += f", eos={self.eos}"
         return s
 
-    def forward(
-        self,
-        logits: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
-        hyp: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
-    ) -> torch.Tensor:
-        return sequence_log_probs(logits, hyp, self.dim, self.eos)
+    if TYPE_CHECKING:
+        def forward(
+            self,
+            logits: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
+            hyp: torch.Tensor,
+        ) -> torch.Tensor:
+            pass
+    else:
+    
+        def forward(self, logits : Any, hyp : torch.Tensor) -> torch.Tensor:
+            return sequence_log_probs(logits, hyp, self.dim, self.eos)
 
 
 class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
@@ -2010,13 +2024,14 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
         """
         raise NotImplementedError()
 
+    @torch.jit.export
     def check_input(
         self,
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
-    ) -> None:
+    ):
         """Check if input is properly formatted, RuntimeError otherwise
 
         See Also
@@ -2037,21 +2052,10 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
             raise RuntimeError(
                 f"dim must be in the range [{-key_dim + 1}, {key_dim - 2}] and not -1"
             )
-        try:
-            e_shape = broadcast_shapes(
-                query.unsqueeze(self.dim).shape[:-1], key.shape[:-1]
-            )
-        except RuntimeError:
-            raise RuntimeError("unsqueezed query and key do not broadcast")
+        e_shape = broadcast_shapes(query.unsqueeze(self.dim).shape[:-1], key.shape[:-1])
         if mask is not None:
-            try:
-                broadcast_shapes(e_shape, mask.shape)
-            except RuntimeError:
-                raise RuntimeError("e and mask do not broadcast")
-        try:
-            broadcast_shapes(e_shape + (1,), value.shape)
-        except RuntimeError:
-            raise RuntimeError("unsqueezed e and value do not broadcast")
+            broadcast_shapes(e_shape, mask.shape)
+        broadcast_shapes(e_shape + (1,), value.shape)
 
     def forward(
         self,
@@ -2393,8 +2397,26 @@ class MultiHeadedAttention(GlobalSoftAttention):
         value: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ):
-        """Check that input is formatted correctly, RuntimeError otherwise"""
-        super().check_input(query, key, value, mask)
+        # FIXME(sdrobert): TorchScript doesn't currently support calls to super().
+        # Replace this when it does. Also surround broadcast_shapes with try/catch
+        # when supported
+        key_dim = key.dim()
+        if query.dim() != key_dim - 1:
+            raise RuntimeError("query must have one fewer dimension than key")
+        if key_dim != value.dim():
+            raise RuntimeError("key must have same number of dimensions as value")
+        if query.shape[-1] != self.query_size:
+            raise RuntimeError("Last dimension of query must match query_size")
+        if key.shape[-1] != self.key_size:
+            raise RuntimeError("Last dimension of key must match key_size")
+        if self.dim > key_dim - 2 or key_dim == -1 or self.dim < -key_dim + 1:
+            raise RuntimeError(
+                f"dim must be in the range [{-key_dim + 1}, {key_dim - 2}] and not -1"
+            )
+        e_shape = broadcast_shapes(query.unsqueeze(self.dim).shape[:-1], key.shape[:-1])
+        if mask is not None:
+            broadcast_shapes(e_shape, mask.shape)
+        broadcast_shapes(e_shape + (1,), value.shape)
         if value.size(-1) != self.value_size:
             raise RuntimeError("Last dimension of value must match value_size")
 
@@ -2451,6 +2473,43 @@ class MultiHeadedAttention(GlobalSoftAttention):
 
 
 @script
+def _spec_augment_check_input(
+    feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
+):
+    if feats.dim() != 3:
+        raise RuntimeError(
+            f"Expected feats to have three dimensions, got {feats.dim()}"
+        )
+    N, T, _ = feats.shape
+    if lengths is not None:
+        if lengths.dim() != 1:
+            raise RuntimeError(
+                f"Expected lengths to be one dimensional, got {lengths.dim()}"
+            )
+        if lengths.size(0) != N:
+            raise RuntimeError(
+                f"Batch dimension of feats ({N}) and lengths ({lengths.size(0)}) "
+                "do not match"
+            )
+        if not torch.all((lengths <= T) & (lengths > 0)):
+            raise RuntimeError(f"values of lengths must be between (1, {T})")
+    else:
+        lengths = torch.tensor([T] * N, device=feats.device)
+
+
+SpecAugmentParams = Tuple[
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+]
+
+
+@script
 def spec_augment_draw_parameters(
     feats: torch.Tensor,
     max_time_warp: float,
@@ -2462,16 +2521,7 @@ def spec_augment_draw_parameters(
     num_time_mask_proportion: float,
     num_freq_mask: int,
     lengths: Optional[torch.Tensor] = None,
-) -> Tuple[
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-]:
+) -> SpecAugmentParams:
     """Functional version of SpecAugment.draw_parameters
 
     See Also
@@ -2479,12 +2529,13 @@ def spec_augment_draw_parameters(
     SpecAugment
         For definitions of arguments and a description of this function.
     """
+    _spec_augment_check_input(feats, lengths)
     N, T, F = feats.shape
     device = feats.device
     eps = _get_tensor_eps(feats)
     omeps = 1 - eps
     if lengths is None:
-        lengths = torch.tensor([T] * N, device=device)
+        lengths = torch.full((N,), T, dtype=torch.long, device=device)
     lengths = lengths.to(device)
     # note that order matters slightly in whether we draw widths or positions first.
     # The paper specifies that position is drawn first for warps, whereas widths
@@ -2497,13 +2548,13 @@ def spec_augment_draw_parameters(
         w_0 = torch.rand([N], device=device) * (lengths - 2 * (max_ + eps)) + max_ + eps
         w = torch.rand([N], device=device) * (2 * max_) - max_
     else:
-        w_0 = w = None
+        w_0 = w = torch.empty(0)
     if max_freq_warp:
         max_ = min(max_freq_warp, F / 2 - eps)
         v_0 = torch.rand([N], device=device) * (F - 2 * (max_ + eps)) + max_ + eps
         v = torch.rand([N], device=device) * (2 * max_) - max_
     else:
-        v_0 = v = None
+        v_0 = v = torch.empty(0)
     if (
         max_time_mask
         and max_time_mask_proportion
@@ -2538,29 +2589,20 @@ def spec_augment_draw_parameters(
             * (lengths.unsqueeze(1) - t + omeps)
         ).long()
     else:
-        t = t_0 = None
+        t = t_0 = torch.empty(0)
     if max_freq_mask and num_freq_mask:
         max_ = min(max_freq_mask, F)
         f = (torch.rand([N, num_freq_mask], device=device) * (max_ + omeps)).long()
         f_0 = (torch.rand([N, num_freq_mask], device=device) * (F - f + omeps)).long()
     else:
-        f = f_0 = None
+        f = f_0 = torch.empty(0)
     return w_0, w, v_0, v, t_0, t, f_0, f
 
 
 @script
 def spec_augment_apply_parameters(
     feats: torch.Tensor,
-    params: Tuple[
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-    ],
+    params: SpecAugmentParams,
     interpolation_order: int,
     lengths: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
@@ -2571,20 +2613,21 @@ def spec_augment_apply_parameters(
     SpecAugment
         For definitions of arguments and a description of this function.
     """
+    _spec_augment_check_input(feats, lengths)
     N, T, F = feats.shape
     device = feats.device
     if lengths is None:
-        lengths = torch.tensor([T] * N, device=device, dtype=feats.dtype)
+        lengths = torch.full((N,), T, dtype=torch.long, device=device)
     lengths = lengths.to(feats.dtype)
     w_0, w, v_0, v, t_0, t, f_0, f = params
     new_feats = feats
     time_grid: Optional[torch.Tensor] = None
     freq_grid: Optional[torch.Tensor] = None
     do_warp = False
-    if w_0 is not None and w is not None:
+    if w_0 is not None and w_0.numel() and w is not None and w.numel():
         time_grid = warp_1d_grid(w_0, w, lengths, T, interpolation_order)
         do_warp = True
-    if v_0 is not None and v is not None:
+    if v_0 is not None and v_0.numel() and v is not None and v.numel():
         freq_grid = warp_1d_grid(
             v_0, v, torch.tensor([F] * N, device=device), F, interpolation_order,
         )
@@ -2607,12 +2650,12 @@ def spec_augment_apply_parameters(
         ).squeeze(1)
     tmask: Optional[torch.Tensor] = None
     fmask: Optional[torch.Tensor] = None
-    if t_0 is not None and t is not None:
+    if t_0 is not None and t_0.numel() and t is not None and t.numel():
         tmask = torch.arange(T, device=device).unsqueeze(0).unsqueeze(2)  # (1, T,1)
         t_1 = t_0 + t  # (N, MT)
         tmask = (tmask >= t_0.unsqueeze(1)) & (tmask < t_1.unsqueeze(1))  # (N,T,MT)
         tmask = tmask.any(2, keepdim=True)  # (N, T, 1)
-    if f_0 is not None and f is not None:
+    if f_0 is not None and f_0.numel() and f is not None and f.numel():
         fmask = torch.arange(F, device=device).unsqueeze(0).unsqueeze(2)  # (1, F,1)
         f_1 = f_0 + f  # (N, MF)
         fmask = (fmask >= f_0.unsqueeze(1)) & (fmask < f_1.unsqueeze(1))  # (N,F,MF)
@@ -2648,25 +2691,7 @@ def spec_augment(
     SpecAugment
         For definitions of arguments and a description of this function.
     """
-    if feats.dim() != 3:
-        raise RuntimeError(
-            f"Expected feats to have three dimensions, got {feats.dim()}"
-        )
-    N, T, _ = feats.shape
-    if lengths is not None:
-        if lengths.dim() != 1:
-            raise RuntimeError(
-                f"Expected lengths to be one dimensional, got {lengths.dim()}"
-            )
-        if lengths.size(0) != N:
-            raise RuntimeError(
-                f"Batch dimension of feats ({N}) and lengths ({lengths.size(0)}) "
-                "do not match"
-            )
-        if not torch.all((lengths <= T) & (lengths > 0)):
-            raise RuntimeError(f"values of lengths must be between (1, {T})")
-    else:
-        lengths = torch.tensor([T] * N, device=feats.device)
+    _spec_augment_check_input(feats, lengths)
     if not training:
         return feats
     params = spec_augment_draw_parameters(
@@ -2833,8 +2858,8 @@ class SpecAugment(torch.nn.Module):
         interpolation_order: int = 1,
     ):
         super().__init__()
-        self.max_time_warp = max_time_warp
-        self.max_freq_warp = max_freq_warp
+        self.max_time_warp = float(max_time_warp)
+        self.max_freq_warp = float(max_freq_warp)
         self.max_time_mask = max_time_mask
         self.max_freq_mask = max_freq_mask
         self.max_time_mask_proportion = max_time_mask_proportion
@@ -2858,16 +2883,7 @@ class SpecAugment(torch.nn.Module):
 
     def draw_parameters(
         self, feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
-    ) -> Tuple[
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-    ]:
+    ) -> SpecAugmentParams:
         """Randomly draw parameterizations of augmentations
 
         Called as part of this layer's :func:`__call__` method.
@@ -2882,35 +2898,35 @@ class SpecAugment(torch.nn.Module):
 
         Returns
         -------
-        w_0 : torch.Tensor or :obj:`None`
+        w_0 : torch.Tensor
             If step 1 is enabled, of shape ``(N,)`` containing the source points in the
-            time warp (floatint-point).
-        w : torch.Tensor or :obj:`None`
+            time warp (floatint-point). Otherwise, is empty.
+        w : torch.Tensor
             If step 1 is enabled, of shape ``(N,)`` containing the number of frames to
             shift the source point by (positive or negative) in the destination in time.
-            Positive values indicate a right shift.
-        v_0 : torch.Tensor or :obj:`None`
+            Positive values indicate a right shift. Otherwise is empty.
+        v_0 : torch.Tensor
             If step 2 is enabled, of shape ``(N,)`` containing the source points in the
-            frequency warp (floating point)
-        v : torch.Tensor or :obj:`None`
+            frequency warp (floating point). Otherwise is empty.
+        v : torch.Tensor
             If step 2 is enabled, of shape ``(N,)`` containing the number of
             coefficients to shift the source point by (positive or negative) in the
-            destination in time. Positive values indicate a right shift.
-            Floating-point
-        t_0 : torch.Tensor or :obj:`None`
+            destination in time. Positive values indicate a right shift. Otherwise is
+            empty.
+        t_0 : torch.Tensor
             If step 3 is enabled, of shape ``(N, M_T)`` where ``M_T`` is the number of
             time masks specifying the lower index (inclusive) of the time masks.
-            Integer.
-        t : torch.Tensor or :obj:`None`
+            Otherwise is empty.
+        t : torch.Tensor
             If step 3 is enabled, of shape ``(N, M_T)`` specifying the number of frames
-            per time mask. Integer
-        f_0 : torch.Tensor or :obj:`None`
+            per time mask. Otherise is empty.
+        f_0 : torch.Tensor
             If step 4 is enabled, of shape ``(N, M_F)`` where ``M_F`` is the number of
             frequency masks specifying the lower index (inclusive) of the frequency
-            masks. Integer.
-        f : torch.Tensor or :obj:`None`
+            masks. Otherwise is empty.
+        f : torch.Tensor
             If step 4 is enabled, of shape ``(N, M_F)`` specifying the number of
-            frequency coefficients per frequency mask. Integer
+            frequency coefficients per frequency mask. Otherwise is empty.
         """
         return spec_augment_draw_parameters(
             feats,
@@ -2928,16 +2944,7 @@ class SpecAugment(torch.nn.Module):
     def apply_parameters(
         self,
         feats: torch.Tensor,
-        params: Tuple[
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-        ],
+        params: SpecAugmentParams,
         lengths: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Use drawn parameters to apply augmentations
@@ -2968,20 +2975,15 @@ class SpecAugment(torch.nn.Module):
     def forward(
         self, feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        return spec_augment(
-            feats,
-            self.max_time_warp,
-            self.max_freq_warp,
-            self.max_time_mask,
-            self.max_freq_mask,
-            self.max_time_mask_proportion,
-            self.num_time_mask,
-            self.num_time_mask_proportion,
-            self.num_freq_mask,
-            self.interpolation_order,
-            lengths,
-            self.training,
-        )
+        if lengths is None:
+            # _spec_augment_check_input(feats)
+            lengths = torch.full(
+                (feats.size(0),), feats.size(1), dtype=torch.long, device=feats.device
+            )
+        if not self.training:
+            return feats
+        params = self.draw_parameters(feats, lengths)
+        return self.apply_parameters(feats, params, lengths)
 
 
 @script

@@ -132,11 +132,12 @@ def populate_torch_dir():
     return _populate_torch_dir
 
 
-@pytest.fixture(params=[pytest.param("trace", marks=pytest.mark.trace), "notrace"])
-def trace(request):
-    return request.param == "trace"
-
-
-@pytest.fixture(params=[pytest.param("script", marks=pytest.mark.script), "noscript"])
-def script(request):
-    return request.param == "script"
+@pytest.fixture(
+    params=[
+        pytest.param("trace", marks=pytest.mark.trace),
+        pytest.param("script", marks=pytest.mark.script),
+        "nojit",
+    ]
+)
+def jit_type(request):
+    return request.param
