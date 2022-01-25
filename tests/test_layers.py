@@ -221,14 +221,14 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
     # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
     # be 0
     lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list)
+    hist = torch.tensor(-1, device=device)
     if jit_type == "script":
         lm = torch.jit.script(lm)
     elif jit_type == "trace":
         pytest.xfail("lookup_language_model trace unsupported")
-        lm = torch.jit.trace(lm, (hists[0], dict(), torch.tensor(-1, device=device)))
     lm = lm.to(device)
     for exp, hist in zip(exps, hists):
-        act = lm(hist, dict(), torch.tensor(-1, device=device))[0]
+        act = lm(hist, dict(), hist)[0]
         assert torch.allclose(exp, act, atol=1e-5)
 
 

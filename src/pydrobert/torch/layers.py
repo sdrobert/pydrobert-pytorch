@@ -93,15 +93,17 @@ class SequentialLogProbabilities(torch.nn.Module):
         return s
 
     if TYPE_CHECKING:
+
         def forward(
             self,
             logits: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
             hyp: torch.Tensor,
         ) -> torch.Tensor:
             pass
+
     else:
-    
-        def forward(self, logits : Any, hyp : torch.Tensor) -> torch.Tensor:
+
+        def forward(self, logits: Any, hyp: torch.Tensor) -> torch.Tensor:
             return sequence_log_probs(logits, hyp, self.dim, self.eos)
 
 
@@ -447,8 +449,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     argument (implicitly true now). `eos` and `oov` were also removed as part of updates
     to :obj:`SequentialLanguageModel`
 
-    When testing with PyTorch v 1.5.1, scripting this module lead to a fatal Python
-    error.
+    JIT tracing is currently unsupported for subclasses.
     """
 
     __constants__ = ["vocab_size", "sos", "max_ngram", "max_ngram_nodes", "shift"]

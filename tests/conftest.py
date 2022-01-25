@@ -27,6 +27,9 @@ from pydrobert.torch._compat import _v
 
 if _v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
+    SKIP_SCRIPT = True
+else:
+    SKIP_SCRIPT = False
 
 
 @pytest.fixture
@@ -140,4 +143,6 @@ def populate_torch_dir():
     ]
 )
 def jit_type(request):
+    if request.param == "script" and SKIP_SCRIPT:
+        pytest.skip("Module scripting unsupported for PyTorch < 1.8.0")
     return request.param
