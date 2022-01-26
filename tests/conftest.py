@@ -137,9 +137,9 @@ def populate_torch_dir():
 
 @pytest.fixture(
     params=[
+        "nojit",
         pytest.param("trace", marks=pytest.mark.trace),
         pytest.param("script", marks=pytest.mark.script),
-        "nojit",
     ]
 )
 def jit_type(request):

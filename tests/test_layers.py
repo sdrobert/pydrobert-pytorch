@@ -14,6 +14,7 @@
 
 import os
 import itertools
+from typing import Dict
 import warnings
 
 import pytest
@@ -221,14 +222,14 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
     # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
     # be 0
     lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list)
-    hist = torch.tensor(-1, device=device)
+    idx = torch.tensor(-1, device=device)
     if jit_type == "script":
         lm = torch.jit.script(lm)
     elif jit_type == "trace":
         pytest.xfail("lookup_language_model trace unsupported")
     lm = lm.to(device)
     for exp, hist in zip(exps, hists):
-        act = lm(hist, dict(), hist)[0]
+        act = lm(hist, dict(), idx)[0]
         assert torch.allclose(exp, act, atol=1e-5)
 
 
@@ -532,7 +533,7 @@ def test_hard_optimal_completion_distillation_loss(
     assert not torch.all(g.eq(0.0))
 
 
-def test_sequential_language_model(device):
+def test_sequential_language_model(device, jit_type):
     class RNNLM(layers.SequentialLanguageModel):
         def __init__(self, vocab_size, embed_size=128, hidden_size=512):
             super(RNNLM, self).__init__(vocab_size)
@@ -542,23 +543,36 @@ def test_sequential_language_model(device):
             self.rnn = torch.nn.LSTMCell(embed_size, hidden_size)
             self.ff = torch.nn.Linear(hidden_size, vocab_size)
 
-        def calc_idx_log_probs(self, hist, prev, idx):
+        def calc_idx_log_probs(self, hist, prev: Dict[str, torch.Tensor], idx):
             N = hist.size(1)
-            if idx == 0:
-                in_ = hist.new_full((N,), self.vocab_size)
-                prev = [self.rnn.weight_hh.new_zeros((N, self.rnn.hidden_size))] * 2
-            else:
-                if not prev:
-                    prev = self.calc_idx_log_probs(hist, None, idx - 1)[1]
+            in_ = torch.empty(0)  # so jit won't complain
+            if not prev:
+                in_ = torch.full(
+                    (N,), self.vocab_size, device=hist.device, dtype=torch.long
+                )
+                h_1 = c_1 = torch.zeros(
+                    (N, self.rnn.hidden_size), device=hist.device, dtype=torch.float
+                )
+                for idx_ in torch.arange(idx):
+                    if idx_:
+                        in_ = hist[idx_ - 1]
+                    embedding = self.embed(in_)
+                    h_1, c_1 = self.rnn(embedding, (h_1, c_1))
+                prev = {"h": h_1, "c": c_1}
+            if idx:
                 in_ = hist[idx - 1]
             embedding = self.embed(in_)
-            h_1, c_1 = self.rnn(embedding, prev)
+            h_1, c_1 = self.rnn(embedding, (prev["h"], prev["c"]))
             logits = self.ff(h_1)
-            return torch.nn.functional.log_softmax(logits, -1), (h_1, c_1)
+            return torch.nn.functional.log_softmax(logits, -1), {"h": h_1, "c": c_1}
 
-    S, N, V = 100, 10, 50
+    S, N, V = 30, 10, 50
     hist = torch.randint(0, V, (S, N), device=device)
     lm = RNNLM(V).to(device)
+    if jit_type == "script":
+        lm = torch.jit.script(lm)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for SequentialLanguageModel")
     log_probs = lm(hist)
     for idx in torch.arange(S, -1, -1, device=device):
         log_probs_idx = lm(hist[:idx], idx=idx)[0]
@@ -567,6 +581,9 @@ def test_sequential_language_model(device):
 
 def test_ctc_prefix_search(device):
     class MyLM(layers.MixableSequentialLanguageModel):
+
+        bigram_table: torch.Tensor
+
         def __init__(self):
             super().__init__(2)
             self.register_buffer(

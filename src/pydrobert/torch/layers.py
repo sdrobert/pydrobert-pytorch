@@ -251,6 +251,8 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
                 raise RuntimeError("hist must be 2 dimensional")
             S, N = hist.shape
             if idx is not None:
+                if not idx.numel():
+                    raise RuntimeError("idx must be at least one element")
                 if idx.dim() == 1:
                     if idx.size(0) == 1:
                         idx = idx.squeeze(0)
@@ -553,6 +555,8 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         device = hist.device
         assert len(self.ids) == K
         assert len(self.logs) == L
+        if idx.numel() == 0:
+            raise RuntimeError("idx cannot be empty")
         if idx.numel() == 1:
             hist = hist[:idx]
             if idx >= N - 1:
