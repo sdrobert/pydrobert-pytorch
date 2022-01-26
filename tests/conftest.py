@@ -23,10 +23,11 @@ import torch
 
 import pydrobert.torch.config as config
 
-from pydrobert.torch._compat import _v
+import pydrobert.torch._compat as compat
 
-if _v < "1.8.0":
+if compat._v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
+    compat.script = torch.jit.script
     SKIP_SCRIPT = True
 else:
     SKIP_SCRIPT = False

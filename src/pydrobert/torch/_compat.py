@@ -174,8 +174,6 @@ if _v < "1.8.0":
         return torch.solve(B, A)[0]
 
     def jit_isinstance(obj: Any, x: type) -> bool:
-        if torch.jit.is_scripting():
-            return isinstance(obj, x)
         origin = getattr(x, "__origin__", None)
         if origin is None:
             return isinstance(obj, x)

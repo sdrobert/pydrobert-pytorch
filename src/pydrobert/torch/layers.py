@@ -236,7 +236,6 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
 
     else:
 
-        @script
         def forward(
             self,
             hist: torch.Tensor,
