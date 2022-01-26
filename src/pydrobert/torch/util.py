@@ -38,7 +38,6 @@ from ._compat import (
     trunc_divide,
     meshgrid,
     linalg_solve,
-    jit_isinstance,
 )
 
 __all__ = [
@@ -1787,7 +1786,7 @@ else:
                 "Dimension out of range (expected to be in range of [{}, {}], but "
                 "got {})".format(-hyp_dim, hyp_dim - 1, dim)
             )
-        if jit_isinstance(
+        if isinstance(
             logits,
             Tuple[
                 torch.Tensor,
@@ -1819,7 +1818,7 @@ else:
             if uidxs is not None:
                 logits = logits[uidxs]
             return logits
-        elif jit_isinstance(logits, torch.Tensor):
+        elif isinstance(logits, torch.Tensor):
             dim = (hyp_dim + dim) % hyp_dim
             steps = hyp.shape[dim]
             num_classes = logits.shape[-1]

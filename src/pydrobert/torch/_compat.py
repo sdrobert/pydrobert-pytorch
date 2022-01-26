@@ -28,7 +28,6 @@ __all__ = [
     "pad_sequence",
     "SpoofPackedSequence",
     "trunc_divide",
-    "jit_isinstance",
 ]
 
 
@@ -159,12 +158,10 @@ if _v < "1.8.0":
     def linalg_solve(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
         return torch.solve(B, A)[0]
 
-    jit_isinstance = isinstance
 
 else:
     pad_sequence = torch.nn.utils.rnn.pad_sequence
     linalg_solve = torch.linalg.solve
-    jit_isinstance = torch.jit.isinstance
 
     def trunc_divide(input: torch.Tensor, other) -> torch.Tensor:
         return input.div(other, rounding_mode="trunc")

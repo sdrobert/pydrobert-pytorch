@@ -14,7 +14,7 @@
 
 import os
 import itertools
-from typing import Dict
+from typing import Dict, Tuple
 import warnings
 
 import pytest
@@ -533,39 +533,89 @@ def test_hard_optimal_completion_distillation_loss(
     assert not torch.all(g.eq(0.0))
 
 
-def test_sequential_language_model(device, jit_type):
-    class RNNLM(layers.SequentialLanguageModel):
-        def __init__(self, vocab_size, embed_size=128, hidden_size=512):
-            super(RNNLM, self).__init__(vocab_size)
-            self.embed = torch.nn.Embedding(
-                vocab_size + 1, embed_size, padding_idx=vocab_size
+class RNNLM(layers.MixableSequentialLanguageModel):
+    def __init__(self, vocab_size, embed_size=128, hidden_size=512):
+        super().__init__(vocab_size)
+        self.hidden_size = hidden_size
+        self.embed = torch.nn.Embedding(
+            vocab_size + 1, embed_size, padding_idx=vocab_size
+        )
+        self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
+        self.lstm = torch.nn.LSTM(embed_size, hidden_size)
+        self.lstm.weight_ih_l0 = self.cell.weight_ih
+        self.lstm.weight_hh_l0 = self.cell.weight_hh
+        self.lstm.bias_ih_l0 = self.cell.bias_ih
+        self.lstm.bias_hh_l0 = self.cell.bias_hh
+        self.ff = torch.nn.Linear(hidden_size, vocab_size)
+
+    @torch.jit.export
+    def extract_by_src(
+        self, prev: Dict[str, torch.Tensor], src: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        return {
+            "hidden": prev["hidden"].index_select(0, src),
+            "cell": prev["cell"].index_select(0, src),
+        }
+
+    @torch.jit.export
+    def mix_by_mask(
+        self,
+        prev_true: Dict[str, torch.Tensor],
+        prev_false: Dict[str, torch.Tensor],
+        mask: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        mask = mask.unsqueeze(1)
+        return {
+            "hidden": torch.where(mask, prev_true["hidden"], prev_false["hidden"]),
+            "cell": torch.where(mask, prev_true["cell"], prev_false["cell"]),
+        }
+
+    @torch.jit.export
+    def update_input(
+        self, prev: Dict[str, torch.Tensor], hist: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        if len(prev):
+            return prev
+        N = hist.size(1)
+        zeros = self.ff.weight.new_zeros((N, self.hidden_size))
+        return {"hidden": zeros, "cell": zeros}
+
+    @torch.jit.export
+    def calc_full_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        hist = torch.cat([hist.new_full((1, hist.size(1)), self.vocab_size), hist], 0)
+        x = self.embed(hist)
+        x = self.lstm(x)[0]
+        logits = self.ff(x)
+        return torch.nn.functional.log_softmax(logits, -1)
+
+    @torch.jit.export
+    def calc_idx_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        idx_zero = idx == 0
+        if idx_zero.all():
+            x = torch.full(
+                (hist.size(1),), self.vocab_size, dtype=hist.dtype, device=hist.device
             )
-            self.rnn = torch.nn.LSTMCell(embed_size, hidden_size)
-            self.ff = torch.nn.Linear(hidden_size, vocab_size)
+        else:
+            x = hist.gather(
+                0, (idx - 1).expand(hist.shape[1:]).clamp(min=0).unsqueeze(0)
+            ).squeeze(
+                0
+            )  # (N,)
+            x = x.masked_fill(idx_zero.expand(x.shape), self.vocab_size)
+        x = self.embed(x)
+        h_1, c_1 = self.cell(x, (prev["hidden"], prev["cell"]))
+        logits = self.ff(h_1)
+        return (
+            torch.nn.functional.log_softmax(logits, -1),
+            {"hidden": h_1, "cell": c_1},
+        )
 
-        def calc_idx_log_probs(self, hist, prev: Dict[str, torch.Tensor], idx):
-            N = hist.size(1)
-            in_ = torch.empty(0)  # so jit won't complain
-            if not prev:
-                in_ = torch.full(
-                    (N,), self.vocab_size, device=hist.device, dtype=torch.long
-                )
-                h_1 = c_1 = torch.zeros(
-                    (N, self.rnn.hidden_size), device=hist.device, dtype=torch.float
-                )
-                for idx_ in torch.arange(idx):
-                    if idx_:
-                        in_ = hist[idx_ - 1]
-                    embedding = self.embed(in_)
-                    h_1, c_1 = self.rnn(embedding, (h_1, c_1))
-                prev = {"h": h_1, "c": c_1}
-            if idx:
-                in_ = hist[idx - 1]
-            embedding = self.embed(in_)
-            h_1, c_1 = self.rnn(embedding, (prev["h"], prev["c"]))
-            logits = self.ff(h_1)
-            return torch.nn.functional.log_softmax(logits, -1), {"h": h_1, "c": c_1}
 
+def test_sequential_language_model(device, jit_type):
     S, N, V = 30, 10, 50
     hist = torch.randint(0, V, (S, N), device=device)
     lm = RNNLM(V).to(device)
@@ -574,9 +624,15 @@ def test_sequential_language_model(device, jit_type):
     elif jit_type == "trace":
         pytest.xfail("trace unsupported for SequentialLanguageModel")
     log_probs = lm(hist)
-    for idx in torch.arange(S, -1, -1, device=device):
-        log_probs_idx = lm(hist[:idx], idx=idx)[0]
+    prev = dict()
+    for idx in range(S):
+        log_probs_idx, next_ = lm(hist[:idx], prev, idx=idx)
         assert torch.allclose(log_probs[idx], log_probs_idx)
+        # this is more for the scripting to ensure we can handle both tensor and
+        # integer indexes
+        log_probs_idx_ = lm(hist[:idx], prev, idx=torch.as_tensor(idx))[0]
+        assert torch.allclose(log_probs_idx, log_probs_idx_)
+        prev = next_
 
 
 def test_ctc_prefix_search(device):
@@ -649,51 +705,6 @@ def test_ctc_prefix_search(device):
 
 
 def test_ctc_prefix_search_batch(device):
-    class RNNLM(layers.MixableSequentialLanguageModel):
-        def __init__(self, vocab_size, embed_size=128, hidden_size=512):
-            super().__init__(vocab_size)
-            self.hidden_size = hidden_size
-            self.embed = torch.nn.Embedding(
-                vocab_size + 1, embed_size, padding_idx=vocab_size
-            )
-            self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
-            self.ff = torch.nn.Linear(hidden_size, vocab_size)
-
-        def extract_by_src(self, prev, src):
-            return {
-                "hidden_state": prev["hidden_state"].index_select(0, src),
-                "cell_state": prev["cell_state"].index_select(0, src),
-            }
-
-        def mix_by_mask(self, prev_true, prev_false, mask):
-            return dict(
-                (k, torch.where(mask.unsqueeze(1), prev_true[k], prev_false[k]))
-                for k in prev_true
-            )
-
-        def update_input(self, prev, hist):
-            if len(prev):
-                return prev
-            N = hist.size(1)
-            zeros = self.ff.weight.new_zeros((N, self.hidden_size))
-            return {"hidden_state": zeros, "cell_state": zeros}
-
-        def calc_idx_log_probs(self, hist, prev, idx):
-            idx_zero = idx == 0
-            if idx_zero.all():
-                x = hist.new_full((hist.size(1),), self.vocab_size)
-            else:
-                x = hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(
-                    0
-                )  # (N,)
-                x = x.masked_fill(idx_zero, self.vocab_size)
-            x = self.embed(x)
-            h_1, c_1 = self.cell(x, (prev["hidden_state"], prev["cell_state"]))
-            logits = self.ff(h_1)
-            return (
-                torch.nn.functional.log_softmax(logits, -1),
-                {"hidden_state": h_1, "cell_state": c_1},
-            )
 
     T, N, V, K = 50, 128, 50, 5
     assert K <= V
@@ -790,8 +801,8 @@ def test_beam_search_batch(device):
 
         def extract_by_src(self, prev, src):
             return {
-                "hidden_state": prev["hidden_state"].index_select(0, src),
-                "cell_state": prev["cell_state"].index_select(0, src),
+                "hidden": prev["hidden"].index_select(0, src),
+                "cell": prev["cell"].index_select(0, src),
             }
 
         def update_input(self, prev, hist):
@@ -799,7 +810,7 @@ def test_beam_search_batch(device):
                 return prev
             N = hist.size(1)
             zeros = self.ff.weight.new_zeros((N, self.hidden_size))
-            return {"hidden_state": zeros, "cell_state": zeros}
+            return {"hidden": zeros, "cell": zeros}
 
         def calc_idx_log_probs(self, hist, prev, idx):
             idx_zero = idx == 0
@@ -813,11 +824,11 @@ def test_beam_search_batch(device):
                 )  # (N,)
                 x = x.masked_fill(idx_zero, self.vocab_size)
             x = self.embed(x)
-            h_1, c_1 = self.cell(x, (prev["hidden_state"], prev["cell_state"]))
+            h_1, c_1 = self.cell(x, (prev["hidden"], prev["cell"]))
             logits = self.ff(h_1)
             return (
                 torch.nn.functional.log_softmax(logits, -1),
-                {"hidden_state": h_1, "cell_state": c_1},
+                {"hidden": h_1, "cell": c_1},
             )
 
     T, N, V, K = 64, 16, 128, 8

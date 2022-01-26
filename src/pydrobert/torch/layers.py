@@ -136,13 +136,12 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     = v | w^{(n)}_{s - 1}, \ldots)`. That is, each distribution over types conditioned
     on each prefix of tokens (``:0``, ``:1``, ``:2``, etc.) is returned.
 
-    If `idx` is specified, it must be a long tensor of shape ``(0,)`` or ``(N,)``. The
-    former is broadcast into the latter. The call returns a pair. The first element is
-    `log_probs_idx` of shape ``(N, vocab_size)``, where ``log_probs[n, v]`` equals
-    :math:`\log P(w^{(n)}_{idx[n]} = v | w^{(n)}_{idx[n]-1}, \ldots)`. That is, the
-    distributions over the next type conditioned on token prefixes up to and excluding
-    ``s = idx`` are returned. The second element, `in_next`, is discussed in relation to
-    `prev` below.
+    If `idx` is specified, it must etiher be an integer or a long tensor of shape
+    ``(,)`` or ``(N,)``. The call returns a pair. The first element is `log_probs_idx`
+    of shape ``(N, vocab_size)``, where ``log_probs[n, v]`` equals :math:`\log
+    P(w^{(n)}_{idx[n]} = v | w^{(n)}_{idx[n]-1}, \ldots)`. That is, the distributions
+    over the next type conditioned on token prefixes up to and excluding ``s = idx`` are
+    returned. The second element, `in_next`, is discussed in relation to `prev` below.
 
     The `prev` argument is a dictionary of tensors which represents some additional
     input used in the computation. It may contain static input (e.g. a tensor of encoder
@@ -232,7 +231,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
             self,
             hist: torch.Tensor,
             prev: Optional[Dict[str, torch.Tensor]] = None,
-            idx: Optional[torch.Tensor] = None,
+            idx: Optional[Union[int, torch.Tensor]] = None,
         ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
             pass
 
@@ -243,33 +242,38 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
             self,
             hist: torch.Tensor,
             prev: Optional[Dict[str, torch.Tensor]] = None,
-            idx: Optional[torch.Tensor] = None,
+            idx: Optional[Any] = None,
         ) -> Any:
             if prev is None:
                 prev = dict()
             if hist.dim() != 2:
                 raise RuntimeError("hist must be 2 dimensional")
             S, N = hist.shape
+            idx_ = torch.empty(0)
             if idx is not None:
-                if not idx.numel():
-                    raise RuntimeError("idx must be at least one element")
-                if idx.dim() == 1:
-                    if idx.size(0) == 1:
-                        idx = idx.squeeze(0)
-                    elif idx.size(0) != N:
+                if isinstance(idx, int):
+                    idx_ = torch.as_tensor(idx)
+                elif isinstance(idx, torch.Tensor):
+                    idx_ = idx
+                if not idx_.numel():
+                    raise RuntimeError("idx_ must be at least one element")
+                if idx_.dim() == 1:
+                    if idx_.size(0) == 1:
+                        idx_ = idx_.squeeze(0)
+                    elif idx_.size(0) != N:
                         raise RuntimeError(
-                            f"Expected dim 0 of idx to be of size {N}, got {idx.size(0)}"
+                            f"Expected dim 0 of idx_ to be of size {N}, got {idx_.size(0)}"
                         )
-                if ((idx < -S - 1) | (idx > S)).any():
+                if ((idx_ < -S - 1) | (idx_ > S)).any():
                     raise RuntimeError(
-                        f"All values in idx must be between ({-S - 1}, {S})"
+                        f"All values in idx_ must be between ({-S - 1}, {S})"
                     )
-                idx = (idx + S + 1) % (S + 1)
+                idx_ = (idx_ + S + 1) % (S + 1)
             prev = self.update_input(prev, hist)
             if idx is None:
                 return self.calc_full_log_probs(hist, prev)
             else:
-                return self.calc_idx_log_probs(hist, prev, idx)
+                return self.calc_idx_log_probs(hist, prev, idx_)
 
 
 class ExtractableSequentialLanguageModel(
