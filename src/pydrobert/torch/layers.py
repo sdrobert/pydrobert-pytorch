@@ -46,8 +46,7 @@ from pydrobert.torch.util import (
     _get_tensor_eps,
 )
 
-from ._jit import script
-from ._compat import broadcast_shapes
+from ._compat import broadcast_shapes, script
 
 __all__ = [
     "BeamSearch",

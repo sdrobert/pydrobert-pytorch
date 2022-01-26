@@ -31,13 +31,14 @@ import warnings
 import torch
 import pydrobert.torch.config as config
 
-from ._jit import script
 from ._compat import (
     pad_sequence,
     SpoofPackedSequence,
     trunc_divide,
     meshgrid,
     linalg_solve,
+    jit_isinstance,
+    script,
 )
 
 __all__ = [
@@ -1786,7 +1787,31 @@ else:
                 "Dimension out of range (expected to be in range of [{}, {}], but "
                 "got {})".format(-hyp_dim, hyp_dim - 1, dim)
             )
-        if isinstance(
+        if isinstance(logits, torch.Tensor):
+            dim = (hyp_dim + dim) % hyp_dim
+            steps = hyp.shape[dim]
+            num_classes = logits.shape[-1]
+            logits = torch.nn.functional.log_softmax(logits, -1)
+            mask = hyp.lt(0) | hyp.ge(num_classes)
+            if eos is not None:
+                hyp_lens = _lens_from_eos(hyp, eos, dim) + 1
+                if dim:
+                    hyp_lens = hyp_lens.unsqueeze(dim)
+                    if dim == hyp_dim - 1:
+                        hyp_lens = hyp_lens.unsqueeze(-1)
+                    else:
+                        hyp_lens = hyp_lens.flatten(dim + 1)
+                else:
+                    hyp_lens = hyp_lens.view(1, -1)
+                len_mask = torch.arange(steps, device=logits.device).unsqueeze(-1)
+                len_mask = len_mask >= hyp_lens
+                len_mask = len_mask.view_as(mask)
+                mask = mask | len_mask
+            hyp = hyp.masked_fill(mask, 0)
+            logits = logits.gather(-1, hyp.unsqueeze(-1)).squeeze(-1)
+            logits = logits.masked_fill(mask, 0.0)
+            return logits.sum(dim)
+        elif jit_isinstance(
             logits,
             Tuple[
                 torch.Tensor,
@@ -1818,30 +1843,6 @@ else:
             if uidxs is not None:
                 logits = logits[uidxs]
             return logits
-        elif isinstance(logits, torch.Tensor):
-            dim = (hyp_dim + dim) % hyp_dim
-            steps = hyp.shape[dim]
-            num_classes = logits.shape[-1]
-            logits = torch.nn.functional.log_softmax(logits, -1)
-            mask = hyp.lt(0) | hyp.ge(num_classes)
-            if eos is not None:
-                hyp_lens = _lens_from_eos(hyp, eos, dim) + 1
-                if dim:
-                    hyp_lens = hyp_lens.unsqueeze(dim)
-                    if dim == hyp_dim - 1:
-                        hyp_lens = hyp_lens.unsqueeze(-1)
-                    else:
-                        hyp_lens = hyp_lens.flatten(dim + 1)
-                else:
-                    hyp_lens = hyp_lens.view(1, -1)
-                len_mask = torch.arange(steps, device=logits.device).unsqueeze(-1)
-                len_mask = len_mask >= hyp_lens
-                len_mask = len_mask.view_as(mask)
-                mask = mask | len_mask
-            hyp = hyp.masked_fill(mask, 0)
-            logits = logits.gather(-1, hyp.unsqueeze(-1)).squeeze(-1)
-            logits = logits.masked_fill(mask, 0.0)
-            return logits.sum(dim)
         raise RuntimeError("logits must be either a Tensor or PackedSequence")
 
 

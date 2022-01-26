@@ -18,14 +18,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Iterable, List, Optional, Tuple, Union, NamedTuple
+from typing import Any, Iterable, List, Optional, Tuple, Union, NamedTuple
+
 import torch
+import pydrobert.torch.config as config
+
 
 __all__ = [
     "broadcast_shapes",
+    "jit_isinstance",
     "linalg_solve",
     "meshgrid",
     "pad_sequence",
+    "script",
     "SpoofPackedSequence",
     "trunc_divide",
 ]
@@ -37,6 +42,17 @@ class SpoofPackedSequence(NamedTuple):
     batch_sizes: torch.Tensor
     sorted_indices: Optional[torch.Tensor]
     unsorted_indices: Optional[torch.Tensor]
+
+
+if config.USE_JIT:
+    script = torch.jit.script
+else:
+    try:
+        script = torch.jit.script_if_tracing
+    except AttributeError:
+
+        def script(obj, *args, **kwargs):
+            return obj
 
 
 try:
@@ -128,7 +144,6 @@ except ModuleNotFoundError:
     _v = TorchVersion(internal_version)
 
 if _v < "1.8.0":
-    from ._jit import script
 
     @script
     def pad_sequence(
@@ -158,10 +173,34 @@ if _v < "1.8.0":
     def linalg_solve(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
         return torch.solve(B, A)[0]
 
+    def jit_isinstance(obj: Any, x: type) -> bool:
+        if torch.jit.is_scripting():
+            return isinstance(obj, x)
+        origin = getattr(x, "__origin__", None)
+        if origin is None:
+            return isinstance(obj, x)
+        if origin in {tuple, list, set}:
+            args = getattr(x, "__args__", None)
+            if not args:
+                return (
+                    (origin == tuple and obj == tuple())
+                    or (origin == list and obj == list())
+                    or (origin == set and obj == set())
+                )
+            if origin == tuple:
+                return (len(obj) == len(args)) and all(
+                    jit_isinstance(*y) for y in zip(obj, args)
+                )
+        elif origin == Union:
+            args = x.__args__
+            return any(jit_isinstance(obj, y) for y in args)
+        return False
+
 
 else:
     pad_sequence = torch.nn.utils.rnn.pad_sequence
     linalg_solve = torch.linalg.solve
+    jit_isinstance = torch.jit.isinstance
 
     def trunc_divide(input: torch.Tensor, other) -> torch.Tensor:
         return input.div(other, rounding_mode="trunc")

@@ -493,7 +493,7 @@ def test_hard_optimal_completion_distillation_loss(
     logits, ref, hyp = logits.to(device), ref.to(device), hyp.to(device)
     ref_lens, hyp_lens = ref_lens.to(device), hyp_lens.to(device)
     len_mask = len_mask.to(device)
-    inv_len_mask = len_mask.eq(0)
+    inv_len_mask = ~len_mask
     logits.requires_grad_(True)
     loss = layers.HardOptimalCompletionDistillationLoss(
         eos=eos, include_eos=include_eos, batch_first=batch_first, reduction=reduction,
