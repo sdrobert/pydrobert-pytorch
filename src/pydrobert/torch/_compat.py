@@ -174,9 +174,7 @@ if _v < "1.8.0":
     @torch.jit.unused
     def _jit_isinstance(obj: Any, x: type) -> bool:
         if isinstance(obj, torch.nn.utils.rnn.PackedSequence):
-            return _jit_isinstance(
-                (obj.data, obj.batch_sizes, obj.sorted_indices, obj.unsorted_indices), x
-            )
+            obj = obj.data, obj.batch_sizes, obj.sorted_indices, obj.unsorted_indices
         origin = getattr(x, "__origin__", None)
         if origin is None:
             return isinstance(obj, x)
