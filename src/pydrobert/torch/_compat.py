@@ -143,6 +143,16 @@ except ModuleNotFoundError:
 
     _v = TorchVersion(internal_version)
 
+
+@torch.no_grad()
+def broadcast_shapes(a: List[int], b: List[int]) -> List[int]:
+    scalar = torch.zeros((), device="cpu")
+    tensor_a = scalar.expand(a)
+    tensor_b = scalar.expand(b)
+    tensor_a, tensor_b = torch.broadcast_tensors(tensor_a, tensor_b)
+    return tensor_a.shape
+
+
 if _v < "1.8.0":
 
     @script
@@ -168,12 +178,24 @@ if _v < "1.8.0":
         ]
         return torch.stack(sequences, 0 if batch_first else 1)
 
-    trunc_divide = torch.floor_divide
-
     def linalg_solve(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
         return torch.solve(B, A)[0]
 
     def jit_isinstance(obj: Any, x: type) -> bool:
+        if isinstance(
+            obj, (torch.nn.utils.rnn.PackedSequence, SpoofPackedSequence)
+        ) and (
+            x
+            is Tuple[
+                torch.Tensor,
+                torch.Tensor,
+                Optional[torch.Tensor],
+                Optional[torch.Tensor],
+            ]
+        ):
+            # in pytorch >= 1.8, the packed sequence is converted into a tuple like this
+            # when scripting, but will be a packed sequence otherwise.
+            return True
         origin = getattr(x, "__origin__", None)
         if origin is None:
             return isinstance(obj, x)
@@ -200,21 +222,16 @@ else:
     linalg_solve = torch.linalg.solve
     jit_isinstance = torch.jit.isinstance
 
-    def trunc_divide(input: torch.Tensor, other) -> torch.Tensor:
-        return input.div(other, rounding_mode="trunc")
 
-
-@torch.no_grad()
-def broadcast_shapes(a: List[int], b: List[int]) -> List[int]:
-    scalar = torch.zeros((), device="cpu")
-    tensor_a = scalar.expand(a)
-    tensor_b = scalar.expand(b)
-    tensor_a, tensor_b = torch.broadcast_tensors(tensor_a, tensor_b)
-    return tensor_a.shape
+if _v < "1.9.0":
+    trunc_divide = torch.floor_divide
+else:
+    trunc_divide = lambda a, b: torch.div(a, b, rounding_mode="trunc")
 
 
 if _v < "1.10.0":
     meshgrid = torch.meshgrid
+
 else:
 
     def meshgrid(*tensors) -> Tuple[torch.Tensor, ...]:

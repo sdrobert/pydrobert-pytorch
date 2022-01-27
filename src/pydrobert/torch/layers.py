@@ -44,6 +44,7 @@ from pydrobert.torch.util import (
     sequence_log_probs,
     warp_1d_grid,
     _get_tensor_eps,
+    jit_isinstance,
 )
 
 from ._compat import broadcast_shapes, script
@@ -1274,7 +1275,6 @@ class CTCPrefixSearch(torch.nn.Module):
 
     width: int
     beta: float
-    lm: Optional[MixableSequentialLanguageModel]
 
     def __init__(
         self,
@@ -1296,124 +1296,152 @@ class CTCPrefixSearch(torch.nn.Module):
         if self.lm is not None and hasattr(self.lm, "reset_parameters"):
             self.lm.reset_parameters()
 
-    def forward(
-        self,
-        logits: torch.Tensor,
-        lens: Optional[torch.Tensor] = None,
-        prev: Dict[str, torch.Tensor] = dict(),
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if logits.dim() != 3:
-            raise RuntimeError("logits must be 3 dimensional")
-        T, N, Vp1 = logits.shape
-        V = Vp1 - 1
-        if self.lm is not None and self.lm.vocab_size != V:
-            raise RuntimeError(
-                f"Expected dim 2 of logits to be {self.lm.vocab_size + 1}, got {Vp1}"
-            )
-        if lens is None:
-            lens = torch.full((N,), T, device=logits.device, dtype=torch.long)
-            len_min = len_max = T
-        elif lens.dim() != 1:
-            raise RuntimeError("lens must be 1 dimensional")
-        elif lens.size(0) != N:
-            raise RuntimeError(f"expected dim 0 of lens to be {N}, got {lens.size(0)}")
-        else:
-            len_min, len_max = lens.min().item(), lens.max().item()
+    if TYPE_CHECKING:
 
-        probs = logits.softmax(2)
-        blank_probs = probs[..., V]  # (T, N)
-        nonext_probs = probs[..., :V]  # (T, N, V)
-        nb_probs_prev, b_probs_prev = logits.new_zeros((N, 1)), logits.new_ones((N, 1))
-        y_prev = torch.empty((0, N, 1), dtype=torch.long, device=logits.device)
-        y_prev_lens = y_prev_last = torch.zeros(
-            (N, 1), dtype=torch.long, device=logits.device
-        )
-        prev_is_prefix = torch.full(
-            (N, 1, 1), True, device=logits.device, dtype=torch.bool
-        )
-        if self.lm is not None:
-            prev = self.lm.update_input(prev, y_prev)
-        prev_width = 1
-        for t in range(len_max):
-            valid_mask = None if t < len_min else (t < lens).unsqueeze(1)  # (N, 1)
-            nonext_probs_t, blank_probs_t = nonext_probs[t], blank_probs[t]
-            if self.lm is None or not self.beta:
-                ext_probs_t = nonext_probs_t.unsqueeze(1).expand(N, prev_width, V)
-                in_next = dict()
+        def forward(
+            self,
+            logits: torch.Tensor,
+            lens: Optional[torch.Tensor] = None,
+            prev: Dict[str, torch.Tensor] = dict(),
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            pass
+
+    else:
+
+        def forward(
+            self,
+            logits: torch.Tensor,
+            lens: Optional[torch.Tensor] = None,
+            prev_: Optional[Dict[str, torch.Tensor]] = None,
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            if prev_ is None:
+                prev: Dict[str, torch.Tensor] = dict()
             else:
-                lm_log_probs_t, in_next = self.lm(
-                    y_prev.flatten(1), prev, y_prev_lens.flatten()
+                prev = prev_
+            if logits.dim() != 3:
+                raise RuntimeError("logits must be 3 dimensional")
+            T, N, Vp1 = logits.shape
+            V = Vp1 - 1
+            device, dtype = logits.device, logits.dtype
+            if self.lm is not None and self.lm.vocab_size != V:
+                raise RuntimeError(
+                    f"Expected dim 2 of logits to be {self.lm.vocab_size + 1}, got {Vp1}"
                 )
-                lm_probs_t = (self.beta * lm_log_probs_t).exp().view(N, prev_width, V)
-                # note we're no longer in log space, so it's a product
-                ext_probs_t = lm_probs_t * nonext_probs_t.unsqueeze(1)
-                del lm_log_probs_t, lm_probs_t
-            (
-                y_next,
-                y_next_last,
-                y_next_lens,
-                (nb_probs_next, b_probs_next),
-                next_is_prefix,
-                next_src,
-                next_is_nonext,
-            ) = ctc_prefix_search_advance(
-                (ext_probs_t, nonext_probs_t, blank_probs_t),
-                self.width,
-                (nb_probs_prev, b_probs_prev),
-                y_prev,
-                y_prev_last,
-                y_prev_lens,
-                prev_is_prefix,
-            )
-
-            if self.lm is not None and self.beta:
-                next_src = (
-                    torch.arange(
-                        0, prev_width * N, prev_width, device=next_src.device
-                    ).unsqueeze(1)
-                    + next_src
+            if lens is None:
+                lens = torch.full((N,), T, device=logits.device, dtype=torch.long)
+                len_min = len_max = T
+            elif lens.dim() != 1:
+                raise RuntimeError("lens must be 1 dimensional")
+            elif lens.size(0) != N:
+                raise RuntimeError(
+                    f"expected dim 0 of lens to be {N}, got {lens.size(0)}"
                 )
-                prev = self.lm.extract_by_src(prev, next_src.flatten())
-                in_next = self.lm.extract_by_src(in_next, next_src.flatten())
-                prev = self.lm.mix_by_mask(prev, in_next, next_is_nonext.flatten())
-
-            if valid_mask is None:
-                y_prev_lens = y_next_lens
-                nb_probs_prev, b_probs_prev = nb_probs_next, b_probs_next
             else:
-                y_next[:-1] = torch.where(valid_mask.unsqueeze(0), y_next[:-1], y_prev)
-                y_prev_lens = torch.where(valid_mask, y_next_lens, y_prev_lens)
-                if prev_width < self.width:
-                    assert prev_width == 1  # otherwise advance would've padded it
-                    # add invalid path probs rather than broadcast the one good one
-                    neg_inf = nb_probs_prev.new_full(
-                        (N, self.width - prev_width), -float("inf")
+                len_min, len_max = int(lens.min().item()), int(lens.max().item())
+
+            probs = logits.softmax(2)
+            blank_probs = probs[..., V]  # (T, N)
+            nonext_probs = probs[..., :V]  # (T, N, V)
+
+            nb_probs_prev = torch.zeros((N, 1), device=device, dtype=dtype)
+            b_probs_prev = torch.ones((N, 1), device=device, dtype=dtype)
+            y_prev = torch.empty((0, N, 1), dtype=torch.long, device=logits.device)
+            y_prev_lens = y_prev_last = torch.zeros(
+                (N, 1), dtype=torch.long, device=logits.device
+            )
+            prev_is_prefix = torch.full(
+                (N, 1, 1), 1, device=logits.device, dtype=torch.bool
+            )
+            if self.lm is not None:
+                prev = self.lm.update_input(prev, y_prev)
+            prev_width = 1
+            for t in range(len_max):
+                valid_mask = None if t < len_min else (t < lens).unsqueeze(1)  # (N, 1)
+                nonext_probs_t, blank_probs_t = nonext_probs[t], blank_probs[t]
+                if self.lm is None or not self.beta:
+                    ext_probs_t = nonext_probs_t.unsqueeze(1).expand(N, prev_width, V)
+                    in_next = dict()
+                else:
+                    lm_log_probs_t, in_next = self.lm.calc_idx_log_probs(
+                        y_prev.flatten(1), prev, y_prev_lens.flatten()
                     )
-                    nb_probs_prev = torch.cat([nb_probs_prev, neg_inf], 1)
-                    b_probs_prev = torch.cat([b_probs_prev, neg_inf], 1)
-                nb_probs_prev = torch.where(valid_mask, nb_probs_next, nb_probs_prev)
-                b_probs_prev = torch.where(valid_mask, b_probs_next, b_probs_prev)
-            y_prev = y_next
-            # we can let y_next_last and next_is_prefix continue spinning after t passes
-            # the length
-            y_prev_last, prev_is_prefix = y_next_last, next_is_prefix
-            prev_width = self.width
+                    lm_probs_t = (
+                        (self.beta * lm_log_probs_t).exp().view(N, prev_width, V)
+                    )
+                    # note we're no longer in log space, so it's a product
+                    ext_probs_t = lm_probs_t * nonext_probs_t.unsqueeze(1)
+                (
+                    y_next,
+                    y_next_last,
+                    y_next_lens,
+                    (nb_probs_next, b_probs_next),
+                    next_is_prefix,
+                    next_src,
+                    next_is_nonext,
+                ) = ctc_prefix_search_advance(
+                    (ext_probs_t, nonext_probs_t, blank_probs_t),
+                    self.width,
+                    (nb_probs_prev, b_probs_prev),
+                    y_prev,
+                    y_prev_last,
+                    y_prev_lens,
+                    prev_is_prefix,
+                )
 
-        probs_prev = nb_probs_prev + b_probs_prev
+                if self.lm is not None and self.beta:
+                    next_src = (
+                        torch.arange(
+                            0, prev_width * N, prev_width, device=next_src.device
+                        ).unsqueeze(1)
+                        + next_src
+                    )
+                    prev = self.lm.extract_by_src(prev, next_src.flatten())
+                    in_next = self.lm.extract_by_src(in_next, next_src.flatten())
+                    prev = self.lm.mix_by_mask(prev, in_next, next_is_nonext.flatten())
 
-        if prev_width == 1 != self.width:
-            # fill the shape, but only the first (empty path is valid)
-            y_prev = y_prev.repeat(1, 1, self.width)
-            y_prev_lens = y_prev_lens.repeat(1, self.width)
-            probs_prev = torch.cat(
-                [
-                    probs_prev,
-                    probs_prev.new_full((N, self.width - prev_width), -float("inf")),
-                ],
-                1,
-            )
-        # now we zero out the probabilities of duplicate paths which could've arisen
-        return y_prev, y_prev_lens, probs_prev
+                if valid_mask is None:
+                    y_prev_lens = y_next_lens
+                    nb_probs_prev, b_probs_prev = nb_probs_next, b_probs_next
+                else:
+                    y_next[:-1] = torch.where(
+                        valid_mask.unsqueeze(0), y_next[:-1], y_prev
+                    )
+                    y_prev_lens = torch.where(valid_mask, y_next_lens, y_prev_lens)
+                    if prev_width < self.width:
+                        assert prev_width == 1  # otherwise advance would've padded it
+                        # add invalid path probs rather than broadcast the one good one
+                        neg_inf = nb_probs_prev.new_full(
+                            (N, self.width - prev_width), -float("inf")
+                        )
+                        nb_probs_prev = torch.cat([nb_probs_prev, neg_inf], 1)
+                        b_probs_prev = torch.cat([b_probs_prev, neg_inf], 1)
+                    nb_probs_prev = torch.where(
+                        valid_mask, nb_probs_next, nb_probs_prev
+                    )
+                    b_probs_prev = torch.where(valid_mask, b_probs_next, b_probs_prev)
+                y_prev = y_next
+                # we can let y_next_last and next_is_prefix continue spinning after t passes
+                # the length
+                y_prev_last, prev_is_prefix = y_next_last, next_is_prefix
+                prev_width = self.width
+
+            probs_prev = nb_probs_prev + b_probs_prev
+
+            if prev_width == 1 != self.width:
+                # fill the shape, but only the first (empty path is valid)
+                y_prev = y_prev.repeat(1, 1, self.width)
+                y_prev_lens = y_prev_lens.repeat(1, self.width)
+                probs_prev = torch.cat(
+                    [
+                        probs_prev,
+                        probs_prev.new_full(
+                            (N, self.width - prev_width), -float("inf")
+                        ),
+                    ],
+                    1,
+                )
+            # now we zero out the probabilities of duplicate paths which could've arisen
+            return y_prev, y_prev_lens, probs_prev
 
 
 @script

@@ -704,12 +704,18 @@ def test_ctc_prefix_search(device):
             assert torch.allclose(probs_k_exp, probs_k_act)
 
 
-def test_ctc_prefix_search_batch(device):
+def test_ctc_prefix_search_batch(device, jit_type):
 
     T, N, V, K = 50, 128, 50, 5
     assert K <= V
     lm = RNNLM(V)
+    if jit_type == "script":
+        lm = torch.jit.script(lm)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for CTCPrefixSearch")
     search = layers.CTCPrefixSearch(K, lm=lm).to(device)
+    if jit_type == "script":
+        search = torch.jit.script(search)
     logits = torch.randn((T, N, V + 1), device=device)
     lens = torch.randint(0, T, (N,), device=device)
 

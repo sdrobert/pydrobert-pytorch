@@ -479,7 +479,9 @@ def ctc_prefix_search_advance(
 
     if width < 1:
         raise RuntimeError("width must be positive")
-    ext_probs_t, nonext_probs_t, blank_probs_t = probs_t
+    ext_probs_t = probs_t[0]
+    nonext_probs_t = probs_t[1]
+    blank_probs_t = probs_t[2]
     device = ext_probs_t.device
     dtype = ext_probs_t.dtype
     # del probs_t
@@ -494,7 +496,8 @@ def ctc_prefix_search_advance(
         raise RuntimeError(
             f"expected blank_probs_t to have shape {(N,)}, got {blank_probs_t.shape}"
         )
-    nb_probs_prev, b_probs_prev = probs_prev
+    nb_probs_prev = probs_prev[0]
+    b_probs_prev = probs_prev[1]
     # del probs_prev
     if nb_probs_prev.shape != (N, Kp):
         raise RuntimeError(
