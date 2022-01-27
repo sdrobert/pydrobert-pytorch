@@ -18,6 +18,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from optparse import Option
 from typing import Any, Iterable, List, Optional, Tuple, Union, NamedTuple
 
 import torch
@@ -171,9 +172,12 @@ if _v < "1.8.0":
     def linalg_solve(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
         return torch.solve(B, A)[0]
 
-    def jit_isinstance(obj: Any, x: type) -> bool:
-        if torch.jit.is_scripting():
-            return isinstance(obj, x)
+    @torch.jit.unused
+    def _jit_isinstance(obj, x) -> bool:
+        if isinstance(obj, torch.nn.utils.rnn.PackedSequence):
+            return _jit_isinstance(
+                (obj.data, obj.batch_sizes, obj.sorted_indices, obj.unsorted_indices), x
+            )
         origin = getattr(x, "__origin__", None)
         if origin is None:
             return isinstance(obj, x)
@@ -187,12 +191,18 @@ if _v < "1.8.0":
                 )
             if origin == tuple:
                 return (len(obj) == len(args)) and all(
-                    jit_isinstance(*y) for y in zip(obj, args)
+                    _jit_isinstance(*y) for y in zip(obj, args)
                 )
         elif origin == Union:
             args = x.__args__
-            return any(jit_isinstance(obj, y) for y in args)
+            return any(_jit_isinstance(obj, y) for y in args)
         return False
+
+    def jit_isinstance(obj: Any, x: type) -> bool:
+        if torch.jit.is_scripting():
+            return isinstance(obj, x)
+        else:
+            return _jit_isinstance(obj, x)
 
 
 else:
@@ -215,6 +225,18 @@ if _v < "1.10.0":
 
     trunc_divide = torch.floor_divide
 else:
+
+    def trunc_divide(input: torch.Tensor, other: Any) -> torch.Tensor:
+        if not torch.jit.is_scripting():
+            return input.div(other, rounding_mode="")
+        elif torch.jit.isinstance(other, float):
+            return input.div(other, rounding_mode="trunc")
+        elif torch.jit.isinstance(other, int):
+            return input.div(other, rounding_mode="trunc")
+        elif torch.jit.isinstance(other, torch.Tensor):
+            return input.div(other, rounding_mode="trunc")
+        else:
+            assert False
 
     def meshgrid(*tensors) -> Tuple[torch.Tensor, ...]:
         return torch.meshgrid(*tensors, indexing="ij")
