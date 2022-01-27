@@ -143,16 +143,6 @@ except ModuleNotFoundError:
 
     _v = TorchVersion(internal_version)
 
-
-@torch.no_grad()
-def broadcast_shapes(a: List[int], b: List[int]) -> List[int]:
-    scalar = torch.zeros((), device="cpu")
-    tensor_a = scalar.expand(a)
-    tensor_b = scalar.expand(b)
-    tensor_a, tensor_b = torch.broadcast_tensors(tensor_a, tensor_b)
-    return tensor_a.shape
-
-
 if _v < "1.8.0":
 
     @script
@@ -178,24 +168,11 @@ if _v < "1.8.0":
         ]
         return torch.stack(sequences, 0 if batch_first else 1)
 
+
     def linalg_solve(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
         return torch.solve(B, A)[0]
 
     def jit_isinstance(obj: Any, x: type) -> bool:
-        if isinstance(
-            obj, (torch.nn.utils.rnn.PackedSequence, SpoofPackedSequence)
-        ) and (
-            x
-            is Tuple[
-                torch.Tensor,
-                torch.Tensor,
-                Optional[torch.Tensor],
-                Optional[torch.Tensor],
-            ]
-        ):
-            # in pytorch >= 1.8, the packed sequence is converted into a tuple like this
-            # when scripting, but will be a packed sequence otherwise.
-            return True
         origin = getattr(x, "__origin__", None)
         if origin is None:
             return isinstance(obj, x)
@@ -223,17 +200,44 @@ else:
     jit_isinstance = torch.jit.isinstance
 
 
-if _v < "1.9.0":
-    trunc_divide = torch.floor_divide
-else:
-    trunc_divide = lambda a, b: torch.div(a, b, rounding_mode="trunc")
+@torch.no_grad()
+def broadcast_shapes(a: List[int], b: List[int]) -> List[int]:
+    scalar = torch.zeros((), device="cpu")
+    tensor_a = scalar.expand(a)
+    tensor_b = scalar.expand(b)
+    tensor_a, tensor_b = torch.broadcast_tensors(tensor_a, tensor_b)
+    return tensor_a.shape
 
 
 if _v < "1.10.0":
     meshgrid = torch.meshgrid
 
+    trunc_divide = torch.floor_divide
 else:
 
     def meshgrid(*tensors) -> Tuple[torch.Tensor, ...]:
         return torch.meshgrid(*tensors, indexing="ij")
+    
+        def jit_isinstance(obj: Any, x: type) -> bool:
+        if torch.jit.is_scripting():
+            return isinstance(obj, x)
+        origin = getattr(x, "__origin__", None)
+        if origin is None:
+            return isinstance(obj, x)
+        if origin in {tuple, list, set}:
+            args = getattr(x, "__args__", None)
+            if not args:
+                return (
+                    (origin == tuple and obj == tuple())
+                    or (origin == list and obj == list())
+                    or (origin == set and obj == set())
+                )
+            if origin == tuple:
+                return (len(obj) == len(args)) and all(
+                    jit_isinstance(*y) for y in zip(obj, args)
+                )
+        elif origin == Union:
+            args = x.__args__
+            return any(jit_isinstance(obj, y) for y in args)
+        return False
 

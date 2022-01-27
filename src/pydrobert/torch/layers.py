@@ -44,7 +44,6 @@ from pydrobert.torch.util import (
     sequence_log_probs,
     warp_1d_grid,
     _get_tensor_eps,
-    jit_isinstance,
 )
 
 from ._compat import broadcast_shapes, script
@@ -962,7 +961,6 @@ class BeamSearch(torch.nn.Module):
     eos: Optional[int]
     max_iters: Optional[int]
     finish_all_paths: bool
-    lm: ExtractableSequentialLanguageModel
 
     def __init__(
         self,
@@ -996,6 +994,7 @@ class BeamSearch(torch.nn.Module):
         if hasattr(self.lm, "reset_parameters"):
             self.lm.reset_parameters()
 
+    @torch.jit.export
     def update_log_probs_for_step(
         self,
         log_probs_prev: torch.Tensor,
@@ -1063,142 +1062,158 @@ class BeamSearch(torch.nn.Module):
             y_prev_lens = y_prev_lens.gather(1, src)
         return y_prev, log_probs_prev, y_prev_lens
 
-    def forward(
-        self, y_prev: torch.Tensor, prev: Dict[str, torch.Tensor] = dict()
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if y_prev.dim() == 2:
-            prev_width = 1
-        elif y_prev.dim() == 3:
-            if not y_prev.size(0):
-                raise RuntimeError(
-                    "Cannot start with empty prefix when y_prev is 3 dimensional"
-                )
-            prev_width = y_prev.size(2)
-            if prev_width < 1:
-                raise RuntimeError("dim 3 in y_prev must be positive")
-            y_prev = y_prev.flatten(1)
-        else:
-            raise RuntimeError("y_prev must be 2 or 3 dimensional")
-
-        device = y_prev.device
-        S_prev, N = y_prev.size(0), y_prev.size(1) // prev_width
-        prev = self.lm.update_input(prev, y_prev)
-        y_prev = y_prev.view(S_prev, N, prev_width)
-
-        if self.eos is not None and S_prev:
-            y_prev_lens = (
-                -((y_prev == self.eos).cumsum(0).clamp(max=1).sum(0) - 1).clamp(min=0)
-                + S_prev
-            )
-
-            len_eq_mask = y_prev_lens.unsqueeze(1) == y_prev_lens.unsqueeze(2)  # NKK
-            tok_ge_len_mask = (
-                torch.arange(S_prev, device=device).view(S_prev, 1, 1) >= y_prev_lens
-            )  # SNK
-            eq_mask = (
-                y_prev.unsqueeze(2) == y_prev.unsqueeze(3)
-            ) | tok_ge_len_mask.unsqueeze(
-                3
-            )  # SNKK
-            eq_mask = (
-                eq_mask.all(0)
-                & len_eq_mask
-                & ~torch.eye(prev_width, dtype=torch.bool, device=device)
-            )  # NKK
-            if eq_mask.any():
-                raise RuntimeError(
-                    "y_prev was equivalent for the following (batch_idx, path_idx) "
-                    f"paths: {torch.nonzero(eq_mask, as_tuple=True)}"
-                )
-        else:
-            y_prev_lens = y_prev.new_full((N, prev_width), S_prev)
-        log_probs_prev = torch.full(
-            (N, prev_width), -math.log(prev_width), device=device
-        )
-
-        if self.max_iters is None:
-            max_iters = 1024 * 1024 * 1024 * 1024
-        else:
-            max_iters = self.max_iters
-        for t in range(S_prev, max_iters + S_prev):
-            t = torch.tensor(t, device=device)
-
-            if self.eos is not None and t:
-                # determine which paths have already finished (and whether we should
-                # stop)
-                eos_mask = (
-                    y_prev.permute(1, 2, 0)
-                    .gather(2, (y_prev_lens - 1).clamp(min=0).unsqueeze(2))
-                    .squeeze(2)
-                    == self.eos
-                ) & (y_prev_lens > 0)
-                if self.finish_all_paths:
-                    done_mask = eos_mask.all(1, keepdim=True)
-                else:
-                    done_mask = eos_mask[..., :1]
-                if done_mask.all():
-                    break
+    if TYPE_CHECKING:
+        def forward(
+            self, y_prev: torch.Tensor, prev: Dict[str, torch.Tensor] = dict()
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            pass
+    else:
+        def forward(
+            self, y_prev: torch.Tensor, _prev: Optional[Dict[str, torch.Tensor]] = None
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            if _prev is None:
+                prev = dict()
             else:
-                eos_mask = torch.full((N, prev_width), False, device=device)
-                done_mask = eos_mask[..., :1]
+                prev = _prev
+            if y_prev.dim() == 2:
+                prev_width = 1
+            elif y_prev.dim() == 3:
+                if not y_prev.size(0):
+                    raise RuntimeError(
+                        "Cannot start with empty prefix when y_prev is 3 dimensional"
+                    )
+                prev_width = y_prev.size(2)
+                if prev_width < 1:
+                    raise RuntimeError("dim 3 in y_prev must be positive")
+                y_prev = y_prev.flatten(1)
+            else:
+                raise RuntimeError("y_prev must be 2 or 3 dimensional")
 
-            # determine extension probabilities
-            log_probs_t, in_next = self.lm(y_prev.flatten(1), prev, t)
-            log_probs_t = log_probs_t.reshape(N, prev_width, self.lm.vocab_size)
+            device = y_prev.device
+            S_prev, N = y_prev.size(0), y_prev.size(1) // prev_width
+            prev = self.lm.update_input(prev, y_prev)
+            y_prev = y_prev.view(S_prev, N, prev_width)
 
-            # update probabilities if the subclass so desires
-            log_probs_prev, log_probs_t = self.update_log_probs_for_step(
-                log_probs_prev, log_probs_t, y_prev, y_prev_lens, eos_mask
-            )
-
-            if self.eos is not None:
-                # if a path has finished, we allocate the entire probability mass to the
-                # eos token
-                log_probs_t = log_probs_t.masked_fill(
-                    eos_mask.unsqueeze(2), -float("inf")
+            if self.eos is not None and S_prev:
+                y_prev_lens = (
+                    -((y_prev == self.eos).cumsum(0).clamp(max=1).sum(0) - 1).clamp(min=0)
+                    + S_prev
                 )
-                eos_mask_ = eos_mask.unsqueeze(2).repeat(1, 1, self.lm.vocab_size)
-                eos_mask_[..., : self.eos] = False
-                eos_mask_[..., self.eos + 1 :] = False
-                log_probs_t = log_probs_t.masked_fill(eos_mask_, 0.0)
 
-            # extend + prune
-            (y_next, y_next_lens, log_probs_next, next_src) = beam_search_advance(
-                log_probs_t, self.width, log_probs_prev, y_prev, y_prev_lens
-            )
-
-            if self.eos is not None:
-                # beam_search_advance always increments the length. Decrement for the
-                # paths which had completed before the step
-                y_next_lens = y_next_lens - eos_mask.gather(1, next_src).to(y_next_lens)
-
-            # update lm intermediate values
-            next_src = (
-                torch.arange(
-                    0, prev_width * N, prev_width, device=next_src.device
-                ).unsqueeze(1)
-                + next_src
-            )
-            prev = self.lm.extract_by_src(in_next, next_src.flatten())
-
-            if self.eos is not None and done_mask.any():
-                y_prev, log_probs_prev, y_prev_lens = self._to_width(
-                    y_prev, log_probs_prev, y_prev_lens
+                len_eq_mask = y_prev_lens.unsqueeze(1) == y_prev_lens.unsqueeze(2)  # NKK
+                tok_ge_len_mask = (
+                    torch.arange(S_prev, device=device).view(S_prev, 1, 1) >= y_prev_lens
+                )  # SNK
+                eq_mask = (
+                    y_prev.unsqueeze(2) == y_prev.unsqueeze(3)
+                ) | tok_ge_len_mask.unsqueeze(
+                    3
+                )  # SNKK
+                eq_mask = (
+                    eq_mask.all(0)
+                    & len_eq_mask
+                    & ~torch.eye(prev_width, dtype=torch.bool, device=device)
+                )  # NKK
+                if eq_mask.any():
+                    raise RuntimeError(
+                        "y_prev was equivalent for the following (batch_idx, path_idx) "
+                        f"paths: {torch.nonzero(eq_mask)}"
+                    )
+            else:
+                y_prev_lens = torch.full(
+                    (N, prev_width), S_prev, dtype=torch.long, device=device
                 )
-                y_next[:-1] = torch.where(done_mask.unsqueeze(0), y_prev, y_next[:-1])
-                log_probs_next = torch.where(done_mask, log_probs_prev, log_probs_next)
-                y_next_lens = torch.where(done_mask, y_prev_lens, y_next_lens)
+            log_probs_prev = torch.full(
+                (N, prev_width), -math.log(prev_width), device=device
+            )
 
-            y_prev = y_next
-            y_prev_lens = y_next_lens
-            log_probs_prev = log_probs_next
-            prev_width = self.width
+            if self.max_iters is None:
+                max_iters = 1024 * 1024 * 1024 * 1024
+            else:
+                max_iters = self.max_iters
+            for t in range(S_prev, max_iters + S_prev):
+                t = torch.tensor(t, device=device)
 
-        y_prev, log_probs_prev, y_prev_lens = self._to_width(
-            y_prev, log_probs_prev, y_prev_lens
-        )
+                if self.eos is not None and t:
+                    # determine which paths have already finished (and whether we should
+                    # stop)
+                    eos_mask = (
+                        y_prev.permute(1, 2, 0)
+                        .gather(2, (y_prev_lens - 1).clamp(min=0).unsqueeze(2))
+                        .squeeze(2)
+                        == self.eos
+                    ) & (y_prev_lens > 0)
+                    if self.finish_all_paths:
+                        done_mask = eos_mask.all(1, keepdim=True)
+                    else:
+                        done_mask = eos_mask[..., :1]
+                    if done_mask.all():
+                        break
+                else:
+                    eos_mask = torch.full(
+                        (N, prev_width), 0, device=device, dtype=torch.bool
+                    )
+                    done_mask = eos_mask[..., :1]
 
-        return y_prev, y_prev_lens, log_probs_prev
+                # determine extension probabilities
+                log_probs_t, in_next = self.lm.calc_idx_log_probs(
+                    y_prev.flatten(1), prev, t
+                )
+                log_probs_t = log_probs_t.reshape(N, prev_width, self.lm.vocab_size)
+
+                # update probabilities if the subclass so desires
+                log_probs_prev, log_probs_t = self.update_log_probs_for_step(
+                    log_probs_prev, log_probs_t, y_prev, y_prev_lens, eos_mask
+                )
+
+                if self.eos is not None:
+                    # if a path has finished, we allocate the entire probability mass to the
+                    # eos token
+                    log_probs_t = log_probs_t.masked_fill(
+                        eos_mask.unsqueeze(2), -float("inf")
+                    )
+                    eos_mask_ = eos_mask.unsqueeze(2).repeat(1, 1, self.lm.vocab_size)
+                    eos_mask_[..., : self.eos] = False
+                    eos_mask_[..., self.eos + 1 :] = False
+                    log_probs_t = log_probs_t.masked_fill(eos_mask_, 0.0)
+
+                # extend + prune
+                (y_next, y_next_lens, log_probs_next, next_src) = beam_search_advance(
+                    log_probs_t, self.width, log_probs_prev, y_prev, y_prev_lens
+                )
+
+                if self.eos is not None:
+                    # beam_search_advance always increments the length. Decrement for the
+                    # paths which had completed before the step
+                    y_next_lens = y_next_lens - eos_mask.gather(1, next_src).to(y_next_lens)
+
+                # update lm intermediate values
+                next_src = (
+                    torch.arange(
+                        0, prev_width * N, prev_width, device=next_src.device
+                    ).unsqueeze(1)
+                    + next_src
+                )
+                prev = self.lm.extract_by_src(in_next, next_src.flatten())
+
+                if self.eos is not None and done_mask.any():
+                    y_prev, log_probs_prev, y_prev_lens = self._to_width(
+                        y_prev, log_probs_prev, y_prev_lens
+                    )
+                    y_next[:-1] = torch.where(done_mask.unsqueeze(0), y_prev, y_next[:-1])
+                    log_probs_next = torch.where(done_mask, log_probs_prev, log_probs_next)
+                    y_next_lens = torch.where(done_mask, y_prev_lens, y_next_lens)
+
+                y_prev = y_next
+                y_prev_lens = y_next_lens
+                log_probs_prev = log_probs_next
+                prev_width = self.width
+
+            y_prev, log_probs_prev, y_prev_lens = self._to_width(
+                y_prev, log_probs_prev, y_prev_lens
+            )
+
+            return y_prev, y_prev_lens, log_probs_prev
 
 
 class CTCPrefixSearch(torch.nn.Module):

@@ -765,82 +765,19 @@ def test_ctc_prefix_search_batch(device, jit_type):
         assert (y_n_exp == y_n_act).all()
 
 
-def test_beam_search(device):
-    class MyLM(layers.ExtractableSequentialLanguageModel):
-        def __init__(self, vocab_size):
-            super().__init__(vocab_size)
-            bigram_table = (
-                torch.arange(1, vocab_size + 1, dtype=torch.float)
-                .unsqueeze(0)
-                .expand(vocab_size, vocab_size)
-            )
-            # dist over idx = [0, ..., 0, idx + 1, idx + 2, -(idx - 3), ..., -V]
-            bigram_table = bigram_table - bigram_table.triu(2) - bigram_table.tril(-1)
-            self.register_buffer("bigram_table", bigram_table)
-
-        def update_input(self, in_prev, hist):
-            return in_prev
-
-        def extract_by_src(self, in_prev, src):
-            return in_prev
-
-        def calc_idx_log_probs(self, hist, in_prev, idx):
-            hist = torch.cat(
-                [torch.arange(hist.size(1), device=hist.device).unsqueeze(0), hist], 0
-            )
-            vocab = hist.gather(0, idx.unsqueeze(0)).squeeze(0)
-            return self.bigram_table.index_select(vocab, 0), in_prev
-
-
-def test_beam_search_batch(device):
+def test_beam_search_batch(device, jit_type):
     torch.manual_seed(1029)
-
-    class RNNLM(layers.ExtractableSequentialLanguageModel):
-        def __init__(self, vocab_size, embed_size=128, hidden_size=512):
-            super().__init__(vocab_size)
-            self.hidden_size = hidden_size
-            self.embed = torch.nn.Embedding(
-                vocab_size + 1, embed_size, padding_idx=vocab_size
-            )
-            self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
-            self.ff = torch.nn.Linear(hidden_size, vocab_size)
-
-        def extract_by_src(self, prev, src):
-            return {
-                "hidden": prev["hidden"].index_select(0, src),
-                "cell": prev["cell"].index_select(0, src),
-            }
-
-        def update_input(self, prev, hist):
-            if len(prev):
-                return prev
-            N = hist.size(1)
-            zeros = self.ff.weight.new_zeros((N, self.hidden_size))
-            return {"hidden": zeros, "cell": zeros}
-
-        def calc_idx_log_probs(self, hist, prev, idx):
-            idx_zero = idx == 0
-            if idx_zero.all():
-                x = torch.arange(hist.size(0), device=hist.device)
-            elif not idx.dim():
-                x = hist[idx - 1]
-            else:
-                x = hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(
-                    0
-                )  # (N,)
-                x = x.masked_fill(idx_zero, self.vocab_size)
-            x = self.embed(x)
-            h_1, c_1 = self.cell(x, (prev["hidden"], prev["cell"]))
-            logits = self.ff(h_1)
-            return (
-                torch.nn.functional.log_softmax(logits, -1),
-                {"hidden": h_1, "cell": c_1},
-            )
 
     T, N, V, K = 64, 16, 128, 8
     assert K <= V and N * K <= V
     lm = RNNLM(V)
+    if jit_type == "script":
+        lm = torch.jit.script(lm)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for BeamSearch")
     search = layers.BeamSearch(lm, K, eos=0, max_iters=T).to(device)
+    if jit_type == "script":
+        search = torch.jit.script(search)
     y_prev = torch.arange(N, device=device)
 
     exps = []
