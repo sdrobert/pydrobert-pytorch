@@ -168,7 +168,6 @@ if _v < "1.8.0":
         ]
         return torch.stack(sequences, 0 if batch_first else 1)
 
-
     def linalg_solve(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
         return torch.solve(B, A)[0]
 
@@ -217,8 +216,8 @@ else:
 
     def meshgrid(*tensors) -> Tuple[torch.Tensor, ...]:
         return torch.meshgrid(*tensors, indexing="ij")
-    
-        def jit_isinstance(obj: Any, x: type) -> bool:
+
+    def jit_isinstance(obj: Any, x: type) -> bool:
         if torch.jit.is_scripting():
             return isinstance(obj, x)
         origin = getattr(x, "__origin__", None)
