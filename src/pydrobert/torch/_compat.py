@@ -18,8 +18,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from optparse import Option
-from typing import Any, Iterable, List, Optional, Tuple, Union, NamedTuple
+from typing import Any, Iterable, List, Optional, Tuple, Union, NamedTuple, Set
 
 import torch
 import pydrobert.torch.config as config
@@ -173,7 +172,7 @@ if _v < "1.8.0":
         return torch.solve(B, A)[0]
 
     @torch.jit.unused
-    def _jit_isinstance(obj, x) -> bool:
+    def _jit_isinstance(obj: Any, x: type) -> bool:
         if isinstance(obj, torch.nn.utils.rnn.PackedSequence):
             return _jit_isinstance(
                 (obj.data, obj.batch_sizes, obj.sorted_indices, obj.unsorted_indices), x
@@ -181,19 +180,22 @@ if _v < "1.8.0":
         origin = getattr(x, "__origin__", None)
         if origin is None:
             return isinstance(obj, x)
-        if origin in {tuple, list, set}:
+        if origin in {tuple, list, set, List, Set, Tuple}:
             args = getattr(x, "__args__", None)
             if not args:
                 return (
-                    (origin == tuple and obj == tuple())
-                    or (origin == list and obj == list())
-                    or (origin == set and obj == set())
+                    (origin in {tuple, Tuple} and obj == tuple())
+                    or (origin in {list, List} and obj == list())
+                    or (origin in {set, Set} and obj == set())
                 )
-            if origin == tuple:
-                return (len(obj) == len(args)) and all(
+            if origin in {tuple, Tuple}:
+                return (len(obj) is len(args)) and all(
                     _jit_isinstance(*y) for y in zip(obj, args)
                 )
-        elif origin == Union:
+            else:
+                assert len(args) == 1
+                return all(_jit_isinstance(o, args[0]) for o in obj)
+        elif origin is Union:
             args = x.__args__
             return any(_jit_isinstance(obj, y) for y in args)
         return False
@@ -228,7 +230,7 @@ else:
 
     def trunc_divide(input: torch.Tensor, other: Any) -> torch.Tensor:
         if not torch.jit.is_scripting():
-            return input.div(other, rounding_mode="")
+            return input.div(other, rounding_mode="trunc")
         elif torch.jit.isinstance(other, float):
             return input.div(other, rounding_mode="trunc")
         elif torch.jit.isinstance(other, int):
