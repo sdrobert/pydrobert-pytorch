@@ -172,6 +172,8 @@ if _v < "1.8.0":
         return torch.solve(B, A)[0]
 
     def jit_isinstance(obj: Any, x: type) -> bool:
+        if torch.jit.is_scripting():
+            return isinstance(obj, x)
         origin = getattr(x, "__origin__", None)
         if origin is None:
             return isinstance(obj, x)
@@ -216,27 +218,3 @@ else:
 
     def meshgrid(*tensors) -> Tuple[torch.Tensor, ...]:
         return torch.meshgrid(*tensors, indexing="ij")
-
-    def jit_isinstance(obj: Any, x: type) -> bool:
-        if torch.jit.is_scripting():
-            return isinstance(obj, x)
-        origin = getattr(x, "__origin__", None)
-        if origin is None:
-            return isinstance(obj, x)
-        if origin in {tuple, list, set}:
-            args = getattr(x, "__args__", None)
-            if not args:
-                return (
-                    (origin == tuple and obj == tuple())
-                    or (origin == list and obj == list())
-                    or (origin == set and obj == set())
-                )
-            if origin == tuple:
-                return (len(obj) == len(args)) and all(
-                    jit_isinstance(*y) for y in zip(obj, args)
-                )
-        elif origin == Union:
-            args = x.__args__
-            return any(jit_isinstance(obj, y) for y in args)
-        return False
-
