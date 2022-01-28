@@ -1010,82 +1010,11 @@ def error_rate(
     sub_cost: float = 1.0,
     warn: bool = True,
 ) -> torch.Tensor:
-    """Calculate error rates over a batch of references and hypotheses
+    """Functional version of ErrorRate
 
-    An error rate is the total number of insertions, deletions, and substitutions
-    between a reference (gold-standard) and hypothesis (generated) transcription,
-    normalized by the number of elements in a reference. Consult the Wikipedia article
-    on the `Levenshtein distance <https://en.wikipedia.org/wiki/Levenshtein_distance>`__
-    for more information.
-
-    Given a reference (gold-standard) transcript long tensor `ref` of size
-    ``(max_ref_steps, batch_size)`` if `batch_first` is :obj:`False` or ``(batch_size,
-    max_ref_steps)`` otherwise, and a long tensor `hyp` of shape ``(max_hyp_steps,
-    batch_size)`` or ``(batch_size, max_hyp_steps)``, this function produces a tensor
-    `er` of shape ``(batch_size,)`` storing the associated error rates.
-
-    `er` will not have a gradient, and is thus not directly suited to being a loss
-    function.
-
-    Parameters
-    ----------
-    ref : torch.Tensor
-    hyp : torch.Tensor
-    eos : int or None, optional
-        A special token in `ref` and `hyp` whose first occurrence in each batch
-        indicates the end of a transcript. This allows for variable-length transcripts
-        in the batch
-    include_eos : bool, optional
-        Whether to include the first instance of `eos` found in both `ref` and `hyp` as
-        valid tokens to be computed as part of the rate. This is useful when gauging
-        if a model is learning to emit the `eos` properly, but is not usually included
-        in an evaluation. Only the first `eos` per transcript is included
-    norm : bool, optional
-        If :obj:`False`, will return the number of mistakes (rather than the number
-        of mistakes over the total number of referene tokens)
-    batch_first : bool, optional
-    ins_cost : float, optional
-        The cost of an adding a superfluous token to a transcript in `hyp`
-    del_cost : float, optional
-        The cost of missing a token from `ref`
-    sub_cost : float, optional
-        The cost of swapping a token from `ref` with one from `hyp`
-    warn : bool, optional
-        Whether to display warnings on irregularities. Currently, this can happen in
-        three ways.
-
-        1. If :obj:`True` and `ins_cost`, `del_cost`, or `sub_cost` is not 1, a warning
-           about a difference in computations will be raised. See the below warning for
-           more info.
-        2. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
-           transcription has zero length
-        3. If `eos` is set and `include_eos` is :obj:`True`, will warn when a transcript
-           does not include an `eos` symbol
-
-    Returns
-    -------
-    er : torch.Tensor
-        The error rates in `er` will always be floating-point, regardless of whether
-        they are normalized or not
-
-    Warnings
+    See Also
     --------
-    Up to and including `v0.3.0`, `error_rate` computed a normalized `Edit distance
-    <https://en.wikipedia.org/wiki/Edit_distance>`__ instead of an error rate. The
-    latter can be considered the total weighted cost of insertions, deletions, and
-    substitutions (as per `ins_cost`, `del_cost`, and `sub_cost`), whereas the former is
-    the sum of the number of mistakes. The old behaviour of returning the cost is now in
-    :func:`edit_distance` (though `norm` is :obj:`False` by default). For speech
-    recognition evaluation, `error_rate` is the function to use. However, if you are
-    using the default costs, ``ins_cost == del_cost == sub_cost == 1``, there should be
-    no numerical difference between the two.
-
-    While `error_rate` does not report the total cost, `ins_cost`, `del_cost`, and
-    `sub_cost` impact how references are aligned to hypotheses. For example, setting
-    ``sub_cost == 0`` will not remove the count of substitutions from the error rate.
-    In fact, it's more likely to do the opposite: since the cost for a substitution is
-    lower, the underlying algorithm is more likely to align with substitutions,
-    increasing the contribution of substitutions to the error rate.
+    pydrobert.torch.layers.ErrorRate
     """
     return _string_matching(
         ref,
@@ -1114,65 +1043,12 @@ def edit_distance(
     sub_cost: float = 1.0,
     warn: bool = True,
 ) -> torch.Tensor:
-    """Compute an edit distance over a batch of references and hypotheses
+    """Functional version of EditDistance
 
-    An `Edit Distance <https://en.wikipedia.org/wiki/Edit_distance>`__ quantifies
-    how dissimilar two token sequences are as the total cost of transforming a
-    reference sequence into a hypothesis sequence. There are three operations that can
-    be performed, each with an associated cost: adding an extra token to the reference,
-    removing a token from the reference, or swapping a token in the reference with a
-    token in the hypothesis.
-
-    Given a reference (gold-standard) transcript long tensor `ref` of size
-    ``(max_ref_steps, batch_size)`` if `batch_first` is :obj:`False` or ``(batch_size,
-    max_ref_steps)`` otherwise, and a long tensor `hyp` of shape ``(max_hyp_steps,
-    batch_size)`` or ``(batch_size, max_hyp_steps)``, this function produces a tensor
-    `er` of shape ``(batch_size,)`` storing the associated edit distances.
-
-    Parameters
-    ----------
-    ref : torch.Tensor
-    hyp : torch.Tensor
-    eos : int or None, optional
-        A special token in `ref` and `hyp` whose first occurrence in each batch
-        indicates the end of a transcript. This allows for variable-length transcripts
-        in the batch
-    include_eos : bool, optional
-        Whether to include the first instance of `eos` found in both `ref` and `hyp` as
-        valid tokens to be computed as part of the rate. This is useful when gauging
-        if a model is learning to emit the `eos` properly, but is not usually included
-        in an evaluation. Only the first `eos` per transcript is included
-    norm : bool, optional
-        If :obj:`True`, will normalize the distance by the number of tokens in the
-        reference sequence (making the returned value a divergence)
-    batch_first : bool, optional
-    ins_cost : float, optional
-        The cost of an adding an extra token to a sequence in `ref`
-    del_cost : float, optional
-        The cost of removing a token from a sequence in `ref`
-    sub_cost : float, optional
-        The cost of swapping a token from `ref` with one from `hyp`
-    warn : bool, optional
-        Whether to display warnings on irregularities. Currently, this can happen in
-        two ways.
-
-        1. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
-           transcription has zero length
-        2. If `eos` is set and `include_eos` is :obj:`True`, will warn when a transcript
-           does not include an `eos` symbol
-
-    Returns
-    -------
-    ed : torch.Tensor
-        The error rates in `ed` will always be floating-point, regardless of whether
-        they are normalized or not
-
-    Notes
-    -----
-    This function returns identical values (modulo a bug fix) to :func:`error_rate` up
-    to `v0.3.0` (though the default of `norm` has changed to :obj:`False`). For more
-    details on the distinction between this function and the new :func:`error_rate`,
-    please see that function's documentation.
+    See Also
+    --------
+    pydrobert.torch.layers.EditDistance
+        For information about this module and its associated parameters.
     """
     return _string_matching(
         ref,
@@ -1202,96 +1078,12 @@ def optimal_completion(
     exclude_last: bool = False,
     warn: bool = True,
 ) -> torch.Tensor:
-    r"""Return a mask of next tokens of a minimum edit distance prefix
-
-    Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)`` (or
-    ``(batch_size, max_ref_steps)`` if `batch_first` is :obj:`True`) and a hypothesis
-    transcript `hyp` of shape ``(max_hyp_steps, batch_size)`` (or ``(batch_size,
-    max_hyp_steps)``), this function produces a long tensor `optimals` of shape
-    ``(max_hyp_steps + 1, batch_size, max_unique_next)`` (or ``(batch_size,
-    max_hyp_steps + 1, max_unique_next)``), where ``max_unique_next <= max_ref_steps``,
-    of the unique tokens that could be added to the hypothesis prefix ``hyp[:prefix_len,
-    batch]`` such that some remaining suffix concatenated to the prefix would result in
-    a minimal edit distance. See below for an example.
-
-    Parameters
-    ----------
-    ref : torch.Tensor
-    hyp : torch.Tensor
-    eos : int or None, optional
-        A special token in `ref` and `hyp` whose first occurrence in each
-        batch indicates the end of a transcript. This allows for
-        variable-length transcripts in the batch
-    include_eos : bool, optional
-        Whether to include the first instance of `eos` found in both `ref` and
-        `hyp` as valid tokens to be computed as part of the distance and next
-        tokens for a suffix. Only the first `eos` per transcript is included
-    batch_first : bool, optional
-    ins_cost : float, optional
-        The cost of an adding a superfluous token to a transcript in `hyp`
-    del_cost : float, optional
-        The cost of missing a token from `ref`
-    sub_cost : float, optional
-        The cost of swapping a token from `ref` with one from `hyp`
-    padding : int, optional
-        The value to right-pad unequal-length sequences with
-    exclude_last : bool, optional
-        If true, will exclude the final prefix, consisting of the entire
-        transcript, from the returned `optimals`. Optimals will be of shape
-        ``(max_hyp_steps, batch_size, max_unique_next)``
-    warn : bool, optional
-        Whether to display warnings on irregularities. Currently, this only
-        occurs when `eos` is set, `include_eos` is :obj:`True`, and a
-        transcript does not contain the `eos` symbol
-
-    Returns
-    -------
-    optimals : torch.Tensor
-
-    Examples
-    --------
-
-    Consider the reference text "foot" and the hypothesis text "bot". The below shows
-    the matrix used to calculate edit distances between them::
-
-        \ _ f o o t
-        _ 0 1 2 3 4
-        b 1 1 2 3 4
-        o 2 2 1 2 3
-        t 3 3 2 2 2
-
-    If ``prefix_len == 0``, then the prefix is "", and "f" (from the suffix "foot") is
-    the only subsequent token that would not increase the edit distance from that of the
-    prefix (0). If ``prefix_len == 1``, then the prefix is "b". To arrive at the minimum
-    edit distance for "b", one either treats "b" as an insertion or a substitution for
-    "f", yielding suffixes "foot" and "oot". Thus, the subsequent token could be "f" or
-    "o". For the prefix "bo", the minimum edit distance is achieved by first
-    substituting "f" for "b", then substituting "o" for "o", resulting in the suffix
-    "ot" and the next optimal character "o". Finally, for ``prefix_len == 3`` and prefix
-    "bot", there are many operations that can produce the minimum edit distance of 2,
-    resulting in one of the suffixes "ot", "t", and "". The latter suffix requires no
-    more tokens and so any operation would increase the edit distance. Thus the optimal
-    next tokens could be "o" or "t".
-
-    Plugging "foot" and "bot" into this function, we get the prefixes:
-
-    >>> ref_text, hyp_text = "foot", "bot"
-    >>> ref = torch.tensor([ord(c) for c in ref_text]).unsqueeze(1)
-    >>> hyp = torch.tensor([ord(c) for c in hyp_text]).unsqueeze(1)
-    >>> optimal = optimal_completion(ref, hyp).squeeze(1)
-    >>> for prefix_len, o_for_pr in enumerate(optimal):
-    ...     o_for_pr = o_for_pr.masked_select(o_for_pr.ge(0)).tolist()
-    ...     print('prefix={}: {}'.format(
-    ...         hyp_text[:prefix_len], ','.join([chr(i) for i in o_for_pr])))
-    prefix=: f
-    prefix=b: f,o
-    prefix=bo: o
-    prefix=bot: o,t
-
+    """Functional version of OptimalCompletion
+    
     See Also
     --------
-    pydrobert.torch.layers.HardOptimalCompletionDistillationLoss
-        A loss function that uses these optimal completions to train a model
+    pydrobert.torch.layers.OptimalCompletion
+        For information about this module and its associated parameters.
     """
     mask = _string_matching(
         ref,
@@ -1339,72 +1131,12 @@ def prefix_error_rates(
     exclude_last: bool = False,
     warn: bool = True,
 ) -> torch.Tensor:
-    """Compute the error rate between ref and each prefix of hyp
-
-    Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)`` (or
-    ``(batch_size, max_ref_steps)`` if `batch_first` is :obj:`True`) and a hypothesis
-    transcript `hyp` of shape ``(max_hyp_steps, batch_size)`` (or ``(batch_size,
-    max_hyp_steps)``), this function produces a tensor `prefix_ers` of shape
-    ``(max_hyp_steps + 1, batch_size)`` (or ``(batch_size, max_hyp_steps + 1))`` which
-    contains the error rates for each prefix of each hypothesis, starting from the empty
-    prefix.
-
-    Parameters
-    ----------
-    ref : torch.Tensor
-    hyp : torch.Tensor
-    eos : int or None, optional
-        A special token in `ref` and `hyp` whose first occurrence in each batch
-        indicates the end of a transcript. This allows for variable-length transcripts
-        in the batch.
-    include_eos : bool, optional
-        Whether to include the first instance of `eos` found in both `ref` and `hyp` as
-        valid tokens to be computed as part of the distance. Only the first `eos` per
-        transcript is included.
-    norm : bool, optional
-        If :obj:`False`, will return the numbers of mistakes (rather than the numbers
-        of mistakes over the total number of referene tokens)
-    batch_first : bool, optional
-    ins_cost : float, optional
-        The cost of an adding a superfluous token to a transcript in `hyp`
-    del_cost : float, optional
-        The cost of missing a token from `ref`
-    sub_cost : float, optional
-        The cost of swapping a token from `ref` with one from `hyp`
-    padding : int, optional
-        The value to right-pad the error rates of unequal-length sequences with in
-        `prefix_ers`
-    exclude_last : bool, optional
-        If true, will exclude the final prefix, consisting of the entire transcript,
-        from the returned `dists`. `dists` will be of shape ``(max_hyp_steps,
-        batch_size, max_unique_next)``
-    warn : bool, optional
-        Whether to display warnings on irregularities. Currently, this can happen in
-        three ways.
-
-        1. If :obj:`True` and `ins_cost`, `del_cost`, or `sub_cost` is not 1, a warning
-           about a difference in computations will be raised. See the below warning for
-           more info.
-        2. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
-           transcription has zero length
-        3. If `eos` is set and `include_eos` is :obj:`True`, will warn when a transcript
-           does not include an `eos` symbol
-
-    Returns
-    -------
-    prefix_ers : torch.Tensor
-
+    """Functional version of PrefixErrorRates
+    
     See Also
     --------
-    :ref:`Gradient Estimators`
-        Provides an example where this function is used to determine a reward
-        function for reinforcement learning
-
-    Warnings
-    --------
-    The values returned by this function changed after `v0.3.0`. The old behaviour
-    can be found in :func:`prefix_edit_distances` (though with `norm` defaulting to
-    :obj:`False`). Consult the warning in :func:`error_rate` for more info.
+    pydrobert.torch.layers.PrefixErrorRates
+        For information about this module and its associated parameters.
     """
     return _string_matching(
         ref,

@@ -16,7 +16,6 @@
 
 import abc
 import math
-from multiprocessing.dummy import Value
 from typing import (
     Any,
     NoReturn,
@@ -33,16 +32,21 @@ import torch
 from pydrobert.torch.util import (
     beam_search_advance,
     dense_image_warp,
+    edit_distance,
     error_rate,
     optimal_completion,
     ctc_prefix_search_advance,
     pad_variable,
     polyharmonic_spline,
+    prefix_edit_distances,
+    prefix_error_rates,
     sequence_log_probs,
     sparse_image_warp,
     warp_1d_grid,
     _get_tensor_eps,
 )
+
+import pydrobert.torch.config as config
 
 from ._compat import broadcast_shapes, script
 
@@ -52,6 +56,8 @@ __all__ = [
     "CTCPrefixSearch",
     "DenseImageWarp",
     "DotProductSoftAttention",
+    "EditDistance",
+    "ErrorRate",
     "ExtractableSequentialLanguageModel",
     "GeneralizedDotProductSoftAttention",
     "GlobalSoftAttention",
@@ -62,7 +68,10 @@ __all__ = [
     "MinimumErrorRateLoss",
     "MixableSequentialLanguageModel",
     "MultiHeadedAttention",
+    "OptimalCompletion",
     "PolyharmonicSpline",
+    "PrefixEditDistances",
+    "PrefixErrorRates",
     "random_shift",
     "RandomShift",
     "SequentialLanguageModel",
@@ -73,6 +82,534 @@ __all__ = [
     "spec_augment",
     "SpecAugment",
 ]
+
+
+_SM_ARGS = """\
+`ref` is a long tensor of shape ``(max_ref_steps, batch_size)`` such that the
+``n``-th reference (gold-standard) token sequence is stored in ``ref[:, n]``. `hyp`
+is a long tensor of shape ``(max_hyp_steps, batch_size)`` containing the hypothesis
+(machine-generated) sequences."""
+
+_SM_PARAM_DICT = {
+    "eos": """\
+    eos : int or None, optional
+        A special token in `ref` and `hyp` whose first occurrence in each batch
+        indicates the end of a transcript. This allows for variable-length transcripts
+        in the batch.
+    """,
+    "include_eos": """\
+    include_eos : bool, optional
+        Whether to include the first instance of `eos` found in both `ref` and `hyp` as
+        valid tokens to be computed as part of the rate. This is useful when gauging
+        if a model is learning to emit the `eos` properly, but is not usually included
+        in an evaluation. Only the first `eos` per transcript is included.
+    """,
+    "norm": """\
+    norm : bool, optional
+        If :obj:`True`, will normalize the distance by the number of tokens in the
+        reference sequence (making the returned value a divergence)
+    """,
+    "batch_first": """\
+    batch_first : bool, optional
+        If :obj:`True`, the first two dimensions of `ref`, `hyp`, and the return value
+        are transposed from those above.
+    """,
+    "ins_cost": """\
+    ins_cost : float, optional
+        The cost of an adding an extra token to a sequence in `ref`
+    """,
+    "del_cost": """\
+    del_cost : float, optional
+        The cost of removing a token from a sequence in `ref`
+    """,
+    "sub_cost": """\
+    sub_cost : float, optional
+        The cost of swapping a token from `ref` with one from `hyp`
+    """,
+    "warn": """\
+    warn : bool, optional
+        Whether to display warnings on irregularities. Currently, this can happen in
+        three ways:
+
+        1. If :obj:`True` and `ins_cost`, `del_cost`, or `sub_cost` is not 1, a warning
+           about a difference in computations will be raised. See the below warning for
+           more info.
+        2. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
+           transcription has zero length
+        3. If `eos` is set and `include_eos` is :obj:`True`, will warn when a transcript
+           does not include an `eos` symbol
+    """,
+    "padding": """\
+    padding : int, optional
+        The value to right-pad unequal-length sequences with. Defauls to
+        :obj:`pydrobert.torch.config.INDEX_PAD_VALUE`.
+    """,
+    "exclude_last": """\
+    exclude_last : bool, optional
+        If true, will exclude the final prefix, consisting of the entire transcript,
+        from the return value. It will be of shape ``(max_hyp_steps, batch_size,
+        max_unique_next)``
+    """,
+}
+
+
+class _StringMatching(torch.nn.Module, metaclass=abc.ABCMeta):
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "warn",
+    ]
+
+    eos: Optional[int]
+    include_eos: bool
+    batch_first: bool
+    ins_cost: float
+    del_cost: float
+    sub_cost: float
+    warn: bool
+
+    def __init__(
+        self, eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
+    ):
+        super().__init__()
+        self.eos = eos
+        self.include_eos = include_eos
+        self.batch_first = batch_first
+        self.ins_cost = ins_cost
+        self.del_cost = del_cost
+        self.sub_cost = sub_cost
+        self.warn = warn
+
+    def extra_repr(self) -> str:
+        return ", ".join(f"{x}={getattr(self, x)}" for x in self.__constants__)
+
+    @abc.abstractmethod
+    def forward(self, ref: torch.Tensor, hyp: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class EditDistance(_StringMatching):
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "norm",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "warn",
+    ]
+
+    norm: bool
+
+    def __init__(
+        self,
+        eos: Optional[int] = None,
+        include_eos: bool = False,
+        norm: bool = False,
+        batch_first: bool = False,
+        ins_cost: float = 1.0,
+        del_cost: float = 1.0,
+        sub_cost: float = 1.0,
+        warn: bool = True,
+    ):
+        super().__init__(
+            eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
+        )
+        self.norm = norm
+
+    __doc__ = f"""Compute an edit distance over a batch of references and hypotheses
+
+    An `Edit Distance <https://en.wikipedia.org/wiki/Edit_distance>`__ quantifies
+    how dissimilar two token sequences are as the total cost of transforming a
+    reference sequence into a hypothesis sequence. There are three operations that can
+    be performed, each with an associated cost: adding an extra token to the reference,
+    removing a token from the reference, or swapping a token in the reference with a
+    token in the hypothesis.
+
+    When instantiated, this module has the signature::
+
+        ed = edit_distance(ref, hyp)
+
+    {_SM_ARGS}  The return value `ed` is a tensor of shape ``(batch_size,)`` storing the
+    associated edit distances.
+
+    Parameters
+    ----------
+    {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+
+    Notes
+    -----
+    This module returns identical values (modulo a bug fix) to :func:`error_rate` up
+    to `v0.3.0` (though the default of `norm` has changed to :obj:`False`). For more
+    details on the distinction between this module and the new :func:`ErrorRate`,
+    please see that module's documentation.
+    """
+
+    def forward(self, ref: torch.Tensor, hyp: torch.Tensor) -> torch.Tensor:
+        return edit_distance(
+            ref,
+            hyp,
+            self.eos,
+            self.include_eos,
+            self.norm,
+            self.batch_first,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.warn,
+        )
+
+
+class PrefixEditDistances(_StringMatching):
+
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "norm",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "padding",
+        "exclude_last",
+        "warn",
+    ]
+
+    norm: bool
+    padding: int
+    exclude_last: bool
+
+    def __init__(
+        self,
+        eos: Optional[int] = None,
+        include_eos: bool = True,
+        norm: bool = False,
+        batch_first: bool = False,
+        ins_cost: float = 1.0,
+        del_cost: float = 1.0,
+        sub_cost: float = 1.0,
+        padding: int = config.INDEX_PAD_VALUE,
+        exclude_last: bool = False,
+        warn: bool = True,
+    ):
+        super().__init__(
+            eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
+        )
+        self.norm = norm
+        self.padding = padding
+        self.exclude_last = exclude_last
+
+    __doc__ = f"""Compute the edit distance between ref and each prefix of hyp
+
+    When instantiated, this module has the signature::
+
+        prefix_eds = prefix_edit_distances(ref, hyp)
+    
+    {_SM_ARGS} The return value `prefix_eds` is of shape ``(max_hyp_steps + 1,
+    batch_size)`` and contains the edit distances for each prefix of each hypothesis,
+    starting from the empty prefix.
+
+    Parameters
+    ----------
+    {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+    
+    Notes
+    -----
+    This module returns identical values (modulo a bug fix) to
+    :func:`prefix_error_rates` (and :class:`PrefixErrorRates`) up to `v0.3.0` (though
+    the default of `norm` has changed to :obj:`False`). For more details on the
+    distinction between this module and the new :func:`prefix_error_rates`, please
+    consult the documentation of :class:`ErrorRate`.
+    """
+
+    def forward(self, ref: torch.Tensor, hyp: torch.Tensor) -> torch.Tensor:
+        return prefix_edit_distances(
+            ref,
+            hyp,
+            self.eos,
+            self.include_eos,
+            self.norm,
+            self.batch_first,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.padding,
+            self.exclude_last,
+            self.warn,
+        )
+
+
+class ErrorRate(_StringMatching):
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "norm",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "warn",
+    ]
+
+    norm: bool
+
+    def __init__(
+        self,
+        eos: Optional[int] = None,
+        include_eos: bool = False,
+        norm: bool = True,
+        batch_first: bool = False,
+        ins_cost: float = 1.0,
+        del_cost: float = 1.0,
+        sub_cost: float = 1.0,
+        warn: bool = True,
+    ):
+        super().__init__(
+            eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
+        )
+        self.norm = norm
+
+    __doc__ = f"""Calculate error rates over a batch of references and hypotheses
+
+    An error rate is the total number of insertions, deletions, and substitutions
+    between a reference (gold-standard) and hypothesis (generated) transcription,
+    normalized by the number of elements in a reference. Consult the Wikipedia article
+    on the `Levenshtein distance <https://en.wikipedia.org/wiki/Levenshtein_distance>`__
+    for more information.
+
+    When instantiated, this module has the signature::
+
+        er = error_rate(ref, hyp)
+
+    {_SM_ARGS} The return value `er` is a tensor of shape ``(batch_size,)`` storing the
+    associated error rates. `er` will not have a gradient, and is thus not directly
+    suited to being a loss function.
+
+    Parameters
+    ----------
+    {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+
+    Warnings
+    --------
+    Up to and including `v0.3.0`, :func:`error_rate` computed a normalized
+    `Edit distance <https://en.wikipedia.org/wiki/Edit_distance>`__ instead of an error
+    rate. The latter can be considered the total weighted cost of insertions, deletions,
+    and substitutions (as per `ins_cost`, `del_cost`, and `sub_cost`), whereas the
+    former is the sum of the number of mistakes. The old behaviour of returning the cost
+    is now in :func:`edit_distance` and :class:`EditDistance` (though `norm` is
+    :obj:`False` by default). For speech recognition evaluation, this module or
+    :func:`error_rate` is the one to use. However, if you are using the default costs,
+    ``ins_cost == del_cost == sub_cost == 1``, there should be no numerical difference
+    between the two.
+    """
+
+    def forward(self, ref: torch.Tensor, hyp: torch.Tensor) -> torch.Tensor:
+        return error_rate(
+            ref,
+            hyp,
+            self.eos,
+            self.include_eos,
+            self.norm,
+            self.batch_first,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.warn,
+        )
+
+
+class PrefixErrorRates(_StringMatching):
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "norm",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "padding",
+        "exclude_last",
+        "warn",
+    ]
+
+    norm: bool
+    padding: int
+    exclude_last: bool
+
+    def __init__(
+        self,
+        eos: Optional[int] = None,
+        include_eos: bool = True,
+        norm: bool = True,
+        batch_first: bool = False,
+        ins_cost: float = 1.0,
+        del_cost: float = 1.0,
+        sub_cost: float = 1.0,
+        padding: int = config.INDEX_PAD_VALUE,
+        exclude_last: bool = False,
+        warn: bool = True,
+    ):
+        super().__init__(
+            eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
+        )
+        self.norm = norm
+        self.padding = padding
+        self.exclude_last = exclude_last
+
+    __doc__ = f"""Compute the error rate between ref and each prefix of hyp
+
+    When instantiated, this module has the signature::
+
+        prefix_ers = prefix_error_rates(ref, hyp)
+    
+    {_SM_ARGS} The return value `prefix_ers` is of shape ``(max_hyp_steps + 1,
+    batch_size)`` and contains the error rates for each prefix of each hypothesis,
+    starting from the empty prefix.
+
+    Parameters
+    ----------
+    {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+
+    Warnings
+    --------
+    The values returned by :func:`prefix_error_rates` (and thus this module) changed
+    after `v0.3.0`. The old behaviour can be found in :class:`PrefixEditDistances`
+    (though with `norm` defaulting to :obj:`False`). Consult the warning in
+    :class:`ErrorRate` for more info.
+    """
+
+    def forward(self, ref: torch.Tensor, hyp: torch.Tensor) -> torch.Tensor:
+        return prefix_error_rates(
+            ref,
+            hyp,
+            self.eos,
+            self.include_eos,
+            self.norm,
+            self.batch_first,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.padding,
+            self.exclude_last,
+            self.warn,
+        )
+
+
+class OptimalCompletion(_StringMatching):
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "padding",
+        "exclude_last",
+        "warn",
+    ]
+
+    padding: int
+    exclude_last: bool
+
+    def __init__(
+        self,
+        eos: Optional[int] = None,
+        include_eos: bool = True,
+        batch_first: bool = False,
+        ins_cost: float = 1.0,
+        del_cost: float = 1.0,
+        sub_cost: float = 1.0,
+        padding: int = config.INDEX_PAD_VALUE,
+        exclude_last: bool = False,
+        warn: bool = True,
+    ):
+        super().__init__(
+            eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
+        )
+        self.padding = padding
+        self.exclude_last = exclude_last
+
+    __doc__ = f"""Return a mask of next tokens of a minimum edit distance prefix
+    
+    When instantiated, this module has the signature::
+
+        optimals = optimal_completion(ref, hyp)
+    
+    {_SM_ARGS} The return value `optimals` is a long tensor of shape ``(max_hyp_steps +
+    1, batch_size, max_unique_next)``, where ``max_unique_next <= max_ref_steps``, of
+    the unique tokens that could be added to the hypothesis prefix ``hyp[:prefix_len,
+    batch]`` such that some remaining suffix concatenated to the prefix would result in
+    a minimal edit distance. See below for an example.
+
+    Parameters
+    ----------
+    {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+
+    Examples
+    --------
+
+    Consider the reference text "foot" and the hypothesis text "bot". The below shows
+    the matrix used to calculate edit distances between them::
+
+        \ _ f o o t
+        _ 0 1 2 3 4
+        b 1 1 2 3 4
+        o 2 2 1 2 3
+        t 3 3 2 2 2
+
+    If ``prefix_len == 0``, then the prefix is "", and "f" (from the suffix "foot") is
+    the only subsequent token that would not increase the edit distance from that of the
+    prefix (0). If ``prefix_len == 1``, then the prefix is "b". To arrive at the minimum
+    edit distance for "b", one either treats "b" as an insertion or a substitution for
+    "f", yielding suffixes "foot" and "oot". Thus, the subsequent token could be "f" or
+    "o". For the prefix "bo", the minimum edit distance is achieved by first
+    substituting "f" for "b", then substituting "o" for "o", resulting in the suffix
+    "ot" and the next optimal character "o". Finally, for ``prefix_len == 3`` and prefix
+    "bot", there are many operations that can produce the minimum edit distance of 2,
+    resulting in one of the suffixes "ot", "t", and "". The latter suffix requires no
+    more tokens and so any operation would increase the edit distance. Thus the optimal
+    next tokens could be "o" or "t".
+
+    Plugging "foot" and "bot" into this function, we get the prefixes:
+
+    >>> ref_text, hyp_text = "foot", "bot"
+    >>> ref = torch.tensor([ord(c) for c in ref_text]).unsqueeze(1)
+    >>> hyp = torch.tensor([ord(c) for c in hyp_text]).unsqueeze(1)
+    >>> optimal = optimal_completion(ref, hyp).squeeze(1)
+    >>> for prefix_len, o_for_pr in enumerate(optimal):
+    ...     o_for_pr = o_for_pr.masked_select(o_for_pr.ge(0)).tolist()
+    ...     print('prefix={{}}: {{}}'.format(
+    ...         hyp_text[:prefix_len], ','.join([chr(i) for i in o_for_pr])))
+    prefix=: f
+    prefix=b: f,o
+    prefix=bo: o
+    prefix=bot: o,t
+
+    See Also
+    --------
+    pydrobert.torch.layers.HardOptimalCompletionDistillationLoss
+        A loss function that uses these optimal completions to train a model
+    """
+
+    def forward(self, ref: torch.Tensor, hyp: torch.Tensor) -> torch.Tensor:
+        return optimal_completion(
+            ref,
+            hyp,
+            self.eos,
+            self.include_eos,
+            self.batch_first,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.padding,
+            self.exclude_last,
+            self.warn,
+        )
 
 
 class SparseImageWarp(torch.nn.Module):
