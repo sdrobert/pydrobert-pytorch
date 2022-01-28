@@ -363,6 +363,28 @@ def test_dense_image_warp_matches_tensorflow(device, indexing, jit_type):
     assert torch.allclose(exp, act), (exp - act).abs().max()
 
 
+@pytest.mark.parametrize("order", [1, 2, 3])
+def test_polyharmonic_interpolation_matches_tensorflow(order, device, jit_type):
+    torch.manual_seed(5)
+    dir_ = os.path.join(os.path.dirname(__file__), "polyharmonic_spline")
+    x = torch.tensor(np.load(os.path.join(dir_, "x.npy")), device=device)
+    y = torch.tensor(np.load(os.path.join(dir_, "y.npy")), device=device)
+    q = torch.tensor(np.load(os.path.join(dir_, "q.npy")), device=device)
+    exp = torch.tensor(
+        np.load(os.path.join(dir_, "o{}.npy".format(order))), device=device
+    )
+    polyharmonic_spline = layers.PolyharmonicSpline(order, full_matrix=True)
+    if jit_type == "script":
+        polyharmonic_spline = torch.jit.script(polyharmonic_spline)
+    elif jit_type == "trace":
+        polyharmonic_spline = torch.jit.trace(
+            polyharmonic_spline,
+            (torch.rand(1, 2, 1), torch.rand(1, 2, 5), torch.rand(1, 1, 1)),
+        )
+    act = polyharmonic_spline(x, y, q)
+    assert torch.allclose(exp, act, atol=1e-3), (exp - act).abs().max()
+
+
 @pytest.mark.cpu
 def test_lookup_language_model_state_dict():
     vocab_size, sos = 10, -1

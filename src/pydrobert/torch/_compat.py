@@ -238,5 +238,5 @@ else:
         else:
             assert False
 
-    def meshgrid(*tensors) -> Tuple[torch.Tensor, ...]:
-        return torch.meshgrid(*tensors, indexing="ij")
+    def meshgrid(a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return torch.meshgrid(a, b, indexing="ij")

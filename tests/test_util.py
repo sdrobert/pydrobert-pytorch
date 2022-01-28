@@ -953,19 +953,6 @@ def test_polyharmonic_interpolation_equal_on_knots(order, device):
     assert torch.allclose(y, act, atol=1e-3), (y - act).abs().max()
 
 
-@pytest.mark.parametrize("order", [1, 2, 3])
-def test_polyharmonic_interpolation_matches_tensorflow(order, device):
-    dir_ = os.path.join(os.path.dirname(__file__), "polyharmonic_spline")
-    x = torch.tensor(np.load(os.path.join(dir_, "x.npy")), device=device)
-    y = torch.tensor(np.load(os.path.join(dir_, "y.npy")), device=device)
-    q = torch.tensor(np.load(os.path.join(dir_, "q.npy")), device=device)
-    exp = torch.tensor(
-        np.load(os.path.join(dir_, "o{}.npy".format(order))), device=device
-    )
-    act = util.polyharmonic_spline(x, y, q, order, full_matrix=True)
-    assert torch.allclose(exp, act, atol=1e-3), (exp - act).abs().max()
-
-
 @pytest.mark.parametrize("flip_h", [True, False])
 @pytest.mark.parametrize("flip_w", [True, False])
 def test_dense_image_warp_flow_flips(device, flip_h, flip_w):
@@ -1000,7 +987,6 @@ def test_dense_image_warp_shift_right(device):
     assert torch.allclose(exp, act, atol=1e-5), (exp - act).abs().max()
     act = util.dense_image_warp(img, flow, mode="nearest")[..., 1:, 1:]
     assert torch.allclose(exp, act), (exp - act).abs().max()
-
 
 
 @pytest.mark.parametrize("pinned_boundary_points", [0, 1, 2])

@@ -1932,54 +1932,12 @@ def polyharmonic_spline(
     regularization_weight: float = 0.0,
     full_matrix: bool = True,
 ) -> torch.Tensor:
-    """Guess values at query points using a learned polyharmonic spline
-
-    A spline estimates a function ``f : points -> values`` from a fixed number of
-    training points/knots and the values of ``f`` at those points. It does that by
-    solving a series of piecewise linear equations between knots such that the values at
-    the knots match the given values (and some additional constraints depending on the
-    spline).
-
-    This function based on the `interpolate_spline
-    <https://www.tensorflow.org/addons/api_docs/python/tfa/image/interpolate_spline>`__
-    function from Tensorflow, which implements a `Polyharmonic Spline
-    <https://en.wikipedia.org/wiki/Polyharmonic_spline>`__. For technical details,
-    consult the TF documentation.
-
-    Parameters
-    ----------
-    train_points : torch.Tensor
-        A tensor of shape ``(N, T, I)`` representing the training points/knots for
-        ``N`` different functions. ``N`` is the batch dimension, ``T`` is the number
-        of training points, and ``I`` is the size of the vector input to ``f``. Cast to
-        float
-    train_values : torch.Tensor
-        A float tensor of shape ``(N, T, O)`` of ``f`` evaluated on `train_points`.
-        ``O`` is the size of the output vector of ``f``.
-    query_points : torch.Tensor
-        A tensor of shape ``(N, Q, I)`` representing the points you wish to have
-        estimates for. ``Q`` is the number of such points. Cast to float
-    order : int
-        Order of the spline (> 0). 1 = linear. 2 = thin plate spline.
-    regularization_weight : float, optional
-        Weight placed on the regularization term. See TF for more info.
-    full_matrix : bool, optional
-        Whether to solve linear equations via a full concatenated matrix or a block
-        decomposition. Setting to :obj:`True` better matches TF and appears to slightly
-        improve numerical accuracy at the cost of twice the run time and more memory
-        usage.
-
-    Throws
-    ------
-    RuntimeError
-        This function can return a :class`RuntimeError` when no unique spline can be
-        estimated. In general, the spline will require at least ``I+1`` non-degenerate
-        points (linearly independent). See the Wikipedia entry on splnes for more info.
-
-    Returns
-    -------
-    query_values : torch.Tensor
-        A tensor of shape ``(N, Q, O)`` of the values estimated by the spline
+    """Functional version of PolyharmonicSpline
+    
+    See Also
+    --------
+    pydrobert.torch.layers.PolyharmonicSpline
+        For a description of this function and its parameters
     """
     train_points = train_points.float()
     query_points = query_points.float()
@@ -2000,6 +1958,13 @@ def dense_image_warp(
     mode: str = "bilinear",
     padding_mode: str = "border",
 ) -> torch.Tensor:
+    """Functional version of DenseImageWarp
+    
+    See Also
+    --------
+    pydrobert.torch.layers.DenseImageWarp
+        For a description of this function and its parameters
+    """
     # from tfa.image.dense_image_warp
     # output[n, c, h, w] = image[n, c, h - flow[n, h, w, 0], w - flow[n, h, w, 1]]
     # outside of image uses border
@@ -2040,7 +2005,6 @@ def dense_image_warp(
     )
 
 
-@script
 def sparse_image_warp(
     image: torch.Tensor,
     source_points: torch.Tensor,

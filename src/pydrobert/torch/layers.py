@@ -37,6 +37,7 @@ from pydrobert.torch.util import (
     optimal_completion,
     ctc_prefix_search_advance,
     pad_variable,
+    polyharmonic_spline,
     sequence_log_probs,
     warp_1d_grid,
     _get_tensor_eps,
@@ -60,6 +61,7 @@ __all__ = [
     "MinimumErrorRateLoss",
     "MixableSequentialLanguageModel",
     "MultiHeadedAttention",
+    "PolyharmonicSpline",
     "random_shift",
     "RandomShift",
     "SequentialLanguageModel",
@@ -69,6 +71,88 @@ __all__ = [
     "spec_augment",
     "SpecAugment",
 ]
+
+
+class PolyharmonicSpline(torch.nn.Module):
+    """Guess values at query points using a learned polyharmonic spline
+
+    A spline estimates a function ``f : points -> values`` from a fixed number of
+    training points/knots and the values of ``f`` at those points. It does that by
+    solving a series of piecewise linear equations between knots such that the values at
+    the knots match the given values (and some additional constraints depending on the
+    spline).
+
+    This module is based on the `interpolate_spline
+    <https://www.tensorflow.org/addons/api_docs/python/tfa/image/interpolate_spline>`__
+    function from Tensorflow, which implements a `Polyharmonic Spline
+    <https://en.wikipedia.org/wiki/Polyharmonic_spline>`__. For technical details,
+    consult the TF documentation.
+
+    The call signature of this module, once instantiated, is::
+
+        query_values = polyharmonic_spline(
+            train_points, train_values, query_points, query_values
+        )
+    
+    `train_points` is tensor of shape ``(N, T, I)`` representing the training
+    points/knots for ``N`` different functions. ``N`` is the batch dimension, ``T`` is
+    the number of training points, and ``I`` is the size of the vector input to ``f``.
+    `train_values` is a float tensor of shape ``(N, T, O)`` of ``f`` evaluated on
+    `train_points`. ``O`` is the size of the output vector of ``f``. `query_points` is
+    a tensor of shape ``(N, Q, I)`` representing the points you wish to have
+    estimates for. ``Q`` is the number of such points. `query_values` is a tensor of
+    shape ``(N, Q, O)`` consisting of the values estimated by the spline
+
+    Parameters
+    ----------
+    order : int
+        Order of the spline (> 0). 1 = linear. 2 = thin plate spline.
+    regularization_weight : float, optional
+        Weight placed on the regularization term. See TF for more info.
+    full_matrix : bool, optional
+        Whether to solve linear equations via a full concatenated matrix or a block
+        decomposition. Setting to :obj:`True` better matches TF and appears to slightly
+        improve numerical accuracy at the cost of twice the run time and more memory
+        usage.
+
+    Throws
+    ------
+    RuntimeError
+        This module can return a :class`RuntimeError` when no unique spline can be
+        estimated. In general, the spline will require at least ``I+1`` non-degenerate
+        points (linearly independent). See the Wikipedia entry on splnes for more info.
+    """
+
+    __constants__ = ["order", "regularization_weight", "full_matrix"]
+
+    order: int
+    regularization_weight: float
+    full_matrix: bool
+
+    def __init__(
+        self, order: int, regularization_weight: float = 0.0, full_matrix: bool = True
+    ):
+        super().__init__()
+        if order <= 0:
+            raise ValueError(f"order must be positive, got {order}")
+        self.order = order
+        self.regularization_weight = regularization_weight
+        self.full_matrix = full_matrix
+
+    def forward(
+        self,
+        train_points: torch.Tensor,
+        train_values: torch.Tensor,
+        query_points: torch.Tensor,
+    ) -> torch.Tensor:
+        return polyharmonic_spline(
+            train_points,
+            train_values,
+            query_points,
+            self.order,
+            self.regularization_weight,
+            self.full_matrix,
+        )
 
 
 class DenseImageWarp(torch.nn.Module):
@@ -142,9 +226,11 @@ class DenseImageWarp(torch.nn.Module):
         self.indexing = indexing
         self.mode = mode
         self.padding_mode = padding_mode
-    
-    def forward(self, image : torch.Tensor, flow : torch.Tensor) -> torch.Tensor:
-        return dense_image_warp(image, flow, self.indexing, self.mode, self.padding_mode)
+
+    def forward(self, image: torch.Tensor, flow: torch.Tensor) -> torch.Tensor:
+        return dense_image_warp(
+            image, flow, self.indexing, self.mode, self.padding_mode
+        )
 
 
 class SequentialLogProbabilities(torch.nn.Module):
