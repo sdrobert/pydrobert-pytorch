@@ -239,4 +239,6 @@ else:
             assert False
 
     def meshgrid(a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return torch.meshgrid(a, b, indexing="ij")
+        x = torch.meshgrid(a, b, indexing="ij")
+        assert len(x) == 2
+        return x[0], x[1]

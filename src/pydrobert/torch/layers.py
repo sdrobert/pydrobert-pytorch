@@ -39,6 +39,7 @@ from pydrobert.torch.util import (
     pad_variable,
     polyharmonic_spline,
     sequence_log_probs,
+    sparse_image_warp,
     warp_1d_grid,
     _get_tensor_eps,
 )
@@ -66,11 +67,176 @@ __all__ = [
     "RandomShift",
     "SequentialLanguageModel",
     "SequentialLogProbabilities",
+    "SparseImageWarp",
     "spec_augment_apply_parameters",
     "spec_augment_draw_parameters",
     "spec_augment",
     "SpecAugment",
 ]
+
+
+class SparseImageWarp(torch.nn.Module):
+    r"""Warp an image by specifying mappings between few control points
+
+    This module, when instantiated, has the signature::
+
+        warped[, flow] = sparse_image_warp(image, source_points, dest_points)
+
+    `image` is a source image of shape `(N, C, H, W)``, where ``N`` is the batch
+    dimension, ``C`` the channel dimension, ``H`` the image height, and ``W`` the image
+    width. `source_points` and `dest_points` are tensors of shape ``(N, M, 2)``, where
+    ``M`` is the number of control points. `warped` is a float tensor of shape ``(N, C,
+    H, W)`` containing the warped images. The point ``source_points[n, m, :]`` in
+    `image` will be mapped to ``dest_points[n, m, :]`` in `warped`. If `include_flow` is
+    :obj:`True`, `flow`, a float tensor of shape ``(N, H, W, 2)``. ``flow[n, h, w, :]``
+    is the flow for coordinates ``h, w`` in whatever order was specified by `indexing`.
+    See :class:`DenseImageWarp` for more details about `flow`.
+
+    This module mirrors the behaviour of Tensorflow's `sparse_image_warp
+    <https://www.tensorflow.org/addons/api_docs/python/tfa/image/sparse_image_warp>`__,
+    except `image` is in ``NCHW`` order instead of ``NHWC`` order. For more details,
+    please consult their documentation.
+
+    Parameters
+    ----------
+    indexing : {'hw', 'wh'}, optional
+        If `indexing` is ``"hw"``, ``source_points[n, m, 0]`` and
+        ``dest_points[n, m, 0]`` index the height dimension in `image` and `warped`,
+        respectively, and ``source_points[n, m, 1]`` and ``dest_points[n, m, 1]`` the
+        width dimension. If `indexing` is ``"wh"``, the width dimension is the 0-index
+        and height the 1.
+    field_interpolation_order : int, optional
+        The order of the polyharmonic spline used to interpolate the rest of the points
+        from the control. See :func:`polyharmonic_spline` for more info.
+    field_regularization_weight : int, optional
+        The regularization weight of the polyharmonic spline used to interpolate the
+        rest of the points from the control. See :func:`polyharmonic_spline` for more
+        info.
+    field_full_matrix : bool, optional
+        Determines the method of calculating the polyharmonic spline used to interpolate
+        the rest of the points from the control. See :func:`polyharmonic_spline` for
+        more info.
+    pinned_boundary_points : int, optional
+        Dictates whether and how many points along the boundary of `image` are mapped
+        identically to points in `warped`. This keeps the boundary of the `image` from
+        being pulled into the interior of `warped`. When :obj:`0`, no points are added.
+        When :obj:`1`, four points are added, one in each corner of the image. When
+        ``k > 2``, one point in each corner of the image is added, then ``k - 1``
+        equidistant points along each of the four edges, totaling ``4 * k`` points.
+    dense_interpolation_mode : {'bilinear', 'nearest'}, optional
+        The method with which partial indices in the derived mapping are interpolated.
+        See :func:`dense_image_warp` for more info.
+    dense_padding_mode : {'border', 'zero', 'reflection'}, optional
+        What to do when points in the derived mapping fall outside of the boundaries.
+        See :func:`dense_image_warp` for more info.
+    include_flow : bool, optional
+        If :obj:`True`, include the flow field `flow` interpolated from the control
+        points in the return value.
+    
+    Warnings
+    --------
+    When this module is scripted, its return type will be :class:`typing.Any`. This
+    reflects the fact that either `warn` is returned on its own (a tensor) or both
+    `warn` and `flow` (a tuple). Use :func:`torch.jit.isinstance` for type refinement in
+    subsequent scripting. Tracing will infer the correct type.
+    """
+
+    __constants__ = [
+        "indexing",
+        "field_interpolation_order",
+        "field_regularization_weight",
+        "field_full_matrix",
+        "pinned_boundary_points",
+        "dense_interpolation_mode",
+        "dense_padding_mode",
+        "include_flow",
+    ]
+
+    field_interpolation_order: int
+    field_regularization_weight: float
+    field_full_matrix: bool
+    pinned_boundary_points: int
+    dense_interpolation_mode: str
+    dense_padding_mode: str
+    include_flow: bool
+
+    def __init__(
+        self,
+        indexing: str = "hw",
+        field_interpolation_order: int = 2,
+        field_regularization_weight: float = 0.0,
+        field_full_matrix: bool = True,
+        pinned_boundary_points: int = 0,
+        dense_interpolation_mode: str = "bilinear",
+        dense_padding_mode: str = "border",
+        include_flow: bool = True,
+    ):
+        super().__init__()
+        if field_interpolation_order <= 0:
+            raise ValueError(
+                "field_interpolation_order must be positive, got "
+                f"{field_interpolation_order}"
+            )
+        if pinned_boundary_points < 0:
+            raise ValueError(
+                "pinned_boundary_points must be non-negative, got "
+                f"{pinned_boundary_points}"
+            )
+        if indexing not in {"hw", "wh"}:
+            raise ValueError(f"indexing must be either 'hw' or 'wh', got '{indexing}'")
+        if dense_interpolation_mode not in {"bilinear", "nearest"}:
+            raise ValueError(
+                "dense_interpolation_mode must be either 'bilinear' or 'nearest', got "
+                f"'{dense_interpolation_mode}'"
+            )
+        if dense_padding_mode not in {"border", "zeros", "reflection"}:
+            raise ValueError(
+                "dense_padding_mode must be one of 'border', 'zeros', or 'relection', "
+                f"got '{dense_padding_mode}'"
+            )
+        self.indexing = indexing
+        self.field_interpolation_order = field_interpolation_order
+        self.field_regularization_weight = field_regularization_weight
+        self.field_full_matrix = field_full_matrix
+        self.pinned_boundary_points = pinned_boundary_points
+        self.dense_interpolation_mode = dense_interpolation_mode
+        self.dense_padding_mode = dense_padding_mode
+        self.include_flow = include_flow
+
+    def extra_repr(self) -> str:
+        return ", ".join(f"{x}={getattr(self, x)}" for x in self.__constants__)
+
+    if TYPE_CHECKING:
+
+        def forward(
+            self,
+            image: torch.Tensor,
+            source_points: torch.Tensor,
+            dest_points: torch.Tensor,
+        ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+            pass
+
+    else:
+
+        def forward(
+            self,
+            image: torch.Tensor,
+            source_points: torch.Tensor,
+            dest_points: torch.Tensor,
+        ) -> Any:
+            return sparse_image_warp(
+                image,
+                source_points,
+                dest_points,
+                self.indexing,
+                self.field_interpolation_order,
+                self.field_regularization_weight,
+                self.field_full_matrix,
+                self.pinned_boundary_points,
+                self.dense_interpolation_mode,
+                self.dense_padding_mode,
+                self.include_flow,
+            )
 
 
 class PolyharmonicSpline(torch.nn.Module):

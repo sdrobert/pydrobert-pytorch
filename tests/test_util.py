@@ -989,25 +989,6 @@ def test_dense_image_warp_shift_right(device):
     assert torch.allclose(exp, act), (exp - act).abs().max()
 
 
-@pytest.mark.parametrize("pinned_boundary_points", [0, 1, 2])
-def test_sparse_image_warp_identity(device, pinned_boundary_points):
-    torch.manual_seed(34207)
-    N, C, H, W = 50, 12, 8, 3
-    img = exp = torch.rand(N, C, H, W, device=device) * 255
-    # we add 3 random control pointrs under the identity mapping to ensure a
-    # non-degenerate interpolate
-    src = dst = torch.rand(N, 3, 2, device=device) * min(H, W)
-    act, flow = util.sparse_image_warp(
-        img,
-        src,
-        dst,
-        pinned_boundary_points=pinned_boundary_points,
-        dense_interpolation_mode="nearest",
-    )
-    assert torch.allclose(flow, torch.tensor(0.0, device=device))
-    assert torch.allclose(exp, act), (exp - act).abs().max()
-
-
 @pytest.mark.parametrize("include_flow", [True, False])
 @pytest.mark.parametrize("pinned_boundary_points", [0, 2])
 def test_sparse_image_warp_matches_tensorflow(

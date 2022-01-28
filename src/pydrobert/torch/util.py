@@ -2005,92 +2005,89 @@ def dense_image_warp(
     )
 
 
-def sparse_image_warp(
-    image: torch.Tensor,
-    source_points: torch.Tensor,
-    dest_points: torch.Tensor,
-    indexing: str = "hw",
-    field_interpolation_order: int = 2,
-    field_regularization_weight: float = 0.0,
-    field_full_matrix: bool = True,
-    pinned_boundary_points: int = 0,
-    dense_interpolation_mode: str = "bilinear",
-    dense_padding_mode: str = "border",
-    include_flow: bool = True,
-) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-    r"""Warp an image by specifying mappings between few control points
+# N.B. We do this ugly thing so that a trace can be aware of the returned type
+# (rather than just "Any")
+@script
+def _sparse_image_warp_flow(
+    image,
+    source_points,
+    dest_points,
+    indexing: str,
+    field_interpolation_order: int,
+    field_regularization_weight: float,
+    field_full_matrix: bool,
+    pinned_boundary_points: int,
+    dense_interpolation_mode: str,
+    dense_padding_mode: str,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    if indexing == "hw":
+        source_points = source_points.flip(-1)
+        dest_points = dest_points.flip(-1)
 
-    Given a source image `image`, a few source coordinates `source_points` and their
-    corresponding positions `dest_points` in the warped image, this function
-    interpolates the remainder of the map with a polyharmonic spline and produces a
-    warped image `warped`.
+    source_points = source_points.float()
+    dest_points = dest_points.float()
 
-    This function mirrors the behaviour of Tensorflow's `sparse_image_warp
-    <https://www.tensorflow.org/addons/api_docs/python/tfa/image/sparse_image_warp>`__,
-    except `image` is in ``NCHW`` order instead of ``NHWC`` order. For more details,
-    please consult their documentation.
+    N, C, H, W = image.shape
+    WH = torch.tensor([[W, H]] * N, dtype=image.dtype, device=image.device)
 
-    Parameters
-    ----------
-    image : torch.Tensor
-        A float tensor of shape ``(N, C, H, W)``, where ``N`` is the batch dimension,
-        ``C`` the channel dimension, ``H`` the image height, and ``W`` the image width.
-    source_points : torch.Tensor
-        A tensor of shape ``(N, M, 2)``, where ``M`` is the number of control points
-        and the final dimension stores the coordinates of the control point in `image`.
-        Cast to float.
-    dest_points : torch.Tensor
-        A tensor of shape ``(N, M, 2)`` such that the point ``source_points[n, m, :]``
-        in `image` will be mapped to ``dest_points[n, m, :]`` in `warped`.
-        Cast to float.
-    indexing : {'hw', 'wh'}, optional
-        If `indexing` is ``"hw"``, ``source_points[n, m, 0]`` and
-        ``dest_points[n, m, 0]`` index the height dimension in `image` and `warped`,
-        respectively, and ``source_points[n, m, 1]`` and ``dest_points[n, m, 1]`` the
-        width dimension. If `indexing` is ``"wh"``, the width dimension is the 0-index
-        and height the 1.
-    field_interpolation_order : int, optional
-        The order of the polyharmonic spline used to interpolate the rest of the points
-        from the control. See :func:`polyharmonic_spline` for more info.
-    field_regularization_weight : int, optional
-        The regularization weight of the polyharmonic spline used to interpolate the
-        rest of the points from the control. See :func:`polyharmonic_spline` for more
-        info.
-    field_full_matrix : bool, optional
-        Determines the method of calculating the polyharmonic spline used to interpolate
-        the rest of the points from the control. See :func:`polyharmonic_spline` for
-        more info.
-    pinned_boundary_points : int, optional
-        Dictates whether and how many points along the boundary of `image` are mapped
-        identically to points in `warped`. This keeps the boundary of the `image` from
-        being pulled into the interior of `warped`. When :obj:`0`, no points are added.
-        When :obj:`1`, four points are added, one in each corner of the image. When
-        ``k > 2``, one point in each corner of the image is added, then ``k - 1``
-        equidistant points along each of the four edges, totaling ``4 * k`` points.
-    dense_interpolation_mode : {'bilinear', 'nearest'}, optional
-        The method with which partial indices in the derived mapping are interpolated.
-        See :func:`dense_image_warp` for more info.
-    dense_padding_mode : {'border', 'zero', 'reflection'}, optional
-        What to do when points in the derived mapping fall outside of the boundaries.
-        See :func:`dense_image_warp` for more info.
-    include_flow : bool, optional
-        If :obj:`True`, include the flow field `flow` interpolated from the control
-        points in the return value.
+    M = source_points.shape[1]
+    if not M:
+        return (
+            image,
+            torch.zeros((N, H, W, 2), dtype=torch.float, device=image.device),
+        )
 
-    Returns
-    -------
-    warped[, flow] : torch.Tensor[, torch.Tensor]
-        `warped` is a float tensor of shape ``(N, C, H, W)`` containing the warped
-        images. If `include_flow` is :obj:`True`, `flow`, a float tensor of shape
-        ``(N, H, W, 2)``. ``flow[n, h, w, :]`` is the flow for coordinates ``h, w``
-        in whatever order was specified by `indexing`. See :func:`dense_image_warp`
-        for more details.
+    if pinned_boundary_points > 0:
+        pinned_points = _deterimine_pinned_points(pinned_boundary_points, WH)
+        source_points = torch.cat([source_points, pinned_points], 1)  # (N,M',2)
+        dest_points = torch.cat([dest_points, pinned_points], 1)  # (N,M+4k=M',2)
+        # now just pretend M' was M all along
 
-    Warnings
-    --------
-    This function is not safe for JIT scripting or tracing.
-    """
+    H_range = torch.arange(H, dtype=image.dtype, device=image.device)  # (H,)
+    W_range = torch.arange(W, dtype=image.dtype, device=image.device)  # (W,)
+    h, w = meshgrid(H_range, W_range)  # (H, W), (H, W)
+    query_points = torch.stack([w.flatten(), h.flatten()], 1)  # (H * W, 2)
 
+    train_points = dest_points
+    train_values = dest_points - source_points
+    flow = polyharmonic_spline(
+        train_points,
+        train_values,
+        query_points.unsqueeze(0).expand(N, H * W, 2),
+        field_interpolation_order,
+        regularization_weight=field_regularization_weight,
+        full_matrix=field_full_matrix,
+    )
+
+    flow = flow.view(N, H, W, 2)
+
+    warped = dense_image_warp(
+        image,
+        flow,
+        indexing="wh",
+        mode=dense_interpolation_mode,
+        padding_mode=dense_padding_mode,
+    )
+
+    if indexing == "hw":
+        flow = flow.flip(-1)
+
+    return warped, flow
+
+
+@script
+def _sparse_image_warp_noflow(
+    image,
+    source_points,
+    dest_points,
+    indexing: str,
+    field_interpolation_order: int,
+    field_regularization_weight: float,
+    field_full_matrix: bool,
+    pinned_boundary_points: int,
+    dense_interpolation_mode: str,
+    dense_padding_mode: str,
+) -> torch.Tensor:
     # all our computations assume "wh" ordering, so we flip it here if necessary.
     # Though unintuitive, we need this for our call to grid_sample
     if indexing == "hw":
@@ -2118,61 +2115,102 @@ def sparse_image_warp(
     h, w = meshgrid(H_range, W_range)  # (H, W), (H, W)
     query_points = torch.stack([w.flatten(), h.flatten()], 1)  # (H * W, 2)
 
-    if include_flow:
-        train_points = dest_points
-        train_values = dest_points - source_points
-        flow = polyharmonic_spline(
-            train_points,
-            train_values,
-            query_points.unsqueeze(0).expand(N, H * W, 2),
-            field_interpolation_order,
-            regularization_weight=field_regularization_weight,
-            full_matrix=field_full_matrix,
-        )
+    # If we can return just the warped image, we can bypass our call to dense_image_warp
+    # by interpolating the 'grid' parameter of 'grid_sample' instead of the 'flow'
+    # parameter of 'dense_image_warp'
+    # coord = ((grid + 1) * size - 1) / 2
+    # grid = (2 coord + 1) / size - 1
+    train_points = dest_points  # (N, M, 2)
+    train_values = (2.0 * source_points + 1.0) / WH.unsqueeze(1) - 1.0  # (N, M, 2)
 
-        flow = flow.view(N, H, W, 2)
+    grid = polyharmonic_spline(
+        train_points,
+        train_values,
+        query_points.unsqueeze(0).expand(N, H * W, 2),
+        field_interpolation_order,
+        regularization_weight=field_regularization_weight,
+        full_matrix=field_full_matrix,
+    )
 
-        warped = dense_image_warp(
-            image,
-            flow,
-            indexing="wh",
-            mode=dense_interpolation_mode,
-            padding_mode=dense_padding_mode,
-        )
+    grid = grid.view(N, H, W, 2)
 
-        if indexing == "hw":
-            flow = flow.flip(-1)
+    warped = torch.nn.functional.grid_sample(
+        image,
+        grid,
+        mode=dense_interpolation_mode,
+        padding_mode=dense_padding_mode,
+        align_corners=False,
+    )
 
-        return warped, flow
-    else:
-        # If we can return just the warped image, we can bypass our call to
-        # dense_image_warp by interpolating the 'grid' parameter of 'grid_sample'
-        # instead of the 'flow' parameter of 'dense_image_warp'
-        # coord = ((grid + 1) * size - 1) / 2
-        # grid = (2 coord + 1) / size - 1
-        train_points = dest_points  # (N, M, 2)
-        train_values = (2.0 * source_points + 1.0) / WH.unsqueeze(1) - 1.0  # (N, M, 2)
+    return warped
 
-        grid = polyharmonic_spline(
-            train_points,
-            train_values,
-            query_points.unsqueeze(0).expand(N, H * W, 2),
-            field_interpolation_order,
-            regularization_weight=field_regularization_weight,
-            full_matrix=field_full_matrix,
-        )
 
-        grid = grid.view(N, H, W, 2)
+if TYPE_CHECKING:
 
-        warped = torch.nn.functional.grid_sample(
-            image,
-            grid,
-            mode=dense_interpolation_mode,
-            padding_mode=dense_padding_mode,
-            align_corners=False,
-        )
+    def sparse_image_warp(
+        image: torch.Tensor,
+        source_points: torch.Tensor,
+        dest_points: torch.Tensor,
+        indexing: str = "hw",
+        field_interpolation_order: int = 2,
+        field_regularization_weight: float = 0.0,
+        field_full_matrix: bool = True,
+        pinned_boundary_points: int = 0,
+        dense_interpolation_mode: str = "bilinear",
+        dense_padding_mode: str = "border",
+        include_flow: bool = True,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """Functional version of SparseImageWarp
+        
+        See Also
+        --------
+        pydrobert.torch.layers.SparseImageWarp
+            For a description of this function and its parameters
+        """
+        pass
 
-        return warped
+
+else:
+
+    def sparse_image_warp(
+        image: torch.Tensor,
+        source_points: torch.Tensor,
+        dest_points: torch.Tensor,
+        indexing: str = "hw",
+        field_interpolation_order: int = 2,
+        field_regularization_weight: float = 0.0,
+        field_full_matrix: bool = True,
+        pinned_boundary_points: int = 0,
+        dense_interpolation_mode: str = "bilinear",
+        dense_padding_mode: str = "border",
+        include_flow: bool = True,
+    ) -> Any:
+        if include_flow:
+            return _sparse_image_warp_flow(
+                image,
+                source_points,
+                dest_points,
+                indexing,
+                field_interpolation_order,
+                field_regularization_weight,
+                field_full_matrix,
+                pinned_boundary_points,
+                dense_interpolation_mode,
+                dense_padding_mode,
+            )
+        else:
+            return _sparse_image_warp_noflow(
+                image,
+                source_points,
+                dest_points,
+                indexing,
+                field_interpolation_order,
+                field_regularization_weight,
+                field_full_matrix,
+                pinned_boundary_points,
+                dense_interpolation_mode,
+                dense_padding_mode,
+            )
 
 
 @script

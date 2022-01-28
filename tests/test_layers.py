@@ -385,6 +385,30 @@ def test_polyharmonic_interpolation_matches_tensorflow(order, device, jit_type):
     assert torch.allclose(exp, act, atol=1e-3), (exp - act).abs().max()
 
 
+@pytest.mark.parametrize("pinned_boundary_points", [0, 1, 2])
+def test_sparse_image_warp_identity(device, pinned_boundary_points, jit_type):
+    torch.manual_seed(34207)
+    N, C, H, W = 50, 12, 8, 3
+    img = exp = torch.rand(N, C, H, W, device=device) * 255
+    # we add 3 random control pointrs under the identity mapping to ensure a
+    # non-degenerate interpolate
+    src = dst = torch.rand(N, 3, 2, device=device) * min(H, W)
+    sparse_image_warp = layers.SparseImageWarp(
+        dense_interpolation_mode="nearest",
+        pinned_boundary_points=pinned_boundary_points,
+    )
+    if jit_type == "script":
+        sparse_image_warp = torch.jit.script(sparse_image_warp)
+    elif jit_type == "trace":
+        sparse_image_warp = torch.jit.trace(
+            sparse_image_warp,
+            (torch.empty(1, 1, 2, 2), torch.empty(1, 0, 2), torch.empty(1, 0, 2)),
+        )
+    act, flow = sparse_image_warp(img, src, dst)
+    assert torch.allclose(flow, torch.tensor(0.0, device=device))
+    assert torch.allclose(exp, act), (exp - act).abs().max()
+
+
 @pytest.mark.cpu
 def test_lookup_language_model_state_dict():
     vocab_size, sos = 10, -1
