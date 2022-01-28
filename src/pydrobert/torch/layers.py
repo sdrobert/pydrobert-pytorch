@@ -69,6 +69,7 @@ __all__ = [
     "MixableSequentialLanguageModel",
     "MultiHeadedAttention",
     "OptimalCompletion",
+    "PadVariable",
     "PolyharmonicSpline",
     "PrefixEditDistances",
     "PrefixErrorRates",
@@ -82,6 +83,104 @@ __all__ = [
     "spec_augment",
     "SpecAugment",
 ]
+
+
+class PadVariable(torch.nn.Module):
+    """Pad variable-length input by a variable amount on each side
+
+    This module attempts to replicate the behaviour of :func:`torch.nn.functional.pad`
+    on a tensor containing variable sequence lengths with variable amounts of
+    padding.
+
+    When instantiated, this module has the signature::
+
+        padded = pad_variable(x, lens, pad)
+
+    `x` is a tensor of shape ``(N, T, *)`` where ``N`` is the batch index and ``T`` is
+    the sequence index. `lens` is a long tensor of shape ``(N,)`` specifying the
+    sequence lengths: only the values in the range ``x[n, :lens[n]]`` are considered
+    part of the sequence of batch element ``n``. `pad` is a tensor of shape ``(2, N)``
+    specifying how many elements at the start (``pad[0]``) and end (``pad[1]``) of each
+    sequence. The return tensor `padded` will have shape ``(N, T', *)`` such that, for a
+    given batch index ``n``::
+
+        padded[n, :pad[0, n]] = left padding
+        padded[n, pad[0,n]:pad[0,n] + lens[n]] = x[n, :lens[n]]
+        padded[n, pad[0,n] + lens[n]:pad[0,n] + lens[n] + pad[1, n]] = right padding
+
+    Parameters
+    ----------
+    mode : {'constant', 'reflect', 'replicate'}, optional
+        How to pad the sequences. :obj:`'constant'`: fill the padding region with the
+        value specified by `value`. :obj:`'reflect'`: padded values are reflections
+        around the endpoints. For example, the first right-padded value of the ``n``-th
+        sequence would be ``x[n, lens[n] - 2``, the third ``x[n, lens[n] - 3]``, and
+        so on. :obj:`replicate`: padding duplicates the endpoints of each sequence.
+        For example, the left-padded values of the ``n``-th sequence would all be
+        ``x[n, 0]``; the right-padded values would be ``x[n, lens[n] - 1]``.
+    value : scalar, optional
+        The value to pad with when ``mode == 'constant'``.
+
+    Raises
+    ------
+    NotImplementedError
+        If any value in ``pad[:, n]`` equals or exceeds ``lens[n]`` when
+        ``mode == 'reflect'``
+    RuntimeError
+        If any element in `lens` is less than 1 when ``mode == 'replicate'``
+
+    Examples
+    --------
+
+    >>> x = torch.arange(10).view(2, 5)
+    >>> x
+    tensor([[0, 1, 2, 3, 4],
+            [5, 6, 7, 8, 9]])
+    >>> lens = torch.tensor([3, 4])
+    >>> pad = torch.arange(4).view(2, 2)
+    >>> pad.t()  # [[0_left, 0_right], [1_left, 1_right]]
+    tensor([[0, 2],
+            [1, 3]])
+    >>> y = pad_variable(x, lens, pad)  # constant w/ value 0
+    >>> y[0, :3 + 0 + 2]
+    tensor([0, 1, 2, 0, 0])
+    >>> y[1, :4 + 1 + 3]
+    tensor([0, 5, 6, 7, 8, 0, 0, 0])
+    >>> y = pad_variable(x, lens, pad, 'reflect')
+    >>> y[0, :3 + 0 + 2]
+    tensor([0, 1, 2, 1, 0])
+    >>> y[1, :4 + 1 + 3]
+    tensor([6, 5, 6, 7, 8, 7, 6, 5])
+    >>> y = pad_variable(x, lens, pad, 'replicate')
+    >>> y[0, :3 + 0 + 2]
+    tensor([0, 1, 2, 2, 2])
+    >>> y[1, :4 + 1 + 3]
+    tensor([5, 5, 6, 7, 8, 8, 8, 8])
+    """
+
+    __constants__ = ['mode', 'value']
+
+    mode : str
+    value : float
+
+    def __init__(self, mode : str = "constant", value : float = 0.0):
+        super().__init__()
+        if mode not in {'constant', 'reflect', 'replicate'}:
+            raise ValueError(
+                "mode should be one of 'constant', 'reflect', or 'replicate', got "
+                f"'{mode}'"
+            )
+        self.mode = mode
+        self.value = value
+    
+    def extra_repr(self) -> str:
+        s = f'mode={self.mode}'
+        if self.mode == 'constant':
+            s += f', value={self.value}'
+        return s
+    
+    def forward(self, x : torch.Tensor, lens: torch.Tensor, pad: torch.Tensor) -> torch.Tensor:
+        return pad_variable(x, lens, pad, self.mode, self.value)
 
 
 _SM_ARGS = """\

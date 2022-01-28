@@ -27,6 +27,40 @@ INF = float("inf")
 NAN = float("nan")
 
 
+@pytest.mark.parametrize("mode", ["constant", "reflect", "replicate"])
+@pytest.mark.parametrize("another_dim", [True, False])
+def test_pad_variable(device, mode, another_dim, jit_type):
+    N, Tmax, Tmin, F = 10, 50, 5, 30 if another_dim else 1
+    x = torch.rand((N, Tmax, F), device=device)
+    lens = torch.randint(Tmin, Tmax + 1, (N,), device=device)
+    pad = torch.randint(Tmin - 1, size=(2, N), device=device)
+    exp_padded = []
+    for x_n, lens_n, pad_n in zip(x, lens, pad.t()):
+        x_n = x_n[:lens_n]
+        padded_n = torch.nn.functional.pad(
+            x_n.unsqueeze(0).unsqueeze(0), [0, 0] + pad_n.tolist(), mode
+        ).view(-1, F)
+        exp_padded.append(padded_n)
+    pad_variable = layers.PadVariable(mode)
+    if jit_type == "script":
+        pad_variable = torch.jit.script(pad_variable)
+    elif jit_type == "trace":
+        pad_variable = torch.jit.trace(
+            pad_variable,
+            (
+                torch.ones(1, 2),
+                torch.full((1,), 2, dtype=torch.long),
+                torch.ones(2, 1, dtype=torch.long),
+            ),
+        )
+    act_padded = pad_variable(x, lens, pad)
+    for exp_padded_n, act_padded_n in zip(exp_padded, act_padded):
+        assert torch.allclose(exp_padded_n, act_padded_n[: len(exp_padded_n)])
+    # quick double-check that other types work
+    for type_ in (torch.long, torch.bool):
+        assert pad_variable(x.to(type_), lens, pad).dtype == type_
+
+
 @pytest.mark.cpu
 @pytest.mark.parametrize(
     "prob_list,pointers,ids,logs",

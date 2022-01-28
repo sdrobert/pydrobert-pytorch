@@ -298,6 +298,7 @@ def beam_search_advance(
     return y_next, y_next_lens, log_probs_next, next_src
 
 
+@script
 def ctc_greedy_search(
     logits: torch.Tensor,
     in_lens: Optional[torch.Tensor] = None,
@@ -1170,65 +1171,12 @@ def prefix_edit_distances(
     exclude_last: bool = False,
     warn: bool = True,
 ) -> torch.Tensor:
-    """Compute the edit distance between ref and each prefix of hyp
+    """Functional version of PrefixEditDistances
 
-    Given a reference transcript `ref` of shape ``(max_ref_steps, batch_size)`` (or
-    ``(batch_size, max_ref_steps)`` if `batch_first` is :obj:`True`) and a hypothesis
-    transcript `hyp` of shape ``(max_hyp_steps, batch_size)`` (or ``(batch_size,
-    max_hyp_steps)``), this function produces a tensor `prefix_eds` of shape
-    ``(max_hyp_steps + 1, batch_size)`` (or ``(batch_size, max_hyp_steps + 1))`` which
-    contains the edit distance between the reference for each prefix of each hypothesis,
-    starting from the empty prefix.
-
-    Parameters
-    ----------
-    ref : torch.Tensor
-    hyp : torch.Tensor
-    eos : int or None, optional
-        A special token in `ref` and `hyp` whose first occurrence in each batch
-        indicates the end of a transcript. This allows for variable-length transcripts
-        in the batch.
-    include_eos : bool, optional
-        Whether to include the first instance of `eos` found in both `ref` and `hyp` as
-        valid tokens to be computed as part of the distance. Only the first `eos` per
-        transcript is included.
-    norm : bool, optional
-        If :obj:`True`, will normalize the distances by the number of tokens in the
-        reference sequence (making the returned values divergences)
-    batch_first : bool, optional
-    ins_cost : float, optional
-        The cost of an adding an extra token to a sequence in `ref`
-    del_cost : float, optional
-        The cost of removing a token from a sequence in `ref`
-    sub_cost : float, optional
-        The cost of swapping a token from `ref` with one from `hyp`
-    padding : int, optional
-        The value to right-pad the edit distance of unequal-length sequences with in
-        `prefix_eds`
-    exclude_last : bool, optional
-        If true, will exclude the final prefix, consisting of the entire transcript,
-        from the returned `dists`. `dists` will be of shape ``(max_hyp_steps,
-        batch_size, max_unique_next)``
-    warn : bool, optional
-        Whether to display warnings on irregularities. Currently, this can happen in
-        two ways.
-
-        1. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
-           transcription has zero length
-        2. If `eos` is set and `include_eos` is :obj:`True`, will warn when a transcript
-           does not include an `eos` symbol
-
-    Returns
-    -------
-    prefix_eds : torch.Tensor
-
-    Notes
-    -----
-    This function returns identical values (modulo a bug fix) to
-    :func:`prefix_error_rates` up to `v0.3.0` (though the default of `norm` has changed
-    to :obj:`False`). For more details on the distinction between this function and the
-    new :func:`prefix_error_rates`, please consult the documentation of
-    :func:`error_rate`.
+    See Also
+    --------
+    pydrobert.torch.layers.PrefixEditDistances
+        For information about this module and its associated parameters.
     """
     return _string_matching(
         ref,
