@@ -12,16 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Common neural layers from the literature not included in pytorch.nn
-
-Notes
------
-The loss functions :class:`HardOptimalCompletionDistillationLoss` and
-:class:`MinimumErrorRateLoss` have been moved here from :mod:`pydrobert.torch.training`
-"""
+"""Common neural layers from the literature not included in pytorch.nn"""
 
 import abc
 import math
+from multiprocessing.dummy import Value
 from typing import (
     Any,
     NoReturn,
@@ -37,6 +32,7 @@ import torch
 
 from pydrobert.torch.util import (
     beam_search_advance,
+    dense_image_warp,
     error_rate,
     optimal_completion,
     ctc_prefix_search_advance,
@@ -52,6 +48,7 @@ __all__ = [
     "BeamSearch",
     "ConcatSoftAttention",
     "CTCPrefixSearch",
+    "DenseImageWarp",
     "DotProductSoftAttention",
     "ExtractableSequentialLanguageModel",
     "GeneralizedDotProductSoftAttention",
@@ -74,7 +71,129 @@ __all__ = [
 ]
 
 
+class DenseImageWarp(torch.nn.Module):
+    """Warp an input image with per-pixel flow vectors
+
+    Once initialized, this module is called with the signature::
+
+        warped = dense_image_warp(image, flow)
+
+    `image` is a float tensor of shape ``(N, C, H, W)``, where ``N`` is the batch
+    dimension, ``C`` is the channel dimension, ``H`` is the height dimension, and ``W``
+    is the width dimension. `flow` is a float tensor of shape ``(N, H, W, 2)``.
+    It returns a new image `warped` of shape ``(N, C, H, W)`` such that
+
+    ::
+        warped[n, c, h, w] = image[n, c, h - flow[n, h, w, 0], w - flow[n, h, w, 1]]
+
+    If the reference indices ``h - ...`` and ``w - ...`` are not integers, the value is
+    interpolated from the neighboring pixel values.
+
+    This reproduces the functionality of Tensorflow's `dense_image_warp
+    <https://www.tensorflow.org/addons/api_docs/python/tfa/image/dense_image_warp>`__,
+    except `image` is in ``NCHW`` order instead of ``NHWC`` order. It wraps
+    `torch.nn.functional.grid_sample`.
+
+    Warning
+    -------
+    `flow` is not an optical flow. Please consult the TF documentation for more details.
+
+    Parameters
+    ----------
+    indexing : {'hw', 'wh'}, optional
+        If `indexing` is ``"hw"``, ``flow[..., 0] = h``, the height index, and
+        ``flow[..., 1] = w`` is the width index. If ``"wh"``, ``flow[..., 0] = w``
+        and ``flow[..., 1] = h``. The default in TF is ``"hw"``, whereas torch's
+        `grid_sample` is ``"wh"``
+    mode : {'bilinear', 'nearest'}, optional
+        The method of interpolation. Either use bilinear interpolation or the nearest
+        pixel value. The TF default is ``"bilinear"``
+    padding_mode : {"border", "zeros", "reflection"}
+        Controls how points outside of the image boundaries are interpreted.
+        ``"border"``: copy points at around the border of the image. ``"zero"``:
+        use zero-valued pixels. ``"reflection"``: reflect pixels into the image starting
+        from the boundaries.
+    """
+
+    __constants__ = ["indexing", "mode", "padding_mode"]
+
+    indexing: str
+    mode: str
+    padding_mode: str
+
+    def __init__(
+        self,
+        indexing: str = "hw",
+        mode: str = "bilinear",
+        padding_mode: str = "border",
+    ):
+        super().__init__()
+        if indexing not in {"hw", "wh"}:
+            raise ValueError(f"indexing must be either 'hw' or 'wh', got '{indexing}'")
+        if mode not in {"bilinear", "nearest"}:
+            raise ValueError(
+                f"mode must be either 'bilinear' or 'nearest', got '{mode}'"
+            )
+        if padding_mode not in {"border", "zeros", "reflection"}:
+            raise ValueError(
+                "padding_mode must be one of 'border', 'zeros', or 'relection', got "
+                f"'{padding_mode}'"
+            )
+        self.indexing = indexing
+        self.mode = mode
+        self.padding_mode = padding_mode
+    
+    def forward(self, image : torch.Tensor, flow : torch.Tensor) -> torch.Tensor:
+        return dense_image_warp(image, flow, self.indexing, self.mode, self.padding_mode)
+
+
 class SequentialLogProbabilities(torch.nn.Module):
+    r"""Calculate joint log probability of sequences
+
+    Once initialized, this module is called with the signature::
+
+        log_probs = sequential_log_probs(logits, hyp)
+
+    `logits` is a tensor of shape ``(..., steps, ..., num_classes)`` where ``steps``
+    enumerates the time/step `dim`-th dimension. `hyp` is a long tensor of shape
+    ``(..., steps, ...)`` matching the shape of `logits` minus the last dimension.
+    Letting :math:`t` index the step dimension and :math:`b` index all other shared
+    dimensions of `logits` and `hyp`, this function outputs a tensor `log_probs` of the
+    log-joint probability of sequences in the batch:
+
+    .. math::
+
+        \log Pr(samp_b = hyp_b) = \log \left(
+            \prod_t Pr(samp_{b,t} == hyp_{b,t}; logits_{b,t})\right)
+
+    :math:`logits_{b,t}` (with the last dimension free) characterizes a categorical
+    distribution over ``num_classes`` tokens via a softmax function. We assume
+    :math:`samp_{b,t}` is independent of :math:`samp_{b',t'}` given :math:`logits_t`.
+
+    The resulting tensor `log_probs` is matches the shape of `logits` or `hyp` without
+    the ``step`` and ``num_classes`` dimensions.
+
+    Any values of `hyp` not in ``[0, num_classes)`` will be considered padding and
+    ignored.
+
+    If `eos` (end-of-sentence) is set, the first occurrence at :math:`b,t` is included
+    in the sequence, but all :math:`b,>t` are ignored.
+    
+    `logits` may instead be a :class:`torch.nn.utils.rnn.PackedSequence`, though `hyp`
+    must remain a tensor. `eos` is ignored in this case.
+
+    Parameters
+    ----------
+    dim : int, optional
+    eos : int or :obj:`None`, optional
+
+    Notes
+    -----
+    :class:`PackedSequence` instances with ``enforce_sorted=False`` first sort sequences
+    by length. The sort is not guaranteed to be deterministic if some entries have equal
+    length. To avoid the possibility that `logits` and `hyp` are sorted differently, we
+    require `hyp` to always be a :class:`torch.Tensor`.
+    """
 
     __constants__ = ["dim", "eos"]
     dim: int
@@ -1063,11 +1182,14 @@ class BeamSearch(torch.nn.Module):
         return y_prev, log_probs_prev, y_prev_lens
 
     if TYPE_CHECKING:
+
         def forward(
             self, y_prev: torch.Tensor, prev: Dict[str, torch.Tensor] = dict()
         ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             pass
+
     else:
+
         def forward(
             self, y_prev: torch.Tensor, _prev: Optional[Dict[str, torch.Tensor]] = None
         ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -1096,13 +1218,18 @@ class BeamSearch(torch.nn.Module):
 
             if self.eos is not None and S_prev:
                 y_prev_lens = (
-                    -((y_prev == self.eos).cumsum(0).clamp(max=1).sum(0) - 1).clamp(min=0)
+                    -((y_prev == self.eos).cumsum(0).clamp(max=1).sum(0) - 1).clamp(
+                        min=0
+                    )
                     + S_prev
                 )
 
-                len_eq_mask = y_prev_lens.unsqueeze(1) == y_prev_lens.unsqueeze(2)  # NKK
+                len_eq_mask = y_prev_lens.unsqueeze(1) == y_prev_lens.unsqueeze(
+                    2
+                )  # NKK
                 tok_ge_len_mask = (
-                    torch.arange(S_prev, device=device).view(S_prev, 1, 1) >= y_prev_lens
+                    torch.arange(S_prev, device=device).view(S_prev, 1, 1)
+                    >= y_prev_lens
                 )  # SNK
                 eq_mask = (
                     y_prev.unsqueeze(2) == y_prev.unsqueeze(3)
@@ -1185,7 +1312,9 @@ class BeamSearch(torch.nn.Module):
                 if self.eos is not None:
                     # beam_search_advance always increments the length. Decrement for the
                     # paths which had completed before the step
-                    y_next_lens = y_next_lens - eos_mask.gather(1, next_src).to(y_next_lens)
+                    y_next_lens = y_next_lens - eos_mask.gather(1, next_src).to(
+                        y_next_lens
+                    )
 
                 # update lm intermediate values
                 next_src = (
@@ -1200,8 +1329,12 @@ class BeamSearch(torch.nn.Module):
                     y_prev, log_probs_prev, y_prev_lens = self._to_width(
                         y_prev, log_probs_prev, y_prev_lens
                     )
-                    y_next[:-1] = torch.where(done_mask.unsqueeze(0), y_prev, y_next[:-1])
-                    log_probs_next = torch.where(done_mask, log_probs_prev, log_probs_next)
+                    y_next[:-1] = torch.where(
+                        done_mask.unsqueeze(0), y_prev, y_next[:-1]
+                    )
+                    log_probs_next = torch.where(
+                        done_mask, log_probs_prev, log_probs_next
+                    )
                     y_next_lens = torch.where(done_mask, y_prev_lens, y_next_lens)
 
                 y_prev = y_next

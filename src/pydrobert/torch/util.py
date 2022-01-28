@@ -1721,60 +1721,19 @@ if TYPE_CHECKING:
         dim: int = 0,
         eos: Optional[int] = None,
     ) -> torch.Tensor:
-        r"""Calculate joint log probability of sequences
-
-        `logits` is a tensor of shape ``(..., steps, ..., num_classes)`` where ``steps``
-        enumerates the time/step `dim` -th dimension. `hyp` is a long tensor of shape
-        ``(..., steps, ...)`` matching the shape of `logits` minus the last dimension.
-        Letting :math:`t` index the step dimension and :math:`b` index all other shared
-        dimensions of `logits` and `hyp`, this function outputs a tensor `log_probs` of the
-        log-joint probability of sequences in the batch:
-
-        .. math::
-
-            \log Pr(samp_b = hyp_b) = \log \left(
-                \prod_t Pr(samp_{b,t} == hyp_{b,t}; logits_{b,t})\right)
-
-        :math:`logits_{b,t}` (with the last dimension free) characterizes a categorical
-        distribution over ``num_classes`` tokens via a softmax function. We assume
-        :math:`samp_{b,t}` is independent of :math:`samp_{b',t'}` given :math:`logits_t`.
-
-        The resulting tensor `log_probs` is matches the shape of `logits` or
-        `hyp` without the ``step`` and ``num_classes`` dimensions.
-
-        Any values of `hyp` not in ``[0, num_classes)`` will be considered padding and
-        ignored.
-
-        If `eos` (end-of-sentence) is set, the first occurrence at :math:`b,t` is included
-        in the sequence, but all :math:`b,>t` are ignored.
-        
-        `logits` may instead be a :class:`torch.nn.utils.rnn.PackedSequence`, though `hyp`
-        must remain a tensor. `eos` is ignored in this case.
+        """Functional version of SequentialLogProbabilities
 
         Parameters
         ----------
         logits : torch.Tensor or torch.nn.utils.rnn.PackedSequence
         hyp : torch.Tensor
         dim : int, optional
-        eos : int or :obj:`None`, optional
-
-        Returns
-        -------
-        log_prob : torch.Tensor
-
-        Notes
-        -----
-        `dim` is relative to ``hyp.shape``, not ``logits.shape``.
-
-        :class:`PackedSequence` instances with ``enforce_sorted=False`` first sort sequences
-        by length. The sort is not guaranteed to be deterministic if some entries have equal
-        length. To avoid the possibility that `logits` and `hyp` are sorted differently,
-        we require `hyp` to always be a :class:`torch.Tensor`.
+        eos : int or `None`, optional
 
         See Also
         --------
-        pydrobert.torch.layers.MinimumErrorRateLoss
-            An example training regime that uses this function
+        pydrobert.torch.layers.SequentialLogProbabilities
+            For more details about the parameters
         """
         pass
 
@@ -2041,53 +2000,6 @@ def dense_image_warp(
     mode: str = "bilinear",
     padding_mode: str = "border",
 ) -> torch.Tensor:
-    """Warp an input image with per-pixel flow vectors
-
-    Given an `image` and a `flow` field, generates a new image `warped` such that
-
-    ::
-        warped[n, c, h, w] = image[n, c, h - flow[n, h, w, 0], w - flow[n, h, w, 1]]
-
-    If the reference indices ``h - ...`` and ``w - ...`` are not integers, the value is
-    interpolated from the neighboring pixel values.
-
-    This reproduces the functionality of Tensorflow's `dense_image_warp
-    <https://www.tensorflow.org/addons/api_docs/python/tfa/image/dense_image_warp>`__,
-    except `image` is in ``NCHW`` order instead of ``NHWC`` order. It wraps
-    `torch.nn.functional.grid_sample`.
-
-    Warning
-    -------
-    `flow` is not an optical flow. Please consult the TF documentation for more details.
-
-    Parameters
-    ----------
-    image : torch.Tensor
-        A float tensor of shape ``(N, C, H, W)``, where ``N`` is the batch dimension,
-        ``C`` is the channel dimension, ``H`` is the height dimension, and ``W`` is the
-        width dimension.
-    flow : torch.Tensor
-        A float tensor of shape ``(N, H, W, 2)``.
-    indexing : {'hw', 'wh'}, optional
-        If `indexing` is ``"hw"``, ``flow[..., 0] = h``, the height index, and
-        ``flow[..., 1] = w`` is the width index. If ``"wh"``, ``flow[..., 0] = w``
-        and ``flow[..., 1] = h``. The default in TF is ``"hw"``, whereas torch's
-        `grid_sample` is ``"wh"``
-    mode : {'bilinear', 'nearest'}
-        The method of interpolation. Either use bilinear interpolation or the nearest
-        pixel value. The TF default is ``"bilinear"``
-    padding_mode : {"border", "zeros", "reflection"}
-        Controls how points outside of the image boundaries are interpreted.
-        ``"border"``: copy points at around the border of the image. ``"zero"``:
-        use zero-valued pixels. ``"reflection"``: reflect pixels into the image starting
-        from the boundaries.
-
-    Returns
-    -------
-    warped : torch.FloatTensor
-        The warped image of shape ``(N, C, H, W)``.
-    """
-
     # from tfa.image.dense_image_warp
     # output[n, c, h, w] = image[n, c, h - flow[n, h, w, 0], w - flow[n, h, w, 1]]
     # outside of image uses border
@@ -2128,6 +2040,7 @@ def dense_image_warp(
     )
 
 
+@script
 def sparse_image_warp(
     image: torch.Tensor,
     source_points: torch.Tensor,

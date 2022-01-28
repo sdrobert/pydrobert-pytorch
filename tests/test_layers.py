@@ -21,6 +21,7 @@ import pytest
 import torch
 import pydrobert.torch.layers as layers
 import pydrobert.torch.util as util
+import numpy as np
 
 INF = float("inf")
 NAN = float("nan")
@@ -341,6 +342,25 @@ def test_lookup_language_model_republic():
     eos_mask = torch.cat([eos_mask.new_full((1, queries.size(1)), False), eos_mask], 0)
     log_probs.masked_fill_(eos_mask, 0.0)
     assert torch.allclose(log_probs.sum(0), exp, atol=1e-5)
+
+
+@pytest.mark.parametrize("indexing", ["hw", "wh"])
+def test_dense_image_warp_matches_tensorflow(device, indexing, jit_type):
+    dir_ = os.path.join(os.path.dirname(__file__), "dense_image_warp")
+    img = torch.tensor(np.load(os.path.join(dir_, "img.npy")), device=device)
+    flow = torch.tensor(np.load(os.path.join(dir_, "flow.npy")), device=device)
+    if indexing == "wh":
+        flow = flow.flip(-1)
+    dense_image_warp = layers.DenseImageWarp(indexing=indexing)
+    if jit_type == "script":
+        dense_image_warp = torch.jit.script(dense_image_warp)
+    elif jit_type == "trace":
+        dense_image_warp = torch.jit.trace(
+            dense_image_warp, (torch.empty(1, 1, 1, 1), torch.empty(1, 1, 1, 2))
+        )
+    exp = torch.tensor(np.load(os.path.join(dir_, "warped.npy")), device=device)
+    act = dense_image_warp(img, flow)
+    assert torch.allclose(exp, act), (exp - act).abs().max()
 
 
 @pytest.mark.cpu

@@ -1002,17 +1002,6 @@ def test_dense_image_warp_shift_right(device):
     assert torch.allclose(exp, act), (exp - act).abs().max()
 
 
-@pytest.mark.parametrize("indexing", ["hw", "wh"])
-def test_dense_image_warp_matches_tensorflow(device, indexing):
-    dir_ = os.path.join(os.path.dirname(__file__), "dense_image_warp")
-    img = torch.tensor(np.load(os.path.join(dir_, "img.npy")), device=device)
-    flow = torch.tensor(np.load(os.path.join(dir_, "flow.npy")), device=device)
-    if indexing == "wh":
-        flow = flow.flip(-1)
-    exp = torch.tensor(np.load(os.path.join(dir_, "warped.npy")), device=device)
-    act = util.dense_image_warp(img, flow, indexing=indexing)
-    assert torch.allclose(exp, act), (exp - act).abs().max()
-
 
 @pytest.mark.parametrize("pinned_boundary_points", [0, 1, 2])
 def test_sparse_image_warp_identity(device, pinned_boundary_points):
