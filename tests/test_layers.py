@@ -27,9 +27,32 @@ INF = float("inf")
 NAN = float("nan")
 
 
+def test_warp_1d_grid(device, jit_type):
+    N, W = 5, 7
+    src = torch.arange(N, device=device)
+    lengths = src + W - N + 1
+    flow = torch.ones(N, device=device)
+    warp_1d_grid = layers.Warp1DGrid()
+    if jit_type == "script":
+        warp_1d_grid = torch.jit.script(warp_1d_grid)
+    else:
+        warp_1d_grid = torch.jit.trace(
+            warp_1d_grid, (torch.zeros(1), torch.zeros(1), torch.ones(1))
+        )
+    grid_W = warp_1d_grid(src, flow, lengths).view(N, 1, -1)
+    grid_H = torch.zeros_like(grid_W) - 1
+    grid = torch.stack([grid_W, grid_H], -1)
+    feats = torch.eye(N, W, device=device)
+    new_feats = torch.nn.functional.grid_sample(
+        feats.view(N, 1, 1, W), grid, align_corners=False
+    ).view(N, W)
+    assert (new_feats.argmax(1) == (src + flow).long()).all()
+
+
 @pytest.mark.parametrize("mode", ["constant", "reflect", "replicate"])
 @pytest.mark.parametrize("another_dim", [True, False])
 def test_pad_variable(device, mode, another_dim, jit_type):
+    torch.manual_seed(50)
     N, Tmax, Tmin, F = 10, 50, 5, 30 if another_dim else 1
     x = torch.rand((N, Tmax, F), device=device)
     lens = torch.randint(Tmin, Tmax + 1, (N,), device=device)
@@ -410,7 +433,7 @@ def test_prefix_error_rates(
     if jit_type == "script":
         rates = torch.jit.script(rates)
     elif jit_type == "trace":
-        rates = torch.jit.trace(rates, (torch.full((1, 1), eos),) * 2)
+        rates = torch.jit.trace(rates, (torch.full((1, 1), eos, dtype=torch.long),) * 2)
     act = rates(ref, hyp)
     exp = torch.empty(max_hyp_steps + (0 if exclude_last else 1), N, device=device)
     # if include_eos were true, `hyp` would get a bonus for the final `eos`

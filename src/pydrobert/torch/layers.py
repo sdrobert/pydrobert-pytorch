@@ -82,7 +82,61 @@ __all__ = [
     "spec_augment_draw_parameters",
     "spec_augment",
     "SpecAugment",
+    "Warp1DGrid",
 ]
+
+
+class Warp1DGrid(torch.nn.Module):
+    """Interpolate grid values for a dimension of a grid_sample
+
+    This module determines a grid along a single dimension of a signal,
+    image, volume, whatever. 
+
+    When instantiated, this method has the signature::
+
+        grid = warp_1d_grid(src, flow, lengths)
+    
+    `src` is a tensor of shape ``(N,)`` containing source points. `flow` is
+    a tensor of shape ``(N,)`` containing corresponding flow fields for `src`.
+    `lengths` is a long tensor of shape ``(N,)`` specifying the number of
+    valid indices along the dimension in question. The return value is a tensor
+    `grid` of shape ``(N, max_length)`` which provides coodinates for one
+    dimension of the grid passed to :func:`torch.nn.functional.grid_sample`.
+    See the example below.
+
+    Parameters
+    ----------
+    max_length : int or `None`, optional
+        A maximum length to which the grid will be padded. If unspecified,
+        it will be taken to be ``lengths.max().ceil()``.
+    interpolation_order : int, optional
+        The degree of the spline used ot interpolate the grid.
+    """
+
+    __constants__ = ["max_length", "interpolation_order"]
+
+    interpolation_order: int
+    max_length: Optional[int]
+
+    def __init__(self, max_length: Optional[int] = None, interpolation_order: int = 1):
+        super().__init__()
+        if max_length is not None and max_length < 0:
+            raise ValueError("max_length must be non-negative")
+        self.max_length = max_length
+        self.interpolation_order = interpolation_order
+
+    def extra_repr(self) -> str:
+        s = f"interpolation_order={self.interpolation_order}"
+        if self.max_length is not None:
+            s = f"max_length={self.max_length}, " + s
+        return s
+
+    def forward(
+        self, src: torch.Tensor, flow: torch.Tensor, lengths: torch.Tensor
+    ) -> torch.Tensor:
+        return warp_1d_grid(
+            src, flow, lengths, self.max_length, self.interpolation_order
+        )
 
 
 class PadVariable(torch.nn.Module):
@@ -158,28 +212,30 @@ class PadVariable(torch.nn.Module):
     tensor([5, 5, 6, 7, 8, 8, 8, 8])
     """
 
-    __constants__ = ['mode', 'value']
+    __constants__ = ["mode", "value"]
 
-    mode : str
-    value : float
+    mode: str
+    value: float
 
-    def __init__(self, mode : str = "constant", value : float = 0.0):
+    def __init__(self, mode: str = "constant", value: float = 0.0):
         super().__init__()
-        if mode not in {'constant', 'reflect', 'replicate'}:
+        if mode not in {"constant", "reflect", "replicate"}:
             raise ValueError(
                 "mode should be one of 'constant', 'reflect', or 'replicate', got "
                 f"'{mode}'"
             )
         self.mode = mode
         self.value = value
-    
+
     def extra_repr(self) -> str:
-        s = f'mode={self.mode}'
-        if self.mode == 'constant':
-            s += f', value={self.value}'
+        s = f"mode={self.mode}"
+        if self.mode == "constant":
+            s += f", value={self.value}"
         return s
-    
-    def forward(self, x : torch.Tensor, lens: torch.Tensor, pad: torch.Tensor) -> torch.Tensor:
+
+    def forward(
+        self, x: torch.Tensor, lens: torch.Tensor, pad: torch.Tensor
+    ) -> torch.Tensor:
         return pad_variable(x, lens, pad, self.mode, self.value)
 
 
@@ -3564,8 +3620,6 @@ def _spec_augment_check_input(
             )
         if not torch.all((lengths <= T) & (lengths > 0)):
             raise RuntimeError(f"values of lengths must be between (1, {T})")
-    else:
-        lengths = torch.tensor([T] * N, device=feats.device)
 
 
 SpecAugmentParams = Tuple[
@@ -3700,7 +3754,11 @@ def spec_augment_apply_parameters(
         do_warp = True
     if v_0 is not None and v_0.numel() and v is not None and v.numel():
         freq_grid = warp_1d_grid(
-            v_0, v, torch.tensor([F] * N, device=device), F, interpolation_order,
+            v_0,
+            v,
+            torch.full((N,), F, dtype=torch.long, device=device),
+            F,
+            interpolation_order,
         )
         do_warp = True
     if do_warp:

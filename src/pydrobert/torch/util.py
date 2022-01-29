@@ -1,4 +1,4 @@
-# Copyright 2021 Sean Robertson
+# Copyright 2022 Sean Robertson
 #
 # Code for polyharmonic_spline is converted from tensorflow code
 # https://github.com/tensorflow/addons/blob/v0.11.2/tensorflow_addons/image/interpolate_spline.py
@@ -27,6 +27,7 @@
 import re
 from typing import Any, Optional, TextIO, Tuple, Union, TYPE_CHECKING
 import warnings
+import math
 
 import torch
 import pydrobert.torch.config as config
@@ -1898,34 +1899,15 @@ def warp_1d_grid(
     src: torch.Tensor,
     flow: torch.Tensor,
     lengths: torch.Tensor,
-    max_length: int,
-    interpolation_order: int,
+    max_length: Optional[int] = None,
+    interpolation_order: int = 1,
 ) -> torch.Tensor:
-    """Interpolate grid values for 1d of a grid_sample
+    """Functional version of Warp1DGrid
 
-    Parameters
-    ----------
-    src : torch.Tensor
-        A long tensor of shape ``(N,)`` containing random source points.
-    flow : torch.Tensor
-        A long tensor of shape ``(N,)`` containing corresponding flow fields for
-        ``src`` such that ``new_feats[n, * dst[n] *] =
-        feats[n, * src[n] - flow[n] *]`` (for whichever dimension we're talking
-        about).
-    lengths : torch.Tensor
-        A long tensor of shape ``(N,)`` specifying the number of valid indices along
-        the dimension in question.
-    max_length : int
-        An integer s.t. ``max_length >= lengths[n]`` for all ``n``.
-    interpolation order : int
-        Degree of warp.
-
-    Returns
-    -------
-    grid : torch.Tensor
-        A float tensor of shape ``(N, max_length)`` providing coordinates for one
-        dimension of :func:`torch.nn.functional.grid_sample` that will be used to
-        warp the features
+    See Also
+    --------
+    pydrobert.torch.layers.Warp1DGrid
+        For a description of this function and its parameters
     """
     device = src.device
     # the interpolation has three points (per batch elem):
@@ -1935,23 +1917,27 @@ def warp_1d_grid(
     # whatever happens after lengths -.5 is undefined
     # grid = (2 * dst - 2 * flow + 1) / max_length - 1
     N = src.shape[0]
+    if max_length is None:
+        T = int(math.ceil(lengths.max().item())) if lengths.numel() else 0
+    else:
+        T = max_length
     src, flow, lengths = src.float(), flow.float(), lengths.float()
     zeros = torch.zeros_like(src)
     src = torch.stack([zeros - 0.5, src, lengths - 0.5], 1)  # (N, 3)
     flow = torch.stack([zeros, flow, zeros], 1)  # (N, 3)
-    sparse_grid = (2.0 * src + 1.0) / max_length - 1.0  # (N,3)
-    t = torch.arange(max_length, device=device, dtype=torch.float)
+    sparse_grid = (2.0 * src + 1.0) / T - 1.0  # (N,3)
+    t = torch.arange(T, device=device, dtype=torch.float)
     grid = polyharmonic_spline(
         (src + flow).unsqueeze(-1),  # dst (N, 3, 1)
         sparse_grid.unsqueeze(-1),  # (N, 3, 1)
-        t.unsqueeze(0).expand(N, max_length).unsqueeze(-1),  # (N, T, 1)
+        t.unsqueeze(0).expand(N, T).unsqueeze(-1),  # (N, T, 1)
         interpolation_order,
     ).squeeze(
         -1
     )  # (N, T)
     # we perform "boundary" interpolation, meaning any values past index length - 1
     # are assumed to be equal to the boundary and with zero gradient.
-    boundary = (2.0 * lengths - 1.0) / max_length - 1.0
+    boundary = (2.0 * lengths - 1.0) / T - 1.0
     grid = torch.min(grid, boundary.unsqueeze(-1))
     return grid
 
@@ -1964,79 +1950,12 @@ def pad_variable(
     mode: str = "constant",
     value: float = 0.0,
 ) -> torch.Tensor:
-    """Pad variable-length input by a variable amount on each side
+    """Functional version of PadVariable
 
-    This function attempts to replicate the behaviour of :func:`torch.nn.functional.pad`
-    for `x` of variable sequence length with variable amounts of padding. `x` is a
-    tensor of shape ``(N, T, *)`` where ``N`` is the batch index and ``T`` is the
-    sequence index. `lens` is a long tensor of shape ``(N,)`` specifying the sequence
-    lengths: only the values in the range ``x[n, :lens[n]]`` are considered part of the
-    sequence of batch element ``n``. `pad` is a tensor of shape ``(2, N)`` specifying
-    how many elements at the start (``pad[0]``) and end (``pad[1]``) of each sequence.
-    The return tensor `padded` will have shape ``(N, T', *)`` such
-    that, for a given batch index ``n``,
-
-        padded[n, :pad[0, n]] = left padding
-        padded[n, pad[0,n]:pad[0,n] + lens[n]] = x[n, :lens[n]]
-        padded[n, pad[0,n] + lens[n]:pad[0,n] + lens[n] + pad[1, n]] = right padding
-
-    Parameters
-    ----------
-    x : torch.Tensor
-    lens : torch.Tensor
-    pad : torch.Tensor
-    mode : {'constant', 'reflect', 'replicate'}, optional
-        How to pad the sequences. :obj:`'constant'`: fill the padding region with the
-        value specified by `value`. :obj:`'reflect'`: padded values are reflections
-        around the endpoints. For example, the first right-padded value of the ``n``-th
-        sequence would be ``x[n, lens[n] - 2``, the third ``x[n, lens[n] - 3]``, and
-        so on. :obj:`replicate`: padding duplicates the endpoints of each sequence.
-        For example, the left-padded values of the ``n``-th sequence would all be
-        ``x[n, 0]``; the right-padded values would be ``x[n, lens[n] - 1]``.
-    value : scalar, optional
-        The value to pad with when ``mode == 'constant'``.
-
-    Returns
-    -------
-    padded : torch.Tensor
-        The new size for the second dimension would be
-        ``T' = (lens + pad.sum(0)).max().clamp_(min=T)``
-
-    Raises
-    ------
-    NotImplementedError
-        If any value in ``pad[:, n]`` equals or exceeds ``lens[n]`` when
-        ``mode == 'reflect'``
-    RuntimeError
-        If any element in `lens` is less than 1 when ``mode == 'replicate'``
-
-    Examples
+    See Also
     --------
-
-    >>> x = torch.arange(10)
-    >>> x
-    tensor([[0, 1, 2, 3, 4],
-            [5, 6, 7, 8, 9]])
-    >>> lens = torch.tensor([3, 4])
-    >>> pad = torch.arange(4).view(2, 2)
-    >>> pad.t()  # [[0_left, 0_right], [1_left, 1_right]]
-    tensor([[0, 2],
-            [1, 3]])
-    >>> y = pad_variable(x, lens, pad)  # constant w/ value 0
-    >>> y[0, :3 + 0 + 2]
-    tensor([0, 1, 2, 0, 0])
-    >>> y[1, :4 + 1 + 3]
-    tensor([0, 5, 6, 7, 8, 0, 0, 0])
-    >>> y = pad_variable(x, lens, pad, 'reflect')
-    >>> y[0, :3 + 0 + 2]
-    tensor([0, 1, 2, 1, 0])
-    >>> y[1, :4 + 1 + 3]
-    tensor([6, 5, 6, 7, 8, 7, 6, 5])
-    >>> y = pad_variable(x, lens, pad, 'replicate')
-    >>> y[0, :3 + 0 + 2]
-    tensor([0, 1, 2, 2, 2])
-    >>> y[1, :4 + 1 + 3]
-    tensor([5, 5, 6, 7, 8, 8, 8, 8])
+    pydrobert.torch.layers.PadVariable
+        For a description of this function and its parameters
     """
     old_shape = x.shape
     ndim = len(old_shape)
