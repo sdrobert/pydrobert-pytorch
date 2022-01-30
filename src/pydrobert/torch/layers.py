@@ -16,6 +16,7 @@
 
 import abc
 import math
+from turtle import forward
 from typing import (
     Any,
     NoReturn,
@@ -42,6 +43,7 @@ from pydrobert.torch.util import (
     prefix_error_rates,
     sequence_log_probs,
     sparse_image_warp,
+    time_distributed_return,
     warp_1d_grid,
     _get_tensor_eps,
 )
@@ -82,8 +84,68 @@ __all__ = [
     "spec_augment_draw_parameters",
     "spec_augment",
     "SpecAugment",
+    "TimeDistributedReturn",
     "Warp1DGrid",
 ]
+
+
+class TimeDistributedReturn(torch.nn.Module):
+    r"""Accumulate future local rewards at every time step
+
+    In `reinforcement learning
+    <https://en.wikipedia.org/wiki/Reinforcement_learning>`__, the return is defined as
+    the sum of discounted future rewards. This function calculates the return for a
+    given time step :math:`t` as
+
+    .. math::
+
+        R_t = \sum_{t'=t} \gamma^(t' - t) r_{t'}
+
+    Where :math:`r_{t'}` gives the (local) reward at time :math:`t'` and :math:`\gamma`
+    is the discount factor. :math:`\gamma \in [0, 1)` implies convergence, but this is
+    not enforced here.
+
+    When instantiated, this module has the signature::
+
+        R = time_distributed_return(r)
+    
+    where `r` is a two-dimensional tensor of shape ``(steps, batch_size)``, ``r[t, n]``
+    being the (0-indexed) ``t``-th element of the ``n``-th batch element sequence.
+    The return value `R` is a tensor of the same shape.
+
+
+    Parameters
+    ----------
+    r : torch.Tensor
+        A two-dimensional float tensor of shape ``(steps, batch_size)`` (or
+        ``(batch_size, steps)`` if `batch_first` is :obj:`True`) of local rewards. The
+        :math:`t` dimension is the step dimension
+    gamma : float
+        The discount factor :math:`\gamma`.
+    batch_first : bool, optional
+        Transposes the dimensions of `r` and `R` if :obj:`True`.
+
+    See Also
+    --------
+    :ref:`Gradient Estimators`
+        Provides an example of reinforcement learning that uses this function
+    """
+
+    __constants__ = ["gamma", "batch_first"]
+
+    gamma: float
+    batch_first: bool
+
+    def __init__(self, gamma: float, batch_first: bool):
+        super().__init__()
+        self.gamma = gamma
+        self.batch_first = batch_first
+
+    def extra_repr(self) -> str:
+        return f"gamma={self.gamma},batch_first={self.batch_first}"
+
+    def forward(self, r: torch.Tensor) -> torch.Tensor:
+        return time_distributed_return(r, self.gamma, self.batch_first)
 
 
 class Warp1DGrid(torch.nn.Module):

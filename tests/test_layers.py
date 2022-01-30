@@ -27,6 +27,24 @@ INF = float("inf")
 NAN = float("nan")
 
 
+@pytest.mark.parametrize("batch_first", [True, False])
+@pytest.mark.parametrize("gamma", [0.0, 0.95])
+def test_time_distributed_return(device, batch_first, gamma):
+    torch.manual_seed(290129)
+    steps, batch_size = 1000, 30
+    r = torch.randn(steps, batch_size, device=device)
+    exp = torch.empty_like(r)
+    exp[-1] = r[-1]
+    for step in range(steps - 2, -1, -1):
+        exp[step] = r[step] + gamma * exp[step + 1]
+    if batch_first:
+        r = r.t().contiguous()
+        exp = exp.t().contiguous()
+    time_distributed_return = layers.TimeDistributedReturn(gamma, batch_first)
+    act = time_distributed_return(r)
+    assert torch.allclose(exp, act, atol=1e-5)
+
+
 def test_warp_1d_grid(device, jit_type):
     N, W = 5, 7
     src = torch.arange(N, device=device)
@@ -498,7 +516,7 @@ def test_optimal_completion(device, include_eos, batch_first, exclude_last, jit_
         optimal_completion = torch.jit.script(optimal_completion)
     elif jit_type == "trace":
         optimal_completion = torch.jit.trace(
-            optimal_completion, (torch.full((1, 1), eos),) * 2
+            optimal_completion, (torch.full((1, 1), eos, dtype=torch.long),) * 2
         )
     act = optimal_completion(ref, hyp)
     if not batch_first:

@@ -696,52 +696,24 @@ def ctc_prefix_search_advance(
 def time_distributed_return(
     r: torch.Tensor, gamma: float, batch_first: bool = False
 ) -> torch.Tensor:
-    r"""Accumulate future local rewards at every time step
-
-    In `reinforcement learning
-    <https://en.wikipedia.org/wiki/Reinforcement_learning>`__, the return is defined as
-    the sum of discounted future rewards. This function calculates the return for a
-    given time step :math:`t` as
-
-    .. math::
-
-        R_t = \sum_{t'=t} \gamma^(t' - t) r_{t'}
-
-    Where :math:`r_{t'}` gives the (local) reward at time :math:`t'` and
-    :math:`\gamma` is the discount factor. :math:`\gamma \in [0, 1)` implies
-    convergence, but this is not enforced here
-
-    Parameters
-    ----------
-    r : torch.Tensor
-        A two-dimensional float tensor of shape ``(steps, batch_size)`` (or
-        ``(batch_size, steps)`` if `batch_first` is :obj:`True`) of local rewards. The
-        :math:`t` dimension is the step dimension
-    gamma : float
-        The discount factor
-    batch_first : bool, optional
-
-    Returns
-    -------
-    `R` : torch.Tensor
-        Of the same shape as `r`
-
+    """Functional version of TimeDistributedReturn
+    
     See Also
     --------
-    :ref:`Gradient Estimators`
-        Provides an example of reinforcement learning that uses this function
+    pydrobert.torch.layers.TimeDistributedReturn
+        For a description of this function and its parameters
     """
     if r.dim() != 2:
         raise RuntimeError("r must be 2 dimensional")
     if not gamma:
         return r
     if batch_first:
-        exp = torch.arange(r.shape[-1], device=r.device, dtype=r.dtype)
+        exp = torch.arange(r.size(1), device=r.device, dtype=r.dtype)
         discount = torch.pow(gamma, exp)
         discount = (discount.unsqueeze(1) / discount.unsqueeze(0)).tril()
         R = torch.matmul(r, discount)
     else:
-        exp = torch.arange(r.shape[0], device=r.device, dtype=r.dtype)
+        exp = torch.arange(r.size(0), device=r.device, dtype=r.dtype)
         discount = torch.pow(gamma, exp)
         discount = (discount.unsqueeze(0) / discount.unsqueeze(1)).triu()
         R = torch.matmul(discount, r)

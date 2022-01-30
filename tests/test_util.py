@@ -740,23 +740,6 @@ def test_random_walk_advance_config(device, prevent_eos, lens):
             assert not torch.any(y[: l.item(), bt, smp] == eos)
 
 
-@pytest.mark.parametrize("batch_first", [True, False])
-@pytest.mark.parametrize("gamma", [0.0, 0.95])
-def test_time_distributed_return(device, batch_first, gamma):
-    torch.manual_seed(290129)
-    steps, batch_size = 1000, 30
-    r = torch.randn(steps, batch_size, device=device)
-    exp = torch.empty_like(r)
-    exp[-1] = r[-1]
-    for step in range(steps - 2, -1, -1):
-        exp[step] = r[step] + gamma * exp[step + 1]
-    if batch_first:
-        r = r.t().contiguous()
-        exp = exp.t().contiguous()
-    act = util.time_distributed_return(r, gamma, batch_first=batch_first)
-    assert torch.allclose(exp, act, atol=1e-5)
-
-
 def test_polyharmonic_interpolation_linear(device):
     # when the order is 1, this should simply be linear interpolation
     x = torch.arange(3, device=device).unsqueeze(0).unsqueeze(-1).float()
