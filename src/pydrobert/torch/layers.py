@@ -16,39 +16,1219 @@
 
 import abc
 import math
-from typing import NoReturn, Optional, Sequence, Tuple, Dict, Union
+from turtle import forward
+from typing import (
+    Any,
+    NoReturn,
+    Optional,
+    Sequence,
+    Tuple,
+    Dict,
+    Union,
+    TYPE_CHECKING,
+)
 
 import torch
 
 from pydrobert.torch.util import (
     beam_search_advance,
+    dense_image_warp,
+    edit_distance,
     error_rate,
     optimal_completion,
-    polyharmonic_spline,
     ctc_prefix_search_advance,
     pad_variable,
+    polyharmonic_spline,
+    prefix_edit_distances,
+    prefix_error_rates,
+    sequence_log_probs,
+    sparse_image_warp,
+    time_distributed_return,
+    warp_1d_grid,
+    _get_tensor_eps,
 )
+
+import pydrobert.torch.config as config
+
+from ._compat import broadcast_shapes, script
 
 __all__ = [
     "BeamSearch",
     "ConcatSoftAttention",
     "CTCPrefixSearch",
+    "DenseImageWarp",
     "DotProductSoftAttention",
+    "EditDistance",
+    "ErrorRate",
     "ExtractableSequentialLanguageModel",
     "GeneralizedDotProductSoftAttention",
     "GlobalSoftAttention",
+    "hard_optimal_completion_distillation_loss",
     "HardOptimalCompletionDistillationLoss",
     "LookupLanguageModel",
+    "minimum_error_rate_loss",
     "MinimumErrorRateLoss",
     "MixableSequentialLanguageModel",
     "MultiHeadedAttention",
+    "OptimalCompletion",
+    "PadVariable",
+    "PolyharmonicSpline",
+    "PrefixEditDistances",
+    "PrefixErrorRates",
+    "random_shift",
     "RandomShift",
     "SequentialLanguageModel",
+    "SequentialLogProbabilities",
+    "SparseImageWarp",
+    "spec_augment_apply_parameters",
+    "spec_augment_draw_parameters",
+    "spec_augment",
     "SpecAugment",
+    "TimeDistributedReturn",
+    "Warp1DGrid",
 ]
 
-# XXX(sdrobert): a quick note on style. pytorch doesn't tend to protect its
-# read-only attributes using private members, so neither do we
+
+class TimeDistributedReturn(torch.nn.Module):
+    r"""Accumulate future local rewards at every time step
+
+    In `reinforcement learning
+    <https://en.wikipedia.org/wiki/Reinforcement_learning>`__, the return is defined as
+    the sum of discounted future rewards. This function calculates the return for a
+    given time step :math:`t` as
+
+    .. math::
+
+        R_t = \sum_{t'=t} \gamma^(t' - t) r_{t'}
+
+    Where :math:`r_{t'}` gives the (local) reward at time :math:`t'` and :math:`\gamma`
+    is the discount factor. :math:`\gamma \in [0, 1)` implies convergence, but this is
+    not enforced here.
+
+    When instantiated, this module has the signature::
+
+        R = time_distributed_return(r)
+    
+    where `r` is a two-dimensional tensor of shape ``(steps, batch_size)``, ``r[t, n]``
+    being the (0-indexed) ``t``-th element of the ``n``-th batch element sequence.
+    The return value `R` is a tensor of the same shape.
+
+
+    Parameters
+    ----------
+    r : torch.Tensor
+        A two-dimensional float tensor of shape ``(steps, batch_size)`` (or
+        ``(batch_size, steps)`` if `batch_first` is :obj:`True`) of local rewards. The
+        :math:`t` dimension is the step dimension
+    gamma : float
+        The discount factor :math:`\gamma`.
+    batch_first : bool, optional
+        Transposes the dimensions of `r` and `R` if :obj:`True`.
+
+    See Also
+    --------
+    :ref:`Gradient Estimators`
+        Provides an example of reinforcement learning that uses this function
+    """
+
+    __constants__ = ["gamma", "batch_first"]
+
+    gamma: float
+    batch_first: bool
+
+    def __init__(self, gamma: float, batch_first: bool):
+        super().__init__()
+        self.gamma = gamma
+        self.batch_first = batch_first
+
+    def extra_repr(self) -> str:
+        return f"gamma={self.gamma},batch_first={self.batch_first}"
+
+    def forward(self, r: torch.Tensor) -> torch.Tensor:
+        return time_distributed_return(r, self.gamma, self.batch_first)
+
+
+class Warp1DGrid(torch.nn.Module):
+    """Interpolate grid values for a dimension of a grid_sample
+
+    This module determines a grid along a single dimension of a signal,
+    image, volume, whatever. 
+
+    When instantiated, this method has the signature::
+
+        grid = warp_1d_grid(src, flow, lengths)
+    
+    `src` is a tensor of shape ``(N,)`` containing source points. `flow` is
+    a tensor of shape ``(N,)`` containing corresponding flow fields for `src`.
+    `lengths` is a long tensor of shape ``(N,)`` specifying the number of
+    valid indices along the dimension in question. The return value is a tensor
+    `grid` of shape ``(N, max_length)`` which provides coodinates for one
+    dimension of the grid passed to :func:`torch.nn.functional.grid_sample`.
+    See the example below.
+
+    Parameters
+    ----------
+    max_length : int or `None`, optional
+        A maximum length to which the grid will be padded. If unspecified,
+        it will be taken to be ``lengths.max().ceil()``.
+    interpolation_order : int, optional
+        The degree of the spline used ot interpolate the grid.
+    """
+
+    __constants__ = ["max_length", "interpolation_order"]
+
+    interpolation_order: int
+    max_length: Optional[int]
+
+    def __init__(self, max_length: Optional[int] = None, interpolation_order: int = 1):
+        super().__init__()
+        if max_length is not None and max_length < 0:
+            raise ValueError("max_length must be non-negative")
+        self.max_length = max_length
+        self.interpolation_order = interpolation_order
+
+    def extra_repr(self) -> str:
+        s = f"interpolation_order={self.interpolation_order}"
+        if self.max_length is not None:
+            s = f"max_length={self.max_length}, " + s
+        return s
+
+    def forward(
+        self, src: torch.Tensor, flow: torch.Tensor, lengths: torch.Tensor
+    ) -> torch.Tensor:
+        return warp_1d_grid(
+            src, flow, lengths, self.max_length, self.interpolation_order
+        )
+
+
+class PadVariable(torch.nn.Module):
+    """Pad variable-length input by a variable amount on each side
+
+    This module attempts to replicate the behaviour of :func:`torch.nn.functional.pad`
+    on a tensor containing variable sequence lengths with variable amounts of
+    padding.
+
+    When instantiated, this module has the signature::
+
+        padded = pad_variable(x, lens, pad)
+
+    `x` is a tensor of shape ``(N, T, *)`` where ``N`` is the batch index and ``T`` is
+    the sequence index. `lens` is a long tensor of shape ``(N,)`` specifying the
+    sequence lengths: only the values in the range ``x[n, :lens[n]]`` are considered
+    part of the sequence of batch element ``n``. `pad` is a tensor of shape ``(2, N)``
+    specifying how many elements at the start (``pad[0]``) and end (``pad[1]``) of each
+    sequence. The return tensor `padded` will have shape ``(N, T', *)`` such that, for a
+    given batch index ``n``::
+
+        padded[n, :pad[0, n]] = left padding
+        padded[n, pad[0,n]:pad[0,n] + lens[n]] = x[n, :lens[n]]
+        padded[n, pad[0,n] + lens[n]:pad[0,n] + lens[n] + pad[1, n]] = right padding
+
+    Parameters
+    ----------
+    mode : {'constant', 'reflect', 'replicate'}, optional
+        How to pad the sequences. :obj:`'constant'`: fill the padding region with the
+        value specified by `value`. :obj:`'reflect'`: padded values are reflections
+        around the endpoints. For example, the first right-padded value of the ``n``-th
+        sequence would be ``x[n, lens[n] - 2``, the third ``x[n, lens[n] - 3]``, and
+        so on. :obj:`replicate`: padding duplicates the endpoints of each sequence.
+        For example, the left-padded values of the ``n``-th sequence would all be
+        ``x[n, 0]``; the right-padded values would be ``x[n, lens[n] - 1]``.
+    value : scalar, optional
+        The value to pad with when ``mode == 'constant'``.
+
+    Raises
+    ------
+    NotImplementedError
+        If any value in ``pad[:, n]`` equals or exceeds ``lens[n]`` when
+        ``mode == 'reflect'``
+    RuntimeError
+        If any element in `lens` is less than 1 when ``mode == 'replicate'``
+
+    Examples
+    --------
+
+    >>> x = torch.arange(10).view(2, 5)
+    >>> x
+    tensor([[0, 1, 2, 3, 4],
+            [5, 6, 7, 8, 9]])
+    >>> lens = torch.tensor([3, 4])
+    >>> pad = torch.arange(4).view(2, 2)
+    >>> pad.t()  # [[0_left, 0_right], [1_left, 1_right]]
+    tensor([[0, 2],
+            [1, 3]])
+    >>> y = pad_variable(x, lens, pad)  # constant w/ value 0
+    >>> y[0, :3 + 0 + 2]
+    tensor([0, 1, 2, 0, 0])
+    >>> y[1, :4 + 1 + 3]
+    tensor([0, 5, 6, 7, 8, 0, 0, 0])
+    >>> y = pad_variable(x, lens, pad, 'reflect')
+    >>> y[0, :3 + 0 + 2]
+    tensor([0, 1, 2, 1, 0])
+    >>> y[1, :4 + 1 + 3]
+    tensor([6, 5, 6, 7, 8, 7, 6, 5])
+    >>> y = pad_variable(x, lens, pad, 'replicate')
+    >>> y[0, :3 + 0 + 2]
+    tensor([0, 1, 2, 2, 2])
+    >>> y[1, :4 + 1 + 3]
+    tensor([5, 5, 6, 7, 8, 8, 8, 8])
+    """
+
+    __constants__ = ["mode", "value"]
+
+    mode: str
+    value: float
+
+    def __init__(self, mode: str = "constant", value: float = 0.0):
+        super().__init__()
+        if mode not in {"constant", "reflect", "replicate"}:
+            raise ValueError(
+                "mode should be one of 'constant', 'reflect', or 'replicate', got "
+                f"'{mode}'"
+            )
+        self.mode = mode
+        self.value = value
+
+    def extra_repr(self) -> str:
+        s = f"mode={self.mode}"
+        if self.mode == "constant":
+            s += f", value={self.value}"
+        return s
+
+    def forward(
+        self, x: torch.Tensor, lens: torch.Tensor, pad: torch.Tensor
+    ) -> torch.Tensor:
+        return pad_variable(x, lens, pad, self.mode, self.value)
+
+
+_SM_ARGS = """\
+`ref` is a long tensor of shape ``(max_ref_steps, batch_size)`` such that the
+``n``-th reference (gold-standard) token sequence is stored in ``ref[:, n]``. `hyp`
+is a long tensor of shape ``(max_hyp_steps, batch_size)`` containing the hypothesis
+(machine-generated) sequences."""
+
+_SM_PARAM_DICT = {
+    "eos": """\
+    eos : int or None, optional
+        A special token in `ref` and `hyp` whose first occurrence in each batch
+        indicates the end of a transcript. This allows for variable-length transcripts
+        in the batch.
+    """,
+    "include_eos": """\
+    include_eos : bool, optional
+        Whether to include the first instance of `eos` found in both `ref` and `hyp` as
+        valid tokens to be computed as part of the rate. This is useful when gauging
+        if a model is learning to emit the `eos` properly, but is not usually included
+        in an evaluation. Only the first `eos` per transcript is included.
+    """,
+    "norm": """\
+    norm : bool, optional
+        If :obj:`True`, will normalize the distance by the number of tokens in the
+        reference sequence (making the returned value a divergence)
+    """,
+    "batch_first": """\
+    batch_first : bool, optional
+        If :obj:`True`, the first two dimensions of `ref`, `hyp`, and the return value
+        are transposed from those above.
+    """,
+    "ins_cost": """\
+    ins_cost : float, optional
+        The cost of an adding an extra token to a sequence in `ref`
+    """,
+    "del_cost": """\
+    del_cost : float, optional
+        The cost of removing a token from a sequence in `ref`
+    """,
+    "sub_cost": """\
+    sub_cost : float, optional
+        The cost of swapping a token from `ref` with one from `hyp`
+    """,
+    "warn": """\
+    warn : bool, optional
+        Whether to display warnings on irregularities. Currently, this can happen in
+        three ways:
+
+        1. If :obj:`True` and `ins_cost`, `del_cost`, or `sub_cost` is not 1, a warning
+           about a difference in computations will be raised. See the below warning for
+           more info.
+        2. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
+           transcription has zero length
+        3. If `eos` is set and `include_eos` is :obj:`True`, will warn when a transcript
+           does not include an `eos` symbol
+    """,
+    "padding": """\
+    padding : int, optional
+        The value to right-pad unequal-length sequences with. Defauls to
+        :obj:`pydrobert.torch.config.INDEX_PAD_VALUE`.
+    """,
+    "exclude_last": """\
+    exclude_last : bool, optional
+        If true, will exclude the final prefix, consisting of the entire transcript,
+        from the return value. It will be of shape ``(max_hyp_steps, batch_size,
+        max_unique_next)``
+    """,
+}
+
+
+class _StringMatching(torch.nn.Module, metaclass=abc.ABCMeta):
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "warn",
+    ]
+
+    eos: Optional[int]
+    include_eos: bool
+    batch_first: bool
+    ins_cost: float
+    del_cost: float
+    sub_cost: float
+    warn: bool
+
+    def __init__(
+        self, eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
+    ):
+        super().__init__()
+        self.eos = eos
+        self.include_eos = include_eos
+        self.batch_first = batch_first
+        self.ins_cost = ins_cost
+        self.del_cost = del_cost
+        self.sub_cost = sub_cost
+        self.warn = warn
+
+    def extra_repr(self) -> str:
+        return ", ".join(f"{x}={getattr(self, x)}" for x in self.__constants__)
+
+    @abc.abstractmethod
+    def forward(self, ref: torch.Tensor, hyp: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class EditDistance(_StringMatching):
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "norm",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "warn",
+    ]
+
+    norm: bool
+
+    def __init__(
+        self,
+        eos: Optional[int] = None,
+        include_eos: bool = False,
+        norm: bool = False,
+        batch_first: bool = False,
+        ins_cost: float = 1.0,
+        del_cost: float = 1.0,
+        sub_cost: float = 1.0,
+        warn: bool = True,
+    ):
+        super().__init__(
+            eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
+        )
+        self.norm = norm
+
+    __doc__ = f"""Compute an edit distance over a batch of references and hypotheses
+
+    An `Edit Distance <https://en.wikipedia.org/wiki/Edit_distance>`__ quantifies
+    how dissimilar two token sequences are as the total cost of transforming a
+    reference sequence into a hypothesis sequence. There are three operations that can
+    be performed, each with an associated cost: adding an extra token to the reference,
+    removing a token from the reference, or swapping a token in the reference with a
+    token in the hypothesis.
+
+    When instantiated, this module has the signature::
+
+        ed = edit_distance(ref, hyp)
+
+    {_SM_ARGS}  The return value `ed` is a tensor of shape ``(batch_size,)`` storing the
+    associated edit distances.
+
+    Parameters
+    ----------
+    {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+
+    Notes
+    -----
+    This module returns identical values (modulo a bug fix) to :func:`error_rate` up
+    to `v0.3.0` (though the default of `norm` has changed to :obj:`False`). For more
+    details on the distinction between this module and the new :func:`ErrorRate`,
+    please see that module's documentation.
+    """
+
+    def forward(self, ref: torch.Tensor, hyp: torch.Tensor) -> torch.Tensor:
+        return edit_distance(
+            ref,
+            hyp,
+            self.eos,
+            self.include_eos,
+            self.norm,
+            self.batch_first,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.warn,
+        )
+
+
+class PrefixEditDistances(_StringMatching):
+
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "norm",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "padding",
+        "exclude_last",
+        "warn",
+    ]
+
+    norm: bool
+    padding: int
+    exclude_last: bool
+
+    def __init__(
+        self,
+        eos: Optional[int] = None,
+        include_eos: bool = True,
+        norm: bool = False,
+        batch_first: bool = False,
+        ins_cost: float = 1.0,
+        del_cost: float = 1.0,
+        sub_cost: float = 1.0,
+        padding: int = config.INDEX_PAD_VALUE,
+        exclude_last: bool = False,
+        warn: bool = True,
+    ):
+        super().__init__(
+            eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
+        )
+        self.norm = norm
+        self.padding = padding
+        self.exclude_last = exclude_last
+
+    __doc__ = f"""Compute the edit distance between ref and each prefix of hyp
+
+    When instantiated, this module has the signature::
+
+        prefix_eds = prefix_edit_distances(ref, hyp)
+    
+    {_SM_ARGS} The return value `prefix_eds` is of shape ``(max_hyp_steps + 1,
+    batch_size)`` and contains the edit distances for each prefix of each hypothesis,
+    starting from the empty prefix.
+
+    Parameters
+    ----------
+    {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+    
+    Notes
+    -----
+    This module returns identical values (modulo a bug fix) to
+    :func:`prefix_error_rates` (and :class:`PrefixErrorRates`) up to `v0.3.0` (though
+    the default of `norm` has changed to :obj:`False`). For more details on the
+    distinction between this module and the new :func:`prefix_error_rates`, please
+    consult the documentation of :class:`ErrorRate`.
+    """
+
+    def forward(self, ref: torch.Tensor, hyp: torch.Tensor) -> torch.Tensor:
+        return prefix_edit_distances(
+            ref,
+            hyp,
+            self.eos,
+            self.include_eos,
+            self.norm,
+            self.batch_first,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.padding,
+            self.exclude_last,
+            self.warn,
+        )
+
+
+class ErrorRate(_StringMatching):
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "norm",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "warn",
+    ]
+
+    norm: bool
+
+    def __init__(
+        self,
+        eos: Optional[int] = None,
+        include_eos: bool = False,
+        norm: bool = True,
+        batch_first: bool = False,
+        ins_cost: float = 1.0,
+        del_cost: float = 1.0,
+        sub_cost: float = 1.0,
+        warn: bool = True,
+    ):
+        super().__init__(
+            eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
+        )
+        self.norm = norm
+
+    __doc__ = f"""Calculate error rates over a batch of references and hypotheses
+
+    An error rate is the total number of insertions, deletions, and substitutions
+    between a reference (gold-standard) and hypothesis (generated) transcription,
+    normalized by the number of elements in a reference. Consult the Wikipedia article
+    on the `Levenshtein distance <https://en.wikipedia.org/wiki/Levenshtein_distance>`__
+    for more information.
+
+    When instantiated, this module has the signature::
+
+        er = error_rate(ref, hyp)
+
+    {_SM_ARGS} The return value `er` is a tensor of shape ``(batch_size,)`` storing the
+    associated error rates. `er` will not have a gradient, and is thus not directly
+    suited to being a loss function.
+
+    Parameters
+    ----------
+    {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+
+    Warnings
+    --------
+    Up to and including `v0.3.0`, :func:`error_rate` computed a normalized
+    `Edit distance <https://en.wikipedia.org/wiki/Edit_distance>`__ instead of an error
+    rate. The latter can be considered the total weighted cost of insertions, deletions,
+    and substitutions (as per `ins_cost`, `del_cost`, and `sub_cost`), whereas the
+    former is the sum of the number of mistakes. The old behaviour of returning the cost
+    is now in :func:`edit_distance` and :class:`EditDistance` (though `norm` is
+    :obj:`False` by default). For speech recognition evaluation, this module or
+    :func:`error_rate` is the one to use. However, if you are using the default costs,
+    ``ins_cost == del_cost == sub_cost == 1``, there should be no numerical difference
+    between the two.
+    """
+
+    def forward(self, ref: torch.Tensor, hyp: torch.Tensor) -> torch.Tensor:
+        return error_rate(
+            ref,
+            hyp,
+            self.eos,
+            self.include_eos,
+            self.norm,
+            self.batch_first,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.warn,
+        )
+
+
+class PrefixErrorRates(_StringMatching):
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "norm",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "padding",
+        "exclude_last",
+        "warn",
+    ]
+
+    norm: bool
+    padding: int
+    exclude_last: bool
+
+    def __init__(
+        self,
+        eos: Optional[int] = None,
+        include_eos: bool = True,
+        norm: bool = True,
+        batch_first: bool = False,
+        ins_cost: float = 1.0,
+        del_cost: float = 1.0,
+        sub_cost: float = 1.0,
+        padding: int = config.INDEX_PAD_VALUE,
+        exclude_last: bool = False,
+        warn: bool = True,
+    ):
+        super().__init__(
+            eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
+        )
+        self.norm = norm
+        self.padding = padding
+        self.exclude_last = exclude_last
+
+    __doc__ = f"""Compute the error rate between ref and each prefix of hyp
+
+    When instantiated, this module has the signature::
+
+        prefix_ers = prefix_error_rates(ref, hyp)
+    
+    {_SM_ARGS} The return value `prefix_ers` is of shape ``(max_hyp_steps + 1,
+    batch_size)`` and contains the error rates for each prefix of each hypothesis,
+    starting from the empty prefix.
+
+    Parameters
+    ----------
+    {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+
+    Warnings
+    --------
+    The values returned by :func:`prefix_error_rates` (and thus this module) changed
+    after `v0.3.0`. The old behaviour can be found in :class:`PrefixEditDistances`
+    (though with `norm` defaulting to :obj:`False`). Consult the warning in
+    :class:`ErrorRate` for more info.
+    """
+
+    def forward(self, ref: torch.Tensor, hyp: torch.Tensor) -> torch.Tensor:
+        return prefix_error_rates(
+            ref,
+            hyp,
+            self.eos,
+            self.include_eos,
+            self.norm,
+            self.batch_first,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.padding,
+            self.exclude_last,
+            self.warn,
+        )
+
+
+class OptimalCompletion(_StringMatching):
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "padding",
+        "exclude_last",
+        "warn",
+    ]
+
+    padding: int
+    exclude_last: bool
+
+    def __init__(
+        self,
+        eos: Optional[int] = None,
+        include_eos: bool = True,
+        batch_first: bool = False,
+        ins_cost: float = 1.0,
+        del_cost: float = 1.0,
+        sub_cost: float = 1.0,
+        padding: int = config.INDEX_PAD_VALUE,
+        exclude_last: bool = False,
+        warn: bool = True,
+    ):
+        super().__init__(
+            eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
+        )
+        self.padding = padding
+        self.exclude_last = exclude_last
+
+    __doc__ = f"""Return a mask of next tokens of a minimum edit distance prefix
+    
+    When instantiated, this module has the signature::
+
+        optimals = optimal_completion(ref, hyp)
+    
+    {_SM_ARGS} The return value `optimals` is a long tensor of shape ``(max_hyp_steps +
+    1, batch_size, max_unique_next)``, where ``max_unique_next <= max_ref_steps``, of
+    the unique tokens that could be added to the hypothesis prefix ``hyp[:prefix_len,
+    batch]`` such that some remaining suffix concatenated to the prefix would result in
+    a minimal edit distance. See below for an example.
+
+    Parameters
+    ----------
+    {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+
+    Examples
+    --------
+
+    Consider the reference text "foot" and the hypothesis text "bot". The below shows
+    the matrix used to calculate edit distances between them::
+
+        \ _ f o o t
+        _ 0 1 2 3 4
+        b 1 1 2 3 4
+        o 2 2 1 2 3
+        t 3 3 2 2 2
+
+    If ``prefix_len == 0``, then the prefix is "", and "f" (from the suffix "foot") is
+    the only subsequent token that would not increase the edit distance from that of the
+    prefix (0). If ``prefix_len == 1``, then the prefix is "b". To arrive at the minimum
+    edit distance for "b", one either treats "b" as an insertion or a substitution for
+    "f", yielding suffixes "foot" and "oot". Thus, the subsequent token could be "f" or
+    "o". For the prefix "bo", the minimum edit distance is achieved by first
+    substituting "f" for "b", then substituting "o" for "o", resulting in the suffix
+    "ot" and the next optimal character "o". Finally, for ``prefix_len == 3`` and prefix
+    "bot", there are many operations that can produce the minimum edit distance of 2,
+    resulting in one of the suffixes "ot", "t", and "". The latter suffix requires no
+    more tokens and so any operation would increase the edit distance. Thus the optimal
+    next tokens could be "o" or "t".
+
+    Plugging "foot" and "bot" into this function, we get the prefixes:
+
+    >>> ref_text, hyp_text = "foot", "bot"
+    >>> ref = torch.tensor([ord(c) for c in ref_text]).unsqueeze(1)
+    >>> hyp = torch.tensor([ord(c) for c in hyp_text]).unsqueeze(1)
+    >>> optimal = optimal_completion(ref, hyp).squeeze(1)
+    >>> for prefix_len, o_for_pr in enumerate(optimal):
+    ...     o_for_pr = o_for_pr.masked_select(o_for_pr.ge(0)).tolist()
+    ...     print('prefix={{}}: {{}}'.format(
+    ...         hyp_text[:prefix_len], ','.join([chr(i) for i in o_for_pr])))
+    prefix=: f
+    prefix=b: f,o
+    prefix=bo: o
+    prefix=bot: o,t
+
+    See Also
+    --------
+    pydrobert.torch.layers.HardOptimalCompletionDistillationLoss
+        A loss function that uses these optimal completions to train a model
+    """
+
+    def forward(self, ref: torch.Tensor, hyp: torch.Tensor) -> torch.Tensor:
+        return optimal_completion(
+            ref,
+            hyp,
+            self.eos,
+            self.include_eos,
+            self.batch_first,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.padding,
+            self.exclude_last,
+            self.warn,
+        )
+
+
+class SparseImageWarp(torch.nn.Module):
+    r"""Warp an image by specifying mappings between few control points
+
+    This module, when instantiated, has the signature::
+
+        warped[, flow] = sparse_image_warp(image, source_points, dest_points)
+
+    `image` is a source image of shape `(N, C, H, W)``, where ``N`` is the batch
+    dimension, ``C`` the channel dimension, ``H`` the image height, and ``W`` the image
+    width. `source_points` and `dest_points` are tensors of shape ``(N, M, 2)``, where
+    ``M`` is the number of control points. `warped` is a float tensor of shape ``(N, C,
+    H, W)`` containing the warped images. The point ``source_points[n, m, :]`` in
+    `image` will be mapped to ``dest_points[n, m, :]`` in `warped`. If `include_flow` is
+    :obj:`True`, `flow`, a float tensor of shape ``(N, H, W, 2)``. ``flow[n, h, w, :]``
+    is the flow for coordinates ``h, w`` in whatever order was specified by `indexing`.
+    See :class:`DenseImageWarp` for more details about `flow`.
+
+    This module mirrors the behaviour of Tensorflow's `sparse_image_warp
+    <https://www.tensorflow.org/addons/api_docs/python/tfa/image/sparse_image_warp>`__,
+    except `image` is in ``NCHW`` order instead of ``NHWC`` order. For more details,
+    please consult their documentation.
+
+    Parameters
+    ----------
+    indexing : {'hw', 'wh'}, optional
+        If `indexing` is ``"hw"``, ``source_points[n, m, 0]`` and
+        ``dest_points[n, m, 0]`` index the height dimension in `image` and `warped`,
+        respectively, and ``source_points[n, m, 1]`` and ``dest_points[n, m, 1]`` the
+        width dimension. If `indexing` is ``"wh"``, the width dimension is the 0-index
+        and height the 1.
+    field_interpolation_order : int, optional
+        The order of the polyharmonic spline used to interpolate the rest of the points
+        from the control. See :func:`polyharmonic_spline` for more info.
+    field_regularization_weight : int, optional
+        The regularization weight of the polyharmonic spline used to interpolate the
+        rest of the points from the control. See :func:`polyharmonic_spline` for more
+        info.
+    field_full_matrix : bool, optional
+        Determines the method of calculating the polyharmonic spline used to interpolate
+        the rest of the points from the control. See :func:`polyharmonic_spline` for
+        more info.
+    pinned_boundary_points : int, optional
+        Dictates whether and how many points along the boundary of `image` are mapped
+        identically to points in `warped`. This keeps the boundary of the `image` from
+        being pulled into the interior of `warped`. When :obj:`0`, no points are added.
+        When :obj:`1`, four points are added, one in each corner of the image. When
+        ``k > 2``, one point in each corner of the image is added, then ``k - 1``
+        equidistant points along each of the four edges, totaling ``4 * k`` points.
+    dense_interpolation_mode : {'bilinear', 'nearest'}, optional
+        The method with which partial indices in the derived mapping are interpolated.
+        See :func:`dense_image_warp` for more info.
+    dense_padding_mode : {'border', 'zero', 'reflection'}, optional
+        What to do when points in the derived mapping fall outside of the boundaries.
+        See :func:`dense_image_warp` for more info.
+    include_flow : bool, optional
+        If :obj:`True`, include the flow field `flow` interpolated from the control
+        points in the return value.
+    
+    Warnings
+    --------
+    When this module is scripted, its return type will be :class:`typing.Any`. This
+    reflects the fact that either `warn` is returned on its own (a tensor) or both
+    `warn` and `flow` (a tuple). Use :func:`torch.jit.isinstance` for type refinement in
+    subsequent scripting. Tracing will infer the correct type.
+    """
+
+    __constants__ = [
+        "indexing",
+        "field_interpolation_order",
+        "field_regularization_weight",
+        "field_full_matrix",
+        "pinned_boundary_points",
+        "dense_interpolation_mode",
+        "dense_padding_mode",
+        "include_flow",
+    ]
+
+    field_interpolation_order: int
+    field_regularization_weight: float
+    field_full_matrix: bool
+    pinned_boundary_points: int
+    dense_interpolation_mode: str
+    dense_padding_mode: str
+    include_flow: bool
+
+    def __init__(
+        self,
+        indexing: str = "hw",
+        field_interpolation_order: int = 2,
+        field_regularization_weight: float = 0.0,
+        field_full_matrix: bool = True,
+        pinned_boundary_points: int = 0,
+        dense_interpolation_mode: str = "bilinear",
+        dense_padding_mode: str = "border",
+        include_flow: bool = True,
+    ):
+        super().__init__()
+        if field_interpolation_order <= 0:
+            raise ValueError(
+                "field_interpolation_order must be positive, got "
+                f"{field_interpolation_order}"
+            )
+        if pinned_boundary_points < 0:
+            raise ValueError(
+                "pinned_boundary_points must be non-negative, got "
+                f"{pinned_boundary_points}"
+            )
+        if indexing not in {"hw", "wh"}:
+            raise ValueError(f"indexing must be either 'hw' or 'wh', got '{indexing}'")
+        if dense_interpolation_mode not in {"bilinear", "nearest"}:
+            raise ValueError(
+                "dense_interpolation_mode must be either 'bilinear' or 'nearest', got "
+                f"'{dense_interpolation_mode}'"
+            )
+        if dense_padding_mode not in {"border", "zeros", "reflection"}:
+            raise ValueError(
+                "dense_padding_mode must be one of 'border', 'zeros', or 'relection', "
+                f"got '{dense_padding_mode}'"
+            )
+        self.indexing = indexing
+        self.field_interpolation_order = field_interpolation_order
+        self.field_regularization_weight = field_regularization_weight
+        self.field_full_matrix = field_full_matrix
+        self.pinned_boundary_points = pinned_boundary_points
+        self.dense_interpolation_mode = dense_interpolation_mode
+        self.dense_padding_mode = dense_padding_mode
+        self.include_flow = include_flow
+
+    def extra_repr(self) -> str:
+        return ", ".join(f"{x}={getattr(self, x)}" for x in self.__constants__)
+
+    if TYPE_CHECKING:
+
+        def forward(
+            self,
+            image: torch.Tensor,
+            source_points: torch.Tensor,
+            dest_points: torch.Tensor,
+        ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+            pass
+
+    else:
+
+        def forward(
+            self,
+            image: torch.Tensor,
+            source_points: torch.Tensor,
+            dest_points: torch.Tensor,
+        ) -> Any:
+            return sparse_image_warp(
+                image,
+                source_points,
+                dest_points,
+                self.indexing,
+                self.field_interpolation_order,
+                self.field_regularization_weight,
+                self.field_full_matrix,
+                self.pinned_boundary_points,
+                self.dense_interpolation_mode,
+                self.dense_padding_mode,
+                self.include_flow,
+            )
+
+
+class PolyharmonicSpline(torch.nn.Module):
+    """Guess values at query points using a learned polyharmonic spline
+
+    A spline estimates a function ``f : points -> values`` from a fixed number of
+    training points/knots and the values of ``f`` at those points. It does that by
+    solving a series of piecewise linear equations between knots such that the values at
+    the knots match the given values (and some additional constraints depending on the
+    spline).
+
+    This module is based on the `interpolate_spline
+    <https://www.tensorflow.org/addons/api_docs/python/tfa/image/interpolate_spline>`__
+    function from Tensorflow, which implements a `Polyharmonic Spline
+    <https://en.wikipedia.org/wiki/Polyharmonic_spline>`__. For technical details,
+    consult the TF documentation.
+
+    The call signature of this module, once instantiated, is::
+
+        query_values = polyharmonic_spline(
+            train_points, train_values, query_points, query_values
+        )
+    
+    `train_points` is tensor of shape ``(N, T, I)`` representing the training
+    points/knots for ``N`` different functions. ``N`` is the batch dimension, ``T`` is
+    the number of training points, and ``I`` is the size of the vector input to ``f``.
+    `train_values` is a float tensor of shape ``(N, T, O)`` of ``f`` evaluated on
+    `train_points`. ``O`` is the size of the output vector of ``f``. `query_points` is
+    a tensor of shape ``(N, Q, I)`` representing the points you wish to have
+    estimates for. ``Q`` is the number of such points. `query_values` is a tensor of
+    shape ``(N, Q, O)`` consisting of the values estimated by the spline
+
+    Parameters
+    ----------
+    order : int
+        Order of the spline (> 0). 1 = linear. 2 = thin plate spline.
+    regularization_weight : float, optional
+        Weight placed on the regularization term. See TF for more info.
+    full_matrix : bool, optional
+        Whether to solve linear equations via a full concatenated matrix or a block
+        decomposition. Setting to :obj:`True` better matches TF and appears to slightly
+        improve numerical accuracy at the cost of twice the run time and more memory
+        usage.
+
+    Throws
+    ------
+    RuntimeError
+        This module can return a :class`RuntimeError` when no unique spline can be
+        estimated. In general, the spline will require at least ``I+1`` non-degenerate
+        points (linearly independent). See the Wikipedia entry on splnes for more info.
+    """
+
+    __constants__ = ["order", "regularization_weight", "full_matrix"]
+
+    order: int
+    regularization_weight: float
+    full_matrix: bool
+
+    def __init__(
+        self, order: int, regularization_weight: float = 0.0, full_matrix: bool = True
+    ):
+        super().__init__()
+        if order <= 0:
+            raise ValueError(f"order must be positive, got {order}")
+        self.order = order
+        self.regularization_weight = regularization_weight
+        self.full_matrix = full_matrix
+
+    def forward(
+        self,
+        train_points: torch.Tensor,
+        train_values: torch.Tensor,
+        query_points: torch.Tensor,
+    ) -> torch.Tensor:
+        return polyharmonic_spline(
+            train_points,
+            train_values,
+            query_points,
+            self.order,
+            self.regularization_weight,
+            self.full_matrix,
+        )
+
+
+class DenseImageWarp(torch.nn.Module):
+    """Warp an input image with per-pixel flow vectors
+
+    Once initialized, this module is called with the signature::
+
+        warped = dense_image_warp(image, flow)
+
+    `image` is a float tensor of shape ``(N, C, H, W)``, where ``N`` is the batch
+    dimension, ``C`` is the channel dimension, ``H`` is the height dimension, and ``W``
+    is the width dimension. `flow` is a float tensor of shape ``(N, H, W, 2)``.
+    It returns a new image `warped` of shape ``(N, C, H, W)`` such that
+
+    ::
+        warped[n, c, h, w] = image[n, c, h - flow[n, h, w, 0], w - flow[n, h, w, 1]]
+
+    If the reference indices ``h - ...`` and ``w - ...`` are not integers, the value is
+    interpolated from the neighboring pixel values.
+
+    This reproduces the functionality of Tensorflow's `dense_image_warp
+    <https://www.tensorflow.org/addons/api_docs/python/tfa/image/dense_image_warp>`__,
+    except `image` is in ``NCHW`` order instead of ``NHWC`` order. It wraps
+    `torch.nn.functional.grid_sample`.
+
+    Warning
+    -------
+    `flow` is not an optical flow. Please consult the TF documentation for more details.
+
+    Parameters
+    ----------
+    indexing : {'hw', 'wh'}, optional
+        If `indexing` is ``"hw"``, ``flow[..., 0] = h``, the height index, and
+        ``flow[..., 1] = w`` is the width index. If ``"wh"``, ``flow[..., 0] = w``
+        and ``flow[..., 1] = h``. The default in TF is ``"hw"``, whereas torch's
+        `grid_sample` is ``"wh"``
+    mode : {'bilinear', 'nearest'}, optional
+        The method of interpolation. Either use bilinear interpolation or the nearest
+        pixel value. The TF default is ``"bilinear"``
+    padding_mode : {"border", "zeros", "reflection"}
+        Controls how points outside of the image boundaries are interpreted.
+        ``"border"``: copy points at around the border of the image. ``"zero"``:
+        use zero-valued pixels. ``"reflection"``: reflect pixels into the image starting
+        from the boundaries.
+    """
+
+    __constants__ = ["indexing", "mode", "padding_mode"]
+
+    indexing: str
+    mode: str
+    padding_mode: str
+
+    def __init__(
+        self,
+        indexing: str = "hw",
+        mode: str = "bilinear",
+        padding_mode: str = "border",
+    ):
+        super().__init__()
+        if indexing not in {"hw", "wh"}:
+            raise ValueError(f"indexing must be either 'hw' or 'wh', got '{indexing}'")
+        if mode not in {"bilinear", "nearest"}:
+            raise ValueError(
+                f"mode must be either 'bilinear' or 'nearest', got '{mode}'"
+            )
+        if padding_mode not in {"border", "zeros", "reflection"}:
+            raise ValueError(
+                "padding_mode must be one of 'border', 'zeros', or 'relection', got "
+                f"'{padding_mode}'"
+            )
+        self.indexing = indexing
+        self.mode = mode
+        self.padding_mode = padding_mode
+
+    def forward(self, image: torch.Tensor, flow: torch.Tensor) -> torch.Tensor:
+        return dense_image_warp(
+            image, flow, self.indexing, self.mode, self.padding_mode
+        )
+
+
+class SequentialLogProbabilities(torch.nn.Module):
+    r"""Calculate joint log probability of sequences
+
+    Once initialized, this module is called with the signature::
+
+        log_probs = sequential_log_probs(logits, hyp)
+
+    `logits` is a tensor of shape ``(..., steps, ..., num_classes)`` where ``steps``
+    enumerates the time/step `dim`-th dimension. `hyp` is a long tensor of shape
+    ``(..., steps, ...)`` matching the shape of `logits` minus the last dimension.
+    Letting :math:`t` index the step dimension and :math:`b` index all other shared
+    dimensions of `logits` and `hyp`, this function outputs a tensor `log_probs` of the
+    log-joint probability of sequences in the batch:
+
+    .. math::
+
+        \log Pr(samp_b = hyp_b) = \log \left(
+            \prod_t Pr(samp_{b,t} == hyp_{b,t}; logits_{b,t})\right)
+
+    :math:`logits_{b,t}` (with the last dimension free) characterizes a categorical
+    distribution over ``num_classes`` tokens via a softmax function. We assume
+    :math:`samp_{b,t}` is independent of :math:`samp_{b',t'}` given :math:`logits_t`.
+
+    The resulting tensor `log_probs` is matches the shape of `logits` or `hyp` without
+    the ``step`` and ``num_classes`` dimensions.
+
+    Any values of `hyp` not in ``[0, num_classes)`` will be considered padding and
+    ignored.
+
+    If `eos` (end-of-sentence) is set, the first occurrence at :math:`b,t` is included
+    in the sequence, but all :math:`b,>t` are ignored.
+    
+    `logits` may instead be a :class:`torch.nn.utils.rnn.PackedSequence`, though `hyp`
+    must remain a tensor. `eos` is ignored in this case.
+
+    Parameters
+    ----------
+    dim : int, optional
+    eos : int or :obj:`None`, optional
+
+    Notes
+    -----
+    :class:`PackedSequence` instances with ``enforce_sorted=False`` first sort sequences
+    by length. The sort is not guaranteed to be deterministic if some entries have equal
+    length. To avoid the possibility that `logits` and `hyp` are sorted differently, we
+    require `hyp` to always be a :class:`torch.Tensor`.
+    """
+
+    __constants__ = ["dim", "eos"]
+    dim: int
+    eos: Optional[int]
+
+    def __init__(self, dim: int = 0, eos: Optional[int] = None):
+        super().__init__()
+        self.dim = dim
+        self.eos = eos
+
+    def extra_repr(self) -> str:
+        s = f"dim={self.dim}"
+        if self.eos is not None:
+            s += f", eos={self.eos}"
+        return s
+
+    if TYPE_CHECKING:
+
+        def forward(
+            self,
+            logits: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
+            hyp: torch.Tensor,
+        ) -> torch.Tensor:
+            pass
+
+    else:
+
+        def forward(self, logits: Any, hyp: torch.Tensor) -> torch.Tensor:
+            return sequence_log_probs(logits, hyp, self.dim, self.eos)
 
 
 class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
@@ -80,13 +1260,12 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     = v | w^{(n)}_{s - 1}, \ldots)`. That is, each distribution over types conditioned
     on each prefix of tokens (``:0``, ``:1``, ``:2``, etc.) is returned.
 
-    If `idx` is specified, it must be a long tensor of shape ``(0,)`` or ``(N,)``. The
-    former is broadcast into the latter. The call returns a pair. The first element is
-    `log_probs_idx` of shape ``(N, vocab_size)``, where ``log_probs[n, v]`` equals
-    :math:`\log P(w^{(n)}_{idx[n]} = v | w^{(n)}_{idx[n]-1}, \ldots)`. That is, the
-    distributions over the next type conditioned on token prefixes up to and excluding
-    ``s = idx`` are returned. The second element, `in_next`, is discussed in relation to
-    `prev` below.
+    If `idx` is specified, it must etiher be an integer or a long tensor of shape
+    ``(,)`` or ``(N,)``. The call returns a pair. The first element is `log_probs_idx`
+    of shape ``(N, vocab_size)``, where ``log_probs[n, v]`` equals :math:`\log
+    P(w^{(n)}_{idx[n]} = v | w^{(n)}_{idx[n]-1}, \ldots)`. That is, the distributions
+    over the next type conditioned on token prefixes up to and excluding ``s = idx`` are
+    returned. The second element, `in_next`, is discussed in relation to `prev` below.
 
     The `prev` argument is a dictionary of tensors which represents some additional
     input used in the computation. It may contain static input (e.g. a tensor of encoder
@@ -116,12 +1295,17 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     has to handle OOVs on her own when computing the loss.
     """
 
+    __constants__ = ["vocab_size"]
+
+    vocab_size: int
+
     def __init__(self, vocab_size: int):
-        super(SequentialLanguageModel, self).__init__()
+        super().__init__()
         self.vocab_size = vocab_size
         if vocab_size < 1:
             raise ValueError("vocab_size must be positive")
 
+    @torch.jit.export
     def update_input(
         self, prev: Dict[str, torch.Tensor], hist: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
@@ -150,6 +1334,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         """
         raise NotImplementedError()
 
+    @torch.jit.export
     def calc_full_log_probs(
         self, hist: torch.Tensor, prev: Dict[str, torch.Tensor]
     ) -> torch.Tensor:
@@ -164,31 +1349,54 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
             log_probs.append(log_probs_idx)
         return torch.stack(log_probs, 0)
 
-    def forward(
-        self,
-        hist: torch.Tensor,
-        prev: Dict[str, torch.Tensor] = dict(),
-        idx: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if hist.dim() != 2:
-            raise RuntimeError("hist must be 2 dimensional")
-        S, N = hist.shape
-        if idx is not None:
-            if idx.dim() == 1:
-                if idx.size(0) == 1:
-                    idx = idx.squeeze(0)
-                elif idx.size(0) != N:
+    if TYPE_CHECKING:
+
+        def forward(
+            self,
+            hist: torch.Tensor,
+            prev: Optional[Dict[str, torch.Tensor]] = None,
+            idx: Optional[Union[int, torch.Tensor]] = None,
+        ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
+            pass
+
+    else:
+
+        def forward(
+            self,
+            hist: torch.Tensor,
+            prev: Optional[Dict[str, torch.Tensor]] = None,
+            idx: Optional[Any] = None,
+        ) -> Any:
+            if prev is None:
+                prev = dict()
+            if hist.dim() != 2:
+                raise RuntimeError("hist must be 2 dimensional")
+            S, N = hist.shape
+            idx_ = torch.empty(0)
+            if idx is not None:
+                if isinstance(idx, int):
+                    idx_ = torch.as_tensor(idx, dtype=torch.long, device=hist.device)
+                elif isinstance(idx, torch.Tensor):
+                    idx_ = idx
+                if not idx_.numel():
+                    raise RuntimeError("idx_ must be at least one element")
+                if idx_.dim() == 1:
+                    if idx_.size(0) == 1:
+                        idx_ = idx_.squeeze(0)
+                    elif idx_.size(0) != N:
+                        raise RuntimeError(
+                            f"Expected dim 0 of idx_ to be of size {N}, got {idx_.size(0)}"
+                        )
+                if ((idx_ < -S - 1) | (idx_ > S)).any():
                     raise RuntimeError(
-                        f"Expected dim 0 of idx to be of size {N}, got {idx.size(0)}"
+                        f"All values in idx_ must be between ({-S - 1}, {S})"
                     )
-            if ((idx < -S - 1) | (idx > S)).any():
-                raise RuntimeError(f"All values in idx must be between ({-S - 1}, {S})")
-            idx = (idx + S + 1) % (S + 1)
-        prev = self.update_input(prev, hist)
-        if idx is None:
-            return self.calc_full_log_probs(hist, prev)
-        else:
-            return self.calc_idx_log_probs(hist, prev, idx)
+                idx_ = (idx_ + S + 1) % (S + 1)
+            prev = self.update_input(prev, hist)
+            if idx is None:
+                return self.calc_full_log_probs(hist, prev)
+            else:
+                return self.calc_idx_log_probs(hist, prev, idx_)
 
 
 class ExtractableSequentialLanguageModel(
@@ -304,6 +1512,166 @@ class MixableSequentialLanguageModel(
         raise NotImplementedError()
 
 
+@script
+def _lookup_calc_idx_log_probs(
+    hist: torch.Tensor,
+    idx: torch.Tensor,
+    pointers: torch.Tensor,
+    ids: torch.Tensor,
+    logs: torch.Tensor,
+    shift: int,
+    sos: int,
+    V: int,
+    N: int,
+    G: int,
+) -> torch.Tensor:
+    # we produce two tries with the same node ids: one for logp and one for
+    # logb. Let N be the maximal n-gram. The children of the root are
+    # 1-grams, their children are 2-grams, etc. Thus, x-gram is synonymous
+    # for level x of the trie. The logb trie does not have N-gram children
+    # b/c there are no backoffs for the maximal n-gram.
+    #
+    # pointers is a flattened array of size X of pointers of internal
+    # nodes. They are only populated when N > 1. pointers is arranged in
+    # a breadth-first manner: levels = [
+    #   1-grams + 1; 2-grams + 1; ...; (N - 1)-grams + 1]
+    # pointers contain positive offsets from their current node to the
+    # first index of its children. The immediately subsequent pointer is
+    # the exclusive offset to the end of the range of children; if the
+    # values of the pointer and subsequent pointer are equal, the node has
+    # no children. The subsequent pointer is either the inclusive offset
+    # of the start of a sibling's children, or a dummy pointer (the +1s
+    # above) for the final child in a level.
+    #
+    # ids = [2-grams + 1; ...; N-grams], that is, remove the 1-grams
+    # level from pointers and add the N-grams level. Thus, to convert from
+    # a pointers index to an ids index, one need only subtract U
+    # (vocab_size + shift + 1 % N). id values correspond to the last token
+    # in a reverse n-gram produced by the path through the tree so far.
+    #
+    # logs = [
+    #   1-grams + 1; 2-grams + 1; ...; N-grams;
+    #   1-grams + 1; 2-grams + 1; ...; (N-1)-grams]. The first X values
+    # are the log-probabilities. Letting G be the number of N-gram nodes,
+    # the remaining X - G entries are the backoff probabilities
+    B: int = hist.size(1)
+    M, X = B * V, pointers.numel()
+    U = V + shift + (1 % N)
+    K, L = X + G - U, 2 * X + G
+    device = hist.device
+    assert ids.numel() == K
+    assert logs.numel() == L
+    if idx.numel() == 0:
+        raise RuntimeError("idx cannot be empty")
+    if idx.numel() == 1:
+        hist = hist[:idx]
+        if idx >= N - 1:
+            hist = hist[hist.size(0) - (N - 1) :]
+        else:
+            hist = torch.cat(
+                [
+                    torch.full(
+                        (N - 1 - hist.size(0), B), sos, dtype=torch.long, device=device,
+                    ),
+                    hist,
+                ],
+                0,
+            )
+    else:
+        min_idx = int(idx.min().item())  # parent ensures min_idx >=0
+        if min_idx < N - 1:
+            hist = torch.cat(
+                [
+                    torch.full(
+                        (N - 1 - min_idx, B), sos, dtype=torch.long, device=device,
+                    ),
+                    hist,
+                ],
+                0,
+            )
+            idx = idx + N - 1 - min_idx
+        idx = torch.arange(-N + 1, 0, 1, device=idx.device).unsqueeze(1) + idx
+        hist = hist.gather(0, idx)
+    assert hist.size(0) == N - 1
+    if shift:
+        hist = hist.masked_fill(hist.eq(sos), -shift)
+        hist = hist + shift
+
+    # add the possible extensions to the history
+    cur_step = torch.arange(shift, V + shift, dtype=torch.long, device=device)
+    cur_step = cur_step.view(1, 1, V).expand(1, B, V)
+    hist = torch.cat([hist.unsqueeze(2).expand(N - 1, B, V), cur_step], 0)
+
+    if N == 1:
+        # we're a unigram model, or we've only got unigram history
+        logs_t = logs[:G].unsqueeze(0).expand(B, G)
+        return logs_t.gather(1, hist[-1])  # (B, V)
+
+    # we're now definitely not a unigram model w/ non-empty history
+    hist = hist.view(-1, M)  # pretend M is batch; reshape at end
+    out = torch.zeros(M, dtype=torch.float, device=device)
+    running_mask = torch.full(out.shape, 1, dtype=torch.bool, device=device)
+    vrange = torch.arange(V, dtype=torch.int32, device=device)
+    children = tokens = hist[0]
+    for Nn in range(N - 1):
+        n = N - Nn
+        offsets = pointers[children]  # (M,)
+        # the +1 is because we've shifted over one, meaning the offset
+        # pointing to the same location is one less
+        num_children = pointers[children + 1] - offsets + 1  # (N,)
+        first_children = children + offsets
+        step_mask = running_mask
+        for t in range(1, n):
+            tokens = hist[Nn + t]
+            # the max avoids working with empty tensors
+            S = max(1, int(num_children.max().item()))
+            all_children = first_children.unsqueeze(1) + vrange[:S].unsqueeze(0)
+            matches = (
+                (ids[all_children.clamp(max=K + U - 1) - U] == tokens.unsqueeze(1))
+                & (vrange[:S].unsqueeze(0) < num_children.unsqueeze(1))
+                & step_mask.unsqueeze(1)
+            )
+            next_step = matches.any(1)
+            if t == n - 1:
+                # we're last. Add probabilities
+                logs_t = torch.where(
+                    matches,
+                    logs[all_children],
+                    torch.zeros(all_children.shape, dtype=logs.dtype, device=device,),
+                ).sum(
+                    1
+                )  # (M,)
+                # the trie has dummy lower-order n-grams. If there's
+                # an (n+1) gram passing through it. We do not want to
+                # match these - we will back off further
+                finite = torch.isfinite(logs_t)
+                out = torch.where(finite, out + logs_t, out)
+                next_step = next_step & finite
+                running_mask = running_mask & next_step.eq(0)
+                new_backoff = step_mask & next_step.eq(0)
+                # add backoff for newly failed paths
+                out = torch.where(new_backoff, out + logs[X + G + children], out,)
+            else:
+                # we're not last. Update children
+                children = torch.where(
+                    matches,
+                    all_children,
+                    torch.zeros(
+                        all_children.shape,
+                        dtype=all_children.dtype,
+                        device=all_children.device,
+                    ),
+                ).sum(1)
+                offsets = pointers[children]
+                num_children = pointers[children + 1] - offsets + 1
+                first_children = children + offsets
+            step_mask = next_step
+        children = tokens = hist[Nn + 1]
+    # unigrams always exist. Add the log-probability and exit
+    out = torch.where(running_mask, out + logs[tokens], out)
+    return out.view(B, V)
+
+
 class LookupLanguageModel(MixableSequentialLanguageModel):
     r"""Construct a backoff n-gram model from a fixed lookup table
 
@@ -369,7 +1737,16 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     After 0.3.0, `sos` became no longer optional. `pad_sos_to_n` was removed as an
     argument (implicitly true now). `eos` and `oov` were also removed as part of updates
     to :obj:`SequentialLanguageModel`
+
+    JIT scripting is possible with this module, but not tracing.
     """
+
+    __constants__ = ["vocab_size", "sos", "max_ngram", "max_ngram_nodes", "shift"]
+
+    sos: int
+    max_ngram: int
+    max_ngram_nodes: int
+    shift: int
 
     # XXX(sdrobert): as discussed in [heafield2011], we could potentially speed
     # up computations by keeping track of prefix probs and storing them in
@@ -380,7 +1757,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     def __init__(
         self, vocab_size: int, sos: int, prob_list: Optional[Sequence[dict]] = None,
     ):
-        super(LookupLanguageModel, self).__init__(vocab_size)
+        super().__init__(vocab_size)
         self.sos = sos
         if sos < 0 or sos > vocab_size:
             # we want sos to refer to an index but it's oov, so we'll shift all
@@ -397,7 +1774,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             self.max_ngram_nodes = self.shift + vocab_size
         else:
             self.max_ngram = len(prob_list)
-            self.max_ngram_nodes = None  # changed by build_trie
+            self.max_ngram_nodes = -1  # changed by build_trie
             logs, ids, pointers = self._build_trie(prob_list)
         self.register_buffer("logs", logs)
         self.register_buffer("ids", ids)
@@ -408,165 +1785,39 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         s += ", max_ngram={}, sos={}".format(self.max_ngram, self.sos)
         return s
 
+    @torch.jit.export
     def extract_by_src(
         self, prev: Dict[str, torch.Tensor], src: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
-        return prev
+        return dict()
 
+    @torch.jit.export
     def mix_by_mask(
         self,
         prev_true: Dict[str, torch.Tensor],
         prev_false: Dict[str, torch.Tensor],
         mask: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        return prev_true
+        return dict()
 
     def calc_idx_log_probs(
         self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        # we produce two tries with the same node ids: one for logp and one for
-        # logb. Let N be the maximal n-gram. The children of the root are
-        # 1-grams, their children are 2-grams, etc. Thus, x-gram is synonymous
-        # for level x of the trie. The logb trie does not have N-gram children
-        # b/c there are no backoffs for the maximal n-gram.
-        #
-        # pointers is a flattened array of size X of pointers of internal
-        # nodes. They are only populated when N > 1. pointers is arranged in
-        # a breadth-first manner: levels = [
-        #   1-grams + 1; 2-grams + 1; ...; (N - 1)-grams + 1]
-        # pointers contain positive offsets from their current node to the
-        # first index of its children. The immediately subsequent pointer is
-        # the exclusive offset to the end of the range of children; if the
-        # values of the pointer and subsequent pointer are equal, the node has
-        # no children. The subsequent pointer is either the inclusive offset
-        # of the start of a sibling's children, or a dummy pointer (the +1s
-        # above) for the final child in a level.
-        #
-        # ids = [2-grams + 1; ...; N-grams], that is, remove the 1-grams
-        # level from pointers and add the N-grams level. Thus, to convert from
-        # a pointers index to an ids index, one need only subtract U
-        # (vocab_size + shift + 1 % N). id values correspond to the last token
-        # in a reverse n-gram produced by the path through the tree so far.
-        #
-        # logs = [
-        #   1-grams + 1; 2-grams + 1; ...; N-grams;
-        #   1-grams + 1; 2-grams + 1; ...; (N-1)-grams]. The first X values
-        # are the log-probabilities. Letting G be the number of N-gram nodes,
-        # the remaining X - G entries are the backoff probabilities
-        B, V, N = hist.size(1), self.vocab_size, self.max_ngram
-        M, G, X = B * V, self.max_ngram_nodes, len(self.pointers)
-        U = V + self.shift + (1 % N)
-        K, L = X + G - U, 2 * X + G
-        device = hist.device
-        assert len(self.ids) == K
-        assert len(self.logs) == L
-        if idx.numel() == 1:
-            hist = hist[:idx]
-            if idx >= N - 1:
-                hist = hist[hist.size(0) - (N - 1) :]
-            else:
-                hist = torch.cat(
-                    [hist.new_full((N - 1 - hist.size(0), B), self.sos), hist], 0
-                )
-        else:
-            min_idx = idx.min().item()  # SequentialLanguageModel ensures min_idx >=0
-            if min_idx < N - 1:
-                hist = torch.cat(
-                    [hist.new_full((N - 1 - min_idx, B), self.sos), hist], 0
-                )
-                idx = idx + N - 1 - min_idx
-            idx = torch.arange(-N + 1, 0, 1, device=idx.device).unsqueeze(1) + idx
-            hist = hist.gather(0, idx)
-        assert hist.size(0) == N - 1
-        if self.shift:
-            hist = hist.masked_fill(hist.eq(self.sos), -self.shift)
-            hist = hist + self.shift
-
-        # add the possible extensions to the history
-        cur_step = torch.arange(
-            self.shift, V + self.shift, dtype=hist.dtype, device=device
+        return (
+            _lookup_calc_idx_log_probs(
+                hist,
+                idx,
+                self.pointers,
+                self.ids,
+                self.logs,
+                self.shift,
+                self.sos,
+                self.vocab_size,
+                self.max_ngram,
+                self.max_ngram_nodes,
+            ),
+            prev,
         )
-        cur_step = cur_step.view(1, 1, V).expand(1, B, V)
-        hist = torch.cat([hist.unsqueeze(2).expand(N - 1, B, V), cur_step], 0)
-
-        if N == 1:
-            # we're a unigram model, or we've only got unigram history
-            hist = hist[-1]  # (B, V)
-            logs = self.logs[:G].unsqueeze(0).expand(B, G)
-            return logs.gather(1, hist), None  # (B, V)
-
-        # we're now definitely not a unigram model w/ non-empty history
-        assert X and K
-        hist = hist.view(-1, M)  # pretend M is batch; reshape at end
-        out = torch.zeros(M, dtype=torch.float, device=device)
-        running_mask = torch.ones_like(out, dtype=torch.uint8).eq(1)
-        vrange = torch.arange(V, dtype=torch.int32, device=device)
-        n = N
-        while True:
-            children = tokens = hist[0]
-            if n == 1:
-                # unigrams always exist. Add the log-probability and exit
-                out = torch.where(running_mask, out + self.logs[tokens], out)
-                break
-            offsets = self.pointers[children].to(torch.int32)  # (M,)
-            num_children = self.pointers[children + 1].to(torch.int32)
-            # the +1 is because we've shifted over one, meaning the offset
-            # pointing to the same location is one less
-            num_children = num_children - offsets + 1  # (M,)
-            parents = children
-            first_children = parents + offsets.long()
-            step_mask = running_mask
-            for t in range(1, n):
-                next_step = step_mask & num_children.ne(0)
-                tokens = hist[t]
-                S = num_children.max()
-                all_children = (
-                    first_children.unsqueeze(1) + vrange[:S].unsqueeze(0).long()
-                )
-                matches = self.ids[all_children.clamp(max=K + U - 1) - U].long()
-                matches = matches == tokens.unsqueeze(1)
-                matches = matches & (
-                    vrange[:S].unsqueeze(0) < num_children.unsqueeze(1)
-                )
-                matches = matches & step_mask.unsqueeze(1)
-                next_step = matches.any(1)
-                if t == n - 1:
-                    # we're last. Add probabilities
-                    logs = torch.where(
-                        matches,
-                        self.logs[all_children],
-                        torch.zeros_like(all_children, dtype=torch.float),
-                    ).sum(
-                        1
-                    )  # (M,)
-                    # the trie has dummy lower-order n-grams. If there's
-                    # an (n+1) gram passing through it. We do not want to
-                    # match these - we will back off further
-                    finite = torch.isfinite(logs)
-                    out = torch.where(finite, out + logs, out)
-                    next_step = next_step & finite
-                    running_mask = running_mask & next_step.eq(0)
-                    new_backoff = step_mask & next_step.eq(0)
-                    # add backoff for newly failed paths
-                    out = torch.where(
-                        new_backoff, out + self.logs[X + G + parents], out,
-                    )
-                else:
-                    # we're not last. Update children
-                    children = torch.where(
-                        matches, all_children, torch.zeros_like(all_children),
-                    ).sum(1)
-                # this'll be invalid for the last step, so don't re-use!
-                step_mask = next_step
-                if t != n - 1:
-                    offsets = self.pointers[children].to(torch.int32)
-                    num_children = self.pointers[children + 1].to(torch.int32)
-                    num_children = num_children - offsets + 1
-                    parents = children
-                    first_children = parents + offsets.long()
-            hist = hist[1:]
-            n -= 1
-        return out.view(B, V), prev
 
     def load_state_dict(self, state_dict: dict, **kwargs) -> None:
         error_prefix = "Error(s) in loading state_dict for {}:\n".format(
@@ -844,7 +2095,6 @@ class BeamSearch(torch.nn.Module):
     eos: Optional[int]
     max_iters: Optional[int]
     finish_all_paths: bool
-    lm: ExtractableSequentialLanguageModel
 
     def __init__(
         self,
@@ -878,6 +2128,7 @@ class BeamSearch(torch.nn.Module):
         if hasattr(self.lm, "reset_parameters"):
             self.lm.reset_parameters()
 
+    @torch.jit.export
     def update_log_probs_for_step(
         self,
         log_probs_prev: torch.Tensor,
@@ -945,142 +2196,172 @@ class BeamSearch(torch.nn.Module):
             y_prev_lens = y_prev_lens.gather(1, src)
         return y_prev, log_probs_prev, y_prev_lens
 
-    def forward(
-        self, y_prev: torch.Tensor, prev: Dict[str, torch.Tensor] = dict()
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if y_prev.dim() == 2:
-            prev_width = 1
-        elif y_prev.dim() == 3:
-            if not y_prev.size(0):
-                raise RuntimeError(
-                    "Cannot start with empty prefix when y_prev is 3 dimensional"
-                )
-            prev_width = y_prev.size(2)
-            if prev_width < 1:
-                raise RuntimeError("dim 3 in y_prev must be positive")
-            y_prev = y_prev.flatten(1)
-        else:
-            raise RuntimeError("y_prev must be 2 or 3 dimensional")
+    if TYPE_CHECKING:
 
-        device = y_prev.device
-        S_prev, N = y_prev.size(0), y_prev.size(1) // prev_width
-        prev = self.lm.update_input(prev, y_prev)
-        y_prev = y_prev.view(S_prev, N, prev_width)
+        def forward(
+            self, y_prev: torch.Tensor, prev: Dict[str, torch.Tensor] = dict()
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            pass
 
-        if self.eos is not None and S_prev:
-            y_prev_lens = (
-                -((y_prev == self.eos).cumsum(0).clamp(max=1).sum(0) - 1).clamp(min=0)
-                + S_prev
-            )
+    else:
 
-            len_eq_mask = y_prev_lens.unsqueeze(1) == y_prev_lens.unsqueeze(2)  # NKK
-            tok_ge_len_mask = (
-                torch.arange(S_prev, device=device).view(S_prev, 1, 1) >= y_prev_lens
-            )  # SNK
-            eq_mask = (
-                y_prev.unsqueeze(2) == y_prev.unsqueeze(3)
-            ) | tok_ge_len_mask.unsqueeze(
-                3
-            )  # SNKK
-            eq_mask = (
-                eq_mask.all(0)
-                & len_eq_mask
-                & ~torch.eye(prev_width, dtype=torch.bool, device=device)
-            )  # NKK
-            if eq_mask.any():
-                raise RuntimeError(
-                    "y_prev was equivalent for the following (batch_idx, path_idx) "
-                    f"paths: {torch.nonzero(eq_mask, as_tuple=True)}"
-                )
-        else:
-            y_prev_lens = y_prev.new_full((N, prev_width), S_prev)
-        log_probs_prev = torch.full(
-            (N, prev_width), -math.log(prev_width), device=device
-        )
-
-        if self.max_iters is None:
-            max_iters = 1024 * 1024 * 1024 * 1024
-        else:
-            max_iters = self.max_iters
-        for t in range(S_prev, max_iters + S_prev):
-            t = torch.tensor(t, device=device)
-
-            if self.eos is not None and t:
-                # determine which paths have already finished (and whether we should
-                # stop)
-                eos_mask = (
-                    y_prev.permute(1, 2, 0)
-                    .gather(2, (y_prev_lens - 1).clamp(min=0).unsqueeze(2))
-                    .squeeze(2)
-                    == self.eos
-                ) & (y_prev_lens > 0)
-                if self.finish_all_paths:
-                    done_mask = eos_mask.all(1, keepdim=True)
-                else:
-                    done_mask = eos_mask[..., :1]
-                if done_mask.all():
-                    break
+        def forward(
+            self, y_prev: torch.Tensor, _prev: Optional[Dict[str, torch.Tensor]] = None
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            if _prev is None:
+                prev = dict()
             else:
-                eos_mask = torch.full((N, prev_width), False, device=device)
-                done_mask = eos_mask[..., :1]
+                prev = _prev
+            if y_prev.dim() == 2:
+                prev_width = 1
+            elif y_prev.dim() == 3:
+                if not y_prev.size(0):
+                    raise RuntimeError(
+                        "Cannot start with empty prefix when y_prev is 3 dimensional"
+                    )
+                prev_width = y_prev.size(2)
+                if prev_width < 1:
+                    raise RuntimeError("dim 3 in y_prev must be positive")
+                y_prev = y_prev.flatten(1)
+            else:
+                raise RuntimeError("y_prev must be 2 or 3 dimensional")
 
-            # determine extension probabilities
-            log_probs_t, in_next = self.lm(y_prev.flatten(1), prev, t)
-            log_probs_t = log_probs_t.reshape(N, prev_width, self.lm.vocab_size)
+            device = y_prev.device
+            S_prev, N = y_prev.size(0), y_prev.size(1) // prev_width
+            prev = self.lm.update_input(prev, y_prev)
+            y_prev = y_prev.view(S_prev, N, prev_width)
 
-            # update probabilities if the subclass so desires
-            log_probs_prev, log_probs_t = self.update_log_probs_for_step(
-                log_probs_prev, log_probs_t, y_prev, y_prev_lens, eos_mask
-            )
-
-            if self.eos is not None:
-                # if a path has finished, we allocate the entire probability mass to the
-                # eos token
-                log_probs_t = log_probs_t.masked_fill(
-                    eos_mask.unsqueeze(2), -float("inf")
+            if self.eos is not None and S_prev:
+                y_prev_lens = (
+                    -((y_prev == self.eos).cumsum(0).clamp(max=1).sum(0) - 1).clamp(
+                        min=0
+                    )
+                    + S_prev
                 )
-                eos_mask_ = eos_mask.unsqueeze(2).repeat(1, 1, self.lm.vocab_size)
-                eos_mask_[..., : self.eos] = False
-                eos_mask_[..., self.eos + 1 :] = False
-                log_probs_t = log_probs_t.masked_fill(eos_mask_, 0.0)
 
-            # extend + prune
-            (y_next, y_next_lens, log_probs_next, next_src) = beam_search_advance(
-                log_probs_t, self.width, log_probs_prev, y_prev, y_prev_lens
-            )
-
-            if self.eos is not None:
-                # beam_search_advance always increments the length. Decrement for the
-                # paths which had completed before the step
-                y_next_lens = y_next_lens - eos_mask.gather(1, next_src).to(y_next_lens)
-
-            # update lm intermediate values
-            next_src = (
-                torch.arange(
-                    0, prev_width * N, prev_width, device=next_src.device
-                ).unsqueeze(1)
-                + next_src
-            )
-            prev = self.lm.extract_by_src(in_next, next_src.flatten())
-
-            if self.eos is not None and done_mask.any():
-                y_prev, log_probs_prev, y_prev_lens = self._to_width(
-                    y_prev, log_probs_prev, y_prev_lens
+                len_eq_mask = y_prev_lens.unsqueeze(1) == y_prev_lens.unsqueeze(
+                    2
+                )  # NKK
+                tok_ge_len_mask = (
+                    torch.arange(S_prev, device=device).view(S_prev, 1, 1)
+                    >= y_prev_lens
+                )  # SNK
+                eq_mask = (
+                    y_prev.unsqueeze(2) == y_prev.unsqueeze(3)
+                ) | tok_ge_len_mask.unsqueeze(
+                    3
+                )  # SNKK
+                eq_mask = (
+                    eq_mask.all(0)
+                    & len_eq_mask
+                    & ~torch.eye(prev_width, dtype=torch.bool, device=device)
+                )  # NKK
+                if eq_mask.any():
+                    raise RuntimeError(
+                        "y_prev was equivalent for the following (batch_idx, path_idx) "
+                        f"paths: {torch.nonzero(eq_mask)}"
+                    )
+            else:
+                y_prev_lens = torch.full(
+                    (N, prev_width), S_prev, dtype=torch.long, device=device
                 )
-                y_next[:-1] = torch.where(done_mask.unsqueeze(0), y_prev, y_next[:-1])
-                log_probs_next = torch.where(done_mask, log_probs_prev, log_probs_next)
-                y_next_lens = torch.where(done_mask, y_prev_lens, y_next_lens)
+            log_probs_prev = torch.full(
+                (N, prev_width), -math.log(prev_width), device=device
+            )
 
-            y_prev = y_next
-            y_prev_lens = y_next_lens
-            log_probs_prev = log_probs_next
-            prev_width = self.width
+            if self.max_iters is None:
+                max_iters = 1024 * 1024 * 1024 * 1024
+            else:
+                max_iters = self.max_iters
+            for t in range(S_prev, max_iters + S_prev):
+                t = torch.tensor(t, device=device)
 
-        y_prev, log_probs_prev, y_prev_lens = self._to_width(
-            y_prev, log_probs_prev, y_prev_lens
-        )
+                if self.eos is not None and t:
+                    # determine which paths have already finished (and whether we should
+                    # stop)
+                    eos_mask = (
+                        y_prev.permute(1, 2, 0)
+                        .gather(2, (y_prev_lens - 1).clamp(min=0).unsqueeze(2))
+                        .squeeze(2)
+                        == self.eos
+                    ) & (y_prev_lens > 0)
+                    if self.finish_all_paths:
+                        done_mask = eos_mask.all(1, keepdim=True)
+                    else:
+                        done_mask = eos_mask[..., :1]
+                    if done_mask.all():
+                        break
+                else:
+                    eos_mask = torch.full(
+                        (N, prev_width), 0, device=device, dtype=torch.bool
+                    )
+                    done_mask = eos_mask[..., :1]
 
-        return y_prev, y_prev_lens, log_probs_prev
+                # determine extension probabilities
+                log_probs_t, in_next = self.lm.calc_idx_log_probs(
+                    y_prev.flatten(1), prev, t
+                )
+                log_probs_t = log_probs_t.reshape(N, prev_width, self.lm.vocab_size)
+
+                # update probabilities if the subclass so desires
+                log_probs_prev, log_probs_t = self.update_log_probs_for_step(
+                    log_probs_prev, log_probs_t, y_prev, y_prev_lens, eos_mask
+                )
+
+                if self.eos is not None:
+                    # if a path has finished, we allocate the entire probability mass to the
+                    # eos token
+                    log_probs_t = log_probs_t.masked_fill(
+                        eos_mask.unsqueeze(2), -float("inf")
+                    )
+                    eos_mask_ = eos_mask.unsqueeze(2).repeat(1, 1, self.lm.vocab_size)
+                    eos_mask_[..., : self.eos] = False
+                    eos_mask_[..., self.eos + 1 :] = False
+                    log_probs_t = log_probs_t.masked_fill(eos_mask_, 0.0)
+
+                # extend + prune
+                (y_next, y_next_lens, log_probs_next, next_src) = beam_search_advance(
+                    log_probs_t, self.width, log_probs_prev, y_prev, y_prev_lens
+                )
+
+                if self.eos is not None:
+                    # beam_search_advance always increments the length. Decrement for the
+                    # paths which had completed before the step
+                    y_next_lens = y_next_lens - eos_mask.gather(1, next_src).to(
+                        y_next_lens
+                    )
+
+                # update lm intermediate values
+                next_src = (
+                    torch.arange(
+                        0, prev_width * N, prev_width, device=next_src.device
+                    ).unsqueeze(1)
+                    + next_src
+                )
+                prev = self.lm.extract_by_src(in_next, next_src.flatten())
+
+                if self.eos is not None and done_mask.any():
+                    y_prev, log_probs_prev, y_prev_lens = self._to_width(
+                        y_prev, log_probs_prev, y_prev_lens
+                    )
+                    y_next[:-1] = torch.where(
+                        done_mask.unsqueeze(0), y_prev, y_next[:-1]
+                    )
+                    log_probs_next = torch.where(
+                        done_mask, log_probs_prev, log_probs_next
+                    )
+                    y_next_lens = torch.where(done_mask, y_prev_lens, y_next_lens)
+
+                y_prev = y_next
+                y_prev_lens = y_next_lens
+                log_probs_prev = log_probs_next
+                prev_width = self.width
+
+            y_prev, log_probs_prev, y_prev_lens = self._to_width(
+                y_prev, log_probs_prev, y_prev_lens
+            )
+
+            return y_prev, y_prev_lens, log_probs_prev
 
 
 class CTCPrefixSearch(torch.nn.Module):
@@ -1157,7 +2438,6 @@ class CTCPrefixSearch(torch.nn.Module):
 
     width: int
     beta: float
-    lm: Optional[MixableSequentialLanguageModel]
 
     def __init__(
         self,
@@ -1179,124 +2459,224 @@ class CTCPrefixSearch(torch.nn.Module):
         if self.lm is not None and hasattr(self.lm, "reset_parameters"):
             self.lm.reset_parameters()
 
-    def forward(
-        self,
-        logits: torch.Tensor,
-        lens: Optional[torch.Tensor] = None,
-        prev: Dict[str, torch.Tensor] = dict(),
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if logits.dim() != 3:
-            raise RuntimeError("logits must be 3 dimensional")
-        T, N, Vp1 = logits.shape
-        V = Vp1 - 1
-        if self.lm is not None and self.lm.vocab_size != V:
-            raise RuntimeError(
-                f"Expected dim 2 of logits to be {self.lm.vocab_size + 1}, got {Vp1}"
-            )
-        if lens is None:
-            lens = torch.full((N,), T, device=logits.device, dtype=torch.long)
-            len_min = len_max = T
-        elif lens.dim() != 1:
-            raise RuntimeError("lens must be 1 dimensional")
-        elif lens.size(0) != N:
-            raise RuntimeError(f"expected dim 0 of lens to be {N}, got {lens.size(0)}")
-        else:
-            len_min, len_max = lens.min().item(), lens.max().item()
+    if TYPE_CHECKING:
 
-        probs = logits.softmax(2)
-        blank_probs = probs[..., V]  # (T, N)
-        nonext_probs = probs[..., :V]  # (T, N, V)
-        nb_probs_prev, b_probs_prev = logits.new_zeros((N, 1)), logits.new_ones((N, 1))
-        y_prev = torch.empty((0, N, 1), dtype=torch.long, device=logits.device)
-        y_prev_lens = y_prev_last = torch.zeros(
-            (N, 1), dtype=torch.long, device=logits.device
-        )
-        prev_is_prefix = torch.full(
-            (N, 1, 1), True, device=logits.device, dtype=torch.bool
-        )
-        if self.lm is not None:
-            prev = self.lm.update_input(prev, y_prev)
-        prev_width = 1
-        for t in range(len_max):
-            valid_mask = None if t < len_min else (t < lens).unsqueeze(1)  # (N, 1)
-            nonext_probs_t, blank_probs_t = nonext_probs[t], blank_probs[t]
-            if self.lm is None or not self.beta:
-                ext_probs_t = nonext_probs_t.unsqueeze(1).expand(N, prev_width, V)
-                in_next = dict()
+        def forward(
+            self,
+            logits: torch.Tensor,
+            lens: Optional[torch.Tensor] = None,
+            prev: Dict[str, torch.Tensor] = dict(),
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            pass
+
+    else:
+
+        def forward(
+            self,
+            logits: torch.Tensor,
+            lens: Optional[torch.Tensor] = None,
+            prev_: Optional[Dict[str, torch.Tensor]] = None,
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            if prev_ is None:
+                prev: Dict[str, torch.Tensor] = dict()
             else:
-                lm_log_probs_t, in_next = self.lm(
-                    y_prev.flatten(1), prev, y_prev_lens.flatten()
+                prev = prev_
+            if logits.dim() != 3:
+                raise RuntimeError("logits must be 3 dimensional")
+            T, N, Vp1 = logits.shape
+            V = Vp1 - 1
+            device, dtype = logits.device, logits.dtype
+            if self.lm is not None and self.lm.vocab_size != V:
+                raise RuntimeError(
+                    f"Expected dim 2 of logits to be {self.lm.vocab_size + 1}, got {Vp1}"
                 )
-                lm_probs_t = (self.beta * lm_log_probs_t).exp().view(N, prev_width, V)
-                # note we're no longer in log space, so it's a product
-                ext_probs_t = lm_probs_t * nonext_probs_t.unsqueeze(1)
-                del lm_log_probs_t, lm_probs_t
-            (
-                y_next,
-                y_next_last,
-                y_next_lens,
-                (nb_probs_next, b_probs_next),
-                next_is_prefix,
-                next_src,
-                next_is_nonext,
-            ) = ctc_prefix_search_advance(
-                (ext_probs_t, nonext_probs_t, blank_probs_t),
-                self.width,
-                (nb_probs_prev, b_probs_prev),
-                y_prev,
-                y_prev_last,
-                y_prev_lens,
-                prev_is_prefix,
-            )
-
-            if self.lm is not None and self.beta:
-                next_src = (
-                    torch.arange(
-                        0, prev_width * N, prev_width, device=next_src.device
-                    ).unsqueeze(1)
-                    + next_src
+            if lens is None:
+                lens = torch.full((N,), T, device=logits.device, dtype=torch.long)
+                len_min = len_max = T
+            elif lens.dim() != 1:
+                raise RuntimeError("lens must be 1 dimensional")
+            elif lens.size(0) != N:
+                raise RuntimeError(
+                    f"expected dim 0 of lens to be {N}, got {lens.size(0)}"
                 )
-                prev = self.lm.extract_by_src(prev, next_src.flatten())
-                in_next = self.lm.extract_by_src(in_next, next_src.flatten())
-                prev = self.lm.mix_by_mask(prev, in_next, next_is_nonext.flatten())
-
-            if valid_mask is None:
-                y_prev_lens = y_next_lens
-                nb_probs_prev, b_probs_prev = nb_probs_next, b_probs_next
             else:
-                y_next[:-1] = torch.where(valid_mask.unsqueeze(0), y_next[:-1], y_prev)
-                y_prev_lens = torch.where(valid_mask, y_next_lens, y_prev_lens)
-                if prev_width < self.width:
-                    assert prev_width == 1  # otherwise advance would've padded it
-                    # add invalid path probs rather than broadcast the one good one
-                    neg_inf = nb_probs_prev.new_full(
-                        (N, self.width - prev_width), -float("inf")
+                len_min, len_max = int(lens.min().item()), int(lens.max().item())
+
+            probs = logits.softmax(2)
+            blank_probs = probs[..., V]  # (T, N)
+            nonext_probs = probs[..., :V]  # (T, N, V)
+
+            nb_probs_prev = torch.zeros((N, 1), device=device, dtype=dtype)
+            b_probs_prev = torch.ones((N, 1), device=device, dtype=dtype)
+            y_prev = torch.empty((0, N, 1), dtype=torch.long, device=logits.device)
+            y_prev_lens = y_prev_last = torch.zeros(
+                (N, 1), dtype=torch.long, device=logits.device
+            )
+            prev_is_prefix = torch.full(
+                (N, 1, 1), 1, device=logits.device, dtype=torch.bool
+            )
+            if self.lm is not None:
+                prev = self.lm.update_input(prev, y_prev)
+            prev_width = 1
+            for t in range(len_max):
+                valid_mask = None if t < len_min else (t < lens).unsqueeze(1)  # (N, 1)
+                nonext_probs_t, blank_probs_t = nonext_probs[t], blank_probs[t]
+                if self.lm is None or not self.beta:
+                    ext_probs_t = nonext_probs_t.unsqueeze(1).expand(N, prev_width, V)
+                    in_next = dict()
+                else:
+                    lm_log_probs_t, in_next = self.lm.calc_idx_log_probs(
+                        y_prev.flatten(1), prev, y_prev_lens.flatten()
                     )
-                    nb_probs_prev = torch.cat([nb_probs_prev, neg_inf], 1)
-                    b_probs_prev = torch.cat([b_probs_prev, neg_inf], 1)
-                nb_probs_prev = torch.where(valid_mask, nb_probs_next, nb_probs_prev)
-                b_probs_prev = torch.where(valid_mask, b_probs_next, b_probs_prev)
-            y_prev = y_next
-            # we can let y_next_last and next_is_prefix continue spinning after t passes
-            # the length
-            y_prev_last, prev_is_prefix = y_next_last, next_is_prefix
-            prev_width = self.width
+                    lm_probs_t = (
+                        (self.beta * lm_log_probs_t).exp().view(N, prev_width, V)
+                    )
+                    # note we're no longer in log space, so it's a product
+                    ext_probs_t = lm_probs_t * nonext_probs_t.unsqueeze(1)
+                (
+                    y_next,
+                    y_next_last,
+                    y_next_lens,
+                    (nb_probs_next, b_probs_next),
+                    next_is_prefix,
+                    next_src,
+                    next_is_nonext,
+                ) = ctc_prefix_search_advance(
+                    (ext_probs_t, nonext_probs_t, blank_probs_t),
+                    self.width,
+                    (nb_probs_prev, b_probs_prev),
+                    y_prev,
+                    y_prev_last,
+                    y_prev_lens,
+                    prev_is_prefix,
+                )
 
-        probs_prev = nb_probs_prev + b_probs_prev
+                if self.lm is not None and self.beta:
+                    next_src = (
+                        torch.arange(
+                            0, prev_width * N, prev_width, device=next_src.device
+                        ).unsqueeze(1)
+                        + next_src
+                    )
+                    prev = self.lm.extract_by_src(prev, next_src.flatten())
+                    in_next = self.lm.extract_by_src(in_next, next_src.flatten())
+                    prev = self.lm.mix_by_mask(prev, in_next, next_is_nonext.flatten())
 
-        if prev_width == 1 != self.width:
-            # fill the shape, but only the first (empty path is valid)
-            y_prev = y_prev.repeat(1, 1, self.width)
-            y_prev_lens = y_prev_lens.repeat(1, self.width)
-            probs_prev = torch.cat(
-                [
-                    probs_prev,
-                    probs_prev.new_full((N, self.width - prev_width), -float("inf")),
-                ],
-                1,
+                if valid_mask is None:
+                    y_prev_lens = y_next_lens
+                    nb_probs_prev, b_probs_prev = nb_probs_next, b_probs_next
+                else:
+                    y_next[:-1] = torch.where(
+                        valid_mask.unsqueeze(0), y_next[:-1], y_prev
+                    )
+                    y_prev_lens = torch.where(valid_mask, y_next_lens, y_prev_lens)
+                    if prev_width < self.width:
+                        assert prev_width == 1  # otherwise advance would've padded it
+                        # add invalid path probs rather than broadcast the one good one
+                        neg_inf = nb_probs_prev.new_full(
+                            (N, self.width - prev_width), -float("inf")
+                        )
+                        nb_probs_prev = torch.cat([nb_probs_prev, neg_inf], 1)
+                        b_probs_prev = torch.cat([b_probs_prev, neg_inf], 1)
+                    nb_probs_prev = torch.where(
+                        valid_mask, nb_probs_next, nb_probs_prev
+                    )
+                    b_probs_prev = torch.where(valid_mask, b_probs_next, b_probs_prev)
+                y_prev = y_next
+                # we can let y_next_last and next_is_prefix continue spinning after t passes
+                # the length
+                y_prev_last, prev_is_prefix = y_next_last, next_is_prefix
+                prev_width = self.width
+
+            probs_prev = nb_probs_prev + b_probs_prev
+
+            if prev_width == 1 != self.width:
+                # fill the shape, but only the first (empty path is valid)
+                y_prev = y_prev.repeat(1, 1, self.width)
+                y_prev_lens = y_prev_lens.repeat(1, self.width)
+                probs_prev = torch.cat(
+                    [
+                        probs_prev,
+                        probs_prev.new_full(
+                            (N, self.width - prev_width), -float("inf")
+                        ),
+                    ],
+                    1,
+                )
+            # now we zero out the probabilities of duplicate paths which could've arisen
+            return y_prev, y_prev_lens, probs_prev
+
+
+@script
+def hard_optimal_completion_distillation_loss(
+    logits: torch.Tensor,
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    batch_first: bool = False,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    weight: Optional[torch.Tensor] = None,
+    reduction: str = "mean",
+    ignore_index: int = -2,
+    warn: bool = True,
+) -> torch.Tensor:
+    """Functional version of HardOptimalCompletionDistillationLoss
+
+    See Also
+    --------
+    HardOptimalCompletionDistillationLoss
+        The :class:`torch.nn.Module` version. Describes the arguments.
+    """
+    if logits.dim() != 3:
+        raise RuntimeError("logits must be 3 dimensional")
+    if logits.shape[:-1] != hyp.shape:
+        raise RuntimeError("first two dims of logits must match hyp shape")
+    if include_eos:
+        if eos is not None and ((eos < 0) or (eos >= logits.size(-1))):
+            raise RuntimeError(f"If include_eos=True, eos ({eos}) must be a class idx")
+        if eos is not None and eos == ignore_index:
+            raise RuntimeError(
+                f"If include_eos=True, eos cannot equal ignore_index ({eos}"
             )
-        # now we zero out the probabilities of duplicate paths which could've arisen
-        return y_prev, y_prev_lens, probs_prev
+    optimals = optimal_completion(
+        ref,
+        hyp,
+        eos=eos,
+        include_eos=include_eos,
+        batch_first=batch_first,
+        ins_cost=ins_cost,
+        del_cost=del_cost,
+        sub_cost=sub_cost,
+        padding=ignore_index,
+        exclude_last=True,
+        warn=warn,
+    )
+    max_unique_next = optimals.shape[-1]
+    logits = logits.unsqueeze(2).expand(-1, -1, max_unique_next, -1)
+    logits = logits.contiguous()
+    loss = torch.nn.functional.cross_entropy(
+        logits.view(-1, logits.size(-1)),
+        optimals.flatten(),
+        weight=weight,
+        ignore_index=ignore_index,
+        reduction="none",
+    ).view_as(optimals)
+    padding_mask = optimals.eq(ignore_index)
+    no_padding_mask = ~padding_mask
+    loss = loss.masked_fill(padding_mask, 0.0).sum(2)
+    loss = torch.where(
+        no_padding_mask.any(2), loss / no_padding_mask.float().sum(2), loss,
+    )
+    if reduction == "mean":
+        loss = loss.mean()
+    elif reduction == "sum":
+        loss = loss.sum()
+    elif reduction != "none":
+        raise RuntimeError(f"'{reduction}' is not a valid value for reduction")
+    return loss
 
 
 class HardOptimalCompletionDistillationLoss(torch.nn.Module):
@@ -1355,14 +2735,9 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         Specifies the reduction to be applied to the output. 'none': no
         reduction will be applied. 'sum': the output will be summed. 'mean':
         the output will be averaged.
-
-    Attributes
-    ----------
-    eos : int
-    include_eos, batch_first : bool
-    ins_cost, del_cost, sub_cost : float
-    reduction : {'mean', 'none', 'sum'}
-    weight : torch.Tensor or None
+    ignore_index : int, optional
+        Specify a target value that is ignored and does not contribute to the input
+        gradient. Should not be set to `eos` when `include_eos` is :obj:`True`.
 
     See Also
     --------
@@ -1374,6 +2749,26 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         of sampling non-auto-regressive models
     """
 
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "reduction",
+        "ignore_index",
+    ]
+
+    eos: Optional[int]
+    include_eos: bool
+    batch_first: bool
+    ins_cost: float
+    del_cost: float
+    sub_cost: float
+    reduction: str
+    ignore_index: int
+
     def __init__(
         self,
         eos: Optional[int] = None,
@@ -1384,8 +2779,9 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         sub_cost: float = 1.0,
         weight: Optional[torch.Tensor] = None,
         reduction: str = "mean",
+        ignore_index: int = -100,
     ):
-        super(HardOptimalCompletionDistillationLoss, self).__init__()
+        super().__init__()
         self.eos = eos
         self.include_eos = include_eos
         self.batch_first = batch_first
@@ -1393,34 +2789,8 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         self.del_cost = del_cost
         self.sub_cost = sub_cost
         self.reduction = reduction
-        self._cross_ent = torch.nn.CrossEntropyLoss(weight=weight, reduction="none")
-
-    @property
-    def weight(self) -> Optional[torch.Tensor]:
-        return self._cross_ent.weight
-
-    @weight.setter
-    def weight(self, value: Optional[torch.Tensor]):
-        self._cross_ent.weight = value
-
-    def check_input(self, logits: torch.Tensor, ref: torch.Tensor, hyp: torch.Tensor):
-        """Check if input formatted correctly, otherwise RuntimeError"""
-        if logits.dim() != 3:
-            raise RuntimeError("logits must be 3 dimensional")
-        if logits.shape[:-1] != hyp.shape:
-            raise RuntimeError("first two dims of logits must match hyp shape")
-        if (
-            self.include_eos
-            and self.eos is not None
-            and ((self.eos < 0) or (self.eos >= logits.shape[-1]))
-        ):
-            raise RuntimeError(
-                "if include_eos=True, eos ({}) must be a class idx".format(self.eos)
-            )
-        if self.reduction not in {"mean", "sum", "none"}:
-            raise RuntimeError(
-                '"{}" is not a valid value for reduction' "".format(self.reduction)
-            )
+        self.ignore_index = ignore_index
+        self.register_buffer("weight", weight)
 
     def forward(
         self,
@@ -1429,41 +2799,102 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         hyp: torch.Tensor,
         warn: bool = True,
     ) -> torch.Tensor:
-        self.check_input(logits, ref, hyp)
-        # the padding we use will never be exposed to the user, so we merely
-        # ensure we're not trampling the eos
-        padding = -2 if self.eos == -1 else -1
-        self._cross_ent.ignore_index = padding
-        optimals = optimal_completion(
+        return hard_optimal_completion_distillation_loss(
+            logits,
             ref,
             hyp,
-            eos=self.eos,
-            include_eos=self.include_eos,
-            batch_first=self.batch_first,
-            ins_cost=self.ins_cost,
-            del_cost=self.del_cost,
-            sub_cost=self.sub_cost,
-            padding=padding,
-            exclude_last=True,
-            warn=warn,
+            self.eos,
+            self.include_eos,
+            self.batch_first,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.weight,
+            self.reduction,
+            self.ignore_index,
+            warn,
         )
-        max_unique_next = optimals.shape[-1]
-        logits = logits.unsqueeze(2).expand(-1, -1, max_unique_next, -1)
-        logits = logits.contiguous()
-        loss = self._cross_ent(
-            logits.view(-1, logits.shape[-1]), optimals.flatten()
-        ).view_as(optimals)
-        padding_mask = optimals.eq(padding)
-        no_padding_mask = padding_mask.eq(0)
-        loss = loss.masked_fill(padding_mask, 0.0).sum(2)
-        loss = torch.where(
-            no_padding_mask.any(2), loss / no_padding_mask.float().sum(2), loss,
-        )
-        if self.reduction == "mean":
-            loss = loss.mean()
-        elif self.reduction == "sum":
-            loss = loss.sum()
-        return loss
+
+
+@script
+def minimum_error_rate_loss(
+    log_probs: torch.Tensor,
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    sub_avg: bool = True,
+    batch_first: bool = False,
+    norm: bool = True,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    reduction: str = "mean",
+    warn: bool = True,
+) -> torch.Tensor:
+    """Functional version of MinimumErrorRateLoss
+
+    See Also
+    --------
+    MinimumErrorRateLoss
+        The :class:`torch.nn.Module` version. Describes the arguments
+    """
+    if log_probs.dim() != 2:
+        raise RuntimeError("log_probs must be 2 dimensional")
+    if hyp.dim() != 3:
+        raise RuntimeError("hyp must be 3 dimensional")
+    if ref.dim() not in (2, 3):
+        raise RuntimeError("ref must be 2 or 3 dimensional")
+    if batch_first:
+        batch_size, samples, max_hyp_steps = hyp.shape
+        if ref.dim() == 2:
+            ref = ref.unsqueeze(1).repeat(1, samples, 1)
+        if (ref.shape[:2] != (batch_size, samples)) or (
+            ref.shape[:2] != log_probs.shape
+        ):
+            raise RuntimeError(
+                "ref and hyp batch_size and sample dimensions must match"
+            )
+        max_ref_steps = ref.size(-1)
+        ref = ref.view(-1, max_ref_steps)
+        hyp = hyp.view(-1, max_hyp_steps)
+    else:
+        max_hyp_steps, batch_size, samples = hyp.shape
+        if ref.dim() == 2:
+            ref = ref.unsqueeze(-1).repeat(1, 1, samples)
+        if (ref.shape[1:] != (batch_size, samples)) or (
+            ref.shape[1:] != log_probs.shape
+        ):
+            raise RuntimeError(
+                "ref and hyp batch_size and sample dimensions must match"
+            )
+        max_ref_steps = ref.size(0)
+        ref = ref.view(max_ref_steps, -1)
+        hyp = hyp.view(max_hyp_steps, -1)
+    if samples < 2:
+        raise RuntimeError(f"Batch must have at least two samples, got {samples}")
+    er = error_rate(
+        ref,
+        hyp,
+        eos=eos,
+        include_eos=include_eos,
+        norm=norm,
+        batch_first=batch_first,
+        ins_cost=ins_cost,
+        del_cost=del_cost,
+        sub_cost=sub_cost,
+        warn=warn,
+    ).view(batch_size, samples)
+    if sub_avg:
+        er = er - er.mean(1, keepdim=True)
+    loss = er * torch.nn.functional.softmax(log_probs, 1)
+    if reduction == "mean":
+        loss = loss.mean()
+    elif reduction == "sum":
+        loss = loss.sum()
+    elif reduction != "none":
+        raise RuntimeError(f"'{reduction}' is not a valid value for reduction")
+    return loss
 
 
 class MinimumErrorRateLoss(torch.nn.Module):
@@ -1487,7 +2918,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
     This loss function has the following signature::
 
-        loss(log_probs, ref, hyp)
+        loss(log_probs, ref, hyp, warn=True)
 
     `log_probs` is a tensor of shape ``(batch_size, samples)`` providing the log joint
     probabilities of every path. `hyp` is a long tensor of shape ``(max_hyp_steps,
@@ -1597,6 +3028,27 @@ class MinimumErrorRateLoss(torch.nn.Module):
         For converting token log probs (or logits) to sequence log probs
     """
 
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "sub_avg",
+        "batch_first",
+        "norm",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "reduction",
+    ]
+
+    eos: Optional[int]
+    include_eos: bool
+    sub_avg: bool
+    norm: bool
+    ins_cost: float
+    del_cost: float
+    sub_cost: float
+    reduction: str
+
     def __init__(
         self,
         eos: Optional[int] = None,
@@ -1609,7 +3061,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
         sub_cost: float = 1.0,
         reduction: str = "mean",
     ):
-        super(MinimumErrorRateLoss, self).__init__()
+        super().__init__()
         self.eos = eos
         self.include_eos = include_eos
         self.sub_avg = sub_avg
@@ -1620,45 +3072,6 @@ class MinimumErrorRateLoss(torch.nn.Module):
         self.sub_cost = sub_cost
         self.reduction = reduction
 
-    def check_input(
-        self, log_probs: torch.Tensor, ref: torch.Tensor, hyp: torch.Tensor
-    ):
-        """Check if the input is formatted correctly, otherwise RuntimeError"""
-        if log_probs.dim() != 2:
-            raise RuntimeError("log_probs must be 2 dimensional")
-        if hyp.dim() != 3:
-            raise RuntimeError("hyp must be 3 dimensional")
-        if ref.dim() not in {2, 3}:
-            raise RuntimeError("ref must be 2 or 3 dimensional")
-        if self.batch_first:
-            if ref.dim() == 2:
-                ref = ref.unsqueeze(1).expand(-1, hyp.shape[1], -1)
-            if (ref.shape[:2] != hyp.shape[:2]) or (ref.shape[:2] != log_probs.shape):
-                raise RuntimeError(
-                    "ref and hyp batch_size and sample dimensions must match"
-                )
-            if ref.shape[1] < 2:
-                raise RuntimeError(
-                    "Batch must have at least two samples, got {}"
-                    "".format(ref.shape[1])
-                )
-        else:
-            if ref.dim() == 2:
-                ref = ref.unsqueeze(-1).expand(-1, -1, hyp.shape[-1])
-            if (ref.shape[1:] != hyp.shape[1:]) or (ref.shape[1:] != log_probs.shape):
-                raise RuntimeError(
-                    "ref and hyp batch_size and sample dimensions must match"
-                )
-            if ref.shape[2] < 2:
-                raise RuntimeError(
-                    "Batch must have at least two samples, got {}"
-                    "".format(ref.shape[2])
-                )
-        if self.reduction not in {"mean", "sum", "none"}:
-            raise RuntimeError(
-                '"{}" is not a valid value for reduction' "".format(self.reduction)
-            )
-
     def forward(
         self,
         log_probs: torch.Tensor,
@@ -1666,41 +3079,21 @@ class MinimumErrorRateLoss(torch.nn.Module):
         hyp: torch.Tensor,
         warn: bool = True,
     ) -> torch.Tensor:
-        self.check_input(log_probs, ref, hyp)
-        if self.batch_first:
-            batch_size, samples, max_hyp_steps = hyp.shape
-            max_ref_steps = ref.shape[-1]
-            if ref.dim() == 2:
-                ref = ref.unsqueeze(1).repeat(1, samples, 1)
-            ref = ref.view(-1, max_ref_steps)
-            hyp = hyp.view(-1, max_hyp_steps)
-        else:
-            max_hyp_steps, batch_size, samples = hyp.shape
-            max_ref_steps = ref.shape[0]
-            if ref.dim() == 2:
-                ref = ref.unsqueeze(-1).repeat(1, 1, samples)
-            ref = ref.view(max_ref_steps, -1)
-            hyp = hyp.view(max_hyp_steps, -1)
-        er = error_rate(
+        return minimum_error_rate_loss(
+            log_probs,
             ref,
             hyp,
-            eos=self.eos,
-            include_eos=self.include_eos,
-            norm=self.norm,
-            batch_first=self.batch_first,
-            ins_cost=self.ins_cost,
-            del_cost=self.del_cost,
-            sub_cost=self.sub_cost,
-            warn=warn,
-        ).view(batch_size, samples)
-        if self.sub_avg:
-            er = er - er.mean(1, keepdim=True)
-        loss = er * torch.nn.functional.softmax(log_probs, 1)
-        if self.reduction == "mean":
-            loss = loss.mean()
-        elif self.reduction == "sum":
-            loss = loss.sum()
-        return loss
+            self.eos,
+            self.include_eos,
+            self.sub_avg,
+            self.batch_first,
+            self.norm,
+            self.ins_cost,
+            self.del_cost,
+            self.sub_cost,
+            self.reduction,
+            warn,
+        )
 
 
 class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
@@ -1713,30 +3106,28 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
     Usually, this is in the context of encoder-decoder architectures, which is
     explained here.
 
-    Assume `query` is a tensor of shape ``(batch_size, query_size)``
-    representing a single hidden state of a decoder RNN. Assume `key` is a
-    tensor of shape ``(T, batch_size, key_size)`` representing the encoder
-    output, ``dim == 0`` to specify that the variable-length dimension of `key`
-    is the zero-th dimension, and ``value == key``. The output `out` will be a
-    tensor of shape ``(batch_size, key_size)``. Letting :math:`t` index the
-    `dim`-th dimension:
+    Assume `query` is a tensor of shape ``(batch_size, query_size)`` representing a
+    single hidden state of a decoder RNN. Assume `key` is a tensor of shape ``(T,
+    batch_size, key_size)`` representing the encoder output, ``dim == 0`` to specify
+    that the variable-length dimension of `key` is the zero-th dimension, and ``value ==
+    key``. The output `out` will be a tensor of shape ``(batch_size, key_size)``.
+    Letting :math:`t` index the `dim`-th dimension:
 
         .. math::
 
             out = \sum_t a_t value_t
 
-    ``a`` is the attention vector. In our example, ``a`` will be of shape
-    ``(T, batch_size)``. ``a`` is the result of a softmax over the `dim`-th
-    dimension of another tensor ``e`` of shape ``(T, batch_size)`` with an
-    optional `mask`
+    ``a`` is the attention vector. In our example, ``a`` will be of shape ``(T,
+    batch_size)``. ``a`` is the result of a softmax over the `dim`-th dimension of
+    another tensor ``e`` of shape ``(T, batch_size)`` with an optional `mask`
 
     .. math::
 
         a = softmax(e * mask - (1 - mask) \infty, dim)
 
-    `mask` (if specified) is of shape ``(T, batch_size)`` and will set ``a`` to
-    zero wherever the mask is zero. `mask` can be used to indicate padded
-    values when `key` consists of variable-length sequences.
+    `mask` (if specified) is of shape ``(T, batch_size)`` and will set ``a`` to zero
+    wherever the mask is zero. `mask` can be used to indicate padded values when `key`
+    consists of variable-length sequences.
 
     ``e`` is the result of a score function over `key` and `query`
 
@@ -1746,7 +3137,7 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
 
     ``score()`` is implemented by subclasses of :class:`GlobalSoftAttention`
 
-    The signature when calling an instance this module is:
+    The signature when calling an instance this module is::
 
         attention(query, key, value[, mask])
 
@@ -1758,10 +3149,6 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
         The length of the last dimension of the `key` argument
     dim : int, optional
         The sequence dimension of the `key` argument
-
-    Attributes
-    ----------
-    query_size, key_size, dim : int
 
     Examples
     --------
@@ -1801,8 +3188,14 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
         broadcasting semantics
     """
 
+    __constants__ = ["query_size", "key_size", "dim"]
+
+    query_size: int
+    key_size: int
+    dim: int
+
     def __init__(self, query_size: int, key_size: int, dim: int = 0):
-        super(GlobalSoftAttention, self).__init__()
+        super().__init__()
         self.query_size = query_size
         self.key_size = key_size
         self.dim = dim
@@ -1829,20 +3222,15 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
         """
         raise NotImplementedError()
 
+    @torch.jit.export
     def check_input(
         self,
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
-    ) -> None:
+    ):
         """Check if input is properly formatted, RuntimeError otherwise
-
-        Warnings
-        --------
-        This method doesn't check that the tensors properly broadcast. If they
-        don't, they will fail later on. It only ensures the proper sizes and
-        that the final dimensions are appropriately sized where applicable
 
         See Also
         --------
@@ -1858,12 +3246,14 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
             raise RuntimeError("Last dimension of query must match query_size")
         if key.shape[-1] != self.key_size:
             raise RuntimeError("Last dimension of key must match key_size")
-        if self.dim > key_dim - 2 or self.dim < -key_dim + 1:
+        if self.dim > key_dim - 2 or key_dim == -1 or self.dim < -key_dim + 1:
             raise RuntimeError(
-                "dim must be in the range [{}, {}]" "".format(-key_dim + 1, key_dim - 2)
+                f"dim must be in the range [{-key_dim + 1}, {key_dim - 2}] and not -1"
             )
-        if mask is not None and mask.dim() != key_dim - 1:
-            raise RuntimeError("mask must have one fewer dimension than key")
+        e_shape = broadcast_shapes(query.unsqueeze(self.dim).shape[:-1], key.shape[:-1])
+        if mask is not None:
+            broadcast_shapes(e_shape, mask.shape)
+        broadcast_shapes(e_shape + (1,), value.shape)
 
     def forward(
         self,
@@ -1872,20 +3262,27 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
         value: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        self.check_input(query, key, value, mask)
+        if mask is None:
+            # tracing can't handle calls with None arguments, so we make a
+            # non-threatening mask to call with
+            mask_ = torch.ones(
+                (1,) * (key.dim() - 1), device=query.device, dtype=torch.bool
+            )
+            self.check_input(query, key, value, mask_)
+        else:
+            self.check_input(query, key, value, mask)
         e = self.score(query, key)
         if mask is not None:
-            e = e.masked_fill(mask.eq(0), -float("inf"))
+            e = e.masked_fill(~mask, -float("inf"))
         a = torch.nn.functional.softmax(e, self.dim)
-        c = (a.unsqueeze(-1) * value).sum(self.dim)
-        return c
+        return (a.unsqueeze(-1) * value).sum(self.dim)
 
     def extra_repr(self) -> str:
         return "query_size={}, key_size={}, dim={}".format(
             self.query_size, self.key_size, self.dim
         )
 
-    def reset_parameters(self):
+    def reset_parameters(self) -> None:
         pass
 
 
@@ -1910,19 +3307,18 @@ class DotProductSoftAttention(GlobalSoftAttention):
         1, but if set to :math:`1 / size`, you'll get the scaled dot-product
         attention of [vaswani2017]_
 
-    Attributes
-    ----------
-    query_size, key_size, dim : int
-    scale_factor : float
-
     See Also
     --------
     GlobalSoftAttention
         For a description of how to call this module, how it works, etc.
     """
 
+    __constants__ = ["query_size", "key_size", "dim", "scale_factor"]
+
+    scale_factor: float
+
     def __init__(self, size: int, dim: int = 0, scale_factor: float = 1.0):
-        super(DotProductSoftAttention, self).__init__(size, size, dim)
+        super().__init__(size, size, dim)
         self.scale_factor = scale_factor
 
     def score(self, query: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
@@ -1930,7 +3326,7 @@ class DotProductSoftAttention(GlobalSoftAttention):
         return (query * key).sum(-1) * self.scale_factor
 
     def extra_repr(self) -> str:
-        return "size={}, dim={}".format(self.query_size, self.dim)
+        return super().extra_repr() + f", scale_factor={self.scale_factor}"
 
 
 class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
@@ -1954,33 +3350,31 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
     bias : bool, optional
         Whether to add a bias term ``b``: :math:`W key + b`
 
-    Attributes
-    ----------
-    query_size, key_size, dim : int
-    W : torch.nn.Linear
-        The matrix :math:`W`
-
     See Also
     --------
     GlobalSoftAttention
         For a description of how to call this module, how it works, etc.
     """
 
+    weight: torch.Tensor
+
     def __init__(
         self, query_size: int, key_size: int, dim: int = 0, bias: bool = False
     ):
-        super(GeneralizedDotProductSoftAttention, self).__init__(
-            query_size, key_size, dim
-        )
-        self.W = torch.nn.Linear(key_size, query_size, bias=bias)
+        super().__init__(query_size, key_size, dim)
+        self.weight = torch.nn.parameter.Parameter(torch.empty(query_size, key_size))
+        if bias:
+            self.bias = torch.nn.parameter.Parameter(torch.empty(query_size))
+        else:
+            self.register_parameter("bias", None)
+        self.reset_parameters()
 
     def score(self, query: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
-        Wkey = self.W(key)
+        Wkey = torch.nn.functional.linear(key, self.weight, self.bias)
         query = query.unsqueeze(self.dim)
         return (query * Wkey).sum(-1)
 
-    def reset_parameters(self) -> None:
-        self.W.reset_parameters()
+    reset_parameters = torch.jit.unused(torch.nn.Linear.reset_parameters)
 
 
 class ConcatSoftAttention(GlobalSoftAttention):
@@ -2007,19 +3401,14 @@ class ConcatSoftAttention(GlobalSoftAttention):
         Whether to add bias term ``b`` :math:`W [query, key] + b`
     hidden_size : int, optional
 
-    Attributes
-    ----------
-    query_size, key_size, dim, hidden_size : int
-    W : torch.nn.Linear
-        The matrix :math:`W`
-    v : torch.nn.Linear
-        The vector :math:`v` as a single-row matrix
-
     See Also
     --------
     GlobalSoftAttention
         For a description of how to call this module, how it works, etc.
     """
+
+    weight: torch.Tensor
+    v: torch.Tensor
 
     def __init__(
         self,
@@ -2029,12 +3418,18 @@ class ConcatSoftAttention(GlobalSoftAttention):
         bias: bool = False,
         hidden_size: int = 1000,
     ):
-        super(ConcatSoftAttention, self).__init__(query_size, key_size, dim)
-        self.hidden_size = hidden_size
-        self.W = torch.nn.Linear(query_size + key_size, hidden_size, bias=bias)
+        super().__init__(query_size, key_size, dim)
+        self.weight = torch.nn.parameter.Parameter(
+            torch.empty(hidden_size, query_size + key_size)
+        )
+        if bias:
+            self.bias = torch.nn.parameter.Parameter(torch.empty(hidden_size))
+        else:
+            self.register_parameter("bias", None)
         # there's no point in a bias for v. It'll just be absorbed by the
         # softmax later. You could add a bias after the tanh layer, though...
-        self.v = torch.nn.Linear(hidden_size, 1, bias=False)
+        self.v = torch.nn.parameter.Parameter(torch.empty(hidden_size))
+        self.reset_parameters()
 
     def score(self, query: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
         query = query.unsqueeze(self.dim)
@@ -2042,17 +3437,18 @@ class ConcatSoftAttention(GlobalSoftAttention):
         query, _ = torch.broadcast_tensors(query, query_wo_last.unsqueeze(-1))
         key, _ = torch.broadcast_tensors(key, key_wo_last.unsqueeze(-1))
         cat = torch.cat([query, key], -1)
-        Wcat = self.W(cat)
-        return self.v(Wcat).squeeze(-1)
+        Wcat = torch.nn.functional.linear(cat, self.weight, self.bias)
+        tanhWcat = torch.tanh(Wcat)
+        return torch.nn.functional.linear(tanhWcat, self.v.unsqueeze(0), None).squeeze(
+            -1
+        )
 
     def reset_parameters(self) -> None:
-        self.W.reset_parameters()
-        self.v.reset_parameters()
+        torch.nn.Linear.reset_parameters(self)
+        torch.nn.init.normal_(self.v)
 
     def extra_repr(self) -> str:
-        s = super(ConcatSoftAttention, self).extra_repr()
-        s += ", hidden_size={}".format(self.hidden_size)
-        return s
+        return super().extra_repr() + f", hidden_size={self.v.size(0)}"
 
 
 class MultiHeadedAttention(GlobalSoftAttention):
@@ -2143,6 +3539,21 @@ class MultiHeadedAttention(GlobalSoftAttention):
         Matrices :math:`W^Q`, :math:`W^K`, :math:`W^V`, and :math:`W^C`
     """
 
+    __constants__ = [
+        "query_size",
+        "key_size",
+        "dim",
+        "value_size",
+        "num_heads",
+        "out_size",
+        "d_v",
+    ]
+
+    value_size: int
+    num_heads: int
+    out_size: int
+    d_v: int
+
     def __init__(
         self,
         query_size: int,
@@ -2157,9 +3568,11 @@ class MultiHeadedAttention(GlobalSoftAttention):
         bias_WV: bool = False,
         bias_WC: bool = False,
     ):
-        super(MultiHeadedAttention, self).__init__(
-            query_size, key_size, dim=single_head_attention.dim
-        )
+        super().__init__(query_size, key_size, dim=single_head_attention.dim)
+        if self.dim < 0:
+            raise ValueError(
+                "Negative dimensions are ambiguous for multi-headed attention"
+            )
         self.value_size = value_size
         self.out_size = value_size if out_size is None else out_size
         self.num_heads = num_heads
@@ -2182,14 +3595,32 @@ class MultiHeadedAttention(GlobalSoftAttention):
         value: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ):
-        """Check that input is formatted correctly, RuntimeError otherwise"""
-        super(MultiHeadedAttention, self).check_input(query, key, value, mask)
-        if value.shape[-1] != self.value_size:
+        # FIXME(sdrobert): TorchScript doesn't currently support calls to super().
+        # Replace this when it does. Also surround broadcast_shapes with try/catch
+        # when supported
+        key_dim = key.dim()
+        if query.dim() != key_dim - 1:
+            raise RuntimeError("query must have one fewer dimension than key")
+        if key_dim != value.dim():
+            raise RuntimeError("key must have same number of dimensions as value")
+        if query.shape[-1] != self.query_size:
+            raise RuntimeError("Last dimension of query must match query_size")
+        if key.shape[-1] != self.key_size:
+            raise RuntimeError("Last dimension of key must match key_size")
+        if self.dim > key_dim - 2 or key_dim == -1 or self.dim < -key_dim + 1:
+            raise RuntimeError(
+                f"dim must be in the range [{-key_dim + 1}, {key_dim - 2}] and not -1"
+            )
+        e_shape = broadcast_shapes(query.unsqueeze(self.dim).shape[:-1], key.shape[:-1])
+        if mask is not None:
+            broadcast_shapes(e_shape, mask.shape)
+        broadcast_shapes(e_shape + (1,), value.shape)
+        if value.size(-1) != self.value_size:
             raise RuntimeError("Last dimension of value must match value_size")
 
     def score(self, query: torch.Tensor, key: torch.Tensor) -> NoReturn:
         raise NotImplementedError(
-            "In MultiHeadedAttention, score() is handled by " "single_head_attention"
+            "In MultiHeadedAttention, score() is handled by single_head_attention"
         )
 
     def forward(
@@ -2199,28 +3630,28 @@ class MultiHeadedAttention(GlobalSoftAttention):
         value: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        if mask is None:
+            # avoid issues with calls with None
+            # if the dimension is correct, a tensor of shape (1, ...) should always
+            # broadcast
+            mask = torch.ones(
+                (1,) * (key.dim() - 1), device=query.device, dtype=torch.bool
+            )
         self.check_input(query, key, value, mask)
-        query_shape = tuple(query.shape)
-        key_shape = tuple(key.shape)
-        value_shape = tuple(value.shape)
-        key_dim = key.dim()
-        dim = (self.dim + key_dim) % key_dim
+        query_shape = query.shape
+        key_shape = key.shape
+        value_shape = value.shape
         query_heads = self.WQ(query).view(
-            *(query_shape[:-1] + (self.num_heads, self.d_q))
+            (query_shape[:-1] + (self.num_heads, self.d_q))
         )
-        key_heads = self.WK(key).view(*(key_shape[:-1] + (self.num_heads, self.d_k)))
+        key_heads = self.WK(key).view((key_shape[:-1] + (self.num_heads, self.d_k)))
         value_heads = self.WV(value).view(
-            *(value_shape[:-1] + (self.num_heads, self.d_v))
+            (value_shape[:-1] + (self.num_heads, self.d_v))
         )
         if mask is not None:
             mask = mask.unsqueeze(-2)
-        old_dim = self.single_head_attention.dim
-        try:
-            self.single_head_attention.dim = dim
-            cat = self.single_head_attention(query_heads, key_heads, value_heads, mask)
-        finally:
-            self.single_head_attention.dim = old_dim
-        cat = cat.view(*(tuple(cat.shape[:-2]) + (self.num_heads * self.d_v,)))
+        cat = self.single_head_attention(query_heads, key_heads, value_heads, mask)
+        cat = cat.view((cat.shape[:-2] + (self.num_heads * self.d_v,)))
         return self.WC(cat)
 
     def reset_parameters(self) -> None:
@@ -2231,12 +3662,251 @@ class MultiHeadedAttention(GlobalSoftAttention):
         self.single_head_attention.reset_parameters()
 
     def extra_repr(self) -> str:
-        s = super(MultiHeadedAttention, self).extra_repr()
+        s = super().extra_repr()
         # rest of info in single_head_attention submodule
         s += ", value_size={}, out_size={}, num_heads={}".format(
             self.value_size, self.out_size, self.num_heads
         )
         return s
+
+
+@script
+def _spec_augment_check_input(
+    feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
+):
+    if feats.dim() != 3:
+        raise RuntimeError(
+            f"Expected feats to have three dimensions, got {feats.dim()}"
+        )
+    N, T, _ = feats.shape
+    if lengths is not None:
+        if lengths.dim() != 1:
+            raise RuntimeError(
+                f"Expected lengths to be one dimensional, got {lengths.dim()}"
+            )
+        if lengths.size(0) != N:
+            raise RuntimeError(
+                f"Batch dimension of feats ({N}) and lengths ({lengths.size(0)}) "
+                "do not match"
+            )
+        if not torch.all((lengths <= T) & (lengths > 0)):
+            raise RuntimeError(f"values of lengths must be between (1, {T})")
+
+
+SpecAugmentParams = Tuple[
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+]
+
+
+@script
+def spec_augment_draw_parameters(
+    feats: torch.Tensor,
+    max_time_warp: float,
+    max_freq_warp: float,
+    max_time_mask: int,
+    max_freq_mask: int,
+    max_time_mask_proportion: float,
+    num_time_mask: int,
+    num_time_mask_proportion: float,
+    num_freq_mask: int,
+    lengths: Optional[torch.Tensor] = None,
+) -> SpecAugmentParams:
+    """Functional version of SpecAugment.draw_parameters
+
+    See Also
+    --------
+    SpecAugment
+        For definitions of arguments and a description of this function.
+    """
+    _spec_augment_check_input(feats, lengths)
+    N, T, F = feats.shape
+    device = feats.device
+    eps = _get_tensor_eps(feats)
+    omeps = 1 - eps
+    if lengths is None:
+        lengths = torch.full((N,), T, dtype=torch.long, device=device)
+    lengths = lengths.to(device)
+    # note that order matters slightly in whether we draw widths or positions first.
+    # The paper specifies that position is drawn first for warps, whereas widths
+    # are drawn first for masks
+    if max_time_warp:
+        # we want the range (W, length - W) exclusive to be where w_0 can come
+        # from. If W >= length / 2, this is impossible. Rather than giving up,
+        # we limit the maximum length to W < length / 2
+        max_ = torch.clamp(lengths.float() / 2 - eps, max=max_time_warp)
+        w_0 = torch.rand([N], device=device) * (lengths - 2 * (max_ + eps)) + max_ + eps
+        w = torch.rand([N], device=device) * (2 * max_) - max_
+    else:
+        w_0 = w = torch.empty(0)
+    if max_freq_warp:
+        max_ = min(max_freq_warp, F / 2 - eps)
+        v_0 = torch.rand([N], device=device) * (F - 2 * (max_ + eps)) + max_ + eps
+        v = torch.rand([N], device=device) * (2 * max_) - max_
+    else:
+        v_0 = v = torch.empty(0)
+    if (
+        max_time_mask
+        and max_time_mask_proportion
+        and num_time_mask
+        and num_time_mask_proportion
+    ):
+        lengths = lengths.float()
+        max_ = (
+            torch.clamp(lengths * max_time_mask_proportion, max=max_time_mask,)
+            .floor()
+            .to(device)
+        )
+        nums_ = (
+            torch.clamp(lengths * num_time_mask_proportion, max=num_time_mask,)
+            .floor()
+            .to(device)
+        )
+        t = (
+            (
+                torch.rand([N, num_time_mask], device=device)
+                * (max_ + omeps).unsqueeze(1)
+            )
+            .long()
+            .masked_fill(
+                nums_.unsqueeze(1)
+                <= torch.arange(num_time_mask, dtype=lengths.dtype, device=device),
+                0,
+            )
+        )
+        t_0 = (
+            torch.rand([N, num_time_mask], device=device)
+            * (lengths.unsqueeze(1) - t + omeps)
+        ).long()
+    else:
+        t = t_0 = torch.empty(0)
+    if max_freq_mask and num_freq_mask:
+        max_ = min(max_freq_mask, F)
+        f = (torch.rand([N, num_freq_mask], device=device) * (max_ + omeps)).long()
+        f_0 = (torch.rand([N, num_freq_mask], device=device) * (F - f + omeps)).long()
+    else:
+        f = f_0 = torch.empty(0)
+    return w_0, w, v_0, v, t_0, t, f_0, f
+
+
+@script
+def spec_augment_apply_parameters(
+    feats: torch.Tensor,
+    params: SpecAugmentParams,
+    interpolation_order: int,
+    lengths: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Functional version of SpecAugment.apply_parameters
+
+    See Also
+    --------
+    SpecAugment
+        For definitions of arguments and a description of this function.
+    """
+    _spec_augment_check_input(feats, lengths)
+    N, T, F = feats.shape
+    device = feats.device
+    if lengths is None:
+        lengths = torch.full((N,), T, dtype=torch.long, device=device)
+    lengths = lengths.to(feats.dtype)
+    w_0, w, v_0, v, t_0, t, f_0, f = params
+    new_feats = feats
+    time_grid: Optional[torch.Tensor] = None
+    freq_grid: Optional[torch.Tensor] = None
+    do_warp = False
+    if w_0 is not None and w_0.numel() and w is not None and w.numel():
+        time_grid = warp_1d_grid(w_0, w, lengths, T, interpolation_order)
+        do_warp = True
+    if v_0 is not None and v_0.numel() and v is not None and v.numel():
+        freq_grid = warp_1d_grid(
+            v_0,
+            v,
+            torch.full((N,), F, dtype=torch.long, device=device),
+            F,
+            interpolation_order,
+        )
+        do_warp = True
+    if do_warp:
+        if time_grid is None:
+            time_grid = torch.arange(T, device=device, dtype=torch.float)
+            time_grid = (2 * time_grid + 1) / T - 1
+            time_grid = time_grid.unsqueeze(0).expand(N, T)
+        if freq_grid is None:
+            freq_grid = torch.arange(F, device=device, dtype=torch.float)
+            freq_grid = (2 * freq_grid + 1) / F - 1
+            freq_grid = freq_grid.unsqueeze(0).expand(N, F)
+        time_grid = time_grid.unsqueeze(2).expand(N, T, F)
+        freq_grid = freq_grid.unsqueeze(1).expand(N, T, F)
+        # note: grid coordinate are (freq, time) rather than (time, freq)
+        grid = torch.stack([freq_grid, time_grid], 3)  # (N, T, F, 2)
+        new_feats = torch.nn.functional.grid_sample(
+            new_feats.unsqueeze(1), grid, padding_mode="border", align_corners=False
+        ).squeeze(1)
+    tmask: Optional[torch.Tensor] = None
+    fmask: Optional[torch.Tensor] = None
+    if t_0 is not None and t_0.numel() and t is not None and t.numel():
+        tmask = torch.arange(T, device=device).unsqueeze(0).unsqueeze(2)  # (1, T,1)
+        t_1 = t_0 + t  # (N, MT)
+        tmask = (tmask >= t_0.unsqueeze(1)) & (tmask < t_1.unsqueeze(1))  # (N,T,MT)
+        tmask = tmask.any(2, keepdim=True)  # (N, T, 1)
+    if f_0 is not None and f_0.numel() and f is not None and f.numel():
+        fmask = torch.arange(F, device=device).unsqueeze(0).unsqueeze(2)  # (1, F,1)
+        f_1 = f_0 + f  # (N, MF)
+        fmask = (fmask >= f_0.unsqueeze(1)) & (fmask < f_1.unsqueeze(1))  # (N,F,MF)
+        fmask = fmask.any(2).unsqueeze(1)  # (N, 1, F)
+    if tmask is not None:
+        if fmask is not None:
+            tmask = tmask | fmask
+        new_feats = new_feats.masked_fill(tmask, 0.0)
+    elif fmask is not None:
+        new_feats = new_feats.masked_fill(fmask, 0.0)
+    return new_feats
+
+
+@script
+def spec_augment(
+    feats: torch.Tensor,
+    max_time_warp: float,
+    max_freq_warp: float,
+    max_time_mask: int,
+    max_freq_mask: int,
+    max_time_mask_proportion: float,
+    num_time_mask: int,
+    num_time_mask_proportion: float,
+    num_freq_mask: int,
+    interpolation_order: int,
+    lengths: Optional[torch.Tensor] = None,
+    training: bool = True,
+) -> torch.Tensor:
+    """Functional version of SpecAugment
+
+    See Also
+    --------
+    SpecAugment
+        For definitions of arguments and a description of this function.
+    """
+    _spec_augment_check_input(feats, lengths)
+    if not training:
+        return feats
+    params = spec_augment_draw_parameters(
+        feats,
+        max_time_warp,
+        max_freq_warp,
+        max_time_mask,
+        max_freq_mask,
+        max_time_mask_proportion,
+        num_time_mask,
+        num_time_mask_proportion,
+        num_freq_mask,
+        lengths,
+    )
+    return spec_augment_apply_parameters(feats, params, interpolation_order, lengths)
 
 
 class SpecAugment(torch.nn.Module):
@@ -2323,17 +3993,6 @@ class SpecAugment(torch.nn.Module):
         [park2020]_). 2 = thin plate (default for [park2019]_). Higher orders are
         possible at increased computational cost.
 
-    Attributes
-    ----------
-    max_time_warp : float
-    max_freq_warp : float
-    max_time_mask : int
-    max_freq_mask : int
-    max_time_mask_proportion : float
-    num_time_mask : int
-    num_freq_mask : int
-    interpolation_order : int
-
     Notes
     -----
     There are a few differences between this implementation of warping and those you
@@ -2364,6 +4023,28 @@ class SpecAugment(torch.nn.Module):
     of frequency that occurred due to the 2D warp was unintentional.
     """
 
+    __constants__ = [
+        "max_time_warp",
+        "max_freq_warp",
+        "max_time_mask",
+        "max_freq_mask",
+        "max_time_mask_proportion",
+        "num_time_mask",
+        "num_time_mask_proportion",
+        "num_freq_mask",
+        "interpolation_order",
+    ]
+
+    max_time_warp: float
+    max_freq_warp: float
+    max_time_mask: int
+    max_freq_mask: int
+    max_time_mask_proportion: float
+    num_time_mask: int
+    num_time_mask_proportion: float
+    num_freq_mask: int
+    interpolation_order: int
+
     def __init__(
         self,
         max_time_warp: float = 80.0,
@@ -2376,9 +4057,9 @@ class SpecAugment(torch.nn.Module):
         num_freq_mask: int = 2,
         interpolation_order: int = 1,
     ):
-        super(SpecAugment, self).__init__()
-        self.max_time_warp = max_time_warp
-        self.max_freq_warp = max_freq_warp
+        super().__init__()
+        self.max_time_warp = float(max_time_warp)
+        self.max_freq_warp = float(max_freq_warp)
         self.max_time_mask = max_time_mask
         self.max_freq_mask = max_freq_mask
         self.max_time_mask_proportion = max_time_mask_proportion
@@ -2400,42 +4081,9 @@ class SpecAugment(torch.nn.Module):
             s += ",warp_f={}".format(self.max_freq_warp)
         return s
 
-    def check_input(
-        self, feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
-    ) -> None:
-        if feats.dim() != 3:
-            raise RuntimeError(
-                "Expected feats to have three dimensions, got {}".format(feats.dim())
-            )
-        if lengths is not None:
-            if lengths.dim() != 1:
-                raise RuntimeError(
-                    "Expected lengths to be one dimensional, got {}"
-                    "".format(lengths.dim())
-                )
-            N, T, _ = feats.shape
-            if lengths.shape[0] != N:
-                raise RuntimeError(
-                    "Batch dimension of feats ({}) and lengths ({}) do not match"
-                    "".format(N, lengths.shape[0])
-                )
-            if not torch.all((lengths <= T) & (lengths > 0)):
-                raise RuntimeError(
-                    "values of lengths must be between (1, {})".format(T)
-                )
-
     def draw_parameters(
         self, feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
-    ) -> Tuple[
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-    ]:
+    ) -> SpecAugmentParams:
         """Randomly draw parameterizations of augmentations
 
         Called as part of this layer's :func:`__call__` method.
@@ -2450,195 +4098,53 @@ class SpecAugment(torch.nn.Module):
 
         Returns
         -------
-        w_0 : torch.Tensor or :obj:`None`
+        w_0 : torch.Tensor
             If step 1 is enabled, of shape ``(N,)`` containing the source points in the
-            time warp (floatint-point).
-        w : torch.Tensor or :obj:`None`
+            time warp (floatint-point). Otherwise, is empty.
+        w : torch.Tensor
             If step 1 is enabled, of shape ``(N,)`` containing the number of frames to
             shift the source point by (positive or negative) in the destination in time.
-            Positive values indicate a right shift.
-        v_0 : torch.Tensor or :obj:`None`
+            Positive values indicate a right shift. Otherwise is empty.
+        v_0 : torch.Tensor
             If step 2 is enabled, of shape ``(N,)`` containing the source points in the
-            frequency warp (floating point)
-        v : torch.Tensor or :obj:`None`
+            frequency warp (floating point). Otherwise is empty.
+        v : torch.Tensor
             If step 2 is enabled, of shape ``(N,)`` containing the number of
             coefficients to shift the source point by (positive or negative) in the
-            destination in time. Positive values indicate a right shift.
-            Floating-point
-        t_0 : torch.Tensor or :obj:`None`
+            destination in time. Positive values indicate a right shift. Otherwise is
+            empty.
+        t_0 : torch.Tensor
             If step 3 is enabled, of shape ``(N, M_T)`` where ``M_T`` is the number of
             time masks specifying the lower index (inclusive) of the time masks.
-            Integer.
-        t : torch.Tensor or :obj:`None`
+            Otherwise is empty.
+        t : torch.Tensor
             If step 3 is enabled, of shape ``(N, M_T)`` specifying the number of frames
-            per time mask. Integer
-        f_0 : torch.Tensor or :obj:`None`
+            per time mask. Otherise is empty.
+        f_0 : torch.Tensor
             If step 4 is enabled, of shape ``(N, M_F)`` where ``M_F`` is the number of
             frequency masks specifying the lower index (inclusive) of the frequency
-            masks. Integer.
-        f : torch.Tensor or :obj:`None`
+            masks. Otherwise is empty.
+        f : torch.Tensor
             If step 4 is enabled, of shape ``(N, M_F)`` specifying the number of
-            frequency coefficients per frequency mask. Integer
+            frequency coefficients per frequency mask. Otherwise is empty.
         """
-        N, T, F = feats.shape
-        device = feats.device
-        eps = torch.finfo(torch.float).eps
-        omeps = 1 - eps
-        if lengths is None:
-            lengths = torch.tensor([T] * N, device=device)
-        lengths = lengths.to(device)
-        # note that order matters slightly in whether we draw widths or positions first.
-        # The paper specifies that position is drawn first for warps, whereas widths
-        # are drawn first for masks
-        if self.max_time_warp:
-            # we want the range (W, length - W) exclusive to be where w_0 can come
-            # from. If W >= length / 2, this is impossible. Rather than giving up,
-            # we limit the maximum length to W < length / 2
-            max_ = torch.clamp(lengths.float() / 2 - eps, max=self.max_time_warp)
-            w_0 = (
-                torch.rand([N], device=device) * (lengths - 2 * (max_ + eps))
-                + max_
-                + eps
-            )
-            w = torch.rand([N], device=device) * (2 * max_) - max_
-        else:
-            w_0 = w = None
-        if self.max_freq_warp:
-            max_ = min(self.max_freq_warp, F / 2 - eps)
-            v_0 = torch.rand([N], device=device) * (F - 2 * (max_ + eps)) + max_ + eps
-            v = torch.rand([N], device=device) * (2 * max_) - max_
-        else:
-            v_0 = v = None
-        if (
-            self.max_time_mask
-            and self.max_time_mask_proportion
-            and self.num_time_mask
-            and self.num_time_mask_proportion
-        ):
-            lengths = lengths.float()
-            max_ = (
-                torch.clamp(
-                    lengths * self.max_time_mask_proportion, max=self.max_time_mask,
-                )
-                .floor()
-                .to(device)
-            )
-            nums_ = (
-                torch.clamp(
-                    lengths * self.num_time_mask_proportion, max=self.num_time_mask,
-                )
-                .floor()
-                .to(device)
-            )
-            t = (
-                (
-                    torch.rand([N, self.num_time_mask], device=device)
-                    * (max_ + omeps).unsqueeze(1)
-                )
-                .long()
-                .masked_fill(
-                    nums_.unsqueeze(1)
-                    <= torch.arange(
-                        self.num_time_mask, dtype=lengths.dtype, device=device
-                    ),
-                    0,
-                )
-            )
-            t_0 = (
-                torch.rand([N, self.num_time_mask], device=device)
-                * (lengths.unsqueeze(1) - t + omeps)
-            ).long()
-        else:
-            t = t_0 = None
-        if self.max_freq_mask and self.num_freq_mask:
-            max_ = min(self.max_freq_mask, F)
-            f = (
-                torch.rand([N, self.num_freq_mask], device=device) * (max_ + omeps)
-            ).long()
-            f_0 = (
-                torch.rand([N, self.num_freq_mask], device=device) * (F - f + omeps)
-            ).long()
-        else:
-            f = f_0 = None
-        return w_0, w, v_0, v, t_0, t, f_0, f
-
-    @staticmethod
-    def warp_1d_grid(
-        src: torch.Tensor,
-        flow: torch.Tensor,
-        lengths: torch.Tensor,
-        max_length: int,
-        interpolation_order: int,
-    ) -> torch.Tensor:
-        """Interpolate grid values for 1d of a grid_sample
-
-        Called as part of this layer's :func:`__call__` method.
-
-        Parameters
-        ----------
-        src : torch.Tensor
-            A long tensor of shape ``(N,)`` containing random source points.
-        flow : torch.Tensor
-            A long tensor of shape ``(N,)`` containing corresponding flow fields for
-            ``src`` such that ``new_feats[n, * dst[n] *] =
-            feats[n, * src[n] - flow[n] *]`` (for whichever dimension we're talking
-            about).
-        lengths : torch.Tensor
-            A long tensor of shape ``(N,)`` specifying the number of valid indices along
-            the dimension in question.
-        max_length : int
-            An integer s.t. ``max_length >= lengths[n]`` for all ``n``.
-        interpolation order : int
-            Degree of warp.
-
-        Returns
-        -------
-        grid : torch.Tensor
-            A float tensor of shape ``(N, max_length)`` providing coordinates for one
-            dimension of :func:`torch.nn.functional.grid_sample` that will be used to
-            warp the features
-        """
-        device = src.device
-        # the interpolation has three points (per batch elem):
-        # 1. t=-.5, flow=0
-        # 2. t=src, flow=flow
-        # 3. t=lengths -.5, flow=0
-        # whatever happens after lengths -.5 is undefined
-        # grid = (2 * dst - 2 * flow + 1) / max_length - 1
-        N = src.shape[0]
-        src, flow, lengths = src.float(), flow.float(), lengths.float()
-        zeros = torch.zeros_like(src)
-        src = torch.stack([zeros - 0.5, src, lengths - 0.5], 1)  # (N, 3)
-        flow = torch.stack([zeros, flow, zeros], 1)  # (N, 3)
-        sparse_grid = (2.0 * src + 1.0) / max_length - 1.0  # (N,3)
-        t = torch.arange(max_length, device=device, dtype=torch.float)
-        grid = polyharmonic_spline(
-            (src + flow).unsqueeze(-1),  # dst (N, 3, 1)
-            sparse_grid.unsqueeze(-1),  # (N, 3, 1)
-            t.unsqueeze(0).expand(N, max_length).unsqueeze(-1),  # (N, T, 1)
-            interpolation_order,
-        ).squeeze(
-            -1
-        )  # (N, T)
-        # we perform "boundary" interpolation, meaning any values past index length - 1
-        # are assumed to be equal to the boundary and with zero gradient.
-        boundary = (2.0 * lengths - 1.0) / max_length - 1.0
-        grid = torch.min(grid, boundary.unsqueeze(-1))
-        return grid
+        return spec_augment_draw_parameters(
+            feats,
+            self.max_time_warp,
+            self.max_freq_warp,
+            self.max_time_mask,
+            self.max_freq_mask,
+            self.max_time_mask_proportion,
+            self.num_time_mask,
+            self.num_time_mask_proportion,
+            self.num_freq_mask,
+            lengths,
+        )
 
     def apply_parameters(
         self,
         feats: torch.Tensor,
-        params: Tuple[
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-            Optional[torch.Tensor],
-        ],
+        params: SpecAugmentParams,
         lengths: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Use drawn parameters to apply augmentations
@@ -2659,73 +4165,59 @@ class SpecAugment(torch.nn.Module):
         new_feats : torch.Tensor
             Augmented time-frequency features of same shape as `feats`.
         """
-        N, T, F = feats.shape
-        device = feats.device
-        if lengths is None:
-            lengths = torch.tensor([T] * N, device=device)
-        lengths = lengths.float()
-        w_0, w, v_0, v, t_0, t, f_0, f = params
-        new_feats = feats
-        time_grid = freq_grid = None
-        do_warp = False
-        if w_0 is not None and w is not None:
-            time_grid = self.warp_1d_grid(w_0, w, lengths, T, self.interpolation_order)
-            do_warp = True
-        if v_0 is not None and v is not None:
-            freq_grid = self.warp_1d_grid(
-                v_0,
-                v,
-                torch.tensor([F] * N, device=device),
-                F,
-                self.interpolation_order,
-            )
-            do_warp = True
-        if do_warp:
-            if time_grid is None:
-                time_grid = torch.arange(T, device=device, dtype=torch.float)
-                time_grid = (2 * time_grid + 1) / T - 1
-                time_grid = time_grid.unsqueeze(0).expand(N, T)
-            elif freq_grid is None:
-                freq_grid = torch.arange(F, device=device, dtype=torch.float)
-                freq_grid = (2 * freq_grid + 1) / F - 1
-                freq_grid = freq_grid.unsqueeze(0).expand(N, F)
-            time_grid = time_grid.unsqueeze(2).expand(N, T, F)
-            freq_grid = freq_grid.unsqueeze(1).expand(N, T, F)
-            # note: grid coordinate are (freq, time) rather than (time, freq)
-            grid = torch.stack([freq_grid, time_grid], 3)  # (N, T, F, 2)
-            new_feats = torch.nn.functional.grid_sample(
-                new_feats.unsqueeze(1), grid, padding_mode="border", align_corners=False
-            ).squeeze(1)
-        tmask = fmask = None
-        if t_0 is not None and t is not None:
-            tmask = torch.arange(T, device=device).unsqueeze(0).unsqueeze(2)  # (1, T,1)
-            t_1 = t_0 + t  # (N, MT)
-            tmask = (tmask >= t_0.unsqueeze(1)) & (tmask < t_1.unsqueeze(1))  # (N,T,MT)
-            tmask = tmask.any(2, keepdim=True)  # (N, T, 1)
-        if f_0 is not None and f is not None:
-            fmask = torch.arange(F, device=device).unsqueeze(0).unsqueeze(2)  # (1, F,1)
-            f_1 = f_0 + f  # (N, MF)
-            fmask = (fmask >= f_0.unsqueeze(1)) & (fmask < f_1.unsqueeze(1))  # (N,F,MF)
-            fmask = fmask.any(2).unsqueeze(1)  # (N, 1, F)
-        if tmask is not None:
-            if fmask is not None:
-                tmask = tmask | fmask
-            new_feats = new_feats.masked_fill(tmask, 0.0)
-        elif fmask is not None:
-            new_feats = new_feats.masked_fill(fmask, 0.0)
-        return new_feats
+        return spec_augment_apply_parameters(
+            feats, params, self.interpolation_order, lengths
+        )
+
+    def reset_parameters(self) -> None:
+        pass
 
     def forward(
         self, feats: torch.Tensor, lengths: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        self.check_input(feats, lengths)
+        if lengths is None:
+            # _spec_augment_check_input(feats)
+            lengths = torch.full(
+                (feats.size(0),), feats.size(1), dtype=torch.long, device=feats.device
+            )
         if not self.training:
             return feats
-        N, T, _ = feats.shape
-        if lengths is None:
-            lengths = torch.tensor([T] * N, device=feats.device)
         params = self.draw_parameters(feats, lengths)
         return self.apply_parameters(feats, params, lengths)
+
+
+@script
+def random_shift(
+    in_: torch.Tensor,
+    in_lens: torch.Tensor,
+    prop: Tuple[float, float],
+    mode: str,
+    value: float,
+    training: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Functional version of RandomShift
+
+    See Also
+    --------
+    RandomShift
+        For definitions of arguments and a description of this function
+    """
+    if in_.dim() < 2:
+        raise RuntimeError(f"in_ must be at least 2 dimensional")
+    if in_lens.dim() != 1 or in_lens.size(0) != in_.size(0):
+        raise RuntimeError(
+            f"For in_ of shape {in_.shape}, expected in_lens to be of shape "
+            f"({in_.size(0)}), got {in_lens.shape}"
+        )
+    if training:
+        in_lens_ = in_lens.float()
+        pad = torch.stack([prop[0] * in_lens_, prop[1] * in_lens_])
+        pad *= torch.rand_like(pad)
+        pad = pad.long()
+        out_lens = in_lens + pad.sum(0)
+        return pad_variable(in_, in_lens, pad, mode, value), out_lens
+    else:
+        return in_, in_lens
 
 
 class RandomShift(torch.nn.Module):
@@ -2767,12 +4259,6 @@ class RandomShift(torch.nn.Module):
         The constant with which to pad the sequence if `mode` is set to
         :obj:`'constant'`.
 
-    Attributes
-    ----------
-    mode : {'reflect', 'replicate', 'constant'}
-    prop : tuple
-    value : float
-
     Raises
     ------
     NotImplementedError
@@ -2786,6 +4272,12 @@ class RandomShift(torch.nn.Module):
         For more details on the different types of padding. Note the default `mode` is
         different between this and the function.
     """
+
+    __constants__ = ["prop", "mode", "value"]
+
+    prop: Tuple[float, float]
+    mode: str
+    value: float
 
     def __init__(
         self,
@@ -2824,25 +4316,9 @@ class RandomShift(torch.nn.Module):
     def reset_parameters(self) -> None:
         pass
 
-    def check_input(self, in_: torch.Tensor, in_lens: torch.Tensor) -> None:
-        if in_.dim() < 2:
-            raise RuntimeError(f"in_ must be at least 2 dimensional")
-        if in_lens.dim() != 1 or in_lens.size(0) != in_.size(0):
-            raise RuntimeError(
-                f"For in_ of shape {in_.shape}, expected in_lens to be of shape "
-                f"({in_.size(0)}), got {in_lens.shape}"
-            )
-
     def forward(
         self, in_: torch.Tensor, in_lens: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        self.check_input(in_, in_lens)
-        if self.training:
-            in_lens_ = in_lens.float()
-            pad = torch.stack([self.prop[0] * in_lens_, self.prop[1] * in_lens_])
-            pad *= torch.rand_like(pad)
-            pad = pad.long()
-            out_lens = in_lens + pad.sum(0)
-            return pad_variable(in_, in_lens, pad, self.mode, self.value), out_lens
-        else:
-            return in_, in_lens
+        return random_shift(
+            in_, in_lens, self.prop, self.mode, self.value, self.training
+        )

@@ -21,6 +21,17 @@ from shutil import rmtree
 
 import torch
 
+import pydrobert.torch.config as config
+
+import pydrobert.torch._compat as compat
+
+if compat._v < "1.8.0":
+    config.USE_JIT = True  # "trace" tests won't work otherwise
+    compat.script = torch.jit.script
+    SKIP_SCRIPT = True
+else:
+    SKIP_SCRIPT = False
+
 
 @pytest.fixture
 def temp_dir():
@@ -123,3 +134,16 @@ def populate_torch_dir():
         return feats, alis, refs, feat_sizes, ref_sizes, utt_ids
 
     return _populate_torch_dir
+
+
+@pytest.fixture(
+    params=[
+        "nojit",
+        pytest.param("trace", marks=pytest.mark.trace),
+        pytest.param("script", marks=pytest.mark.script),
+    ]
+)
+def jit_type(request):
+    if request.param == "script" and SKIP_SCRIPT:
+        pytest.skip("Module scripting unsupported for PyTorch < 1.8.0")
+    return request.param

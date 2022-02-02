@@ -21,6 +21,8 @@ import pytest
 import pydrobert.torch.util as util
 import numpy as np
 
+from pydrobert.torch._compat import meshgrid
+
 
 @pytest.mark.cpu
 def test_parse_arpa_lm():
@@ -555,58 +557,6 @@ def test_beam_search_advance(device):
     assert (y_next_act[:Kp, :, 0] == y_next_0_exp).all()
 
 
-@pytest.mark.parametrize("include_eos", [0, 1])
-@pytest.mark.parametrize("batch_first", [True, False])
-@pytest.mark.parametrize("norm", [True, False], ids=("normed", "unnormed"))
-@pytest.mark.parametrize("distance", [True, False], ids=("edit", "rate"))
-def test_error_rate_against_known(device, norm, include_eos, batch_first, distance):
-    eos = 0
-    pairs = (
-        ((1, 2, 3), (1, 2, 3), 0),
-        ((2, 3), (1, 2, 3), 1),
-        ((1, 3), (1, 2, 3), 1),
-        ((3,), (1, 2, 3), 2),
-        ((1, 2, 3), (1, 3), 1),
-        ((1, 2, 3), (1, 2,), 1),
-        ((1, 2, 3), (1,), 2),
-        ((1, 3, 1, 2, 3), (1, 2, 3), 2),
-        ((1, 2, 3), (4, 5, 6), 3),
-        ((2, 2, 2), (2,), 2),
-        (tuple(), (1,), 1),
-        (tuple(), tuple(), 0),
-    )
-    ref_lens = torch.tensor([len(x[0]) + include_eos for x in pairs], device=device)
-    hyp_lens = torch.tensor([len(x[1]) + include_eos for x in pairs], device=device)
-    ref = torch.nn.utils.rnn.pad_sequence(
-        [torch.tensor(x[0] + (eos,) * include_eos) for x in pairs],
-        padding_value=eos,
-        batch_first=batch_first,
-    ).to(device)
-    hyp = torch.nn.utils.rnn.pad_sequence(
-        [torch.tensor(x[1] + (eos,) * include_eos) for x in pairs],
-        padding_value=eos,
-        batch_first=batch_first,
-    ).to(device)
-    exp = torch.tensor([float(x[2]) for x in pairs], device=device)
-    if norm:
-        exp = torch.where(ref_lens == 0, hyp_lens.ne(0).float(), exp / ref_lens.float())
-    # when all the costs are one, the edit distance should be the same as the error rate
-    if distance:
-        func = util.edit_distance
-    else:
-        func = util.error_rate
-    act = func(
-        ref,
-        hyp,
-        eos=eos,
-        warn=False,
-        norm=norm,
-        include_eos=include_eos,
-        batch_first=batch_first,
-    )
-    assert torch.allclose(exp, act)
-
-
 @pytest.mark.parametrize("ins_cost", [2.0, 0.5, 1.0], ids=("i2.0", "i0.5", "i1.0"))
 @pytest.mark.parametrize("del_cost", [2.0, 0.5, 1.0], ids=("d2.0", "d0.5", "d1.0"))
 @pytest.mark.parametrize("sub_cost", [2.0, 0.5, 1.0], ids=("s2.0", "s0.5", "s1.0"))
@@ -719,57 +669,6 @@ def test_error_rate_ignores_padding(
     assert torch.allclose(out_a, out_b)
 
 
-@pytest.mark.parametrize("include_eos", [True, False])
-@pytest.mark.parametrize("batch_first", [True, False])
-@pytest.mark.parametrize("exclude_last", [True, False])
-def test_optimal_completion(device, include_eos, batch_first, exclude_last):
-    eos, padding = ord("#"), -1
-    triplets = (
-        (
-            "sunday#",
-            "saturday#",
-            ["s", "u", "un", "und", "n", "nd", "a", "y", "#", ""],
-        ),
-        ("sunday#", "satrapy#", ["s", "u", "un", "und", "unda", "y", "y#", "#", ""],),
-        ("abc#", "abc#", ["a", "b", "c", "#", ""]),
-        ("foot#", "bot#", ["f", "fo", "o", "ot#", ""]),
-        ("abc#", "def#", ["a", "ab", "abc", "abc#", ""]),
-    )
-    ref = torch.nn.utils.rnn.pad_sequence(
-        [torch.tensor([ord(c) for c in word]) for (word, _, _) in triplets],
-        batch_first=batch_first,
-        padding_value=padding,
-    ).to(device)
-    hyp = torch.nn.utils.rnn.pad_sequence(
-        [torch.tensor([ord(c) for c in word]) for (_, word, _) in triplets],
-        batch_first=batch_first,
-        padding_value=eos,
-    ).to(device)
-    act = util.optimal_completion(
-        ref,
-        hyp,
-        eos=eos,
-        padding=padding,
-        batch_first=batch_first,
-        exclude_last=exclude_last,
-        include_eos=include_eos,
-    )
-    if not batch_first:
-        act = act.transpose(0, 1)  # (batch, hyp, ref)
-    assert act.shape[0] == len(triplets)
-    for act_bt, (_, _, exp_bt) in zip(act, triplets):
-        if not include_eos:
-            exp_bt = [nexts.replace("#", "") for nexts in exp_bt[:-1]]
-        if exclude_last:
-            exp_bt = exp_bt[:-1]
-        assert act_bt.shape[0] >= len(exp_bt)
-        assert torch.all(act_bt[len(exp_bt) :].eq(padding))
-        for act_bt_hyp, exp_bt_hyp in zip(act_bt, exp_bt):
-            act_bt_hyp = act_bt_hyp.masked_select(act_bt_hyp.ne(padding))
-            act_bt_hyp = sorted(chr(i) for i in act_bt_hyp.tolist())
-            assert sorted(exp_bt_hyp) == act_bt_hyp
-
-
 def test_random_walk_advance(device):
     torch.manual_seed(3487209)
     N, T, S, C = 5, 1000, 4, 10
@@ -841,139 +740,6 @@ def test_random_walk_advance_config(device, prevent_eos, lens):
             assert not torch.any(y[: l.item(), bt, smp] == eos)
 
 
-@pytest.mark.parametrize("exclude_last", [True, False])
-@pytest.mark.parametrize("batch_first", [True, False])
-@pytest.mark.parametrize("ins_cost", [0.5, 1.0], ids=("i0.5", "i1.0"))
-@pytest.mark.parametrize("del_cost", [0.5, 1.0], ids=("d0.5", "d1.0"))
-@pytest.mark.parametrize("sub_cost", [0.5, 1.0], ids=("s0.5", "s1.0"))
-@pytest.mark.parametrize("norm", [True, False], ids=("normed", "unnormed"))
-@pytest.mark.parametrize("distance", [True, False], ids=("edit", "rate"))
-def test_prefix_error_rates(
-    device, exclude_last, batch_first, ins_cost, del_cost, sub_cost, norm, distance
-):
-    N, max_ref_steps, max_hyp_steps, C, eos = 30, 11, 12, 10, -1
-    padding = -2
-    hyp_lens = torch.randint(1, max_hyp_steps + 1, (N,), device=device)
-    ref_lens = torch.randint(1, max_ref_steps + 1, (N,), device=device)
-    hyp = torch.randint(C, (max_hyp_steps, N), device=device)
-    ref = torch.randint(C, (max_ref_steps, N), device=device)
-    hyp[hyp_lens - 1, range(N)] = eos
-    ref[ref_lens - 1, range(N)] = eos
-    ref_lens -= 1  # exclude the eos
-    hyp_lens -= 1
-    if distance:
-        funcs = util.prefix_edit_distances
-        func = util.edit_distance
-    else:
-        funcs = util.prefix_error_rates
-        func = util.error_rate
-    act = funcs(
-        ref.t().contiguous() if batch_first else ref,
-        hyp.t().contiguous() if batch_first else hyp,
-        eos=eos,
-        include_eos=False,
-        norm=norm,
-        ins_cost=ins_cost,
-        del_cost=del_cost,
-        sub_cost=sub_cost,
-        exclude_last=exclude_last,
-        padding=padding,
-        batch_first=batch_first,
-        warn=False,
-    )
-    if batch_first:
-        act = act.t().contiguous()
-    exp = torch.empty(max_hyp_steps + (0 if exclude_last else 1), N, device=device)
-    # if include_eos were true, `hyp` would get a bonus for the final `eos`
-    # which isn't in its prefix
-    for pref_len in range(max_hyp_steps - (1 if exclude_last else 0), -1, -1):
-        hyp[pref_len:] = eos
-        exp[pref_len] = func(
-            ref,
-            hyp,
-            eos=eos,
-            include_eos=False,
-            norm=norm,
-            ins_cost=ins_cost,
-            del_cost=del_cost,
-            sub_cost=sub_cost,
-            warn=False,
-        )
-    exp = exp.masked_fill(
-        (
-            torch.arange(exp.shape[0], device=device).unsqueeze(1)
-            >= hyp_lens + (0 if exclude_last else 1)
-        ),
-        padding,
-    )
-    assert torch.allclose(exp, act)
-
-
-@pytest.mark.parametrize("dim", [0, 2, -1, None])
-def test_sequence_log_probs(device, dim):
-    torch.manual_seed(24519)
-    max_steps, num_classes, eos = 30, 10, 0
-    dim1, dim2, dim3, dim4 = 5, 2, 1, 3
-    logits = torch.full(
-        (max_steps, dim1, dim2, dim3, dim4, num_classes), -float("inf"), device=device
-    )
-    hyp = torch.randint(
-        1, num_classes, (max_steps, dim1, dim2, dim3, dim4), device=device
-    )
-    hyp_lens = torch.randint(2, max_steps, (dim1, dim2, dim3, dim4), device=device)
-    len_mask = torch.arange(max_steps, device=device).unsqueeze(-1)
-    if dim is None:
-        # hyp_lens must be 1d for packed sequences, so we get rid of dim1..dim4
-        hyp_lens = hyp_lens.view(-1)
-        hyp = hyp.view(max_steps, -1)
-        logits = logits.view(max_steps, -1, num_classes)
-        hyp_lens, _ = hyp_lens.sort(descending=True)
-    else:
-        len_mask = len_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-    hyp = hyp.masked_fill(len_mask == hyp_lens, eos)
-    logits = logits.scatter(-1, hyp.unsqueeze(-1), 0.0)
-    rand_mask = torch.randint_like(hyp, 2).eq(1)
-    # > 0 to ensure that at least one valid value exists in the path
-    rand_mask = rand_mask & (len_mask < hyp_lens) & (len_mask > 0)
-    hyp = hyp.masked_fill(rand_mask, -1)
-    padding_mask = (len_mask > hyp_lens) | rand_mask
-    logits = logits.masked_fill(padding_mask.unsqueeze(-1), -float("inf"))
-    if dim is None:
-        hyp = torch.nn.utils.rnn.pack_padded_sequence(hyp, hyp_lens.cpu())
-        logits = torch.nn.utils.rnn.pack_padded_sequence(logits, hyp_lens.cpu())
-    elif dim:
-        hyp_dim = (dim + 5) % 5
-        hyp = hyp.transpose(0, hyp_dim).contiguous()
-        logits = logits.transpose(0, hyp_dim).contiguous()
-    log_probs = util.sequence_log_probs(logits, hyp, dim=dim, eos=eos)
-    assert log_probs.eq(0.0).all()
-    if dim is None:
-        logits = torch.nn.utils.rnn.PackedSequence(
-            torch.randn_like(logits[0]), logits[1]
-        )
-    else:
-        logits = torch.randn_like(logits)
-    log_probs = util.sequence_log_probs(logits, hyp, dim=dim, eos=eos)
-    assert log_probs.ne(0.0).any()
-
-
-@pytest.mark.parametrize("batch_first", [True, False])
-@pytest.mark.parametrize("gamma", [0.0, 0.95])
-def test_time_distributed_return(device, batch_first, gamma):
-    torch.manual_seed(290129)
-    steps, batch_size = 1000, 30
-    r = torch.randn(steps, batch_size, device=device)
-    exp = torch.empty_like(r)
-    exp[-1] = r[-1]
-    for step in range(steps - 2, -1, -1):
-        exp[step] = r[step] + gamma * exp[step + 1]
-    if batch_first:
-        r = r.t().contiguous()
-        exp = exp.t().contiguous()
-    act = util.time_distributed_return(r, gamma, batch_first=batch_first)
-    assert torch.allclose(exp, act, atol=1e-5)
-
-
 def test_polyharmonic_interpolation_linear(device):
     # when the order is 1, this should simply be linear interpolation
     x = torch.arange(3, device=device).unsqueeze(0).unsqueeze(-1).float()
@@ -999,19 +765,6 @@ def test_polyharmonic_interpolation_equal_on_knots(order, device):
     assert torch.allclose(y, act, atol=1e-3), (y - act).abs().max()
 
 
-@pytest.mark.parametrize("order", [1, 2, 3])
-def test_polyharmonic_interpolation_matches_tensorflow(order, device):
-    dir_ = os.path.join(os.path.dirname(__file__), "polyharmonic_spline")
-    x = torch.tensor(np.load(os.path.join(dir_, "x.npy")), device=device)
-    y = torch.tensor(np.load(os.path.join(dir_, "y.npy")), device=device)
-    q = torch.tensor(np.load(os.path.join(dir_, "q.npy")), device=device)
-    exp = torch.tensor(
-        np.load(os.path.join(dir_, "o{}.npy".format(order))), device=device
-    )
-    act = util.polyharmonic_spline(x, y, q, order, full_matrix=True)
-    assert torch.allclose(exp, act, atol=1e-3), (exp - act).abs().max()
-
-
 @pytest.mark.parametrize("flip_h", [True, False])
 @pytest.mark.parametrize("flip_w", [True, False])
 def test_dense_image_warp_flow_flips(device, flip_h, flip_w):
@@ -1029,7 +782,7 @@ def test_dense_image_warp_flow_flips(device, flip_h, flip_w):
     else:
         w = torch.zeros((W,), dtype=torch.float32, device=device)
     exp = exp.flatten()
-    flow = torch.stack(torch.meshgrid(h, w), 2)
+    flow = torch.stack(meshgrid(h, w), 2)
     act = util.dense_image_warp(img, flow).flatten()
     assert torch.allclose(exp, act, atol=1e-4), (exp - act).abs().max()
     act = util.dense_image_warp(img, flow, mode="nearest").flatten()
@@ -1045,37 +798,6 @@ def test_dense_image_warp_shift_right(device):
     act = util.dense_image_warp(img, flow)[..., 1:, 1:]
     assert torch.allclose(exp, act, atol=1e-5), (exp - act).abs().max()
     act = util.dense_image_warp(img, flow, mode="nearest")[..., 1:, 1:]
-    assert torch.allclose(exp, act), (exp - act).abs().max()
-
-
-@pytest.mark.parametrize("indexing", ["hw", "wh"])
-def test_dense_image_warp_matches_tensorflow(device, indexing):
-    dir_ = os.path.join(os.path.dirname(__file__), "dense_image_warp")
-    img = torch.tensor(np.load(os.path.join(dir_, "img.npy")), device=device)
-    flow = torch.tensor(np.load(os.path.join(dir_, "flow.npy")), device=device)
-    if indexing == "wh":
-        flow = flow.flip(-1)
-    exp = torch.tensor(np.load(os.path.join(dir_, "warped.npy")), device=device)
-    act = util.dense_image_warp(img, flow, indexing=indexing)
-    assert torch.allclose(exp, act), (exp - act).abs().max()
-
-
-@pytest.mark.parametrize("pinned_boundary_points", [0, 1, 2])
-def test_sparse_image_warp_identity(device, pinned_boundary_points):
-    torch.manual_seed(34207)
-    N, C, H, W = 50, 12, 8, 3
-    img = exp = torch.rand(N, C, H, W, device=device) * 255
-    # we add 3 random control pointrs under the identity mapping to ensure a
-    # non-degenerate interpolate
-    src = dst = torch.rand(N, 3, 2, device=device) * min(H, W)
-    act, flow = util.sparse_image_warp(
-        img,
-        src,
-        dst,
-        pinned_boundary_points=pinned_boundary_points,
-        dense_interpolation_mode="nearest",
-    )
-    assert torch.allclose(flow, torch.tensor(0.0, device=device))
     assert torch.allclose(exp, act), (exp - act).abs().max()
 
 
@@ -1115,24 +837,3 @@ def test_sparse_image_warp_matches_tensorflow(
         (exp_warped - act_warped).abs().max()
     )
 
-
-@pytest.mark.parametrize("mode", ["constant", "reflect", "replicate"])
-@pytest.mark.parametrize("another_dim", [True, False])
-def test_pad_variable(device, mode, another_dim):
-    N, Tmax, Tmin, F = 10, 50, 5, 30 if another_dim else 1
-    x = torch.rand((N, Tmax, F), device=device)
-    lens = torch.randint(Tmin, Tmax + 1, (N,), device=device)
-    pad = torch.randint(Tmin - 1, size=(2, N), device=device)
-    exp_padded = []
-    for x_n, lens_n, pad_n in zip(x, lens, pad.t()):
-        x_n = x_n[:lens_n]
-        padded_n = torch.nn.functional.pad(
-            x_n.unsqueeze(0).unsqueeze(0), [0, 0] + pad_n.tolist(), mode
-        ).view(-1, F)
-        exp_padded.append(padded_n)
-    act_padded = util.pad_variable(x, lens, pad, mode)
-    for exp_padded_n, act_padded_n in zip(exp_padded, act_padded):
-        assert torch.allclose(exp_padded_n, act_padded_n[: len(exp_padded_n)])
-    # quick double-check that other types work
-    for type_ in (torch.long, torch.bool):
-        assert util.pad_variable(x.to(type_), lens, pad, mode).dtype == type_

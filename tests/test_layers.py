@@ -14,14 +14,92 @@
 
 import os
 import itertools
+from typing import Dict, Tuple
+import warnings
 
 import pytest
 import torch
 import pydrobert.torch.layers as layers
 import pydrobert.torch.util as util
+import numpy as np
 
 INF = float("inf")
 NAN = float("nan")
+
+
+@pytest.mark.parametrize("batch_first", [True, False])
+@pytest.mark.parametrize("gamma", [0.0, 0.95])
+def test_time_distributed_return(device, batch_first, gamma):
+    torch.manual_seed(290129)
+    steps, batch_size = 1000, 30
+    r = torch.randn(steps, batch_size, device=device)
+    exp = torch.empty_like(r)
+    exp[-1] = r[-1]
+    for step in range(steps - 2, -1, -1):
+        exp[step] = r[step] + gamma * exp[step + 1]
+    if batch_first:
+        r = r.t().contiguous()
+        exp = exp.t().contiguous()
+    time_distributed_return = layers.TimeDistributedReturn(gamma, batch_first)
+    act = time_distributed_return(r)
+    assert torch.allclose(exp, act, atol=1e-5)
+
+
+def test_warp_1d_grid(device, jit_type):
+    N, W = 5, 7
+    src = torch.arange(N, device=device)
+    lengths = src + W - N + 1
+    flow = torch.ones(N, device=device)
+    warp_1d_grid = layers.Warp1DGrid()
+    if jit_type == "script":
+        warp_1d_grid = torch.jit.script(warp_1d_grid)
+    else:
+        warp_1d_grid = torch.jit.trace(
+            warp_1d_grid, (torch.zeros(1), torch.zeros(1), torch.ones(1))
+        )
+    grid_W = warp_1d_grid(src, flow, lengths).view(N, 1, -1)
+    grid_H = torch.zeros_like(grid_W) - 1
+    grid = torch.stack([grid_W, grid_H], -1)
+    feats = torch.eye(N, W, device=device)
+    new_feats = torch.nn.functional.grid_sample(
+        feats.view(N, 1, 1, W), grid, align_corners=False
+    ).view(N, W)
+    assert (new_feats.argmax(1) == (src + flow).long()).all()
+
+
+@pytest.mark.parametrize("mode", ["constant", "reflect", "replicate"])
+@pytest.mark.parametrize("another_dim", [True, False])
+def test_pad_variable(device, mode, another_dim, jit_type):
+    torch.manual_seed(50)
+    N, Tmax, Tmin, F = 10, 50, 5, 30 if another_dim else 1
+    x = torch.rand((N, Tmax, F), device=device)
+    lens = torch.randint(Tmin, Tmax + 1, (N,), device=device)
+    pad = torch.randint(Tmin - 1, size=(2, N), device=device)
+    exp_padded = []
+    for x_n, lens_n, pad_n in zip(x, lens, pad.t()):
+        x_n = x_n[:lens_n]
+        padded_n = torch.nn.functional.pad(
+            x_n.unsqueeze(0).unsqueeze(0), [0, 0] + pad_n.tolist(), mode
+        ).view(-1, F)
+        exp_padded.append(padded_n)
+    pad_variable = layers.PadVariable(mode)
+    if jit_type == "script":
+        pad_variable = torch.jit.script(pad_variable)
+    elif jit_type == "trace":
+        pad_variable = torch.jit.trace(
+            pad_variable,
+            (
+                torch.ones(1, 2),
+                torch.full((1,), 2, dtype=torch.long),
+                torch.ones(2, 1, dtype=torch.long),
+            ),
+        )
+    act_padded = pad_variable(x, lens, pad)
+    for exp_padded_n, act_padded_n in zip(exp_padded, act_padded):
+        assert torch.allclose(exp_padded_n, act_padded_n[: len(exp_padded_n)])
+    # quick double-check that other types work
+    for type_ in (torch.long, torch.bool):
+        assert pad_variable(x.to(type_), lens, pad).dtype == type_
 
 
 @pytest.mark.cpu
@@ -150,7 +228,7 @@ def test_lookup_language_model_builds_trie(prob_list, pointers, ids, logs):
 
 
 @pytest.mark.parametrize("N", [1, 2, 5])
-def test_lookup_language_model_log_probs(device, N):
+def test_lookup_language_model_log_probs(device, N, jit_type):
     torch.manual_seed(1900)
     vocab_size, sos = 10, -1
     prob_list = []
@@ -219,10 +297,13 @@ def test_lookup_language_model_log_probs(device, N):
     # the sos shouldn't matter -- it isn't in the lookup table. The lm will
     # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
     # be 0
-    lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list)
-    lm = lm.to(device)
+    lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list).to(device)
+    if jit_type == "script":
+        lm = torch.jit.script(lm)
+    elif jit_type == "trace":
+        pytest.xfail("lookup_language_model trace unsupported")
     for exp, hist in zip(exps, hists):
-        act = lm(hist, None, torch.tensor(-1, device=device))[0]
+        act = lm(hist, None, -1)[0]
         assert torch.allclose(exp, act, atol=1e-5)
 
 
@@ -336,6 +417,240 @@ def test_lookup_language_model_republic():
     assert torch.allclose(log_probs.sum(0), exp, atol=1e-5)
 
 
+@pytest.mark.parametrize("exclude_last", [True, False])
+@pytest.mark.parametrize("norm", [True, False], ids=("normed", "unnormed"))
+@pytest.mark.parametrize("distance", [True, False], ids=("edit", "rate"))
+def test_prefix_error_rates(
+    device, exclude_last, norm, distance, jit_type,
+):
+    N, max_ref_steps, max_hyp_steps, C, eos = 30, 11, 12, 10, -1
+    ins_cost, del_cost, sub_cost = (float(x) for x in range(1, 4))
+    padding = -2
+    hyp_lens = torch.randint(1, max_hyp_steps + 1, (N,), device=device)
+    ref_lens = torch.randint(1, max_ref_steps + 1, (N,), device=device)
+    hyp = torch.randint(C, (max_hyp_steps, N), device=device)
+    ref = torch.randint(C, (max_ref_steps, N), device=device)
+    hyp[hyp_lens - 1, range(N)] = eos
+    ref[ref_lens - 1, range(N)] = eos
+    ref_lens -= 1  # exclude the eos
+    hyp_lens -= 1
+    func = util.edit_distance if distance else util.error_rate
+    rates = (layers.PrefixEditDistances if distance else layers.PrefixErrorRates)(
+        eos=eos,
+        include_eos=False,
+        norm=norm,
+        ins_cost=ins_cost,
+        del_cost=del_cost,
+        sub_cost=sub_cost,
+        exclude_last=exclude_last,
+        padding=padding,
+        warn=False,
+    )
+    if jit_type == "script":
+        rates = torch.jit.script(rates)
+    elif jit_type == "trace":
+        rates = torch.jit.trace(rates, (torch.full((1, 1), eos, dtype=torch.long),) * 2)
+    act = rates(ref, hyp)
+    exp = torch.empty(max_hyp_steps + (0 if exclude_last else 1), N, device=device)
+    # if include_eos were true, `hyp` would get a bonus for the final `eos`
+    # which isn't in its prefix
+    for pref_len in range(max_hyp_steps - (1 if exclude_last else 0), -1, -1):
+        hyp[pref_len:] = eos
+        exp[pref_len] = func(
+            ref,
+            hyp,
+            eos=eos,
+            include_eos=False,
+            norm=norm,
+            ins_cost=ins_cost,
+            del_cost=del_cost,
+            sub_cost=sub_cost,
+            warn=False,
+        )
+    exp = exp.masked_fill(
+        (
+            torch.arange(exp.shape[0], device=device).unsqueeze(1)
+            >= hyp_lens + (0 if exclude_last else 1)
+        ),
+        padding,
+    )
+    assert torch.allclose(exp, act)
+
+
+@pytest.mark.parametrize("include_eos", [True, False])
+@pytest.mark.parametrize("batch_first", [True, False])
+@pytest.mark.parametrize("exclude_last", [True, False])
+def test_optimal_completion(device, include_eos, batch_first, exclude_last, jit_type):
+    eos, padding = ord("#"), -1
+    triplets = (
+        (
+            "sunday#",
+            "saturday#",
+            ["s", "u", "un", "und", "n", "nd", "a", "y", "#", ""],
+        ),
+        ("sunday#", "satrapy#", ["s", "u", "un", "und", "unda", "y", "y#", "#", ""],),
+        ("abc#", "abc#", ["a", "b", "c", "#", ""]),
+        ("foot#", "bot#", ["f", "fo", "o", "ot#", ""]),
+        ("abc#", "def#", ["a", "ab", "abc", "abc#", ""]),
+    )
+    ref = torch.nn.utils.rnn.pad_sequence(
+        [torch.tensor([ord(c) for c in word]) for (word, _, _) in triplets],
+        batch_first=batch_first,
+        padding_value=padding,
+    ).to(device)
+    hyp = torch.nn.utils.rnn.pad_sequence(
+        [torch.tensor([ord(c) for c in word]) for (_, word, _) in triplets],
+        batch_first=batch_first,
+        padding_value=eos,
+    ).to(device)
+    optimal_completion = layers.OptimalCompletion(
+        eos=eos,
+        padding=padding,
+        batch_first=batch_first,
+        exclude_last=exclude_last,
+        include_eos=include_eos,
+    )
+    if jit_type == "script":
+        optimal_completion = torch.jit.script(optimal_completion)
+    elif jit_type == "trace":
+        optimal_completion = torch.jit.trace(
+            optimal_completion, (torch.full((1, 1), eos, dtype=torch.long),) * 2
+        )
+    act = optimal_completion(ref, hyp)
+    if not batch_first:
+        act = act.transpose(0, 1)  # (batch, hyp, ref)
+    assert act.shape[0] == len(triplets)
+    for act_bt, (_, _, exp_bt) in zip(act, triplets):
+        if not include_eos:
+            exp_bt = [nexts.replace("#", "") for nexts in exp_bt[:-1]]
+        if exclude_last:
+            exp_bt = exp_bt[:-1]
+        assert act_bt.shape[0] >= len(exp_bt)
+        assert torch.all(act_bt[len(exp_bt) :].eq(padding))
+        for act_bt_hyp, exp_bt_hyp in zip(act_bt, exp_bt):
+            act_bt_hyp = act_bt_hyp.masked_select(act_bt_hyp.ne(padding))
+            act_bt_hyp = sorted(chr(i) for i in act_bt_hyp.tolist())
+            assert sorted(exp_bt_hyp) == act_bt_hyp
+
+
+@pytest.mark.parametrize("include_eos", [0, 1])
+@pytest.mark.parametrize("batch_first", [True, False])
+@pytest.mark.parametrize("norm", [True, False], ids=("normed", "unnormed"))
+@pytest.mark.parametrize("distance", [True, False], ids=("edit", "rate"))
+def test_error_rate_against_known(
+    device, norm, include_eos, batch_first, distance, jit_type
+):
+    eos = 0
+    pairs = (
+        ((1, 2, 3), (1, 2, 3), 0),
+        ((2, 3), (1, 2, 3), 1),
+        ((1, 3), (1, 2, 3), 1),
+        ((3,), (1, 2, 3), 2),
+        ((1, 2, 3), (1, 3), 1),
+        ((1, 2, 3), (1, 2,), 1),
+        ((1, 2, 3), (1,), 2),
+        ((1, 3, 1, 2, 3), (1, 2, 3), 2),
+        ((1, 2, 3), (4, 5, 6), 3),
+        ((2, 2, 2), (2,), 2),
+        (tuple(), (1,), 1),
+        (tuple(), tuple(), 0),
+    )
+    ref_lens = torch.tensor([len(x[0]) + include_eos for x in pairs], device=device)
+    hyp_lens = torch.tensor([len(x[1]) + include_eos for x in pairs], device=device)
+    ref = torch.nn.utils.rnn.pad_sequence(
+        [torch.tensor(x[0] + (eos,) * include_eos) for x in pairs],
+        padding_value=eos,
+        batch_first=batch_first,
+    ).to(device)
+    hyp = torch.nn.utils.rnn.pad_sequence(
+        [torch.tensor(x[1] + (eos,) * include_eos) for x in pairs],
+        padding_value=eos,
+        batch_first=batch_first,
+    ).to(device)
+    exp = torch.tensor([float(x[2]) for x in pairs], device=device)
+    if norm:
+        exp = torch.where(ref_lens == 0, hyp_lens.ne(0).float(), exp / ref_lens.float())
+    # when all the costs are one, the edit distance should be the same as the error rate
+    rate = (layers.EditDistance if distance else layers.ErrorRate)(
+        eos=eos,
+        warn=False,
+        norm=norm,
+        include_eos=bool(include_eos),
+        batch_first=batch_first,
+    )
+    if jit_type == "script":
+        rate = torch.jit.script(rate)
+    elif jit_type == "trace":
+        rate = torch.jit.trace(rate, (torch.zeros(1, 1), torch.zeros(1, 1)))
+    act = rate(ref, hyp)
+    assert torch.allclose(exp, act)
+
+
+@pytest.mark.parametrize("indexing", ["hw", "wh"])
+def test_dense_image_warp_matches_tensorflow(device, indexing, jit_type):
+    dir_ = os.path.join(os.path.dirname(__file__), "dense_image_warp")
+    img = torch.tensor(np.load(os.path.join(dir_, "img.npy")), device=device)
+    flow = torch.tensor(np.load(os.path.join(dir_, "flow.npy")), device=device)
+    if indexing == "wh":
+        flow = flow.flip(-1)
+    dense_image_warp = layers.DenseImageWarp(indexing=indexing)
+    if jit_type == "script":
+        dense_image_warp = torch.jit.script(dense_image_warp)
+    elif jit_type == "trace":
+        dense_image_warp = torch.jit.trace(
+            dense_image_warp, (torch.empty(1, 1, 1, 1), torch.empty(1, 1, 1, 2))
+        )
+    exp = torch.tensor(np.load(os.path.join(dir_, "warped.npy")), device=device)
+    act = dense_image_warp(img, flow)
+    assert torch.allclose(exp, act), (exp - act).abs().max()
+
+
+@pytest.mark.parametrize("order", [1, 2, 3])
+def test_polyharmonic_interpolation_matches_tensorflow(order, device, jit_type):
+    torch.manual_seed(5)
+    dir_ = os.path.join(os.path.dirname(__file__), "polyharmonic_spline")
+    x = torch.tensor(np.load(os.path.join(dir_, "x.npy")), device=device)
+    y = torch.tensor(np.load(os.path.join(dir_, "y.npy")), device=device)
+    q = torch.tensor(np.load(os.path.join(dir_, "q.npy")), device=device)
+    exp = torch.tensor(
+        np.load(os.path.join(dir_, "o{}.npy".format(order))), device=device
+    )
+    polyharmonic_spline = layers.PolyharmonicSpline(order, full_matrix=True)
+    if jit_type == "script":
+        polyharmonic_spline = torch.jit.script(polyharmonic_spline)
+    elif jit_type == "trace":
+        polyharmonic_spline = torch.jit.trace(
+            polyharmonic_spline,
+            (torch.rand(1, 2, 1), torch.rand(1, 2, 5), torch.rand(1, 1, 1)),
+        )
+    act = polyharmonic_spline(x, y, q)
+    assert torch.allclose(exp, act, atol=1e-3), (exp - act).abs().max()
+
+
+@pytest.mark.parametrize("pinned_boundary_points", [0, 1, 2])
+def test_sparse_image_warp_identity(device, pinned_boundary_points, jit_type):
+    torch.manual_seed(34207)
+    N, C, H, W = 50, 12, 8, 3
+    img = exp = torch.rand(N, C, H, W, device=device) * 255
+    # we add 3 random control pointrs under the identity mapping to ensure a
+    # non-degenerate interpolate
+    src = dst = torch.rand(N, 3, 2, device=device) * min(H, W)
+    sparse_image_warp = layers.SparseImageWarp(
+        dense_interpolation_mode="nearest",
+        pinned_boundary_points=pinned_boundary_points,
+    )
+    if jit_type == "script":
+        sparse_image_warp = torch.jit.script(sparse_image_warp)
+    elif jit_type == "trace":
+        sparse_image_warp = torch.jit.trace(
+            sparse_image_warp,
+            (torch.empty(1, 1, 2, 2), torch.empty(1, 0, 2), torch.empty(1, 0, 2)),
+        )
+    act, flow = sparse_image_warp(img, src, dst)
+    assert torch.allclose(flow, torch.tensor(0.0, device=device))
+    assert torch.allclose(exp, act), (exp - act).abs().max()
+
+
 @pytest.mark.cpu
 def test_lookup_language_model_state_dict():
     vocab_size, sos = 10, -1
@@ -397,8 +712,8 @@ def test_lookup_language_model_state_dict():
 
 @pytest.mark.parametrize("batch_first", [True, False])
 @pytest.mark.parametrize("sub_avg", [True, False])
-@pytest.mark.parametrize("reduction", ["mean", "none"])
-def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction):
+@pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction, jit_type):
     torch.manual_seed(100)
     num_batches, samples, num_classes = 5, 5, 30
     max_ref_steps, max_hyp_steps = 10, 5
@@ -421,11 +736,21 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction):
     loss = layers.MinimumErrorRateLoss(
         eos=None, sub_avg=sub_avg, batch_first=batch_first, reduction=reduction,
     )
+    if jit_type == "trace":
+        loss = torch.jit.trace(loss, (log_probs, ref, hyp))
+    elif jit_type == "script":
+        loss = torch.jit.script(loss)
     l1 = loss(log_probs, ref, hyp)
     assert l1.ne(0.0).any()
     l2 = loss(log_probs, ref, hyp)
     assert torch.allclose(l1, l2)
-    loss.eos = 0
+    loss = layers.MinimumErrorRateLoss(
+        eos=0, sub_avg=sub_avg, batch_first=batch_first, reduction=reduction,
+    )
+    if jit_type == "trace":
+        loss = torch.jit.trace(loss, (log_probs, ref, hyp))
+    elif jit_type == "script":
+        loss = torch.jit.script(loss)
     l3 = loss(log_probs, ref, hyp)
     assert l3.eq(0.0).all()
 
@@ -436,7 +761,7 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction):
 @pytest.mark.parametrize("reduction", ["mean", "none"])
 @pytest.mark.parametrize("include_eos", [True, False])
 def test_hard_optimal_completion_distillation_loss(
-    device, batch_first, eos, ref_steps_times, reduction, include_eos
+    device, batch_first, eos, ref_steps_times, reduction, include_eos, jit_type
 ):
     torch.manual_seed(209384)
     num_batches, max_steps, num_classes = 20, 41, 10
@@ -476,11 +801,15 @@ def test_hard_optimal_completion_distillation_loss(
     logits, ref, hyp = logits.to(device), ref.to(device), hyp.to(device)
     ref_lens, hyp_lens = ref_lens.to(device), hyp_lens.to(device)
     len_mask = len_mask.to(device)
-    inv_len_mask = len_mask.eq(0)
+    inv_len_mask = ~len_mask
     logits.requires_grad_(True)
     loss = layers.HardOptimalCompletionDistillationLoss(
         eos=eos, include_eos=include_eos, batch_first=batch_first, reduction=reduction,
     )
+    if jit_type == "script":
+        loss = torch.jit.script(loss)
+    elif jit_type == "trace":
+        loss = torch.jit.trace(loss, (logits, ref, hyp))
     l1 = loss(logits, ref, hyp)
     assert torch.all(l1 == l1)  # no nans
     if reduction == "none":
@@ -512,41 +841,113 @@ def test_hard_optimal_completion_distillation_loss(
     assert not torch.all(g.eq(0.0))
 
 
-def test_sequential_language_model(device):
-    class RNNLM(layers.SequentialLanguageModel):
-        def __init__(self, vocab_size, embed_size=128, hidden_size=512):
-            super(RNNLM, self).__init__(vocab_size)
-            self.embed = torch.nn.Embedding(
-                vocab_size + 1, embed_size, padding_idx=vocab_size
+class RNNLM(layers.MixableSequentialLanguageModel):
+    def __init__(self, vocab_size, embed_size=128, hidden_size=512):
+        super().__init__(vocab_size)
+        self.hidden_size = hidden_size
+        self.embed = torch.nn.Embedding(
+            vocab_size + 1, embed_size, padding_idx=vocab_size
+        )
+        self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
+        self.lstm = torch.nn.LSTM(embed_size, hidden_size)
+        self.lstm.weight_ih_l0 = self.cell.weight_ih
+        self.lstm.weight_hh_l0 = self.cell.weight_hh
+        self.lstm.bias_ih_l0 = self.cell.bias_ih
+        self.lstm.bias_hh_l0 = self.cell.bias_hh
+        self.ff = torch.nn.Linear(hidden_size, vocab_size)
+
+    @torch.jit.export
+    def extract_by_src(
+        self, prev: Dict[str, torch.Tensor], src: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        return {
+            "hidden": prev["hidden"].index_select(0, src),
+            "cell": prev["cell"].index_select(0, src),
+        }
+
+    @torch.jit.export
+    def mix_by_mask(
+        self,
+        prev_true: Dict[str, torch.Tensor],
+        prev_false: Dict[str, torch.Tensor],
+        mask: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        mask = mask.unsqueeze(1)
+        return {
+            "hidden": torch.where(mask, prev_true["hidden"], prev_false["hidden"]),
+            "cell": torch.where(mask, prev_true["cell"], prev_false["cell"]),
+        }
+
+    @torch.jit.export
+    def update_input(
+        self, prev: Dict[str, torch.Tensor], hist: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        if len(prev):
+            return prev
+        N = hist.size(1)
+        zeros = self.ff.weight.new_zeros((N, self.hidden_size))
+        return {"hidden": zeros, "cell": zeros}
+
+    @torch.jit.export
+    def calc_full_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        hist = torch.cat([hist.new_full((1, hist.size(1)), self.vocab_size), hist], 0)
+        x = self.embed(hist)
+        x = self.lstm(x)[0]
+        logits = self.ff(x)
+        return torch.nn.functional.log_softmax(logits, -1)
+
+    @torch.jit.export
+    def calc_idx_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        idx_zero = idx == 0
+        if idx_zero.all():
+            x = torch.full(
+                (hist.size(1),), self.vocab_size, dtype=hist.dtype, device=hist.device
             )
-            self.rnn = torch.nn.LSTMCell(embed_size, hidden_size)
-            self.ff = torch.nn.Linear(hidden_size, vocab_size)
+        else:
+            x = hist.gather(
+                0, (idx - 1).expand(hist.shape[1:]).clamp(min=0).unsqueeze(0)
+            ).squeeze(
+                0
+            )  # (N,)
+            x = x.masked_fill(idx_zero.expand(x.shape), self.vocab_size)
+        x = self.embed(x)
+        h_1, c_1 = self.cell(x, (prev["hidden"], prev["cell"]))
+        logits = self.ff(h_1)
+        return (
+            torch.nn.functional.log_softmax(logits, -1),
+            {"hidden": h_1, "cell": c_1},
+        )
 
-        def calc_idx_log_probs(self, hist, prev, idx):
-            N = hist.size(1)
-            if idx == 0:
-                in_ = hist.new_full((N,), self.vocab_size)
-                prev = [self.rnn.weight_hh.new_zeros((N, self.rnn.hidden_size))] * 2
-            else:
-                if not prev:
-                    prev = self.calc_idx_log_probs(hist, None, idx - 1)[1]
-                in_ = hist[idx - 1]
-            embedding = self.embed(in_)
-            h_1, c_1 = self.rnn(embedding, prev)
-            logits = self.ff(h_1)
-            return torch.nn.functional.log_softmax(logits, -1), (h_1, c_1)
 
-    S, N, V = 100, 10, 50
+def test_sequential_language_model(device, jit_type):
+    S, N, V = 30, 10, 50
     hist = torch.randint(0, V, (S, N), device=device)
     lm = RNNLM(V).to(device)
+    if jit_type == "script":
+        lm = torch.jit.script(lm)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for SequentialLanguageModel")
     log_probs = lm(hist)
-    for idx in torch.arange(S, -1, -1, device=device):
-        log_probs_idx = lm(hist[:idx], idx=idx)[0]
+    prev = dict()
+    for idx in range(S):
+        log_probs_idx, next_ = lm(hist[:idx], prev, idx=idx)
         assert torch.allclose(log_probs[idx], log_probs_idx)
+        # this is more for the scripting to ensure we can handle both tensor and
+        # integer indexes
+        log_probs_idx_ = lm(hist[:idx], prev, idx=torch.as_tensor(idx).to(device))[0]
+        assert torch.allclose(log_probs_idx, log_probs_idx_)
+        prev = next_
 
 
 def test_ctc_prefix_search(device):
     class MyLM(layers.MixableSequentialLanguageModel):
+
+        bigram_table: torch.Tensor
+
         def __init__(self):
             super().__init__(2)
             self.register_buffer(
@@ -611,57 +1012,18 @@ def test_ctc_prefix_search(device):
             assert torch.allclose(probs_k_exp, probs_k_act)
 
 
-def test_ctc_prefix_search_batch(device):
-    class RNNLM(layers.MixableSequentialLanguageModel):
-        def __init__(self, vocab_size, embed_size=128, hidden_size=512):
-            super().__init__(vocab_size)
-            self.hidden_size = hidden_size
-            self.embed = torch.nn.Embedding(
-                vocab_size + 1, embed_size, padding_idx=vocab_size
-            )
-            self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
-            self.ff = torch.nn.Linear(hidden_size, vocab_size)
-
-        def extract_by_src(self, prev, src):
-            return {
-                "hidden_state": prev["hidden_state"].index_select(0, src),
-                "cell_state": prev["cell_state"].index_select(0, src),
-            }
-
-        def mix_by_mask(self, prev_true, prev_false, mask):
-            return dict(
-                (k, torch.where(mask.unsqueeze(1), prev_true[k], prev_false[k]))
-                for k in prev_true
-            )
-
-        def update_input(self, prev, hist):
-            if len(prev):
-                return prev
-            N = hist.size(1)
-            zeros = self.ff.weight.new_zeros((N, self.hidden_size))
-            return {"hidden_state": zeros, "cell_state": zeros}
-
-        def calc_idx_log_probs(self, hist, prev, idx):
-            idx_zero = idx == 0
-            if idx_zero.all():
-                x = hist.new_full((hist.size(1),), self.vocab_size)
-            else:
-                x = hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(
-                    0
-                )  # (N,)
-                x = x.masked_fill(idx_zero, self.vocab_size)
-            x = self.embed(x)
-            h_1, c_1 = self.cell(x, (prev["hidden_state"], prev["cell_state"]))
-            logits = self.ff(h_1)
-            return (
-                torch.nn.functional.log_softmax(logits, -1),
-                {"hidden_state": h_1, "cell_state": c_1},
-            )
+def test_ctc_prefix_search_batch(device, jit_type):
 
     T, N, V, K = 50, 128, 50, 5
     assert K <= V
     lm = RNNLM(V)
+    if jit_type == "script":
+        lm = torch.jit.script(lm)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for CTCPrefixSearch")
     search = layers.CTCPrefixSearch(K, lm=lm).to(device)
+    if jit_type == "script":
+        search = torch.jit.script(search)
     logits = torch.randn((T, N, V + 1), device=device)
     lens = torch.randint(0, T, (N,), device=device)
 
@@ -711,82 +1073,19 @@ def test_ctc_prefix_search_batch(device):
         assert (y_n_exp == y_n_act).all()
 
 
-def test_beam_search(device):
-    class MyLM(layers.ExtractableSequentialLanguageModel):
-        def __init__(self, vocab_size):
-            super().__init__(vocab_size)
-            bigram_table = (
-                torch.arange(1, vocab_size + 1, dtype=torch.float)
-                .unsqueeze(0)
-                .expand(vocab_size, vocab_size)
-            )
-            # dist over idx = [0, ..., 0, idx + 1, idx + 2, -(idx - 3), ..., -V]
-            bigram_table = bigram_table - bigram_table.triu(2) - bigram_table.tril(-1)
-            self.register_buffer("bigram_table", bigram_table)
-
-        def update_input(self, in_prev, hist):
-            return in_prev
-
-        def extract_by_src(self, in_prev, src):
-            return in_prev
-
-        def calc_idx_log_probs(self, hist, in_prev, idx):
-            hist = torch.cat(
-                [torch.arange(hist.size(1), device=hist.device).unsqueeze(0), hist], 0
-            )
-            vocab = hist.gather(0, idx.unsqueeze(0)).squeeze(0)
-            return self.bigram_table.index_select(vocab, 0), in_prev
-
-
-def test_beam_search_batch(device):
+def test_beam_search_batch(device, jit_type):
     torch.manual_seed(1029)
-
-    class RNNLM(layers.ExtractableSequentialLanguageModel):
-        def __init__(self, vocab_size, embed_size=128, hidden_size=512):
-            super().__init__(vocab_size)
-            self.hidden_size = hidden_size
-            self.embed = torch.nn.Embedding(
-                vocab_size + 1, embed_size, padding_idx=vocab_size
-            )
-            self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
-            self.ff = torch.nn.Linear(hidden_size, vocab_size)
-
-        def extract_by_src(self, prev, src):
-            return {
-                "hidden_state": prev["hidden_state"].index_select(0, src),
-                "cell_state": prev["cell_state"].index_select(0, src),
-            }
-
-        def update_input(self, prev, hist):
-            if len(prev):
-                return prev
-            N = hist.size(1)
-            zeros = self.ff.weight.new_zeros((N, self.hidden_size))
-            return {"hidden_state": zeros, "cell_state": zeros}
-
-        def calc_idx_log_probs(self, hist, prev, idx):
-            idx_zero = idx == 0
-            if idx_zero.all():
-                x = torch.arange(hist.size(0), device=hist.device)
-            elif not idx.dim():
-                x = hist[idx - 1]
-            else:
-                x = hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(
-                    0
-                )  # (N,)
-                x = x.masked_fill(idx_zero, self.vocab_size)
-            x = self.embed(x)
-            h_1, c_1 = self.cell(x, (prev["hidden_state"], prev["cell_state"]))
-            logits = self.ff(h_1)
-            return (
-                torch.nn.functional.log_softmax(logits, -1),
-                {"hidden_state": h_1, "cell_state": c_1},
-            )
 
     T, N, V, K = 64, 16, 128, 8
     assert K <= V and N * K <= V
     lm = RNNLM(V)
+    if jit_type == "script":
+        lm = torch.jit.script(lm)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for BeamSearch")
     search = layers.BeamSearch(lm, K, eos=0, max_iters=T).to(device)
+    if jit_type == "script":
+        search = torch.jit.script(search)
     y_prev = torch.arange(N, device=device)
 
     exps = []
@@ -889,7 +1188,7 @@ def test_global_soft_attention(device, dim):
 
 
 @pytest.mark.parametrize("dim", [0, 1, 2])
-def test_dot_product_soft_attention(device, dim):
+def test_dot_product_soft_attention(device, dim, jit_type):
     torch.manual_seed(387420)
     dim1, dim2, dim3, dim4 = 50, 30, 12, 100
     key_shape = (dim1, dim2, dim3, dim4)
@@ -900,6 +1199,12 @@ def test_dot_product_soft_attention(device, dim):
     exp = torch.nn.functional.softmax(key[..., 0], dim).unsqueeze(-1) * key
     exp = exp.sum(dim)
     attention = layers.DotProductSoftAttention(dim4, dim, scale_factor=0.5)
+    if jit_type == "script":
+        attention = torch.jit.script(attention)
+    elif jit_type == "trace":
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            attention = torch.jit.trace(attention, (query, key, key))
     act = attention(query, key, key)
     assert torch.allclose(exp, act)
 
@@ -951,15 +1256,13 @@ def test_dot_product_soft_attention_on_transformer_input():
     assert torch.allclose(g_q1, g_q2, atol=1e-5)
     assert torch.allclose(g_k1, g_k2, atol=1e-5)
     assert torch.allclose(g_v1, g_v2, atol=1e-5)
-    mask = torch.randint(2, (num_batch, len_q, len_k)).eq(1)
+    mask = torch.randint(2, (num_batch, len_q, len_k), dtype=torch.bool)
     out1 = matrix_attention(query, key, value, mask)
-    # the "contiguous" is necessary for 1.3.0
-    # https://github.com/pytorch/pytorch/issues/28502
     out2 = our_attention(
         query,
         key.unsqueeze(2),
         value.unsqueeze(2),
-        mask.transpose(1, 2).contiguous().eq(0),  # we use the inverse of mask
+        ~mask.transpose(1, 2),  # we use the inverse of mask
     )
     assert torch.allclose(out1, out2, atol=1e-5)
 
@@ -969,7 +1272,7 @@ def test_dot_product_soft_attention_on_transformer_input():
 @pytest.mark.parametrize(
     "layer", ["general", "concat", "multihead_general", "multihead_concat"]
 )
-def test_learnable_soft_attention(device, dim, bias, layer):
+def test_learnable_soft_attention(device, dim, bias, layer, jit_type):
     torch.manual_seed(347201)
     max_dim, max_dim_size, max_num_heads = 5, 30, 10
     num_dim = torch.randint(dim + 2, max_dim + 1, (1,), device=device).item()
@@ -1018,15 +1321,23 @@ def test_learnable_soft_attention(device, dim, bias, layer):
     attention.reset_parameters()
     optim = torch.optim.Adam(attention.parameters(), lr=1.0)
     optim.zero_grad()
-    out1 = attention(query, key, key)
+    if jit_type == "trace":
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            attention_trace = torch.jit.trace(attention, (query, key, key))
+    elif jit_type == "script":
+        attention_trace = torch.jit.script(attention)
+    else:
+        attention_trace = attention
+    out1 = attention_trace(query, key, key)
     out1.mean().backward()
     optim.step()
     optim.zero_grad()
-    out2 = attention(query, key, key)
+    out2 = attention_trace(query, key, key)
     assert not torch.allclose(out1, out2, atol=1e-5)
     torch.manual_seed(30)
     attention.reset_parameters()
-    out3 = attention(query, key, key)
+    out3 = attention_trace(query, key, key)
     assert torch.allclose(out1, out3, atol=1e-5)
 
 
@@ -1190,34 +1501,49 @@ def test_spec_augment_masking(device):
     assert torch.all(act_masked_f == exp_masked_f)
 
 
-def test_spec_augment_call(device):
-    torch.manual_seed(6493263)
+@pytest.mark.parametrize("use_lengths", [True, False], ids=["lengths", "nolengths"])
+def test_spec_augment_call(device, use_lengths, jit_type):
     N, T, F = 30, 2048, 80
     max_time_warp, max_freq_warp = 15, 20
     max_time_mask, max_freq_mask = 30, 7
     num_time_mask, num_freq_mask = 2, 3
     max_time_mask_proportion = 0.2
-    lengths = torch.randint(1, T + 1, (N,), device=device)
+    if use_lengths:
+        lengths = torch.randint(1, T + 1, (N,), device=device)
     feats = torch.rand(N, T, F, device=device)
     spec_augment = layers.SpecAugment(
         max_time_warp=max_time_warp,
         max_freq_warp=max_freq_warp,
-        max_time_mask=max_time_mask,
+        max_time_mask=max_time_mask if jit_type != "trace" else 0,
         max_freq_mask=max_freq_mask,
         max_time_mask_proportion=max_time_mask_proportion,
         num_time_mask=num_time_mask,
         num_freq_mask=num_freq_mask,
     ).to(device)
-    spec_augment(feats, lengths)
+    if use_lengths:
+        args = (feats, lengths)
+    else:
+        args = (feats,)
+    if jit_type == "trace":
+        # spec_augment is nondeterministic, so we don't check repeat return values
+        spec_augment = torch.jit.trace(spec_augment, args, check_trace=False)
+    elif jit_type == "script":
+        spec_augment = torch.jit.script(spec_augment)
+    spec_augment(*args)
 
 
 @pytest.mark.parametrize("mode", ["reflect", "constant", "replicate"])
-def test_random_shift_call(device, mode):
+def test_random_shift_call(device, mode, jit_type):
     torch.manual_seed(50)
     N, T, A, B = 50, 300, 13, 11
     in_ = torch.rand(N, T, A, B, device=device)
     in_lens = torch.randint(1, T + 1, (N,), device=device)
     rand_shift = layers.RandomShift(1.0, mode).to(device)
+    if jit_type == "trace":
+        # random_shift is nondeterministic, so we don't check repeat return values
+        rand_shift = torch.jit.trace(rand_shift, (in_, in_lens), check_trace=False)
+    elif jit_type == "script":
+        rand_shift = torch.jit.script(rand_shift)
     out, out_lens = rand_shift(in_, in_lens)
     assert out.dim() == 4
     assert (out_lens >= in_lens).all()
@@ -1225,3 +1551,83 @@ def test_random_shift_call(device, mode):
     assert out.size(1) >= out_lens.max()
     assert out.size(2) == A
     assert out.size(3) == B
+
+
+@pytest.mark.parametrize("dim", [0, 2, -1, None])
+def test_sequence_log_probs(device, dim, jit_type):
+    torch.manual_seed(24519)
+    max_steps, num_classes, eos = 30, 10, 0
+    dim1, dim2, dim3, dim4 = 5, 2, 1, 4
+    logits = torch.full(
+        (max_steps, dim1, dim2, dim3, dim4, num_classes), -float("inf"), device=device
+    )
+    hyp = torch.randint(
+        1, num_classes, (max_steps, dim1, dim2, dim3, dim4), device=device
+    )
+    hyp_lens = torch.randint(2, max_steps, (dim1, dim2, dim3, dim4), device=device)
+    len_mask = torch.arange(max_steps, device=device).unsqueeze(-1)
+    if dim is None:
+        # hyp_lens must be 1d for packed sequences, so we get rid of dim1..dim4
+        hyp_lens = hyp_lens.flatten()
+        hyp = hyp.flatten(1)
+        logits = logits.view(max_steps, -1, num_classes)
+    else:
+        len_mask = len_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+    hyp = hyp.masked_fill(len_mask == hyp_lens, eos)
+    logits = logits.scatter(-1, hyp.unsqueeze(-1), 0.0)
+    rand_mask = torch.randint_like(hyp, 2).eq(1)
+    # > 0 to ensure that at least one valid value exists in the path
+    rand_mask = rand_mask & (len_mask < hyp_lens) & (len_mask > 0)
+    hyp = hyp.masked_fill(rand_mask, -1)
+    padding_mask = (len_mask > hyp_lens) | rand_mask
+    logits = logits.masked_fill(padding_mask.unsqueeze(-1), -float("inf"))
+    if dim is None:
+        logits = torch.nn.utils.rnn.pack_padded_sequence(
+            logits, hyp_lens.cpu(), enforce_sorted=False
+        )
+    elif dim:
+        hyp_dim = (dim + 5) % 5
+        hyp = hyp.transpose(0, hyp_dim).contiguous()
+        logits = logits.transpose(0, hyp_dim).contiguous()
+    sequence_log_probs = layers.SequentialLogProbabilities(
+        0 if dim is None else dim, eos
+    )
+    if jit_type == "trace":
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sequence_log_probs = torch.jit.trace(sequence_log_probs, (logits, hyp))
+    elif jit_type == "script":
+        sequence_log_probs = torch.jit.script(sequence_log_probs)
+    log_probs = sequence_log_probs(logits, hyp)
+    assert log_probs.eq(0.0).all()
+    if dim is None:
+        logits = torch.nn.utils.rnn.PackedSequence(
+            torch.randn_like(logits.data),
+            logits.batch_sizes,
+            logits.sorted_indices,
+            logits.unsorted_indices,
+        )
+    else:
+        logits = torch.randn_like(logits)
+    log_probs_1 = sequence_log_probs(logits, hyp)
+    assert log_probs_1.ne(0.0).any()
+    # this is mostly a test to ensure the packed sequences are being properly
+    # sorted/unsorted
+    log_probs_1 = log_probs_1[::2]
+    if dim is None:
+        logits, _ = torch.nn.utils.rnn.pad_packed_sequence(logits)
+        logits = logits[:, ::2]
+        hyp = hyp[:, ::2]
+        hyp_lens = hyp_lens[::2]
+        logits = torch.nn.utils.rnn.pack_padded_sequence(
+            logits, hyp_lens.cpu(), enforce_sorted=False
+        )
+    elif dim == 0:
+        logits = logits[:, ::2]
+        hyp = hyp[:, ::2]
+    else:
+        logits = logits[::2]
+        hyp = hyp[::2]
+    log_probs_2 = sequence_log_probs(logits, hyp)
+    assert log_probs_1.shape == log_probs_2.shape
+    assert torch.allclose(log_probs_1, log_probs_2)

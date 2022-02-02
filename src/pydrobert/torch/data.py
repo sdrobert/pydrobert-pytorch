@@ -37,7 +37,7 @@ import numpy as np
 import torch
 import torch.utils.data
 import param
-import pydrobert.torch
+import pydrobert.torch.config as config
 
 __all__ = [
     "context_window_seq_to_batch",
@@ -1515,7 +1515,7 @@ def spect_seq_to_batch(
     `feat_sizes` and `ref_sizes` are long tensor  of shape ``(N,)`` containing the
     original ``T`` and ``R`` values. The batch will be sorted by decreasing numbers of
     frames. `feats` is zero-padded while `alis` and `refs` are padded with module
-    constant :const:`pydrobert.torch.INDEX_PAD_VALUE`
+    constant :const:`pydrobert.torch.config.INDEX_PAD_VALUE`
 
     If ``ali`` or ``ref`` is :obj:`None` in any element, `alis` or `refs` and
     `ref_sizes` will also be :obj:`None`
@@ -1542,12 +1542,12 @@ def spect_seq_to_batch(
     )
     if has_ali:
         alis = torch.nn.utils.rnn.pad_sequence(
-            alis, padding_value=pydrobert.torch.INDEX_PAD_VALUE, batch_first=batch_first
+            alis, padding_value=config.INDEX_PAD_VALUE, batch_first=batch_first
         )
     if has_ref:
         ref_sizes = torch.tensor([len(x) for x in refs])
         refs = torch.nn.utils.rnn.pad_sequence(
-            refs, padding_value=pydrobert.torch.INDEX_PAD_VALUE, batch_first=batch_first
+            refs, padding_value=config.INDEX_PAD_VALUE, batch_first=batch_first
         )
     return (
         feats,
@@ -1630,7 +1630,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     The first axis of each of `feats`, `alis`, `refs`, `feat_sizes`, and
     `ref_sizes` is ordered by utterances of descending frame lengths. Shorter
     utterances in `feats` are zero-padded to the right, `alis` is padded with
-    the module constant :const:`pydrobert.torch.INDEX_PAD_VALUE`
+    the module constant :const:`pydrobert.torch.config.INDEX_PAD_VALUE`
 
     `batch_first` is separated from `params` because it is usually a matter of
     model architecture whether it is :obj:`True` - something the user doesn't
@@ -1839,7 +1839,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     -----
 
     Shorter utterances in `feats` are zero-padded to the right, `alis` and `refs` are
-    padded with :const:`pydrobert.torch.INDEX_PAD_VALUE`
+    padded with :const:`pydrobert.torch.config.INDEX_PAD_VALUE`
 
     Examples
     --------

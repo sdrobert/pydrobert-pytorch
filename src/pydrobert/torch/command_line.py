@@ -26,10 +26,6 @@ import torch
 import pydrobert.torch.data as data
 import pydrobert.torch.util as util
 
-__author__ = "Sean Robertson"
-__email__ = "sdrobert@cs.toronto.edu"
-__license__ = "Apache 2.0"
-__copyright__ = "Copyright 2019 Sean Robertson"
 __all__ = [
     "compute_torch_token_data_dir_error_rates",
     "ctm_to_torch_token_data_dir",
@@ -41,7 +37,9 @@ __all__ = [
 
 
 def _get_torch_spect_data_dir_info_parse_args(args):
-    parser = argparse.ArgumentParser(description=get_torch_spect_data_dir_info.__doc__,)
+    parser = argparse.ArgumentParser(
+        description=get_torch_spect_data_dir_info.__doc__,
+    )
     parser.add_argument("dir", type=str, help="The torch data directory")
     parser.add_argument(
         "out_file",
@@ -198,7 +196,9 @@ def get_torch_spect_data_dir_info(args: Optional[Sequence[str]] = None) -> None:
 
 
 def _trn_to_torch_token_data_dir_parse_args(args):
-    parser = argparse.ArgumentParser(description=trn_to_torch_token_data_dir.__doc__,)
+    parser = argparse.ArgumentParser(
+        description=trn_to_torch_token_data_dir.__doc__,
+    )
     parser.add_argument("trn", type=argparse.FileType("r"), help="The input trn file")
     parser.add_argument(
         "token2id",
@@ -898,7 +898,10 @@ def _compute_torch_token_data_dir_parse_args(args):
         "transcript directory",
     )
     parser.add_argument(
-        "hyp", nargs="?", default=None, help="The hypothesis transcript directory",
+        "hyp",
+        nargs="?",
+        default=None,
+        help="The hypothesis transcript directory",
     )
     parser.add_argument(
         "out",
