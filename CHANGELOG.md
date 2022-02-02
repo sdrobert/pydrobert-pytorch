@@ -2,6 +2,15 @@
 
 ## HEAD
 
+- Added a number of modules to `pydrobert.torch.layers` as a wrapper around the
+  functional versions.
+- Added compatibility wrappers to avoid warnings across supported pytorch
+  versions.
+- Refactored code and added tests to support JIT tracing and scripting for most
+  functions/modules in pytorch >= 1.8.1. Did not handle those in
+  `pydrobert.torch.estimators` yet because I plan on revamping that code
+  before the next release. I'll write up documentation shortly.
+- Added `pydrobert.torch.config` to store constants used in the module.
 - Removed `setup.py`.
 - Deleted conda recipe in prep for [conda-forge](https://conda-forge.org/).
 - Compatibility/determinism fixes for 1.5.1.

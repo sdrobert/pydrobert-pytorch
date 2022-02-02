@@ -1375,7 +1375,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
             idx_ = torch.empty(0)
             if idx is not None:
                 if isinstance(idx, int):
-                    idx_ = torch.as_tensor(idx)
+                    idx_ = torch.as_tensor(idx, dtype=torch.long, device=hist.device)
                 elif isinstance(idx, torch.Tensor):
                     idx_ = idx
                 if not idx_.numel():
@@ -1512,6 +1512,166 @@ class MixableSequentialLanguageModel(
         raise NotImplementedError()
 
 
+@script
+def _lookup_calc_idx_log_probs(
+    hist: torch.Tensor,
+    idx: torch.Tensor,
+    pointers: torch.Tensor,
+    ids: torch.Tensor,
+    logs: torch.Tensor,
+    shift: int,
+    sos: int,
+    V: int,
+    N: int,
+    G: int,
+) -> torch.Tensor:
+    # we produce two tries with the same node ids: one for logp and one for
+    # logb. Let N be the maximal n-gram. The children of the root are
+    # 1-grams, their children are 2-grams, etc. Thus, x-gram is synonymous
+    # for level x of the trie. The logb trie does not have N-gram children
+    # b/c there are no backoffs for the maximal n-gram.
+    #
+    # pointers is a flattened array of size X of pointers of internal
+    # nodes. They are only populated when N > 1. pointers is arranged in
+    # a breadth-first manner: levels = [
+    #   1-grams + 1; 2-grams + 1; ...; (N - 1)-grams + 1]
+    # pointers contain positive offsets from their current node to the
+    # first index of its children. The immediately subsequent pointer is
+    # the exclusive offset to the end of the range of children; if the
+    # values of the pointer and subsequent pointer are equal, the node has
+    # no children. The subsequent pointer is either the inclusive offset
+    # of the start of a sibling's children, or a dummy pointer (the +1s
+    # above) for the final child in a level.
+    #
+    # ids = [2-grams + 1; ...; N-grams], that is, remove the 1-grams
+    # level from pointers and add the N-grams level. Thus, to convert from
+    # a pointers index to an ids index, one need only subtract U
+    # (vocab_size + shift + 1 % N). id values correspond to the last token
+    # in a reverse n-gram produced by the path through the tree so far.
+    #
+    # logs = [
+    #   1-grams + 1; 2-grams + 1; ...; N-grams;
+    #   1-grams + 1; 2-grams + 1; ...; (N-1)-grams]. The first X values
+    # are the log-probabilities. Letting G be the number of N-gram nodes,
+    # the remaining X - G entries are the backoff probabilities
+    B: int = hist.size(1)
+    M, X = B * V, pointers.numel()
+    U = V + shift + (1 % N)
+    K, L = X + G - U, 2 * X + G
+    device = hist.device
+    assert ids.numel() == K
+    assert logs.numel() == L
+    if idx.numel() == 0:
+        raise RuntimeError("idx cannot be empty")
+    if idx.numel() == 1:
+        hist = hist[:idx]
+        if idx >= N - 1:
+            hist = hist[hist.size(0) - (N - 1) :]
+        else:
+            hist = torch.cat(
+                [
+                    torch.full(
+                        (N - 1 - hist.size(0), B), sos, dtype=torch.long, device=device,
+                    ),
+                    hist,
+                ],
+                0,
+            )
+    else:
+        min_idx = int(idx.min().item())  # parent ensures min_idx >=0
+        if min_idx < N - 1:
+            hist = torch.cat(
+                [
+                    torch.full(
+                        (N - 1 - min_idx, B), sos, dtype=torch.long, device=device,
+                    ),
+                    hist,
+                ],
+                0,
+            )
+            idx = idx + N - 1 - min_idx
+        idx = torch.arange(-N + 1, 0, 1, device=idx.device).unsqueeze(1) + idx
+        hist = hist.gather(0, idx)
+    assert hist.size(0) == N - 1
+    if shift:
+        hist = hist.masked_fill(hist.eq(sos), -shift)
+        hist = hist + shift
+
+    # add the possible extensions to the history
+    cur_step = torch.arange(shift, V + shift, dtype=torch.long, device=device)
+    cur_step = cur_step.view(1, 1, V).expand(1, B, V)
+    hist = torch.cat([hist.unsqueeze(2).expand(N - 1, B, V), cur_step], 0)
+
+    if N == 1:
+        # we're a unigram model, or we've only got unigram history
+        logs_t = logs[:G].unsqueeze(0).expand(B, G)
+        return logs_t.gather(1, hist[-1])  # (B, V)
+
+    # we're now definitely not a unigram model w/ non-empty history
+    hist = hist.view(-1, M)  # pretend M is batch; reshape at end
+    out = torch.zeros(M, dtype=torch.float, device=device)
+    running_mask = torch.full(out.shape, 1, dtype=torch.bool, device=device)
+    vrange = torch.arange(V, dtype=torch.int32, device=device)
+    children = tokens = hist[0]
+    for Nn in range(N - 1):
+        n = N - Nn
+        offsets = pointers[children]  # (M,)
+        # the +1 is because we've shifted over one, meaning the offset
+        # pointing to the same location is one less
+        num_children = pointers[children + 1] - offsets + 1  # (N,)
+        first_children = children + offsets
+        step_mask = running_mask
+        for t in range(1, n):
+            tokens = hist[Nn + t]
+            # the max avoids working with empty tensors
+            S = max(1, int(num_children.max().item()))
+            all_children = first_children.unsqueeze(1) + vrange[:S].unsqueeze(0)
+            matches = (
+                (ids[all_children.clamp(max=K + U - 1) - U] == tokens.unsqueeze(1))
+                & (vrange[:S].unsqueeze(0) < num_children.unsqueeze(1))
+                & step_mask.unsqueeze(1)
+            )
+            next_step = matches.any(1)
+            if t == n - 1:
+                # we're last. Add probabilities
+                logs_t = torch.where(
+                    matches,
+                    logs[all_children],
+                    torch.zeros(all_children.shape, dtype=logs.dtype, device=device,),
+                ).sum(
+                    1
+                )  # (M,)
+                # the trie has dummy lower-order n-grams. If there's
+                # an (n+1) gram passing through it. We do not want to
+                # match these - we will back off further
+                finite = torch.isfinite(logs_t)
+                out = torch.where(finite, out + logs_t, out)
+                next_step = next_step & finite
+                running_mask = running_mask & next_step.eq(0)
+                new_backoff = step_mask & next_step.eq(0)
+                # add backoff for newly failed paths
+                out = torch.where(new_backoff, out + logs[X + G + children], out,)
+            else:
+                # we're not last. Update children
+                children = torch.where(
+                    matches,
+                    all_children,
+                    torch.zeros(
+                        all_children.shape,
+                        dtype=all_children.dtype,
+                        device=all_children.device,
+                    ),
+                ).sum(1)
+                offsets = pointers[children]
+                num_children = pointers[children + 1] - offsets + 1
+                first_children = children + offsets
+            step_mask = next_step
+        children = tokens = hist[Nn + 1]
+    # unigrams always exist. Add the log-probability and exit
+    out = torch.where(running_mask, out + logs[tokens], out)
+    return out.view(B, V)
+
+
 class LookupLanguageModel(MixableSequentialLanguageModel):
     r"""Construct a backoff n-gram model from a fixed lookup table
 
@@ -1578,7 +1738,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     argument (implicitly true now). `eos` and `oov` were also removed as part of updates
     to :obj:`SequentialLanguageModel`
 
-    JIT tracing is currently unsupported for subclasses.
+    JIT scripting is possible with this module, but not tracing.
     """
 
     __constants__ = ["vocab_size", "sos", "max_ngram", "max_ngram_nodes", "shift"]
@@ -1586,9 +1746,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     sos: int
     max_ngram: int
     max_ngram_nodes: int
-    logs: torch.Tensor
-    ids: torch.Tensor
-    pointers: torch.Tensor
+    shift: int
 
     # XXX(sdrobert): as discussed in [heafield2011], we could potentially speed
     # up computations by keeping track of prefix probs and storing them in
@@ -1631,7 +1789,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     def extract_by_src(
         self, prev: Dict[str, torch.Tensor], src: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
-        return prev
+        return dict()
 
     @torch.jit.export
     def mix_by_mask(
@@ -1640,175 +1798,26 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         prev_false: Dict[str, torch.Tensor],
         mask: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        return prev_true
+        return dict()
 
-    @torch.jit.export
     def calc_idx_log_probs(
         self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        # we produce two tries with the same node ids: one for logp and one for
-        # logb. Let N be the maximal n-gram. The children of the root are
-        # 1-grams, their children are 2-grams, etc. Thus, x-gram is synonymous
-        # for level x of the trie. The logb trie does not have N-gram children
-        # b/c there are no backoffs for the maximal n-gram.
-        #
-        # pointers is a flattened array of size X of pointers of internal
-        # nodes. They are only populated when N > 1. pointers is arranged in
-        # a breadth-first manner: levels = [
-        #   1-grams + 1; 2-grams + 1; ...; (N - 1)-grams + 1]
-        # pointers contain positive offsets from their current node to the
-        # first index of its children. The immediately subsequent pointer is
-        # the exclusive offset to the end of the range of children; if the
-        # values of the pointer and subsequent pointer are equal, the node has
-        # no children. The subsequent pointer is either the inclusive offset
-        # of the start of a sibling's children, or a dummy pointer (the +1s
-        # above) for the final child in a level.
-        #
-        # ids = [2-grams + 1; ...; N-grams], that is, remove the 1-grams
-        # level from pointers and add the N-grams level. Thus, to convert from
-        # a pointers index to an ids index, one need only subtract U
-        # (vocab_size + shift + 1 % N). id values correspond to the last token
-        # in a reverse n-gram produced by the path through the tree so far.
-        #
-        # logs = [
-        #   1-grams + 1; 2-grams + 1; ...; N-grams;
-        #   1-grams + 1; 2-grams + 1; ...; (N-1)-grams]. The first X values
-        # are the log-probabilities. Letting G be the number of N-gram nodes,
-        # the remaining X - G entries are the backoff probabilities
-        B, V, N = hist.size(1), self.vocab_size, self.max_ngram
-        M, G, X = B * V, self.max_ngram_nodes, len(self.pointers)
-        U = V + self.shift + (1 % N)
-        K, L = X + G - U, 2 * X + G
-        device = hist.device
-        assert len(self.ids) == K
-        assert len(self.logs) == L
-        if idx.numel() == 0:
-            raise RuntimeError("idx cannot be empty")
-        if idx.numel() == 1:
-            hist = hist[:idx]
-            if idx >= N - 1:
-                hist = hist[hist.size(0) - (N - 1) :]
-            else:
-                hist = torch.cat(
-                    [
-                        torch.full(
-                            (N - 1 - hist.size(0), B),
-                            self.sos,
-                            dtype=torch.long,
-                            device=device,
-                        ),
-                        hist,
-                    ],
-                    0,
-                )
-        else:
-            min_idx = int(idx.min().item())  # parent ensures min_idx >=0
-            if min_idx < N - 1:
-                hist = torch.cat(
-                    [
-                        torch.full(
-                            (N - 1 - min_idx, B),
-                            self.sos,
-                            dtype=torch.long,
-                            device=device,
-                        ),
-                        hist,
-                    ],
-                    0,
-                )
-                idx = idx + N - 1 - min_idx
-            idx = torch.arange(-N + 1, 0, 1, device=idx.device).unsqueeze(1) + idx
-            hist = hist.gather(0, idx)
-        assert hist.size(0) == N - 1
-        if self.shift:
-            hist = hist.masked_fill(hist.eq(self.sos), -self.shift)
-            hist = hist + self.shift
-
-        # add the possible extensions to the history
-        cur_step = torch.arange(
-            self.shift, V + self.shift, dtype=hist.dtype, device=device
+        return (
+            _lookup_calc_idx_log_probs(
+                hist,
+                idx,
+                self.pointers,
+                self.ids,
+                self.logs,
+                self.shift,
+                self.sos,
+                self.vocab_size,
+                self.max_ngram,
+                self.max_ngram_nodes,
+            ),
+            prev,
         )
-        cur_step = cur_step.view(1, 1, V).expand(1, B, V)
-        hist = torch.cat([hist.unsqueeze(2).expand(N - 1, B, V), cur_step], 0)
-
-        if N == 1:
-            # we're a unigram model, or we've only got unigram history
-            hist = hist[-1]  # (B, V)
-            logs = self.logs[:G].unsqueeze(0).expand(B, G)
-            return logs.gather(1, hist), prev  # (B, V)
-
-        # we're now definitely not a unigram model w/ non-empty history
-        assert X and K
-        hist = hist.view(-1, M)  # pretend M is batch; reshape at end
-        out = torch.zeros(M, dtype=torch.float, device=device)
-        running_mask = torch.ones_like(out, dtype=torch.uint8).eq(1)
-        vrange = torch.arange(V, dtype=torch.int32, device=device)
-        n = N
-        while True:
-            children = tokens = hist[0]
-            if n == 1:
-                # unigrams always exist. Add the log-probability and exit
-                out = torch.where(running_mask, out + self.logs[tokens], out)
-                break
-            offsets = self.pointers[children].to(torch.int32)  # (M,)
-            num_children = self.pointers[children + 1].to(torch.int32)
-            # the +1 is because we've shifted over one, meaning the offset
-            # pointing to the same location is one less
-            num_children = num_children - offsets + 1  # (M,)
-            parents = children
-            first_children = parents + offsets.long()
-            step_mask = running_mask
-            for t in range(1, n):
-                next_step = step_mask & num_children.ne(0)
-                tokens = hist[t]
-                S = num_children.max()
-                all_children = (
-                    first_children.unsqueeze(1) + vrange[:S].unsqueeze(0).long()
-                )
-                matches = self.ids[all_children.clamp(max=K + U - 1) - U].long()
-                matches = matches == tokens.unsqueeze(1)
-                matches = matches & (
-                    vrange[:S].unsqueeze(0) < num_children.unsqueeze(1)
-                )
-                matches = matches & step_mask.unsqueeze(1)
-                next_step = matches.any(1)
-                if t == n - 1:
-                    # we're last. Add probabilities
-                    logs = torch.where(
-                        matches,
-                        self.logs[all_children],
-                        torch.zeros_like(all_children, dtype=torch.float),
-                    ).sum(
-                        1
-                    )  # (M,)
-                    # the trie has dummy lower-order n-grams. If there's
-                    # an (n+1) gram passing through it. We do not want to
-                    # match these - we will back off further
-                    finite = torch.isfinite(logs)
-                    out = torch.where(finite, out + logs, out)
-                    next_step = next_step & finite
-                    running_mask = running_mask & next_step.eq(0)
-                    new_backoff = step_mask & next_step.eq(0)
-                    # add backoff for newly failed paths
-                    out = torch.where(
-                        new_backoff, out + self.logs[X + G + parents], out,
-                    )
-                else:
-                    # we're not last. Update children
-                    children = torch.where(
-                        matches, all_children, torch.zeros_like(all_children),
-                    ).sum(1)
-                # this'll be invalid for the last step, so don't re-use!
-                step_mask = next_step
-                if t != n - 1:
-                    offsets = self.pointers[children].to(torch.int32)
-                    num_children = self.pointers[children + 1].to(torch.int32)
-                    num_children = num_children - offsets + 1
-                    parents = children
-                    first_children = parents + offsets.long()
-            hist = hist[1:]
-            n -= 1
-        return out.view(B, V), prev
 
     def load_state_dict(self, state_dict: dict, **kwargs) -> None:
         error_prefix = "Error(s) in loading state_dict for {}:\n".format(

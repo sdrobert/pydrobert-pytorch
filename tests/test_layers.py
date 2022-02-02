@@ -297,15 +297,13 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
     # the sos shouldn't matter -- it isn't in the lookup table. The lm will
     # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
     # be 0
-    lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list)
-    idx = torch.tensor(-1, device=device)
+    lm = layers.LookupLanguageModel(vocab_size, sos, prob_list=prob_list).to(device)
     if jit_type == "script":
         lm = torch.jit.script(lm)
     elif jit_type == "trace":
         pytest.xfail("lookup_language_model trace unsupported")
-    lm = lm.to(device)
     for exp, hist in zip(exps, hists):
-        act = lm(hist, dict(), idx)[0]
+        act = lm(hist, None, -1)[0]
         assert torch.allclose(exp, act, atol=1e-5)
 
 
@@ -940,7 +938,7 @@ def test_sequential_language_model(device, jit_type):
         assert torch.allclose(log_probs[idx], log_probs_idx)
         # this is more for the scripting to ensure we can handle both tensor and
         # integer indexes
-        log_probs_idx_ = lm(hist[:idx], prev, idx=torch.as_tensor(idx))[0]
+        log_probs_idx_ = lm(hist[:idx], prev, idx=torch.as_tensor(idx).to(device))[0]
         assert torch.allclose(log_probs_idx, log_probs_idx_)
         prev = next_
 
