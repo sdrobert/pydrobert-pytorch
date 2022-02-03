@@ -15,7 +15,7 @@
 __author__ = "Sean Robertson"
 __email__ = "sdrobert@cs.toronto.edu"
 __license__ = "Apache 2.0"
-__copyright__ = "Copyright 2021 Sean Robertson"
+__copyright__ = "Copyright 2022 Sean Robertson"
 
 try:
     from ._version import version as __version__  # type: ignore
@@ -26,7 +26,8 @@ __all__ = [
     "config",
     "data",
     "estimators",
-    "layers",
+    "functional",
+    "modules",
     "training",
     "util",
 ]

@@ -1589,9 +1589,7 @@ def test_sequence_log_probs(device, dim, jit_type):
         hyp_dim = (dim + 5) % 5
         hyp = hyp.transpose(0, hyp_dim).contiguous()
         logits = logits.transpose(0, hyp_dim).contiguous()
-    sequence_log_probs = layers.SequentialLogProbabilities(
-        0 if dim is None else dim, eos
-    )
+    sequence_log_probs = layers.SequenceLogProbabilities(0 if dim is None else dim, eos)
     if jit_type == "trace":
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")

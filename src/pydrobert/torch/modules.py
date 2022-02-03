@@ -12,14 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import warnings
+"""Pytorch modules"""
 
-warnings.warn(
-    "pydrobert.torch.layers is deprecated. Use pydrobert.torch.functional for "
-    "functions and pydrobert.torch.modules for modules",
-    DeprecationWarning,
-    2,
-)
+__all__ = [
+    "BeamSearch",
+    "ConcatSoftAttention",
+    "CTCPrefixSearch",
+    "DotProductSoftAttention",
+    "EditDistance",
+    "ErrorRate",
+    "ExtractableSequentialLanguageModel",
+    "GeneralizedDotProductSoftAttention",
+    "GlobalSoftAttention",
+    "HardOptimalCompletionDistillationLoss",
+    "LookupLanguageModel",
+    "MinimumErrorRateLoss",
+    "MixableSequentialLanguageModel",
+    "MultiHeadedAttention",
+    "OptimalCompletion",
+    "PadVariable",
+    "PolyharmonicSpline",
+    "PrefixEditDistances",
+    "PrefixErrorRates",
+    "RandomShift",
+    "SequenceLogProbabilities",
+    "SequentialLanguageModel",
+    "SparseImageWarp",
+    "SpecAugment",
+    "TimeDistributedReturn",
+    "Warp1DGrid",
+]
 
 from ._attn import (
     ConcatSoftAttention,
@@ -30,17 +52,12 @@ from ._attn import (
 )
 from ._decoding import BeamSearch, CTCPrefixSearch, SequenceLogProbabilities
 from ._img import (
-    DenseImageWarp,
-    PadVariable,
     PolyharmonicSpline,
-    random_shift,
-    RandomShift,
-    SparseImageWarp,
-    spec_augment_apply_parameters,
-    spec_augment_draw_parameters,
-    spec_augment,
-    SpecAugment,
     Warp1DGrid,
+    SparseImageWarp,
+    PadVariable,
+    RandomShift,
+    SpecAugment,
 )
 from ._lm import (
     ExtractableSequentialLanguageModel,
@@ -52,9 +69,7 @@ from ._rl import TimeDistributedReturn
 from ._string import (
     EditDistance,
     ErrorRate,
-    hard_optimal_completion_distillation_loss,
     HardOptimalCompletionDistillationLoss,
-    minimum_error_rate_loss,
     MinimumErrorRateLoss,
     OptimalCompletion,
     PrefixEditDistances,

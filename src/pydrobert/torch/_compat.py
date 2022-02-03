@@ -21,7 +21,8 @@
 from typing import Any, Iterable, List, Optional, Tuple, Union, NamedTuple, Set
 
 import torch
-import pydrobert.torch.config as config
+
+from . import config
 
 
 __all__ = [
