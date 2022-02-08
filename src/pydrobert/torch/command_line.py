@@ -23,8 +23,9 @@ import itertools
 from collections import defaultdict, OrderedDict
 
 import torch
+
 import pydrobert.torch.data as data
-import pydrobert.torch.util as util
+from ._string import error_rate
 
 __all__ = [
     "compute_torch_token_data_dir_error_rates",
@@ -37,9 +38,7 @@ __all__ = [
 
 
 def _get_torch_spect_data_dir_info_parse_args(args):
-    parser = argparse.ArgumentParser(
-        description=get_torch_spect_data_dir_info.__doc__,
-    )
+    parser = argparse.ArgumentParser(description=get_torch_spect_data_dir_info.__doc__,)
     parser.add_argument("dir", type=str, help="The torch data directory")
     parser.add_argument(
         "out_file",
@@ -196,9 +195,7 @@ def get_torch_spect_data_dir_info(args: Optional[Sequence[str]] = None) -> None:
 
 
 def _trn_to_torch_token_data_dir_parse_args(args):
-    parser = argparse.ArgumentParser(
-        description=trn_to_torch_token_data_dir.__doc__,
-    )
+    parser = argparse.ArgumentParser(description=trn_to_torch_token_data_dir.__doc__,)
     parser.add_argument("trn", type=argparse.FileType("r"), help="The input trn file")
     parser.add_argument(
         "token2id",
@@ -898,10 +895,7 @@ def _compute_torch_token_data_dir_parse_args(args):
         "transcript directory",
     )
     parser.add_argument(
-        "hyp",
-        nargs="?",
-        default=None,
-        help="The hypothesis transcript directory",
+        "hyp", nargs="?", default=None, help="The hypothesis transcript directory",
     )
     parser.add_argument(
         "out",
@@ -1181,7 +1175,7 @@ def compute_torch_token_data_dir_error_rates(
             ],
             padding_value=padding,
         )
-        ers = util.error_rate(
+        ers = error_rate(
             ref,
             hyp,
             eos=eos,

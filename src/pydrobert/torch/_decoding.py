@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import math
+from optparse import Option
 
 from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING, Union
 
@@ -483,45 +484,12 @@ def ctc_greedy_search(
     batch_first: bool = False,
     is_probs: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """CTC greedy search
-
-    The CTC greedy search picks the path with the highest probability class in
-    `logits` for each element in the sequence. The path (log-)probability is the (sum)
-    product of the chosen type (log-probabilities). The output sequences are the
-    resulting sequence of class labels with blanks and duplicates removed.
-
-    Parameters
-    ----------
-    logits : torch.Tensor
-        A float tensor of shape ``(N, T, V)`` where ``T`` is the sequence dimension,
-        ``N`` is the batch dimension, and ``V`` is the number of classes including the
-        blank label. ``logits[n, t, :]`` represent the unnormalized log-probabilities
-        of the labels at time ``t`` in batch element ``n``.
-    in_lens : torch.Tensor or None, optional
-        If specified, a long tensor of shape ``(N,)`` providing the lengths of the
-        sequence in the batch. For a given batch element ``n``, only the values of
-        `logits` in the slice ``logits[n, :in_lens[n]]`` will be considered valid.
-    blank_idx : int, optional
-        Which index along the class dimension specifices the blank label
-    batch_first : bool, optional
-        If :obj:`False`, `logits` is of shape ``(T, N, V)`` and `paths` is of shape
-        ``(T, N)``.
-    is_probs : bool, optional
-        If :obj:`True`, `logits` will be considered a normalized probability
-        distribution instead of an un-normalized log-probability distribution. The
-        return value `max_` will take the product of sequence probabilities instead of
-        the sum.
-
-    Returns
-    -------
-    max_, paths, out_lens : torch.Tensor, torch.Tensor, torch.Tensor
-        `max_` is a float tensor of shape ``(N,)`` of the total probability of the
-        greedy path. `paths` is a long tensor of shape ``(N, T`` which stores the
-        reduced greedy paths. `out_lens` is a long tensor of shape ``(N,)`` which
-        specifies the lengths of the greedy paths within `paths`: for a given batch
-        element ``n``, the reduced greedy path is the sequence in the range
-        ``paths[n, :out_lens[n]]``. The values of `paths` outside this range are
-        undefined.
+    """Functional version of CTCGreedySearch
+    
+    See Also
+    --------
+    pydrobert.torch.modules.CTCGreedySearch
+        For more information on this function's parameters and return values
     """
     if logits.dim() != 3:
         raise RuntimeError("logits must be 3-dimensional")
@@ -565,6 +533,71 @@ def ctc_greedy_search(
     if not batch_first:
         argmax = argmax.t()
     return max_, argmax, out_lens
+
+
+class CTCGreedySearch(torch.nn.Module):
+    """CTC greedy search
+
+    The CTC greedy search picks the path with the highest probability class in `logits`
+    for each element in the sequence. The path (log-)probability is the (sum) product of
+    the chosen type (log-probabilities). The output sequences are the resulting sequence
+    of class labels with blanks and duplicates removed.
+
+    When instantiated, this module has the signature::
+
+        max_, paths, out_lens = ctc_greedy_search(logits[, in_lens])
+    
+    Where `logits` is a tensor of shape ``(N, T, V)`` where ``T`` is the sequence
+    dimension, ``N`` is the batch dimension, and ``V`` is the number of classes
+    including the blank label. ``logits[n, t, :]`` represent the unnormalized
+    log-probabilities of the labels at time ``t`` in batch element ``n``. If specified,
+    `in_lens` is a tensor of  shape ``(N,)`` providing the lengths of the sequence in
+    the batch. For a given batch element ``n``, only the values of `logits` in the slice
+    ``logits[n, :in_lens[n]]`` will be considered valid. The call returns a triple
+    ``max_, paths, out_lens`` where `max_` is a tensor of shape ``(N,)`` containing the
+    total log-probability of the greedy path.  `paths` is a long tensor of shape ``(N,
+    T)`` which stores the reduced greedy paths. `out_lens` is a long tensor of shape
+    ``(N,)`` which specifies the lengths of the greedy paths within `paths`: for a given
+    batch element ``n``, the reduced greedy path is the sequence in the range ``paths[n,
+    :out_lens[n]]``. The values of `paths` outside this range are undefined.
+
+    Parameters
+    ----------
+    blank_idx : int, optional
+        Which index along the class dimension specifices the blank label
+    batch_first : bool, optional
+        If :obj:`False`, `logits` is of shape ``(T, N, V)`` and `paths` is of shape
+        ``(T, N)``.
+    is_probs : bool, optional
+        If :obj:`True`, `logits` will be considered a normalized probability
+        distribution instead of an un-normalized log-probability distribution. The
+        return value `max_` will take the product of sequence probabilities instead of
+        the sum.
+    """
+
+    __constants__ = ["blank_idx", "batch_first", "is_probs"]
+
+    blank_idx: int
+    batch_first: bool
+    is_probs: bool
+
+    def __init__(
+        self, blank_idx: int = -1, batch_first: bool = False, is_probs: bool = False
+    ):
+        super().__init__()
+        self.blank_idx = blank_idx
+        self.batch_first = batch_first
+        self.is_probs = is_probs
+
+    def extra_repr(self) -> str:
+        return ", ".join(f"{x}={getattr(self, x)}" for x in self.__constants__)
+
+    def forward(
+        self, logits: torch.Tensor, in_lens: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return ctc_greedy_search(
+            logits, in_lens, self.blank_idx, self.batch_first, self.is_probs
+        )
 
 
 @script

@@ -18,6 +18,7 @@ import math
 
 from tempfile import mkdtemp
 from shutil import rmtree
+from zlib import adler32
 
 import torch
 
@@ -62,7 +63,7 @@ def pytest_runtest_setup(item):
         if not CUDA_AVAIL:
             pytest.skip("cuda is not available")
     # implicitly seeds all tests for the sake of reproducibility
-    torch.manual_seed(abs(hash(item.name)))
+    torch.manual_seed(abs(adler32(bytes(item.name, "utf-8"))))
 
 
 @pytest.fixture(scope="session")

@@ -231,54 +231,6 @@ class PolyharmonicSpline(torch.nn.Module):
 
 
 @script
-def warp_1d_grid(
-    src: torch.Tensor,
-    flow: torch.Tensor,
-    lengths: torch.Tensor,
-    max_length: Optional[int] = None,
-    interpolation_order: int = 1,
-) -> torch.Tensor:
-    """Functional version of Warp1DGrid
-
-    See Also
-    --------
-    pydrobert.torch.layers.Warp1DGrid
-        For a description of this function and its parameters
-    """
-    device = src.device
-    # the interpolation has three points (per batch elem):
-    # 1. t=-.5, flow=0
-    # 2. t=src, flow=flow
-    # 3. t=lengths -.5, flow=0
-    # whatever happens after lengths -.5 is undefined
-    # grid = (2 * dst - 2 * flow + 1) / max_length - 1
-    N = src.shape[0]
-    if max_length is None:
-        T = int(math.ceil(lengths.max().item())) if lengths.numel() else 0
-    else:
-        T = max_length
-    src, flow, lengths = src.float(), flow.float(), lengths.float()
-    zeros = torch.zeros_like(src)
-    src = torch.stack([zeros - 0.5, src, lengths - 0.5], 1)  # (N, 3)
-    flow = torch.stack([zeros, flow, zeros], 1)  # (N, 3)
-    sparse_grid = (2.0 * src + 1.0) / T - 1.0  # (N,3)
-    t = torch.arange(T, device=device, dtype=torch.float)
-    grid = polyharmonic_spline(
-        (src + flow).unsqueeze(-1),  # dst (N, 3, 1)
-        sparse_grid.unsqueeze(-1),  # (N, 3, 1)
-        t.unsqueeze(0).expand(N, T).unsqueeze(-1),  # (N, T, 1)
-        interpolation_order,
-    ).squeeze(
-        -1
-    )  # (N, T)
-    # we perform "boundary" interpolation, meaning any values past index length - 1
-    # are assumed to be equal to the boundary and with zero gradient.
-    boundary = (2.0 * lengths - 1.0) / T - 1.0
-    grid = torch.min(grid, boundary.unsqueeze(-1))
-    return grid
-
-
-@script
 def _deterimine_pinned_points(k: int, sizes: torch.Tensor) -> torch.Tensor:
 
     w_max = (sizes[:, :1] - 1).expand(-1, k + 1)  # (N, k+1)
@@ -302,6 +254,50 @@ def _deterimine_pinned_points(k: int, sizes: torch.Tensor) -> torch.Tensor:
     return torch.cat([bottom_edge, left_edge, top_edge, right_edge], 1)  # (N, 4k, 2)
 
 
+@script
+def warp_1d_grid(
+    src: torch.Tensor,
+    flow: torch.Tensor,
+    lengths: torch.Tensor,
+    max_length: Optional[int] = None,
+    interpolation_order: int = 1,
+) -> torch.Tensor:
+    """Functional version of Warp1DGrid
+
+    See Also
+    --------
+    pydrobert.torch.layers.Warp1DGrid
+        For a description of this function and its parameters
+    """
+    device = src.device
+    N = src.shape[0]
+    if max_length is None:
+        T = int(math.ceil(lengths.max().item())) if lengths.numel() else 0
+    else:
+        T = max_length
+    src, flow, lengths = src.float(), flow.float(), lengths.float()
+    eps = _get_tensor_eps(src)  # the epsilon avoids singular matrices
+    src = torch.min(src, lengths - 1).clamp_min(0)
+    dst = torch.min(src + flow, lengths - 1).clamp_min(0)
+    src = (2.0 * src + 1.0) / T - 1.0
+    dst = (2.0 * dst + 1.0) / T - 1.0
+    lowers = torch.full((N,), 1 / T - 1 - eps, dtype=torch.float, device=device)
+    uppers = (2 * lengths - 1) / T - 1.0 + eps
+    src = torch.stack([lowers, src, uppers], 1)  # (N, 3)
+    dst = torch.stack([lowers, dst, uppers], 1)  # (N, 3)
+    # sparse_grid = (2.0 * src + 1.0) / T - 1.0  # (N,3)
+    t = (2.0 * torch.arange(T, device=device) + 1.0) / T - 1.0
+    grid = polyharmonic_spline(
+        dst.unsqueeze(-1),  # dst (N, 3, 1)
+        src.unsqueeze(-1),  # (N, 3, 1)
+        t.unsqueeze(0).expand(N, T).unsqueeze(-1),  # (N, T, 1)
+        interpolation_order,
+    ).squeeze(
+        -1
+    )  # (N, T)
+    return grid
+
+
 class Warp1DGrid(torch.nn.Module):
     """Interpolate grid values for a dimension of a grid_sample
 
@@ -323,10 +319,25 @@ class Warp1DGrid(torch.nn.Module):
     Parameters
     ----------
     max_length : int or `None`, optional
-        A maximum length to which the grid will be padded. If unspecified,
-        it will be taken to be ``lengths.max().ceil()``.
+        A maximum length to which the grid will be padded. If unspecified, it will be
+        taken to be ``lengths.max().ceil()``. If `grid` is being plugged in to
+        :func:`grid_sample`, ensure `max_length` matches the size of the dimension of
+        the image being warped.
     interpolation_order : int, optional
         The degree of the spline used ot interpolate the grid.
+
+    Notes
+    -----
+    The return value `grid` assumes `align_corners` has been set to :obj:`False` in
+    :func:`grid_sample`.
+
+    The values in `grid` depend on the value of `max_length`. `grid` does not contain
+    absolute pixel indices, instead mapping the range ``[0, max_length - 1]`` to the
+    real values in ``[-1, 1]``. Therefore, unless `max_length` is set to some fixed
+    value, the ``n``-th batch element ``grid[n]`` can differ according to the remaining
+    values in `length`. However, the ``n``-th batched image passed to
+    :func:`grid_sample` should still be warped in a way (roughly) agnostic to
+    surrounding batched images.
     """
 
     __constants__ = ["max_length", "interpolation_order"]
@@ -1261,8 +1272,9 @@ def spec_augment_draw_parameters(
     eps = _get_tensor_eps(feats)
     omeps = 1 - eps
     if lengths is None:
-        lengths = torch.full((N,), T, dtype=torch.long, device=device)
-    lengths = lengths.to(device)
+        lengths = torch.full((N,), T, dtype=torch.float, device=device)
+    else:
+        lengths = lengths.to(device).float()
     # note that order matters slightly in whether we draw widths or positions first.
     # The paper specifies that position is drawn first for warps, whereas widths
     # are drawn first for masks
@@ -1270,15 +1282,17 @@ def spec_augment_draw_parameters(
         # we want the range (W, length - W) exclusive to be where w_0 can come
         # from. If W >= length / 2, this is impossible. Rather than giving up,
         # we limit the maximum length to W < length / 2
-        max_ = torch.clamp(lengths.float() / 2 - eps, max=max_time_warp)
-        w_0 = torch.rand([N], device=device) * (lengths - 2 * (max_ + eps)) + max_ + eps
-        w = torch.rand([N], device=device) * (2 * max_) - max_
+        # N.B. We don't worry about going outside the valid range by a bit b/c
+        # warp_1d_grid clamps.
+        W = (lengths / 2 - eps).clamp(0, max_time_warp)
+        w_0 = torch.rand((N,), device=device) * (lengths - 2 * W) + W
+        w = torch.rand([N], device=device) * (2 * W) - W
     else:
         w_0 = w = torch.empty(0)
     if max_freq_warp:
-        max_ = min(max_freq_warp, F / 2 - eps)
-        v_0 = torch.rand([N], device=device) * (F - 2 * (max_ + eps)) + max_ + eps
-        v = torch.rand([N], device=device) * (2 * max_) - max_
+        V = min(max(F / 2 - eps, 0), max_freq_warp)
+        v_0 = torch.rand([N], device=device) * (F - 2 * V) + V
+        v = torch.rand([N], device=device) * (2 * V) - V
     else:
         v_0 = v = torch.empty(0)
     if (
@@ -1287,7 +1301,6 @@ def spec_augment_draw_parameters(
         and num_time_mask
         and num_time_mask_proportion
     ):
-        lengths = lengths.float()
         max_ = (
             torch.clamp(lengths * max_time_mask_proportion, max=max_time_mask,)
             .floor()
@@ -1376,7 +1389,11 @@ def spec_augment_apply_parameters(
         # note: grid coordinate are (freq, time) rather than (time, freq)
         grid = torch.stack([freq_grid, time_grid], 3)  # (N, T, F, 2)
         new_feats = torch.nn.functional.grid_sample(
-            new_feats.unsqueeze(1), grid, padding_mode="border", align_corners=False
+            new_feats.unsqueeze(1),
+            grid,
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=False,
         ).squeeze(1)
     tmask: Optional[torch.Tensor] = None
     fmask: Optional[torch.Tensor] = None
@@ -1538,13 +1555,6 @@ class SpecAugment(torch.nn.Module):
     values will be the result of interpolation), there is no preference for
     integer-valued parameters from a computational standpoint. Further, real-valued warp
     parameters allow for a virtually infinite number of warps instead of just a few.
-
-    Second, the boundary points of the warp interpolation are :obj:`-0.5` and
-    :obj:`length - 0.5` rather than :obj:`0` and :obj:`length - 1` (implied by
-    :func:`sparse_image_warp`). In short, this ensures the distance between the boundary
-    and the shifted value is at least half a sample. This change is mostly
-    inconsequential as any interpolated values with indices outside of ``[0, length -
-    1]`` will be filled with boundary values anyways.
 
     Finally, time warping is implemented by determining the transformation in one
     dimension (time) and broadcasting it across the other (frequency), rather than

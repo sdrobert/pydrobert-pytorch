@@ -1,4 +1,4 @@
-# Copyright 2021 Sean Robertson
+# Copyright 2022 Sean Robertson
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,125 +12,235 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-from tempfile import SpooledTemporaryFile
 import itertools
 
 import torch
 import pytest
-import pydrobert.torch.util as util
-import numpy as np
 
-from pydrobert.torch._compat import meshgrid
+from typing import Dict, Tuple
+
+from pydrobert.torch.modules import (
+    BeamSearch,
+    CTCGreedySearch,
+    CTCPrefixSearch,
+    MixableSequentialLanguageModel,
+)
+from pydrobert.torch.functional import (
+    beam_search_advance,
+    ctc_prefix_search_advance,
+    random_walk_advance,
+)
 
 
-@pytest.mark.cpu
-def test_parse_arpa_lm():
-    file_ = SpooledTemporaryFile(mode="w+")
-    file_.write(
-        r"""\
-This is from https://cmusphinx.github.io/wiki/arpaformat/
-I've removed the backoff for </s> b/c IRSTLM likes to do things like that
+class RNNLM(MixableSequentialLanguageModel):
+    def __init__(self, vocab_size, embed_size=128, hidden_size=512):
+        super().__init__(vocab_size)
+        self.hidden_size = hidden_size
+        self.embed = torch.nn.Embedding(
+            vocab_size + 1, embed_size, padding_idx=vocab_size
+        )
+        self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
+        self.lstm = torch.nn.LSTM(embed_size, hidden_size)
+        self.lstm.weight_ih_l0 = self.cell.weight_ih
+        self.lstm.weight_hh_l0 = self.cell.weight_hh
+        self.lstm.bias_ih_l0 = self.cell.bias_ih
+        self.lstm.bias_hh_l0 = self.cell.bias_hh
+        self.ff = torch.nn.Linear(hidden_size, vocab_size)
 
-\data\
-ngram 1=7
-ngram 2=7
+    @torch.jit.export
+    def extract_by_src(
+        self, prev: Dict[str, torch.Tensor], src: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        return {
+            "hidden": prev["hidden"].index_select(0, src),
+            "cell": prev["cell"].index_select(0, src),
+        }
 
-\1-grams:
--1.0000 <unk>	-0.2553
--98.9366 <s>	 -0.3064
--1.0000 </s>
--0.6990 wood	 -0.2553
--0.6990 cindy	-0.2553
--0.6990 pittsburgh		-0.2553
--0.6990 jean	 -0.1973
+    @torch.jit.export
+    def mix_by_mask(
+        self,
+        prev_true: Dict[str, torch.Tensor],
+        prev_false: Dict[str, torch.Tensor],
+        mask: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        mask = mask.unsqueeze(1)
+        return {
+            "hidden": torch.where(mask, prev_true["hidden"], prev_false["hidden"]),
+            "cell": torch.where(mask, prev_true["cell"], prev_false["cell"]),
+        }
 
-\2-grams:
--0.2553 <unk> wood
--0.2553 <s> <unk>
--0.2553 wood pittsburgh
--0.2553 cindy jean
--0.2553 pittsburgh cindy
--0.5563 jean </s>
--0.5563 jean wood
+    @torch.jit.export
+    def update_input(
+        self, prev: Dict[str, torch.Tensor], hist: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        if len(prev):
+            return prev
+        N = hist.size(1)
+        zeros = self.ff.weight.new_zeros((N, self.hidden_size))
+        return {"hidden": zeros, "cell": zeros}
 
-\end\
-"""
+    @torch.jit.export
+    def calc_full_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        hist = torch.cat([hist.new_full((1, hist.size(1)), self.vocab_size), hist], 0)
+        x = self.embed(hist)
+        x = self.lstm(x)[0]
+        logits = self.ff(x)
+        return torch.nn.functional.log_softmax(logits, -1)
+
+    @torch.jit.export
+    def calc_idx_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        idx_zero = idx == 0
+        if idx_zero.all():
+            x = torch.full(
+                (hist.size(1),), self.vocab_size, dtype=hist.dtype, device=hist.device
+            )
+        else:
+            x = hist.gather(
+                0, (idx - 1).expand(hist.shape[1:]).clamp(min=0).unsqueeze(0)
+            ).squeeze(
+                0
+            )  # (N,)
+            x = x.masked_fill(idx_zero.expand(x.shape), self.vocab_size)
+        x = self.embed(x)
+        h_1, c_1 = self.cell(x, (prev["hidden"], prev["cell"]))
+        logits = self.ff(h_1)
+        return (
+            torch.nn.functional.log_softmax(logits, -1),
+            {"hidden": h_1, "cell": c_1},
+        )
+
+
+def test_ctc_prefix_search(device):
+    class MyLM(MixableSequentialLanguageModel):
+
+        bigram_table: torch.Tensor
+
+        def __init__(self):
+            super().__init__(2)
+            self.register_buffer(
+                "bigram_table",
+                torch.tensor(
+                    [
+                        [1.0, 0.0],  # P(0|<s>), P(1|<s>)
+                        [0.5, 0.5],  # P(0|0), P(1|0)
+                        [0.0, 1.0],  # P(0|1), P(1|1)
+                    ]
+                ).log(),
+            )
+
+        def extract_by_src(self, in_prev, src):
+            return in_prev
+
+        def mix_by_mask(self, in_prev_true, in_prev_false, mask):
+            return in_prev_true
+
+        def calc_idx_log_probs(self, hist, prev, idx):
+            # note we shift + 1 to make room for <s>
+            idx_zero = idx == 0
+            if idx_zero.all():
+                x = hist.new_full((hist.size(1),), 0)
+            else:
+                x = (
+                    hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(0) + 1
+                )  # (N,)
+                x = x.masked_fill(idx_zero, 0)
+            return self.bigram_table.gather(0, x.unsqueeze(1).expand(-1, 2)), None
+
+    T, N, K, V = 3, 128, 2, 3
+    logits = (
+        torch.tensor(
+            [[1 / 2, 1 / 3, 1 / 6], [1 / 3, 1 / 6, 1 / 2], [1 / 6, 1 / 2, 1 / 3],]
+        )
+        .log()
+        .unsqueeze(1)
+        .expand(T, N, V)
+        .to(device)
     )
-    file_.seek(0)
-    ngram_list = util.parse_arpa_lm(file_)
-    assert len(ngram_list) == 2
-    assert set(ngram_list[0]) == {
-        "<unk>",
-        "<s>",
-        "</s>",
-        "wood",
-        "cindy",
-        "pittsburgh",
-        "jean",
-    }
-    assert set(ngram_list[1]) == {
-        ("<unk>", "wood"),
-        ("<s>", "<unk>"),
-        ("wood", "pittsburgh"),
-        ("cindy", "jean"),
-        ("pittsburgh", "cindy"),
-        ("jean", "</s>"),
-        ("jean", "wood"),
-    }
-    assert abs(ngram_list[0]["cindy"][0] + 0.6990) < 1e-4
-    assert abs(ngram_list[0]["jean"][1] + 0.1973) < 1e-4
-    assert abs(ngram_list[1][("cindy", "jean")] + 0.2553) < 1e-4
-    file_.seek(0)
-    token2id = dict((c, hash(c)) for c in ngram_list[0])
-    ngram_list = util.parse_arpa_lm(file_, token2id=token2id)
-    assert set(ngram_list[0]) == set(token2id.values())
-    file_.seek(0)
-    file_.write(
-        r"""\
-Here's one where we skip right to 10-grams
+    exps = [
+        (0.0, [[0, 1], [0]], [5 / 24, 1 / 6]),
+        (1.0, [[0], [0, 1]], [5 / 24, 17 / 144]),
+    ]
+    lm = MyLM().to(device)
+    for beta, y_exp, probs_exp in exps:
+        search = CTCPrefixSearch(K, beta, lm)
+        y_act, y_lens_act, probs_act = search(logits)
+        assert y_act.shape == (T, N, K)
+        assert y_lens_act.shape == (N, K)
+        assert probs_act.shape == (N, K)
+        for y_k_exp, probs_k_exp, y_k_act, y_lens_k_act, probs_k_act in zip(
+            y_exp, probs_exp, y_act.transpose(0, 2), y_lens_act.t(), probs_act.t()
+        ):
+            Tp = len(y_k_exp)
+            assert (y_lens_k_act == Tp).all()
+            y_k_exp = torch.tensor(y_k_exp, device=device).unsqueeze(0)  # (1, Tp)
+            y_k_act = y_k_act[:, :Tp]  # (N, Tp)
+            assert (y_k_act == y_k_exp).all()
+            probs_k_exp = torch.tensor(probs_k_exp, device=device).unsqueeze(0)
+            assert torch.allclose(probs_k_exp, probs_k_act)
 
-\data\
-ngram 10 = 1
 
-\10-grams:
-0.0 1 2 3 4 5 6 7 8 9 10
+def test_ctc_prefix_search_batch(device, jit_type):
+    T, N, V, K = 50, 128, 50, 5
+    assert K <= V
+    lm = RNNLM(V)
+    if jit_type == "script":
+        lm = torch.jit.script(lm)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for CTCPrefixSearch")
+    search = CTCPrefixSearch(K, lm=lm).to(device)
+    if jit_type == "script":
+        search = torch.jit.script(search)
+    logits = torch.randn((T, N, V + 1), device=device)
+    lens = torch.randint(0, T, (N,), device=device)
 
-\end\
-"""
-    )
-    file_.seek(0)
-    ngram_list = util.parse_arpa_lm(file_)
-    assert all(x == dict() for x in ngram_list[:-1])
-    assert not ngram_list[9][tuple(str(x) for x in range(1, 11))]
-    file_.seek(0)
-    file_.write(
-        r"""\
-Here's one where we erroneously include backoffs
+    exps = []
+    for logits_n, lens_n in zip(logits.transpose(0, 1), lens):
+        logits_n = logits_n[:lens_n].unsqueeze(1)
+        lens_n = lens_n.view(1)
+        y_n_exp, y_lens_n_exp, probs_n_exp = search(logits_n, lens_n)
+        y_n_exp = y_n_exp.squeeze(1)  # (T_n, K_n)
+        y_lens_n_exp = y_lens_n_exp.squeeze(0)  # (K_n,)
+        probs_n_exp = probs_n_exp.squeeze(0)  # (K_n,)
+        valid_prefix_mask_n_exp = probs_n_exp >= 0.0
+        if not valid_prefix_mask_n_exp.all():
+            assert not lens_n
+            assert y_lens_n_exp[0] == 0
+        else:
+            assert (y_lens_n_exp <= lens_n).all()
+        exps.append((y_n_exp, y_lens_n_exp, probs_n_exp))
 
-\data\
-ngram 1 = 1
-
-\1-grams:
-0.0 a 0.0
-
-\end\
-"""
-    )
-    file_.seek(0)
-    with pytest.raises(IOError):
-        util.parse_arpa_lm(file_)
-    file_.seek(0)
-    file_.write(
-        r"""\
-Here's an empty one
-
-\data\
-\end\
-"""
-    )
-    file_.seek(0)
-    assert util.parse_arpa_lm(file_) == []
+    y_act, y_lens_act, probs_act = search(logits, lens)
+    for (y_n_exp, y_lens_n_exp, probs_n_exp), y_n_act, y_lens_n_act, probs_n_act in zip(
+        exps, y_act.transpose(0, 1), y_lens_act, probs_act
+    ):
+        assert y_n_exp.shape[1:] == y_n_act.shape[1:]
+        assert y_n_exp.size(0) <= y_n_act.size(0)
+        assert y_lens_n_exp.shape == y_lens_n_act.shape
+        assert probs_n_exp.shape == probs_n_act.shape
+        valid_prefix_mask_n_exp = probs_n_exp >= 0.0
+        valid_prefix_mask_n_act = probs_n_act >= 0.0
+        assert (valid_prefix_mask_n_exp == valid_prefix_mask_n_act).all()
+        if not valid_prefix_mask_n_exp.all():
+            assert valid_prefix_mask_n_exp.sum() == 1  # only one valid path: empty one
+            y_n_exp, y_n_act = y_n_exp[:, :1], y_n_act[:, :1]
+            y_lens_n_exp, y_lens_n_act = y_lens_n_exp[:1], y_lens_n_act[:1]
+            probs_n_exp, probs_n_act = probs_n_exp[:1], probs_n_act[:1]
+        assert (y_lens_n_exp == y_lens_n_act).all()
+        assert torch.allclose(probs_n_exp, probs_n_act)
+        rem = y_n_act.size(0) - y_n_exp.size(0)
+        if rem > 0:
+            y_n_exp = torch.cat([y_n_exp, y_n_exp.new_empty((rem, y_n_exp.size(1)))], 0)
+            assert y_n_exp.shape == y_n_act.shape
+        len_mask = (
+            torch.arange(y_n_exp.size(0), device=device).unsqueeze(1) >= y_lens_n_exp
+        )
+        y_n_exp = y_n_exp.masked_fill_(len_mask, -1)
+        y_n_act = y_n_act.masked_fill_(len_mask, -1)
+        assert (y_n_exp == y_n_act).all()
 
 
 def test_beam_search_advance_greedy(device):
@@ -141,12 +251,68 @@ def test_beam_search_advance_greedy(device):
     y = torch.empty((0, N, 1), dtype=torch.long, device=device)
     log_probs = torch.zeros((N, 1), device=device)
     for logits_t in logits:
-        y, _, log_probs, _ = util.beam_search_advance(
-            logits_t.unsqueeze(1), 1, log_probs, y
-        )
+        y, _, log_probs, _ = beam_search_advance(logits_t.unsqueeze(1), 1, log_probs, y)
     y, log_probs = y.squeeze(2), log_probs.squeeze(1)
     assert torch.allclose(log_probs, greedy_scores)
     assert torch.all(y == greedy_paths)
+
+
+def test_beam_search_batch(device, jit_type):
+    T, N, V, K = 64, 16, 128, 8
+    assert K <= V and N * K <= V
+    lm = RNNLM(V)
+    if jit_type == "script":
+        lm = torch.jit.script(lm)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for BeamSearch")
+    search = BeamSearch(lm, K, eos=0, max_iters=T).to(device)
+    if jit_type == "script":
+        search = torch.jit.script(search)
+    y_prev = torch.arange(N, device=device)
+
+    exps = []
+    for y_prev_n in y_prev:
+        y_prev_n = y_prev_n.view(1, 1)
+        y_n_exp, y_lens_n_exp, log_probs_n_exp = search(y_prev_n)
+        y_n_exp = y_n_exp.squeeze(1)  # (T_n, K_n)
+        y_lens_n_exp = y_lens_n_exp.squeeze(0)  # (K_n,)
+        log_probs_n_exp = log_probs_n_exp.squeeze(0)  # (K_n,)
+        valid_prefix_mask_n_exp = log_probs_n_exp > -float("inf")
+        if not valid_prefix_mask_n_exp.all():
+            assert y_lens_n_exp[0] == 1
+        exps.append((y_n_exp, y_lens_n_exp, log_probs_n_exp))
+
+    y_act, y_lens_act, log_probs_act = search(y_prev.unsqueeze(0))
+    for (
+        (y_n_exp, y_lens_n_exp, log_probs_n_exp),
+        y_n_act,
+        y_lens_n_act,
+        log_probs_n_act,
+    ) in zip(exps, y_act.transpose(0, 1), y_lens_act, log_probs_act):
+        assert y_n_exp.shape[1:] == y_n_act.shape[1:]
+        assert y_n_exp.size(0) <= y_n_act.size(0)
+        assert y_lens_n_exp.shape == y_lens_n_act.shape
+        assert log_probs_n_exp.shape == log_probs_n_act.shape
+        valid_prefix_mask_n_exp = log_probs_n_exp > -float("inf")
+        valid_prefix_mask_n_act = log_probs_n_act > -float("inf")
+        assert (valid_prefix_mask_n_exp == valid_prefix_mask_n_act).all()
+        if not valid_prefix_mask_n_exp.all():
+            assert valid_prefix_mask_n_exp.sum() == 1  # only one valid path: empty one
+            y_n_exp, y_n_act = y_n_exp[:, :1], y_n_act[:, :1]
+            y_lens_n_exp, y_lens_n_act = y_lens_n_exp[:1], y_lens_n_act[:1]
+            log_probs_n_exp, log_probs_n_act = log_probs_n_exp[:1], log_probs_n_act[:1]
+        assert (y_lens_n_exp == y_lens_n_act).all()
+        assert torch.allclose(log_probs_n_exp, log_probs_n_act)
+        rem = y_n_act.size(0) - y_n_exp.size(0)
+        if rem > 0:
+            y_n_exp = torch.cat([y_n_exp, y_n_exp.new_empty((rem, y_n_exp.size(1)))], 0)
+            assert y_n_exp.shape == y_n_act.shape
+        len_mask = (
+            torch.arange(y_n_exp.size(0), device=device).unsqueeze(1) >= y_lens_n_exp
+        )
+        y_n_exp = y_n_exp.masked_fill_(len_mask, -1)
+        y_n_act = y_n_act.masked_fill_(len_mask, -1)
+        assert (y_n_exp == y_n_act).all()
 
 
 @pytest.mark.parametrize(
@@ -187,7 +353,7 @@ def test_beam_search_advance_greedy(device):
 @pytest.mark.parametrize("batch_first", [True, False])
 @pytest.mark.parametrize("is_probs", [True, False])
 def test_ctc_greedy_search(
-    probs, in_lens, max_exp, paths_exp, batch_first, is_probs, device
+    probs, in_lens, max_exp, paths_exp, batch_first, is_probs, device, jit_type
 ):
     probs = torch.tensor(probs, device=device)
     if in_lens is not None:
@@ -202,9 +368,19 @@ def test_ctc_greedy_search(
     if not is_probs:
         max_exp = max_exp.log()
         probs = probs.log()
-    max_act, paths_act, out_lens_act = util.ctc_greedy_search(
-        probs, in_lens, batch_first=batch_first, is_probs=is_probs
-    )
+    ctc_greedy_search = CTCGreedySearch(batch_first=batch_first, is_probs=is_probs)
+    if jit_type == "script":
+        ctc_greedy_search = torch.jit.script(ctc_greedy_search)
+    elif jit_type == "trace":
+        ctc_greedy_search = torch.jit.trace(
+            ctc_greedy_search,
+            (torch.empty(1, 1, 1),)
+            + (tuple() if in_lens is None else (torch.ones((1), dtype=torch.long),)),
+        )
+    if in_lens is None:
+        max_act, paths_act, out_lens_act = ctc_greedy_search(probs)
+    else:
+        max_act, paths_act, out_lens_act = ctc_greedy_search(probs, in_lens)
     assert max_exp.shape == max_act.shape
     assert torch.allclose(max_exp, max_act)
     assert out_lens_exp.shape == out_lens_act.shape
@@ -222,11 +398,10 @@ def test_ctc_greedy_search_ignores_padding(device, batch_first):
     lens = torch.randint(1, Tmax + 1, size=(N,), device=device)
     logits = torch.rand(N, Tmax, V + 1, device=device)
     max_a, out_paths_a, out_lens_a = [], [], []
+    ctc_greedy_search = CTCGreedySearch(batch_first=batch_first)
     for logits_n, lens_n in zip(logits, lens):
-        max_a_n, out_paths_a_n, out_lens_a_n = util.ctc_greedy_search(
-            logits_n[:lens_n].unsqueeze(0 if batch_first else 1),
-            lens_n.view(1),
-            batch_first=batch_first,
+        max_a_n, out_paths_a_n, out_lens_a_n = ctc_greedy_search(
+            logits_n[:lens_n].unsqueeze(0 if batch_first else 1), lens_n.view(1),
         )
         max_a.append(max_a_n)
         out_paths_a.append(out_paths_a_n.squeeze(0 if batch_first else 1))
@@ -236,9 +411,7 @@ def test_ctc_greedy_search_ignores_padding(device, batch_first):
     max_a = torch.cat(max_a, dim=0)
     out_paths_a = torch.nn.utils.rnn.pad_sequence(out_paths_a, batch_first=batch_first)
     out_lens_a = torch.cat(out_lens_a, dim=0)
-    max_b, out_paths_b, out_lens_b = util.ctc_greedy_search(
-        logits, lens, batch_first=batch_first
-    )
+    max_b, out_paths_b, out_lens_b = ctc_greedy_search(logits, lens)
     assert (out_lens_a == out_lens_b).all(), (out_lens_a, out_lens_b)
     assert torch.allclose(max_a, max_b)
     if not batch_first:
@@ -393,7 +566,7 @@ def test_ctc_prefix_search_advance(
         next_is_prefix_act,
         next_src_act,
         next_is_nonext_act,
-    ) = util.ctc_prefix_search_advance(
+    ) = ctc_prefix_search_advance(
         probs_t, K, probs_prev, y_prev, y_prev_last, y_prev_lens, prev_is_prefix
     )
 
@@ -459,7 +632,7 @@ def test_ctc_prefix_search_advance_big_width(device):
         next_is_prefix,
         next_src,
         next_is_nonext,
-    ) = util.ctc_prefix_search_advance(
+    ) = ctc_prefix_search_advance(
         (ext_probs_t, nonext_probs_t, blank_probs_t),
         K,
         (b_probs_prev, nb_probs_prev),
@@ -550,127 +723,14 @@ def test_beam_search_advance(device):
         y_next_lens_act,
         log_probs_next_act,
         next_src_act,
-    ) = util.beam_search_advance(log_probs_t, K, log_probs_prev, y_prev, y_prev_lens)
+    ) = beam_search_advance(log_probs_t, K, log_probs_prev, y_prev, y_prev_lens)
     assert torch.allclose(log_probs_next_exp, log_probs_next_act)
     assert (y_next_lens_act[:, 0] == y_next_lens_0_exp).all()
     assert (next_src_act[:, 0] == next_src_0_exp).all()
     assert (y_next_act[:Kp, :, 0] == y_next_0_exp).all()
 
 
-@pytest.mark.parametrize("ins_cost", [2.0, 0.5, 1.0], ids=("i2.0", "i0.5", "i1.0"))
-@pytest.mark.parametrize("del_cost", [2.0, 0.5, 1.0], ids=("d2.0", "d0.5", "d1.0"))
-@pytest.mark.parametrize("sub_cost", [2.0, 0.5, 1.0], ids=("s2.0", "s0.5", "s1.0"))
-@pytest.mark.parametrize("distance", [True, False], ids=("edit", "rate"))
-@pytest.mark.parametrize("ref_bigger", [True, False])
-def test_error_rate_against_simple_impl(
-    device, ins_cost, del_cost, sub_cost, ref_bigger, distance
-):
-    torch.manual_seed(2502)
-    hyp_steps, ref_steps, batch_size, num_classes = 10, 9, 10, 10
-    eps = 1e-4
-    if ref_bigger:
-        ref_steps, hyp_steps = hyp_steps, ref_steps
-    ref = torch.randint(num_classes, (ref_steps, batch_size), device=device)
-    hyp = torch.randint(num_classes, (hyp_steps, batch_size), device=device)
-    # here's a standard, non-vectorized (except for batch) implementation that
-    # is hard to screw up
-    cost_matrix = torch.empty(hyp_steps + 1, ref_steps + 1, batch_size, device=device)
-    cost_matrix[0] = (
-        torch.arange(float(ref_steps + 1), device=device).unsqueeze(-1) * del_cost
-    )
-    cost_matrix[:, 0] = (
-        torch.arange(float(hyp_steps + 1), device=device).unsqueeze(-1) * ins_cost
-    )
-    edit_matrix = torch.empty(hyp_steps + 1, ref_steps + 1, batch_size, device=device)
-    edit_matrix[0] = torch.arange(float(ref_steps + 1), device=device).unsqueeze(-1)
-    edit_matrix[:, 0] = torch.arange(float(hyp_steps + 1), device=device).unsqueeze(-1)
-    for hyp_idx in range(1, hyp_steps + 1):
-        for ref_idx in range(1, ref_steps + 1):
-            neq_mask = (ref[ref_idx - 1] != hyp[hyp_idx - 1]).float()
-            sub_align = cost_matrix[hyp_idx - 1, ref_idx - 1] + sub_cost * neq_mask
-            ins_align = cost_matrix[hyp_idx - 1, ref_idx] + ins_cost + eps
-            del_align = cost_matrix[hyp_idx, ref_idx - 1] + del_cost + eps
-            cur_costs, argmin = torch.stack([sub_align, ins_align, del_align]).min(0)
-            cur_costs -= argmin.gt(0) * eps
-            cost_matrix[hyp_idx, ref_idx] = cur_costs
-            sub_count = edit_matrix[hyp_idx - 1, ref_idx - 1] + neq_mask
-            ins_count = edit_matrix[hyp_idx - 1, ref_idx] + 1
-            del_count = edit_matrix[hyp_idx, ref_idx - 1] + 1
-            cur_counts = (
-                torch.stack([sub_count, ins_count, del_count])
-                .gather(0, argmin.unsqueeze(0))
-                .squeeze(0)
-            )
-            edit_matrix[hyp_idx, ref_idx] = cur_counts
-    if ins_cost == del_cost == sub_cost == 1:
-        assert torch.allclose(cost_matrix, edit_matrix)
-    if distance:
-        exp = cost_matrix[-1, -1]
-        func = util.edit_distance
-    else:
-        exp = edit_matrix[-1, -1]
-        func = util.error_rate
-    act = func(
-        ref,
-        hyp,
-        norm=False,
-        ins_cost=ins_cost,
-        del_cost=del_cost,
-        sub_cost=sub_cost,
-        warn=False,
-    )
-    assert torch.allclose(exp, act)
-
-
-@pytest.mark.parametrize("ins_cost", [0.5, 1.0], ids=("i0.5", "i1.0"))
-@pytest.mark.parametrize("del_cost", [0.5, 1.0], ids=("d0.5", "d1.0"))
-@pytest.mark.parametrize("sub_cost", [0.5, 1.0], ids=("s0.5", "s1.0"))
-@pytest.mark.parametrize("norm", [True, False], ids=("normed", "unnormed"))
-@pytest.mark.parametrize("distance", [True, False], ids=("edit", "rate"))
-def test_error_rate_ignores_padding(
-    device, ins_cost, del_cost, sub_cost, norm, distance
-):
-    N, Tmax, V, eos = 11, 50, 5, -1
-    ref_lens = torch.randint(Tmax, size=(N,), device=device)
-    refs = [torch.randint(V, size=(len_.item(),), device=device) for len_ in ref_lens]
-    hyp_lens = torch.randint(Tmax, size=(N,), device=device)
-    hyps = [torch.randint(V, size=(len_.item(),), device=device) for len_ in hyp_lens]
-    if distance:
-        func = util.edit_distance
-    else:
-        func = util.error_rate
-    out_a = []
-    for ref, hyp in zip(refs, hyps):
-        out_a.append(
-            func(
-                ref.unsqueeze(1),
-                hyp.unsqueeze(1),
-                norm=norm,
-                ins_cost=ins_cost,
-                del_cost=del_cost,
-                sub_cost=sub_cost,
-                warn=False,
-            )
-        )
-    out_a = torch.cat(out_a, 0)
-    assert out_a.dim() == 1 and out_a.size(0) == N
-    refs = torch.nn.utils.rnn.pad_sequence(refs, padding_value=eos)
-    hyps = torch.nn.utils.rnn.pad_sequence(hyps, padding_value=eos)
-    out_b = func(
-        refs,
-        hyps,
-        eos=eos,
-        norm=norm,
-        ins_cost=ins_cost,
-        del_cost=del_cost,
-        sub_cost=sub_cost,
-        warn=False,
-    )
-    assert torch.allclose(out_a, out_b)
-
-
 def test_random_walk_advance(device):
-    torch.manual_seed(3487209)
     N, T, S, C = 5, 1000, 4, 10
     logits = torch.randn(C, N, C, device=device)
     transitions = torch.nn.functional.softmax(logits.transpose(0, 1), -1)
@@ -690,23 +750,22 @@ def test_random_walk_advance(device):
                 0,
                 y[-1].unsqueeze(0).unsqueeze(-1).expand(1, N, S, C),
             ).squeeze(0)
-        y = util.random_walk_advance(logits_t, S, y)
+        y = random_walk_advance(logits_t, S, y)
     act = y.float().mean(0).mean(1)
     assert torch.allclose(exp, act, atol=0.1)
 
 
 def test_random_walk_advance_relaxation(device):
-    torch.manual_seed(652916)
     N, S, C = 23, 32, 12
     logits_t = torch.randn(N, C, device=device, requires_grad=True)
-    y = util.random_walk_advance(logits_t, S)
-    y, z = util.random_walk_advance(logits_t, S, include_relaxation=True)
+    y = random_walk_advance(logits_t, S)
+    y, z = random_walk_advance(logits_t, S, include_relaxation=True)
     assert torch.all(y[-1] == z.argmax(dim=-1))
     (g,) = torch.autograd.grad([z], [logits_t], grad_outputs=torch.ones_like(z))
     assert g.ne(0.0).any()
     y[..., : S // 2] = -1
     logits_t = logits_t.unsqueeze(1).expand_as(z)
-    y, z = util.random_walk_advance(logits_t, S, y, eos=-1, include_relaxation=True)
+    y, z = random_walk_advance(logits_t, S, y, eos=-1, include_relaxation=True)
     assert y[..., : S // 2].eq(-1).all()
     assert y[..., S // 2 :].ne(-1).all()
     assert torch.isinf(-z[:, : S // 2]).all()
@@ -715,7 +774,7 @@ def test_random_walk_advance_relaxation(device):
     assert g.ne(0.0).any()
     assert g[:, : S // 2].eq(0.0).all()
     y[-1] = -1
-    y, z = util.random_walk_advance(logits_t, S, y, eos=-1, include_relaxation=True)
+    y, z = random_walk_advance(logits_t, S, y, eos=-1, include_relaxation=True)
     # it should be defined, but zero
     (g,) = torch.autograd.grad([z], [logits_t], grad_outputs=torch.ones_like(z))
     assert g.eq(0.0).all()
@@ -724,116 +783,16 @@ def test_random_walk_advance_relaxation(device):
 @pytest.mark.parametrize("prevent_eos", [True, False])
 @pytest.mark.parametrize("lens", [True, False])
 def test_random_walk_advance_config(device, prevent_eos, lens):
-    torch.manual_seed(332)
     N, T, S, C = 20, 100, 5, 4
     eos = 0 if prevent_eos else -1
     lens = torch.randint(1, T, (N,), device=device) if lens else None
     y = None
     for _ in range(T):
         logits_t = torch.randn(N, S, C, device=device)
-        y = util.random_walk_advance(logits_t, S, y, eos, lens, prevent_eos)
+        y = random_walk_advance(logits_t, S, y, eos, lens, prevent_eos)
     if lens is None:
         lens = torch.tensor(T, device=device).expand(N)
     for bt, l in enumerate(lens):
         for smp in range(S):
             assert torch.all(y[l.item() :, bt, smp] == eos)
             assert not torch.any(y[: l.item(), bt, smp] == eos)
-
-
-def test_polyharmonic_interpolation_linear(device):
-    # when the order is 1, this should simply be linear interpolation
-    x = torch.arange(3, device=device).unsqueeze(0).unsqueeze(-1).float()
-    y = torch.tensor([[[0.0], [1.0], [0.0]]], device=device)
-    y = torch.cat([y, 1.0 - y], 2)  # (1, 3, 2)
-    q = torch.tensor([[[0.0], [0.5], [1.0], [1.6], [2.0]]], device=device)
-    exp = torch.tensor(
-        [[[0.0, 1.0], [0.5, 0.5], [1.0, 0.0], [0.4, 0.6], [0.0, 1.0]]], device=device
-    )
-    act = util.polyharmonic_spline(x, y, q, 1)
-    assert torch.allclose(exp, act)
-
-
-@pytest.mark.parametrize("order", [1, 2, 3])
-def test_polyharmonic_interpolation_equal_on_knots(order, device):
-    torch.manual_seed(3487210)
-    N, T, in_, out = 10, 11, 12, 13
-    x = torch.rand(N, T, in_, device=device) * 2
-    y = torch.rand(N, T, out, device=device) * 10.0 + 10
-    act = util.polyharmonic_spline(x, y, x, order)
-    # the high tolerance seems a numerical stability issue caused by polynomials in
-    # the RBF
-    assert torch.allclose(y, act, atol=1e-3), (y - act).abs().max()
-
-
-@pytest.mark.parametrize("flip_h", [True, False])
-@pytest.mark.parametrize("flip_w", [True, False])
-def test_dense_image_warp_flow_flips(device, flip_h, flip_w):
-    H, W = 30, 40
-    img = torch.arange(H * W, dtype=torch.float32, device=device).view(1, 1, H, W)
-    exp = img
-    if flip_h:
-        h = 2 * torch.arange(H, dtype=torch.float32, device=device) - H + 1
-        exp = exp.flip(2)
-    else:
-        h = torch.zeros((H,), dtype=torch.float32, device=device)
-    if flip_w:
-        w = 2 * torch.arange(W, dtype=torch.float32, device=device) - W + 1
-        exp = exp.flip(3)
-    else:
-        w = torch.zeros((W,), dtype=torch.float32, device=device)
-    exp = exp.flatten()
-    flow = torch.stack(meshgrid(h, w), 2)
-    act = util.dense_image_warp(img, flow).flatten()
-    assert torch.allclose(exp, act, atol=1e-4), (exp - act).abs().max()
-    act = util.dense_image_warp(img, flow, mode="nearest").flatten()
-    assert torch.allclose(exp, act), (exp - act).abs().max()
-
-
-def test_dense_image_warp_shift_right(device):
-    torch.manual_seed(40462)
-    N, C, H, W = 11, 20, 50, 19
-    img = torch.rand(N, C, H, W, device=device)
-    flow = torch.ones(N, H, W, 2, device=device)
-    exp = img[..., :-1, :-1]
-    act = util.dense_image_warp(img, flow)[..., 1:, 1:]
-    assert torch.allclose(exp, act, atol=1e-5), (exp - act).abs().max()
-    act = util.dense_image_warp(img, flow, mode="nearest")[..., 1:, 1:]
-    assert torch.allclose(exp, act), (exp - act).abs().max()
-
-
-@pytest.mark.parametrize("include_flow", [True, False])
-@pytest.mark.parametrize("pinned_boundary_points", [0, 2])
-def test_sparse_image_warp_matches_tensorflow(
-    device, include_flow, pinned_boundary_points
-):
-    dir_ = os.path.join(os.path.dirname(__file__), "sparse_image_warp")
-    img = torch.tensor(np.load(os.path.join(dir_, "img.npy")), device=device)
-    src = torch.tensor(np.load(os.path.join(dir_, "src.npy")), device=device)
-    dst = torch.tensor(np.load(os.path.join(dir_, "dst.npy")), device=device)
-    exp_warped = torch.tensor(
-        np.load(os.path.join(dir_, "warped_{}.npy".format(pinned_boundary_points))),
-        device=device,
-    )
-    if include_flow:
-        exp_flow = torch.tensor(
-            np.load(os.path.join(dir_, "flow_{}.npy".format(pinned_boundary_points))),
-            device=device,
-        )
-        act_warped, act_flow = util.sparse_image_warp(
-            img, src, dst, pinned_boundary_points=pinned_boundary_points
-        )
-        assert torch.allclose(exp_flow, act_flow, atol=1e-3), (
-            (exp_flow - act_flow).abs().max()
-        )
-    else:
-        act_warped = util.sparse_image_warp(
-            img,
-            src,
-            dst,
-            pinned_boundary_points=pinned_boundary_points,
-            include_flow=False,
-        )
-    assert torch.allclose(exp_warped, act_warped, atol=1e-3), (
-        (exp_warped - act_warped).abs().max()
-    )
-

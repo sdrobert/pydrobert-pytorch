@@ -17,7 +17,9 @@
 __all__ = [
     "BeamSearch",
     "ConcatSoftAttention",
+    "CTCGreedySearch",
     "CTCPrefixSearch",
+    "DenseImageWarp",
     "DotProductSoftAttention",
     "EditDistance",
     "ErrorRate",
@@ -50,8 +52,14 @@ from ._attn import (
     GlobalSoftAttention,
     MultiHeadedAttention,
 )
-from ._decoding import BeamSearch, CTCPrefixSearch, SequenceLogProbabilities
+from ._decoding import (
+    BeamSearch,
+    CTCGreedySearch,
+    CTCPrefixSearch,
+    SequenceLogProbabilities,
+)
 from ._img import (
+    DenseImageWarp,
     PolyharmonicSpline,
     Warp1DGrid,
     SparseImageWarp,
