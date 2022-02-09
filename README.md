@@ -18,6 +18,8 @@ pinning the version in the requirements or by forking.**
 ## Documentation
 
 - [Latest](https://pydrobert-pytorch.readthedocs.io/en/latest/)
+  *This documentation needs to be cleaned up after the latest refactoring.*
+  Please wait a week or two.
 - [Stable](https://pydrobert-pytorch.readthedocs.io/en/stable/)
 
 ## Installation

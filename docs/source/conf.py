@@ -20,10 +20,7 @@ param.parameterized.docstring_describe_params = False
 sys.path.insert(0, os.path.abspath("../../src"))
 
 
-autodoc_mock_imports = [
-    "numpy",
-    "torch",
-]
+autodoc_mock_imports = ["numpy", "torch", "pydrobert.torch._compat"]
 
 # -- Project information -----------------------------------------------------
 
@@ -44,6 +41,7 @@ extensions = [
     "sphinx.ext.autosectionlabel",
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
+    "myst_parser",
 ]
 
 naploeon_numpy_docstring = True

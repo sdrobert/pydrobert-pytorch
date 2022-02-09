@@ -615,7 +615,7 @@ def _string_matching(
         row = last_row + ins_cost * ins_mask
         sub_row = last_row[:-1] + sub_cost * neq_mask
         if return_mistakes:
-            # The kicker is substitutions over insertions or deletions.
+            # The kicker is substitutions over insertions over deletions.
             pick_sub = row[1:] >= sub_row
             row[1:] = torch.where(pick_sub, sub_row, row[1:])
             last_mistakes = mistakes

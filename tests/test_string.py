@@ -357,9 +357,9 @@ def test_error_rate_against_simple_impl(
             neq_mask = (ref[ref_idx - 1] != hyp[hyp_idx - 1]).float()
             sub_align = cost_matrix[hyp_idx - 1, ref_idx - 1] + sub_cost * neq_mask
             ins_align = cost_matrix[hyp_idx - 1, ref_idx] + ins_cost + eps
-            del_align = cost_matrix[hyp_idx, ref_idx - 1] + del_cost + eps
+            del_align = cost_matrix[hyp_idx, ref_idx - 1] + del_cost + 2 * eps
             cur_costs, argmin = torch.stack([sub_align, ins_align, del_align]).min(0)
-            cur_costs -= argmin.gt(0) * eps
+            cur_costs -= argmin * eps
             cost_matrix[hyp_idx, ref_idx] = cur_costs
             sub_count = edit_matrix[hyp_idx - 1, ref_idx - 1] + neq_mask
             ins_count = edit_matrix[hyp_idx - 1, ref_idx] + 1
