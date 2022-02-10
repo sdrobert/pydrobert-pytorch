@@ -241,13 +241,15 @@ else:
 
     def meshgrid(a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = torch.meshgrid(a, b, indexing="ij")
-        assert len(x) == 2
         return x[0], x[1]
 
 
-# FIXME(sdrobert): I'm getting a bug in the tracer when one tries to call unflatten.
-# unflatten always seems to call the NamedTensor unflatten and then errors out with
-# "Unsupported", even if it isn't a NamedTensor. This is a workaround.
 @script
-def unflatten(x : torch.Tensor, dim : int, shape : List[int]) -> torch.Tensor:
-    return x.unflatten(dim, shape)
+def unflatten(x: torch.Tensor, dim: int, shape: List[int]) -> torch.Tensor:
+    ndim = x.dim()
+    if dim < -ndim or dim > ndim - 1:
+        raise RuntimeError(f"Expected dim to be between [{-ndim},{ndim-1}], got {dim}")
+    dim = (dim + ndim) % ndim
+    full_shape = list(x.shape)
+    full_shape = full_shape[:dim] + shape + full_shape[dim + 1 :]
+    return x.view(full_shape)
