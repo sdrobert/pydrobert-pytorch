@@ -243,3 +243,11 @@ else:
         x = torch.meshgrid(a, b, indexing="ij")
         assert len(x) == 2
         return x[0], x[1]
+
+
+# FIXME(sdrobert): I'm getting a bug in the tracer when one tries to call unflatten.
+# unflatten always seems to call the NamedTensor unflatten and then errors out with
+# "Unsupported", even if it isn't a NamedTensor. This is a workaround.
+@script
+def unflatten(x : torch.Tensor, dim : int, shape : List[int]) -> torch.Tensor:
+    return x.unflatten(dim, shape)

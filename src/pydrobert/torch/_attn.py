@@ -18,7 +18,7 @@ from typing import Optional
 
 import torch
 
-from ._compat import broadcast_shapes
+from ._compat import broadcast_shapes, script, unflatten
 
 
 class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
@@ -190,9 +190,7 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
         if mask is None:
             # tracing can't handle calls with None arguments, so we make a
             # non-threatening mask to call with
-            mask_ = torch.ones(
-                (1,) * (key.dim() - 1), device=query.device, dtype=torch.bool
-            )
+            mask_ = torch.ones((1,), device=query.device, dtype=torch.bool)
             self.check_input(query, key, value, mask_)
         else:
             self.check_input(query, key, value, mask)
@@ -281,8 +279,6 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
         For a description of how to call this module, how it works, etc.
     """
 
-    weight: torch.Tensor
-
     def __init__(
         self, query_size: int, key_size: int, dim: int = 0, bias: bool = False
     ):
@@ -300,6 +296,25 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
         return (query * Wkey).sum(-1)
 
     reset_parameters = torch.jit.unused(torch.nn.Linear.reset_parameters)
+
+
+@script
+def _concat_soft_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor],
+    v: torch.Tensor,
+    dim: int,
+) -> torch.Tensor:
+    query = query.unsqueeze(dim)
+    shape = list(broadcast_shapes(query.shape[:-1], key.shape[:-1]))
+    query = query.expand(shape + [query.size(-1)])
+    key = key.expand(shape + [key.size(-1)])
+    cat = torch.cat([query, key], -1)
+    Wcat = torch.nn.functional.linear(cat, weight, bias)
+    tanhWcat = torch.tanh(Wcat)
+    return torch.nn.functional.linear(tanhWcat, v.unsqueeze(0), None).squeeze(-1)
 
 
 class ConcatSoftAttention(GlobalSoftAttention):
@@ -332,9 +347,6 @@ class ConcatSoftAttention(GlobalSoftAttention):
         For a description of how to call this module, how it works, etc.
     """
 
-    weight: torch.Tensor
-    v: torch.Tensor
-
     def __init__(
         self,
         query_size: int,
@@ -357,15 +369,8 @@ class ConcatSoftAttention(GlobalSoftAttention):
         self.reset_parameters()
 
     def score(self, query: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
-        query = query.unsqueeze(self.dim)
-        query_wo_last, key_wo_last = torch.broadcast_tensors(query[..., 0], key[..., 0])
-        query, _ = torch.broadcast_tensors(query, query_wo_last.unsqueeze(-1))
-        key, _ = torch.broadcast_tensors(key, key_wo_last.unsqueeze(-1))
-        cat = torch.cat([query, key], -1)
-        Wcat = torch.nn.functional.linear(cat, self.weight, self.bias)
-        tanhWcat = torch.tanh(Wcat)
-        return torch.nn.functional.linear(tanhWcat, self.v.unsqueeze(0), None).squeeze(
-            -1
+        return _concat_soft_attention(
+            query, key, self.weight, self.bias, self.v, self.dim
         )
 
     def reset_parameters(self) -> None:
@@ -560,24 +565,20 @@ class MultiHeadedAttention(GlobalSoftAttention):
             # avoid issues with calls with None
             # if the dimension is correct, a tensor of shape (1, ...) should always
             # broadcast
-            mask = torch.ones(
-                (1,) * (key.dim() - 1), device=query.device, dtype=torch.bool
-            )
-        self.check_input(query, key, value, mask)
-        query_shape = query.shape
-        key_shape = key.shape
-        value_shape = value.shape
-        query_heads = self.WQ(query).view(
-            (query_shape[:-1] + (self.num_heads, self.d_q))
-        )
-        key_heads = self.WK(key).view((key_shape[:-1] + (self.num_heads, self.d_k)))
-        value_heads = self.WV(value).view(
-            (value_shape[:-1] + (self.num_heads, self.d_v))
-        )
+            mask_ = torch.ones((1,), device=query.device, dtype=torch.bool)
+            self.check_input(query, key, value, mask_)
+        else:
+            self.check_input(query, key, value, mask)
+        query_heads = self.WQ(query)
+        query_heads = unflatten(query_heads, -1, [self.num_heads, self.d_q])
+        key_heads = self.WK(key)
+        key_heads = unflatten(key_heads, -1, [self.num_heads, self.d_k])
+        value_heads = self.WV(value)
+        value_heads = unflatten(value_heads, -1, [self.num_heads, self.d_v])
         if mask is not None:
             mask = mask.unsqueeze(-2)
         cat = self.single_head_attention(query_heads, key_heads, value_heads, mask)
-        cat = cat.view((cat.shape[:-2] + (self.num_heads * self.d_v,)))
+        cat = cat.flatten(-2)
         return self.WC(cat)
 
     def reset_parameters(self) -> None:

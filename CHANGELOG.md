@@ -2,8 +2,13 @@
 
 ## HEAD
 
-- Added a number of modules to `pydrobert.torch.layers` as a wrapper around the
-  functional versions.
+- Refactored code to move modules to `pydrobert.torch.modules` and functions
+  to `pydrobert.torch.functional`. Deprecated `pydrobert.torch.layers` as well
+  as most of the contents of `pydrobert.torch.util`.
+- Added a number of modules to `pydrobert.torch.modules` to wrap functional
+  API. Moved docstrings to modules.
+- Fixed a problem with `warp_1d_grid`/`SpecAugment` which made it sensitive
+  to the length of other elements in the batch.
 - Added compatibility wrappers to avoid warnings across supported pytorch
   versions.
 - Refactored code and added tests to support JIT tracing and scripting for most
@@ -28,10 +33,10 @@
   - A new documentation page on how to deal with all of that.
 - Fixed bug in controller that always compared thresholds against best, not the
   last point that reset the countdown (#55)
-- Added `util.pad_variable` and `layers.RandomShift` (#54)
+- Added `pad_variable` and `RandomShift` (#54)
 - Modified `error_rate`, `prefix_error_rates` to actually compute error rates
-  when non-default costs are used. Old functionality is now in
-  `edit_distance` and `prefix_edit_distances` (#51)
+  when non-default costs are used. Old functionality is now in `edit_distance`
+  and `prefix_edit_distances` (#51)
 - Fixed bug in how padding is handled in string matching utilities.
 - Fixed logic errors in `compute-torch-token-data-dir-error-rates` (#50)
 - Modified frame end in `pydrobert.torch.data.transcript_to_token` and added
@@ -61,7 +66,8 @@ Miscellaneous other stuff:
 - Removed `future` dependency
 - Shifted most of the configuration to `setup.cfg`, leaving only a shell
   in `setup.py` to remain compatible with Conda builds
-- Added `pyproject.toml` for [PEP 517](https://www.python.org/dev/peps/pep-0517/).
+- Added `pyproject.toml` for [PEP
+  517](https://www.python.org/dev/peps/pep-0517/).
 - `tox.ini` for TOX testing
 - Switched to AppVeyor for CI
 - Added changelog :D

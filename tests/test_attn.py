@@ -95,7 +95,14 @@ def test_dot_product_soft_attention(device, dim, jit_type):
     elif jit_type == "trace":
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            attention = torch.jit.trace(attention, (query, key, key))
+            attention = torch.jit.trace(
+                attention,
+                (
+                    torch.empty((1,), device=device).expand(1, 1, 1, dim4),
+                    torch.empty((1,), device=device).expand(1, 1, 1, 1, dim4),
+                    torch.empty((1,), device=device).expand(1, 1, 1, 1, dim4),
+                ),
+            )
     act = attention(query, key, key)
     assert torch.allclose(exp, act)
 
@@ -163,7 +170,7 @@ def test_dot_product_soft_attention_on_transformer_input():
     "layer", ["general", "concat", "multihead_general", "multihead_concat"]
 )
 def test_learnable_soft_attention(device, dim, bias, layer, jit_type):
-    max_dim, max_dim_size, max_num_heads = 5, 30, 10
+    max_dim, max_dim_size, max_num_heads = 5, 5, 10
     num_dim = torch.randint(dim + 2, max_dim + 1, (1,), device=device).item()
     # dim size must be at least 2. Otherwise, softmax will have only one
     # element and gradient will be zero through it
@@ -209,7 +216,14 @@ def test_learnable_soft_attention(device, dim, bias, layer, jit_type):
     if jit_type == "trace":
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            attention_trace = torch.jit.trace(attention, (query, key, key))
+            attention_trace = torch.jit.trace(
+                attention,
+                (
+                    torch.empty(1, device=device).expand(1, 1, 1, 1, 1, query_size),
+                    torch.empty(1, device=device).expand(1, 1, 1, 1, 1, 1, key_size),
+                    torch.empty(1, device=device).expand(1, 1, 1, 1, 1, 1, key_size),
+                ),
+            )
     elif jit_type == "script":
         attention_trace = torch.jit.script(attention)
     else:
