@@ -552,14 +552,12 @@ def _string_matching(
             (batch_size,), max_hyp_steps, device=ref.device, dtype=torch.long
         )
     if return_mask:
-        # this dtype business is a workaround for different default mask
-        # types < 1.2.0 and > 1.2.0
         mask = torch.empty(
             (max_hyp_steps + (0 if exclude_last else 1), max_ref_steps, batch_size),
             device=device,
             dtype=torch.bool,
         )
-        mask[0, 0] = 1
+        mask[0, 0] = ref_lens > 0
         mask[0, 1:] = 0
     elif return_prf_dsts:
         prefix_ers = torch.empty(
@@ -597,12 +595,12 @@ def _string_matching(
     #
     # if we unroll the loop, we get the minimum of the elements of each row of the above
     # matrix
-    row = torch.arange(max_ref_steps + 1, device=device, dtype=torch.float)  # (R+1, N)
+    rrange = torch.arange(max_ref_steps + 1, device=device, dtype=torch.float)
     if return_mistakes:
-        mistakes = row.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
-        row = row * del_cost
+        mistakes = rrange.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
+        row = rrange * del_cost
     else:
-        row *= del_cost
+        row = rrange * del_cost
         del_mat = row.unsqueeze(1) - row
         del_mat = del_mat + torch.full_like(del_mat, float("inf")).triu(1)
         del_mat = del_mat.unsqueeze(-1)  # (R + 1, R + 1, 1)
@@ -648,6 +646,11 @@ def _string_matching(
             # levenshtein matrix for one of these OCD targets (which is this matrix,
             # except for the final row), the minimal values on the final row sit on a
             # diagonal from the minimal values of the current row.
+            #
+            # N.B. AFAICT this is the only case where we actually care what goes on in
+            # the invalid range of the row. The below masking could always be applied,
+            # but it's wasted effort otherwise.
+            row = row.masked_fill(rrange.unsqueeze(1) > ref_lens, float("inf"))
             mins = row.min(0, keepdim=True)[0]
             row_mask = (row[:-1] == mins) & not_done
             mask[hyp_idx] = row_mask
@@ -659,20 +662,18 @@ def _string_matching(
             else:
                 prefix_ers[hyp_idx] = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
     if return_mask:
-        mask = mask & (
-            (
-                torch.arange(max_ref_steps, device=device)
-                .unsqueeze(1)
-                .expand(max_ref_steps, batch_size)
-                < ref_lens
-            ).unsqueeze(0)
-        )
+        mask &= (
+            torch.arange(max_ref_steps, device=device)
+            .unsqueeze(1)
+            .expand(max_ref_steps, batch_size)
+            < ref_lens
+        ).unsqueeze(0)
         return mask
     elif return_prf_dsts:
         prefix_ers = prefix_ers * mult
         if norm:
             prefix_ers = prefix_ers / ref_lens.to(row.dtype)
-            zero_mask = ref_lens.eq(0).unsqueeze(0)
+            zero_mask = (ref_lens == 0).unsqueeze(0)
             if zero_mask.any():
                 if warn:
                     warnings.warn(
@@ -1296,24 +1297,24 @@ def hard_optimal_completion_distillation_loss(
         exclude_last=True,
         warn=warn,
     )
-    max_unique_next = optimals.shape[-1]
+    max_unique_next = optimals.size(-1)
     logits = logits.unsqueeze(2).expand(-1, -1, max_unique_next, -1)
     logits = logits.contiguous()
     loss = torch.nn.functional.cross_entropy(
-        logits.view(-1, logits.size(-1)),
+        logits.flatten(0, -2),
         optimals.flatten(),
         weight=weight,
         ignore_index=ignore_index,
         reduction="none",
     ).view_as(optimals)
-    padding_mask = optimals.eq(ignore_index)
-    no_padding_mask = ~padding_mask
+    padding_mask = optimals == ignore_index
     loss = loss.masked_fill(padding_mask, 0.0).sum(2)
-    loss = torch.where(
-        no_padding_mask.any(2), loss / no_padding_mask.float().sum(2), loss,
-    )
+    loss = loss / (~padding_mask).sum(2).clamp_min(1)
     if reduction == "mean":
-        loss = loss.mean()
+        seq_dim = 1 if batch_first else 0
+        loss = (
+            loss.sum(seq_dim) / (~padding_mask).any(2).sum(seq_dim).clamp_min(1)
+        ).mean()
     elif reduction == "sum":
         loss = loss.sum()
     elif reduction != "none":
@@ -1349,7 +1350,7 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
     :obj:`False`, otherwise ``(batch_size, max_hyp_steps)`` that provides the hypothesis
     transcriptions. Likewise, `ref` of shape ``(max_ref_steps, batch_size)`` or
     ``(batch_size, max_ref_steps)`` providing reference transcriptions. `logits` is a
-    4-dimensional tensor of shape ``(max_hyp_steps, batch_size, num_classes)`` if
+    3-dimensional tensor of shape ``(max_hyp_steps, batch_size, num_classes)`` if
     `batch_first` is :obj:`False`, ``(batch_size, max_hyp_steps, num_classes)``
     otherwise. A softmax over the step dimension defines the per-step distribution over
     class labels.

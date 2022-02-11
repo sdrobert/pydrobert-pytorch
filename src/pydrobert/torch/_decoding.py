@@ -1368,6 +1368,7 @@ if TYPE_CHECKING:
 
 else:
 
+    @script
     def sequence_log_probs(
         logits: Any, hyp: torch.Tensor, dim: int = 0, eos: Optional[int] = None,
     ) -> torch.Tensor:

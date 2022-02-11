@@ -222,7 +222,12 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction, jit_ty
         eos=None, sub_avg=sub_avg, batch_first=batch_first, reduction=reduction,
     )
     if jit_type == "trace":
-        loss = torch.jit.trace(loss, (log_probs, ref, hyp))
+        trace_args = (
+            torch.empty(2, 2),
+            torch.zeros(2, 2, dtype=torch.long),
+            torch.zeros(2, 2, 2, dtype=torch.long),
+        )
+        loss = torch.jit.trace(loss, trace_args)
     elif jit_type == "script":
         loss = torch.jit.script(loss)
     l1 = loss(log_probs, ref, hyp)
@@ -233,7 +238,7 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction, jit_ty
         eos=0, sub_avg=sub_avg, batch_first=batch_first, reduction=reduction,
     )
     if jit_type == "trace":
-        loss = torch.jit.trace(loss, (log_probs, ref, hyp))
+        loss = torch.jit.trace(loss, trace_args)
     elif jit_type == "script":
         loss = torch.jit.script(loss)
     l3 = loss(log_probs, ref, hyp)
@@ -246,9 +251,8 @@ def test_minimum_error_rate_loss(device, batch_first, sub_avg, reduction, jit_ty
 @pytest.mark.parametrize("reduction", ["mean", "none"])
 @pytest.mark.parametrize("include_eos", [True, False])
 def test_hard_optimal_completion_distillation_loss(
-    device, batch_first, eos, ref_steps_times, reduction, include_eos, jit_type
+    device, batch_first, eos, ref_steps_times, reduction, include_eos
 ):
-    torch.manual_seed(209384)
     num_batches, max_steps, num_classes = 20, 41, 10
     if eos is None:
         hyp_lens = torch.tensor(max_steps).expand(num_batches)
@@ -276,13 +280,13 @@ def test_hard_optimal_completion_distillation_loss(
                 ref[ref_lens[bt] - 1, bt] = eos
                 hyp[hyp_lens[bt] - 1, bt] = eos
         if not include_eos:
-            ref_lens = ref_lens - 1
-            hyp_lens = hyp_lens - 1
+            ref_lens -= 1
+            hyp_lens -= 1
     logits = torch.rand(tuple(hyp.shape) + (num_classes,))
     if batch_first:
-        len_mask = torch.arange(hyp.shape[1]).unsqueeze(0) < hyp_lens.unsqueeze(1)
+        len_mask = torch.arange(hyp.shape[1]).unsqueeze(0) <= hyp_lens.unsqueeze(1)
     else:
-        len_mask = torch.arange(hyp.shape[0]).unsqueeze(1) < hyp_lens
+        len_mask = torch.arange(hyp.shape[0]).unsqueeze(1) <= hyp_lens
     logits, ref, hyp = logits.to(device), ref.to(device), hyp.to(device)
     ref_lens, hyp_lens = ref_lens.to(device), hyp_lens.to(device)
     len_mask = len_mask.to(device)
@@ -291,31 +295,27 @@ def test_hard_optimal_completion_distillation_loss(
     loss = HardOptimalCompletionDistillationLoss(
         eos=eos, include_eos=include_eos, batch_first=batch_first, reduction=reduction,
     )
-    if jit_type == "script":
-        loss = torch.jit.script(loss)
-    elif jit_type == "trace":
-        loss = torch.jit.trace(loss, (logits, ref, hyp))
     l1 = loss(logits, ref, hyp)
     assert torch.all(l1 == l1)  # no nans
     if reduction == "none":
-        assert torch.all(l1.masked_select(inv_len_mask).eq(0.0))
-        # reference transcriptions are all positive length, so the first
-        # optimal completion (assuming hyp length is nonzero) will always be
-        # the first token in ref (and only the first token), given that there's
-        # no ambiguity in the alignment of the prefix ""
+        assert torch.all(l1.masked_select(inv_len_mask) == 0)
+        # Assuming ref is nonzero length, the first optimal completion will always be
+        # the first token in ref (and only the first token), given that there's no
+        # ambiguity in the alignment of the prefix ""
         log_probs = torch.nn.functional.log_softmax(logits, 2)
+        zero_len_mask = ref_lens == 0
         if batch_first:
-            zero_length_mask = ref_lens.eq(0).unsqueeze(1)
             first_loss = torch.where(
-                zero_length_mask,
+                zero_len_mask.unsqueeze(1),
                 torch.zeros_like(log_probs[:, 0, 0]),
                 -log_probs[:, 0].gather(1, ref[:, 0].unsqueeze(-1)).squeeze(-1),
             )
-            assert torch.allclose(l1[:, 0], first_loss)
+            assert torch.allclose(l1[:, 0], first_loss), (
+                (l1[:, 0] - first_loss).abs().max()
+            )
         else:
-            zero_length_mask = ref_lens.eq(0).unsqueeze(0)
             first_loss = torch.where(
-                zero_length_mask,
+                zero_len_mask.unsqueeze(0),
                 torch.zeros_like(log_probs[0, :, 0]),
                 -log_probs[0].gather(1, ref[0].unsqueeze(-1)).squeeze(-1),
             )
@@ -324,6 +324,39 @@ def test_hard_optimal_completion_distillation_loss(
     (g,) = torch.autograd.grad([l1], [logits])
     assert torch.all(g.masked_select(inv_len_mask.unsqueeze(-1)).eq(0.0))
     assert not torch.all(g.eq(0.0))
+
+
+def test_hard_optimal_completion_distillation_loss_batch(device, jit_type):
+    N, T, C = 10, 5, 4
+
+    loss = HardOptimalCompletionDistillationLoss(eos=C, reduction="sum")
+    if jit_type == "script":
+        loss = torch.jit.script(loss)
+    elif jit_type == "trace":
+        loss = torch.jit.trace(
+            loss,
+            (torch.empty(1, 1, C + 1), torch.full((1, 1,), C), torch.full((1, 1), C)),
+        )
+    ref, hyp, logits = [], [], []
+    l1_exp = torch.zeros(1, device=device)
+    for _ in range(N):
+        ref_len_n = torch.randint(T + 1, (1,), device=device).item()
+        ref_n = torch.randint(C, (ref_len_n + 1,), device=device)
+        ref_n[-1] = C
+        hyp_len_n = torch.randint(T + 1, (1,), device=device).item()
+        hyp_n = torch.randint(C, (hyp_len_n + 1,), device=device)
+        hyp_n[-1] = C
+        logits_n = torch.randn((hyp_len_n + 1, C + 1), device=device)
+        l1_exp += loss(logits_n.unsqueeze(1), ref_n.unsqueeze(1), hyp_n.unsqueeze(1))
+        ref.append(ref_n)
+        hyp.append(hyp_n)
+        logits.append(logits_n)
+    # l1_exp /= N
+    ref = torch.nn.utils.rnn.pad_sequence(ref)
+    hyp = torch.nn.utils.rnn.pad_sequence(hyp)
+    logits = torch.nn.utils.rnn.pad_sequence(logits)
+    l1_act = loss(logits, ref, hyp)
+    assert torch.isclose(l1_exp, l1_act)
 
 
 @pytest.mark.parametrize("ins_cost", [2.0, 0.5, 1.0], ids=("i2.0", "i0.5", "i1.0"))

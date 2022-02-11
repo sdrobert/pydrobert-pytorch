@@ -2,6 +2,8 @@
 
 ## HEAD
 
+- Bug fixes to `OptimalCompletion` and `HardOptimalCompletionDistillationLoss`
+  involving batch sizes.
 - Refactored code to move modules to `pydrobert.torch.modules` and functions
   to `pydrobert.torch.functional`. Deprecated `pydrobert.torch.layers` as well
   as most of the contents of `pydrobert.torch.util`.

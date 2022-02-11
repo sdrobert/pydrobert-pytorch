@@ -24,7 +24,6 @@ from pydrobert.torch.modules import (
     PadVariable,
     PolyharmonicSpline,
     RandomShift,
-    SequenceLogProbabilities,
     SparseImageWarp,
     SpecAugment,
     Warp1DGrid,
@@ -339,11 +338,16 @@ def test_spec_augment_call(device, use_lengths, jit_type):
     ).to(device)
     if use_lengths:
         args = (feats, lengths)
+        trace_args = (
+            torch.empty(1, 1, 1, device=device),
+            torch.ones(1, dtype=torch.long, device=device),
+        )
     else:
         args = (feats,)
+        trace_args = (torch.empty(1, 1, 1, device=device),)
     if jit_type == "trace":
         # spec_augment is nondeterministic, so we don't check repeat return values
-        spec_augment = torch.jit.trace(spec_augment, args, check_trace=False)
+        spec_augment = torch.jit.trace(spec_augment, trace_args, check_trace=False)
     elif jit_type == "script":
         spec_augment = torch.jit.script(spec_augment)
     spec_augment(*args)
@@ -357,7 +361,14 @@ def test_random_shift_call(device, mode, jit_type):
     rand_shift = RandomShift(1.0, mode).to(device)
     if jit_type == "trace":
         # random_shift is nondeterministic, so we don't check repeat return values
-        rand_shift = torch.jit.trace(rand_shift, (in_, in_lens), check_trace=False)
+        rand_shift = torch.jit.trace(
+            rand_shift,
+            (
+                torch.empty(1, 1, device=device),
+                torch.ones(1, device=device, dtype=torch.long),
+            ),
+            check_trace=False,
+        )
     elif jit_type == "script":
         rand_shift = torch.jit.script(rand_shift)
     out, out_lens = rand_shift(in_, in_lens)
@@ -367,83 +378,6 @@ def test_random_shift_call(device, mode, jit_type):
     assert out.size(1) >= out_lens.max()
     assert out.size(2) == A
     assert out.size(3) == B
-
-
-@pytest.mark.parametrize("dim", [0, 2, -1, None])
-def test_sequence_log_probs(device, dim, jit_type):
-    max_steps, num_classes, eos = 30, 10, 0
-    dim1, dim2, dim3, dim4 = 5, 2, 1, 4
-    logits = torch.full(
-        (max_steps, dim1, dim2, dim3, dim4, num_classes), -float("inf"), device=device
-    )
-    hyp = torch.randint(
-        1, num_classes, (max_steps, dim1, dim2, dim3, dim4), device=device
-    )
-    hyp_lens = torch.randint(2, max_steps, (dim1, dim2, dim3, dim4), device=device)
-    len_mask = torch.arange(max_steps, device=device).unsqueeze(-1)
-    if dim is None:
-        # hyp_lens must be 1d for packed sequences, so we get rid of dim1..dim4
-        hyp_lens = hyp_lens.flatten()
-        hyp = hyp.flatten(1)
-        logits = logits.view(max_steps, -1, num_classes)
-    else:
-        len_mask = len_mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-    hyp = hyp.masked_fill(len_mask == hyp_lens, eos)
-    logits = logits.scatter(-1, hyp.unsqueeze(-1), 0.0)
-    rand_mask = torch.randint_like(hyp, 2).eq(1)
-    # > 0 to ensure that at least one valid value exists in the path
-    rand_mask = rand_mask & (len_mask < hyp_lens) & (len_mask > 0)
-    hyp = hyp.masked_fill(rand_mask, -1)
-    padding_mask = (len_mask > hyp_lens) | rand_mask
-    logits = logits.masked_fill(padding_mask.unsqueeze(-1), -float("inf"))
-    if dim is None:
-        logits = torch.nn.utils.rnn.pack_padded_sequence(
-            logits, hyp_lens.cpu(), enforce_sorted=False
-        )
-    elif dim:
-        hyp_dim = (dim + 5) % 5
-        hyp = hyp.transpose(0, hyp_dim).contiguous()
-        logits = logits.transpose(0, hyp_dim).contiguous()
-    sequence_log_probs = SequenceLogProbabilities(0 if dim is None else dim, eos)
-    if jit_type == "trace":
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            sequence_log_probs = torch.jit.trace(sequence_log_probs, (logits, hyp))
-    elif jit_type == "script":
-        sequence_log_probs = torch.jit.script(sequence_log_probs)
-    log_probs = sequence_log_probs(logits, hyp)
-    assert log_probs.eq(0.0).all()
-    if dim is None:
-        logits = torch.nn.utils.rnn.PackedSequence(
-            torch.randn_like(logits.data),
-            logits.batch_sizes,
-            logits.sorted_indices,
-            logits.unsorted_indices,
-        )
-    else:
-        logits = torch.randn_like(logits)
-    log_probs_1 = sequence_log_probs(logits, hyp)
-    assert log_probs_1.ne(0.0).any()
-    # this is mostly a test to ensure the packed sequences are being properly
-    # sorted/unsorted
-    log_probs_1 = log_probs_1[::2]
-    if dim is None:
-        logits, _ = torch.nn.utils.rnn.pad_packed_sequence(logits)
-        logits = logits[:, ::2]
-        hyp = hyp[:, ::2]
-        hyp_lens = hyp_lens[::2]
-        logits = torch.nn.utils.rnn.pack_padded_sequence(
-            logits, hyp_lens.cpu(), enforce_sorted=False
-        )
-    elif dim == 0:
-        logits = logits[:, ::2]
-        hyp = hyp[:, ::2]
-    else:
-        logits = logits[::2]
-        hyp = hyp[::2]
-    log_probs_2 = sequence_log_probs(logits, hyp)
-    assert log_probs_1.shape == log_probs_2.shape
-    assert torch.allclose(log_probs_1, log_probs_2)
 
 
 def test_polyharmonic_interpolation_linear(device):
