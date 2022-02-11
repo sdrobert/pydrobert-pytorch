@@ -375,22 +375,30 @@ def optimal_completion(
         return_mask=True,
         exclude_last=exclude_last,
     )
-    max_hyp_steps_p1, _, batch_size = mask.shape
-    targets = []
+    if not batch_first:
+        ref = ref.t()
+    H, R, N = mask.shape
+    device = ref.device
+    # if a token is set to true once, set all duplicates in the transcription to true
+    mask = (
+        mask.transpose(1, 2).unsqueeze(2) & (ref.unsqueeze(1) == ref.unsqueeze(2))
+    ).any(
+        3
+    )  # (H, N, R)
+    # sort the transcriptions and the mask
+    ref, src = ref.sort(1)
+    mask = mask.gather(2, src.expand_as(mask))
+    # set the mask to false for every duplicate token
+    mask[..., :-1] = mask[..., :-1] & (ref[:, :-1] != ref[:, 1:]).expand(H, -1, -1)
+    # scatter the tokens into the target buffer
+    targets_flat = ref.expand_as(mask).masked_select(mask)
+    counts = mask.sum(2)  # (H, N)
+    C = int(counts.max().item())
+    targets = torch.full((H, N, C), padding, dtype=torch.long, device=device)
+    target_mask = counts.unsqueeze(-1) > torch.arange(C, device=device)
+    targets.masked_scatter_(target_mask, targets_flat)
     if batch_first:
-        for mask_bt, ref_bt in zip(mask.transpose(0, 2), ref):
-            for mask_bt_hyp in mask_bt.t():
-                targets.append(torch.unique(ref_bt.masked_select(mask_bt_hyp)))
-    else:
-        for mask_hyp in mask:
-            for mask_hyp_bt, ref_bt in zip(mask_hyp.t(), ref.t()):
-                targets.append(torch.unique(ref_bt.masked_select(mask_hyp_bt)))
-    # the cast to float is a concession for scripting
-    targets = pad_sequence(targets, padding_value=float(padding), batch_first=True)
-    if batch_first:
-        targets = targets.view(batch_size, max_hyp_steps_p1, -1)
-    else:
-        targets = targets.view(max_hyp_steps_p1, batch_size, -1)
+        targets = targets.transpose(0, 1)
     return targets
 
 
