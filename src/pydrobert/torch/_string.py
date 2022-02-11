@@ -662,7 +662,8 @@ def _string_matching(
             else:
                 prefix_ers[hyp_idx] = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
     if return_mask:
-        mask &= (
+        # &= unsupported in scripting < 1.8
+        mask = mask & (
             torch.arange(max_ref_steps, device=device)
             .unsqueeze(1)
             .expand(max_ref_steps, batch_size)
