@@ -335,7 +335,11 @@ def test_hard_optimal_completion_distillation_loss_batch(device, jit_type):
     elif jit_type == "trace":
         loss = torch.jit.trace(
             loss,
-            (torch.empty(1, 1, C + 1), torch.full((1, 1,), C), torch.full((1, 1), C)),
+            (
+                torch.empty(1, 1, C + 1),
+                torch.full((1, 1,), C, dtype=torch.long),
+                torch.full((1, 1), C, dtype=torch.long),
+            ),
         )
     ref, hyp, logits = [], [], []
     l1_exp = torch.zeros(1, device=device)
