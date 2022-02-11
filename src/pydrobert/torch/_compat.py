@@ -199,7 +199,7 @@ if _v < "1.8.0":
             return any(_jit_isinstance(obj, y) for y in args)
         return False
 
-    def jit_isinstance(obj: Any, x: Any) -> bool:
+    def jit_isinstance(obj: Any, x: type) -> bool:
         if torch.jit.is_scripting():
             return isinstance(obj, x)
         else:

@@ -1341,100 +1341,105 @@ def random_walk_advance(
         return y
 
 
-if TYPE_CHECKING:
+@script
+def _sequence_log_probs_tensor(
+    logits: torch.Tensor, hyp: torch.Tensor, dim: int, eos: Optional[int]
+) -> torch.Tensor:
+    hyp_dim = hyp.dim()
+    if dim < -hyp_dim or dim > hyp_dim - 1:
+        raise RuntimeError(
+            "Dimension out of range (expected to be in range of [{}, {}], but "
+            "got {})".format(-hyp_dim, hyp_dim - 1, dim)
+        )
+    dim = (hyp_dim + dim) % hyp_dim
+    steps = hyp.shape[dim]
+    num_classes = logits.shape[-1]
+    logits = torch.nn.functional.log_softmax(logits, -1)
+    mask = hyp.lt(0) | hyp.ge(num_classes)
+    if eos is not None:
+        hyp_lens = _lens_from_eos(hyp, eos, dim) + 1
+        if dim:
+            hyp_lens = hyp_lens.unsqueeze(dim)
+            if dim == hyp_dim - 1:
+                hyp_lens = hyp_lens.unsqueeze(-1)
+            else:
+                hyp_lens = hyp_lens.flatten(dim + 1)
+        else:
+            hyp_lens = hyp_lens.view(1, -1)
+        len_mask = torch.arange(steps, device=logits.device).unsqueeze(-1)
+        len_mask = len_mask >= hyp_lens
+        len_mask = len_mask.view_as(mask)
+        mask = mask | len_mask
+    hyp = hyp.masked_fill(mask, 0)
+    logits = logits.gather(-1, hyp.unsqueeze(-1)).squeeze(-1)
+    logits = logits.masked_fill(mask, 0.0)
+    return logits.sum(dim)
 
-    def sequence_log_probs(
-        logits: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
-        hyp: torch.Tensor,
-        dim: int = 0,
-        eos: Optional[int] = None,
-    ) -> torch.Tensor:
-        """Functional version of SequentialLogProbabilities
 
-        Parameters
-        ----------
-        logits : torch.Tensor or torch.nn.utils.rnn.PackedSequence
-        hyp : torch.Tensor
-        dim : int, optional
-        eos : int or `None`, optional
+@script
+def _sequence_log_probs_ps(
+    logits: Tuple[
+        torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]
+    ],
+    hyp: torch.Tensor,
+    dim: int,
+) -> torch.Tensor:
+    hyp_dim = hyp.dim()
+    if dim < -hyp_dim or dim > hyp_dim - 1:
+        raise RuntimeError(
+            "Dimension out of range (expected to be in range of [{}, {}], but "
+            "got {})".format(-hyp_dim, hyp_dim - 1, dim)
+        )
+    logits, batch_sizes, sidxs, uidxs = logits
+    if sidxs is not None:
+        hyp = torch.index_select(hyp, 1 - dim, sidxs)  # sort hyp
+    lens = (
+        (torch.arange(hyp.size(1 - dim)).unsqueeze(1) < batch_sizes)
+        .to(torch.long)
+        .sum(1)
+    )
+    hyp = torch.nn.utils.rnn.pack_padded_sequence(hyp, lens, batch_first=bool(dim))[0]
+    num_classes = logits.shape[1]
+    logits = torch.nn.functional.log_softmax(logits, -1)
+    mask = hyp.lt(0) | hyp.ge(num_classes)
+    hyp = hyp.masked_fill(mask, 0)
+    logits = logits.gather(1, hyp.unsqueeze(1)).squeeze(1)
+    logits = logits.masked_fill(mask, 0.0)
+    logits = torch.nn.utils.rnn.pad_packed_sequence(
+        SpoofPackedSequence(logits, batch_sizes, None, None), batch_first=True,
+    )[0].sum(1)
+    if uidxs is not None:
+        logits = logits[uidxs]
+    return logits
 
-        See Also
-        --------
-        pydrobert.torch.layers.SequentialLogProbabilities
-            For more details about the parameters
-        """
-        pass
 
+def sequence_log_probs(
+    logits: Any, hyp: torch.Tensor, dim: int = 0, eos: Optional[int] = None,
+) -> torch.Tensor:
+    """Functional version of SequentialLogProbabilities
 
-else:
+    Parameters
+    ----------
+    logits : torch.Tensor or torch.nn.utils.rnn.PackedSequence
+    hyp : torch.Tensor
+    dim : int, optional
+    eos : int or `None`, optional
 
-    @script
-    def sequence_log_probs(
-        logits: Any, hyp: torch.Tensor, dim: int = 0, eos: Optional[int] = None,
-    ) -> torch.Tensor:
-        hyp_dim = hyp.dim()
-        if dim < -hyp_dim or dim > hyp_dim - 1:
-            raise RuntimeError(
-                "Dimension out of range (expected to be in range of [{}, {}], but "
-                "got {})".format(-hyp_dim, hyp_dim - 1, dim)
-            )
-        if isinstance(logits, torch.Tensor):
-            dim = (hyp_dim + dim) % hyp_dim
-            steps = hyp.shape[dim]
-            num_classes = logits.shape[-1]
-            logits = torch.nn.functional.log_softmax(logits, -1)
-            mask = hyp.lt(0) | hyp.ge(num_classes)
-            if eos is not None:
-                hyp_lens = _lens_from_eos(hyp, eos, dim) + 1
-                if dim:
-                    hyp_lens = hyp_lens.unsqueeze(dim)
-                    if dim == hyp_dim - 1:
-                        hyp_lens = hyp_lens.unsqueeze(-1)
-                    else:
-                        hyp_lens = hyp_lens.flatten(dim + 1)
-                else:
-                    hyp_lens = hyp_lens.view(1, -1)
-                len_mask = torch.arange(steps, device=logits.device).unsqueeze(-1)
-                len_mask = len_mask >= hyp_lens
-                len_mask = len_mask.view_as(mask)
-                mask = mask | len_mask
-            hyp = hyp.masked_fill(mask, 0)
-            logits = logits.gather(-1, hyp.unsqueeze(-1)).squeeze(-1)
-            logits = logits.masked_fill(mask, 0.0)
-            return logits.sum(dim)
-        elif jit_isinstance(
-            logits,
-            Tuple[
-                torch.Tensor,
-                torch.Tensor,
-                Optional[torch.Tensor],
-                Optional[torch.Tensor],
-            ],
-        ):
-            logits, batch_sizes, sidxs, uidxs = logits
-            if sidxs is not None:
-                hyp = torch.index_select(hyp, 1 - dim, sidxs)  # sort hyp
-            lens = (
-                (torch.arange(hyp.size(1 - dim)).unsqueeze(1) < batch_sizes)
-                .to(torch.long)
-                .sum(1)
-            )
-            hyp = torch.nn.utils.rnn.pack_padded_sequence(
-                hyp, lens, batch_first=bool(dim)
-            )[0]
-            num_classes = logits.shape[1]
-            logits = torch.nn.functional.log_softmax(logits, -1)
-            mask = hyp.lt(0) | hyp.ge(num_classes)
-            hyp = hyp.masked_fill(mask, 0)
-            logits = logits.gather(1, hyp.unsqueeze(1)).squeeze(1)
-            logits = logits.masked_fill(mask, 0.0)
-            logits = torch.nn.utils.rnn.pad_packed_sequence(
-                SpoofPackedSequence(logits, batch_sizes, None, None), batch_first=True,
-            )[0].sum(1)
-            if uidxs is not None:
-                logits = logits[uidxs]
-            return logits
-        raise RuntimeError("logits must be either a Tensor or PackedSequence")
+    See Also
+    --------
+    pydrobert.torch.layers.SequentialLogProbabilities
+        For more details about the parameters
+    """
+    if isinstance(logits, torch.Tensor):
+        return _sequence_log_probs_tensor(logits, hyp, dim, eos)
+    elif jit_isinstance(
+        logits,
+        Tuple[
+            torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor],
+        ],
+    ):
+        return _sequence_log_probs_ps(logits, hyp, dim)
+    raise RuntimeError("logits must be either a Tensor or PackedSequence")
 
 
 class SequenceLogProbabilities(torch.nn.Module):
