@@ -375,6 +375,7 @@ def optimal_completion(
         return_mask=True,
         exclude_last=exclude_last,
     )
+    print(mask)
     if not batch_first:
         ref = ref.t()
     H, R, N = mask.shape
@@ -1306,7 +1307,6 @@ def hard_optimal_completion_distillation_loss(
         exclude_last=True,
         warn=warn,
     )
-    print(optimals.transpose(0, 1))
     max_unique_next = optimals.size(-1)
     logits = logits.unsqueeze(2).expand(-1, -1, max_unique_next, -1)
     logits = logits.contiguous()
