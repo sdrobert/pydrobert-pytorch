@@ -34,7 +34,7 @@ if compat._v < "1.8.0":
             obj_ = torch.jit.script(obj)
             return obj(*args, **kwargs)
 
-        return _script
+        return _wrapper
 
     compat.script = _script
     compat.unflatten = compat.script(compat.unflatten)
