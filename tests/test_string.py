@@ -343,7 +343,8 @@ def test_hard_optimal_completion_distillation_loss_batch(device, jit_type):
         )
     ref, hyp, logits = [], [], []
     l1_exp = torch.zeros(1, device=device)
-    for _ in range(N):
+    for n in range(N):
+        print('batch', n)
         ref_len_n = torch.randint(T + 1, (1,), device=device).item()
         ref_n = torch.randint(C, (ref_len_n + 1,), device=device)
         ref_n[-1] = C
@@ -356,6 +357,7 @@ def test_hard_optimal_completion_distillation_loss_batch(device, jit_type):
         hyp.append(hyp_n)
         logits.append(logits_n)
     # l1_exp /= N
+    print('all')
     ref = torch.nn.utils.rnn.pad_sequence(ref)
     hyp = torch.nn.utils.rnn.pad_sequence(hyp)
     logits = torch.nn.utils.rnn.pad_sequence(logits)
