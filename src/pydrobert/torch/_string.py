@@ -59,11 +59,12 @@ def _string_matching(
         ins_cost = del_cost = sub_cost = 1.0
         return_mistakes = False
     elif return_mistakes and warn:
-        warnings.warn(
-            "The behaviour for non-uniform error rates has changed after v0.3.0. "
-            "Please switch to edit_distance functions for old behaviour. Set "
-            "warn=False to suppress this warning"
-        )
+        pass
+        # warnings.warn(
+        #     "The behaviour for non-uniform error rates has changed after v0.3.0. "
+        #     "Please switch to edit_distance functions for old behaviour. Set "
+        #     "warn=False to suppress this warning"
+        # )
     if batch_first:
         ref = ref.t()
         hyp = hyp.t()
@@ -85,21 +86,23 @@ def _string_matching(
             ref_lens = ref_lens + 1
             if ref_eq_mask.any():
                 if warn:
-                    warnings.warn(
-                        "include_eos=True, but a transcription in ref did not "
-                        "contain the eos symbol ({}). To suppress this "
-                        "warning, set warn=False".format(eos)
-                    )
+                    pass
+                    # warnings.warn(
+                    #     "include_eos=True, but a transcription in ref did not "
+                    #     "contain the eos symbol ({}). To suppress this "
+                    #     "warning, set warn=False".format(eos)
+                    # )
                 ref_lens = ref_lens - ref_eq_mask.to(ref_lens.dtype)
             hyp_eq_mask = hyp_lens == max_hyp_steps
             hyp_lens = hyp_lens + 1
             if hyp_eq_mask.any():
                 if warn:
-                    warnings.warn(
-                        "include_eos=True, but a transcription in hyp did not "
-                        "contain the eos symbol ({}). To suppress this "
-                        "warning, set warn=False".format(eos)
-                    )
+                    pass
+                    # warnings.warn(
+                    #     "include_eos=True, but a transcription in hyp did not "
+                    #     "contain the eos symbol ({}). To suppress this "
+                    #     "warning, set warn=False".format(eos)
+                    # )
                 hyp_lens = hyp_lens - hyp_eq_mask.to(hyp_lens.dtype)
     else:
         ref_lens = torch.full(
@@ -230,11 +233,12 @@ def _string_matching(
             zero_mask = ref_lens.eq(0).unsqueeze(0)
             if zero_mask.any():
                 if warn:
-                    warnings.warn(
-                        "ref contains empty transcripts. Error rates will be "
-                        "0 for prefixes of length 0, 1 otherwise. To suppress "
-                        "this warning, set warn=False"
-                    )
+                    pass
+                    # warnings.warn(
+                    #     "ref contains empty transcripts. Error rates will be "
+                    #     "0 for prefixes of length 0, 1 otherwise. To suppress "
+                    #     "this warning, set warn=False"
+                    # )
                 prefix_ers = torch.where(
                     zero_mask,
                     (
@@ -266,11 +270,12 @@ def _string_matching(
         zero_mask = ref_lens.eq(0)
         if zero_mask.any():
             if warn:
-                warnings.warn(
-                    "ref contains empty transcripts. Error rates for entries "
-                    "will be 1 if any insertion and 0 otherwise. To suppress "
-                    "this warning, set warn=False"
-                )
+                pass
+                # warnings.warn(
+                #     "ref contains empty transcripts. Error rates for entries "
+                #     "will be 1 if any insertion and 0 otherwise. To suppress "
+                #     "this warning, set warn=False"
+                # )
             er = torch.where(zero_mask, hyp_lens.gt(0).to(er.dtype), er)
     return er
 
@@ -510,11 +515,12 @@ def _string_matching(
         ins_cost = del_cost = sub_cost = 1.0
         return_mistakes = False
     elif return_mistakes and warn:
-        warnings.warn(
-            "The behaviour for non-uniform error rates has changed after v0.3.0. "
-            "Please switch to edit_distance functions for old behaviour. Set "
-            "warn=False to suppress this warning"
-        )
+        pass
+        # warnings.warn(
+        #     "The behaviour for non-uniform error rates has changed after v0.3.0. "
+        #     "Please switch to edit_distance functions for old behaviour. Set "
+        #     "warn=False to suppress this warning"
+        # )
     if batch_first:
         ref = ref.t()
         hyp = hyp.t()
@@ -536,21 +542,23 @@ def _string_matching(
             ref_lens = ref_lens + 1
             if ref_eq_mask.any():
                 if warn:
-                    warnings.warn(
-                        "include_eos=True, but a transcription in ref did not "
-                        "contain the eos symbol ({}). To suppress this "
-                        "warning, set warn=False".format(eos)
-                    )
+                    pass
+                    # warnings.warn(
+                    #     "include_eos=True, but a transcription in ref did not "
+                    #     "contain the eos symbol ({}). To suppress this "
+                    #     "warning, set warn=False".format(eos)
+                    # )
                 ref_lens = ref_lens - ref_eq_mask.to(ref_lens.dtype)
             hyp_eq_mask = hyp_lens == max_hyp_steps
             hyp_lens = hyp_lens + 1
             if hyp_eq_mask.any():
                 if warn:
-                    warnings.warn(
-                        "include_eos=True, but a transcription in hyp did not "
-                        "contain the eos symbol ({}). To suppress this "
-                        "warning, set warn=False".format(eos)
-                    )
+                    pass
+                    # warnings.warn(
+                    #     "include_eos=True, but a transcription in hyp did not "
+                    #     "contain the eos symbol ({}). To suppress this "
+                    #     "warning, set warn=False".format(eos)
+                    # )
                 hyp_lens = hyp_lens - hyp_eq_mask.to(hyp_lens.dtype)
     else:
         ref_lens = torch.full(
@@ -685,11 +693,12 @@ def _string_matching(
             zero_mask = (ref_lens == 0).unsqueeze(0)
             if zero_mask.any():
                 if warn:
-                    warnings.warn(
-                        "ref contains empty transcripts. Error rates will be "
-                        "0 for prefixes of length 0, 1 otherwise. To suppress "
-                        "this warning, set warn=False"
-                    )
+                    pass
+                    # warnings.warn(
+                    #     "ref contains empty transcripts. Error rates will be "
+                    #     "0 for prefixes of length 0, 1 otherwise. To suppress "
+                    #     "this warning, set warn=False"
+                    # )
                 prefix_ers = torch.where(
                     zero_mask,
                     (
@@ -722,11 +731,12 @@ def _string_matching(
         zero_mask = ref_lens.eq(0)
         if zero_mask.any():
             if warn:
-                warnings.warn(
-                    "ref contains empty transcripts. Error rates for entries "
-                    "will be 1 if any insertion and 0 otherwise. To suppress "
-                    "this warning, set warn=False"
-                )
+                pass
+                # warnings.warn(
+                #     "ref contains empty transcripts. Error rates for entries "
+                #     "will be 1 if any insertion and 0 otherwise. To suppress "
+                #     "this warning, set warn=False"
+                # )
             er = torch.where(zero_mask, hyp_lens.gt(0).to(er.dtype), er)
     return er
 
