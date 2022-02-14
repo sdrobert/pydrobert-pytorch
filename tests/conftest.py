@@ -26,17 +26,18 @@ import pydrobert.torch.config as config
 
 import pydrobert.torch._compat as compat
 
-try:
-    torch._C._jit_clear_class_registry()
-    torch.jit._recursive.concrete_type_store = torch.jit._recursive.ConcreteTypeStore()
-    torch.jit._state._clear_class_state()
-except:
-    pass
-
 if compat._v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
-    compat.script = torch.jit.script
-    compat.unflatten = torch.jit.script(compat.unflatten)
+
+    def _script(obj):
+        def _wrapper(*args, **kwargs):
+            obj_ = torch.jit.script(obj)
+            return obj(*args, **kwargs)
+
+        return _script
+
+    compat.script = _script
+    compat.unflatten = compat.script(compat.unflatten)
     SKIP_SCRIPT = True
 else:
     SKIP_SCRIPT = False
