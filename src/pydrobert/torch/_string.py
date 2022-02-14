@@ -500,6 +500,7 @@ def _string_matching(
 ):
     assert not return_mask or not return_prf_dsts
     assert not exclude_last or (return_mask or return_prf_dsts)
+    print('rm', return_mask)
     if ref.dim() != 2 or hyp.dim() != 2:
         raise RuntimeError("ref and hyp must be 2 dimensional")
     mult = 1.0
