@@ -15,7 +15,6 @@
 import pytest
 import os
 import math
-import functools
 
 from tempfile import mkdtemp
 from shutil import rmtree
@@ -26,11 +25,6 @@ import torch
 import pydrobert.torch.config as config
 
 import pydrobert.torch._compat as compat
-
-try:
-    torch.jit._python_cu = torch._C.CompilationUnit()
-except:
-    pass
 
 if compat._v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
