@@ -14,6 +14,7 @@
 
 """Utility functions which are neither pytorch modules nor functions"""
 
+import functools
 import warnings
 
 __all__ = ["parse_arpa_lm"]
@@ -27,15 +28,15 @@ def import_and_deprecate(func):
     name = func.__name__
     func = getattr(functional, name)
 
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         warnings.warn(
             "pytorch function access through pydrobert.torch.util is deprecated. "
             "Use pydrobert.torch.functional instead"
         )
-        return func(*args, **kwargs)
+        return wrapper.__func(*args, **kwargs)
 
-    if hasattr(func, "__annotations__"):
-        wrapper.__annotations__ = func.__annotations__
+    wrapper.__func = func
     return wrapper
 
 
