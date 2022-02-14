@@ -7,6 +7,8 @@ environment:
   matrix:
     - TOXENV: py36-t151
       PYTHON: "3.6"
+      TOXARGS: "-m 'not trace and not script'"
+      TORCH_JIT: "0"
     - TOXENV: py36-t181
       PYTHON: "3.6"
     - TOXENV: py37-t181
@@ -15,6 +17,8 @@ environment:
       PYTHON: "3.8"
     - TOXENV: py38-151
       PYTHON: "3.8"
+      TOXARGS: "-m 'not trace and not script'"
+      TORCH_JIT: "0"
     - TOXENV: py39
       PYTHON: "3.9"
     # - TOXENV: py310  # wheel not available yet
@@ -41,4 +45,4 @@ install:
   - python3 -m pip install -U tox tox-ltt
 
 test_script:
-  - python3 -m tox
+  - python3 -m tox -- %TOXARGS%
