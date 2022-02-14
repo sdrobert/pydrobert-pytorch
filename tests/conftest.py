@@ -26,6 +26,11 @@ import pydrobert.torch.config as config
 
 import pydrobert.torch._compat as compat
 
+try:
+    torch._C._jit_clear_class_registry()
+except:
+    pass
+
 if compat._v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
     compat.script = torch.jit.script
