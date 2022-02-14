@@ -15,6 +15,7 @@
 import pytest
 import os
 import math
+import functools
 
 from tempfile import mkdtemp
 from shutil import rmtree
@@ -34,13 +35,17 @@ except:
 if compat._v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
 
-    def _script(obj):
-        if hasattr(obj, "code"):
-            print(obj.code)
-        return torch.jit.script(obj)
+    def _script(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            cfn = torch.jit.script(wrapper.__ofn)
+            return cfn(*args, **kwargs)
+
+        wrapper.__ofn = fn
+        return wrapper
 
     compat.script = _script
-    compat.unflatten = torch.jit.script(compat.unflatten)
+    compat.unflatten = _script(compat.unflatten)
     SKIP_SCRIPT = True
 else:
     SKIP_SCRIPT = False
