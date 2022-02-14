@@ -46,7 +46,7 @@ install:
 test_script:
   - >-
     if [ ! -z "$NO_SCRIPT" ]; then
-      export JIT_SCRIPT=0
+      export PYTORCH_JIT=0
       PYTEST_ARGS=( '-m' 'not trace and not script' )
     fi
   - python3 -m tox -- "${PYTEST_ARGS[@]}"
