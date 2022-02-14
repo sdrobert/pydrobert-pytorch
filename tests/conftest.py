@@ -33,7 +33,13 @@ except:
 
 if compat._v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
-    compat.script = torch.jit.script
+
+    def _script(obj):
+        if hasattr(obj, "code"):
+            print(obj.code)
+        return torch.jit.script(obj)
+
+    compat.script = _script
     compat.unflatten = torch.jit.script(compat.unflatten)
     SKIP_SCRIPT = True
 else:
