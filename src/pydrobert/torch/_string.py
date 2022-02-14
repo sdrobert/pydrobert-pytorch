@@ -498,6 +498,7 @@ def _string_matching(
     padding: int = config.INDEX_PAD_VALUE,
     return_mistakes: bool = False,
 ):
+    assert not return_mask
     assert not return_mask or not return_prf_dsts
     assert not exclude_last or (return_mask or return_prf_dsts)
     if ref.dim() != 2 or hyp.dim() != 2:
