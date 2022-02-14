@@ -26,15 +26,15 @@ import pydrobert.torch.config as config
 
 import pydrobert.torch._compat as compat
 
+try:
+    torch.jit._python_cu = torch._C.CompilationUnit()
+except:
+    pass
+
 if compat._v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
-
-    def _script(obj):
-        obj_ = torch.jit.script(obj)
-        return obj_
-
-    compat.script = _script
-    compat.unflatten = compat.script(compat.unflatten)
+    compat.script = torch.jit.script
+    compat.unflatten = torch.jit.script(compat.unflatten)
     SKIP_SCRIPT = True
 else:
     SKIP_SCRIPT = False
