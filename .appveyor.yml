@@ -38,7 +38,7 @@ build: off
 
 install:
   - python3 -m pip install -U pip virtualenv setuptools wheel six
-  - python3 -m pip install -U tox tox-ltt
+  - python3 -m pip install -U tox
 
 test_script:
   - python3 -m tox

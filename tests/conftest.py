@@ -32,9 +32,9 @@ except:
     pass
 
 if compat._v < "1.8.0":
-    # config.USE_JIT = True  # "trace" tests won't work otherwise
-    # compat.script = torch.jit.script
-    # compat.unflatten = torch.jit.script(compat.unflatten)
+    config.USE_JIT = True  # "trace" tests won't work otherwise
+    compat.script = torch.jit.script
+    compat.unflatten = torch.jit.script(compat.unflatten)
     SKIP_SCRIPT = True
 else:
     SKIP_SCRIPT = False
@@ -151,6 +151,6 @@ def populate_torch_dir():
     ]
 )
 def jit_type(request):
-    if request.param == "trace" and SKIP_SCRIPT:
+    if request.param == "script" and SKIP_SCRIPT:
         pytest.skip("See issue #60")
     return request.param

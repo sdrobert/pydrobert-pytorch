@@ -658,9 +658,7 @@ def _string_matching(
             # N.B. AFAICT this is the only case where we actually care what goes on in
             # the invalid range of the row. The below masking could always be applied,
             # but it's wasted effort otherwise.
-            print("row_a", row)
             row = row.masked_fill(rrange.unsqueeze(1) > ref_lens, float("inf"))
-            print("row_b", row)
             mins = row.min(0, keepdim=True)[0]
             row_mask = (row[:-1] == mins) & not_done
             mask[hyp_idx] = row_mask
