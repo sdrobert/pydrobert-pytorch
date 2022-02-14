@@ -7,7 +7,7 @@ environment:
   matrix:
     - TOXENV: py36-t151
       PYTHON: "3.6"
-      PYTEST_ARGS: "-m 'not trace and not script'"
+      PYTEST_ARGS: -m "not trace and not script"
       TORCH_JIT: "0"
     - TOXENV: py36-t181
       PYTHON: "3.6"
@@ -17,7 +17,7 @@ environment:
       PYTHON: "3.8"
     - TOXENV: py38-151
       PYTHON: "3.8"
-      PYTEST_ARGS: "-m 'not trace and not script'"
+      PYTEST_ARGS: -m "not trace and not script"
       TORCH_JIT: "0"
     - TOXENV: py39
       PYTHON: "3.9"
