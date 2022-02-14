@@ -30,11 +30,8 @@ if compat._v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
 
     def _script(obj):
-        def _wrapper(*args, **kwargs):
-            obj_ = torch.jit.script(obj)
-            return obj(*args, **kwargs)
-
-        return _wrapper
+        obj_ = torch.jit.script(obj)
+        return obj_
 
     compat.script = _script
     compat.unflatten = compat.script(compat.unflatten)
