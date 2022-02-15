@@ -21,7 +21,8 @@
 from typing import Any, Iterable, List, Optional, Tuple, Union, NamedTuple, Set
 
 import torch
-import pydrobert.torch.config as config
+
+from . import config
 
 
 __all__ = [
@@ -240,5 +241,15 @@ else:
 
     def meshgrid(a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = torch.meshgrid(a, b, indexing="ij")
-        assert len(x) == 2
         return x[0], x[1]
+
+
+@script
+def unflatten(x: torch.Tensor, dim: int, shape: List[int]) -> torch.Tensor:
+    ndim = x.dim()
+    if dim < -ndim or dim > ndim - 1:
+        raise RuntimeError(f"Expected dim to be between [{-ndim},{ndim-1}], got {dim}")
+    dim = (dim + ndim) % ndim
+    full_shape = list(x.shape)
+    full_shape = full_shape[:dim] + shape + full_shape[dim + 1 :]
+    return x.view(full_shape)

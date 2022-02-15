@@ -1,4 +1,4 @@
-# Copyright 2021 Sean Robertson
+# Copyright 2022 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Functions and classes involved in training
-
-Notes
------
-The loss functions :class:`HardOptimalCompletionDistillationLoss` and
-:class:`MinimumErrorRateLoss` have been moved to :mod:`pydrobert.torch.layers`
-"""
+"""Utilities for managing the training process"""
 
 import os
 import math
@@ -369,15 +363,7 @@ class TrainingStateController(object):
             int(math.log10(max(params.early_stopping_patience, 1))) + 1
         )
         self.fmt_dict["rlr_resume_cd"] = "{{:0{}d}}".format(
-            int(
-                math.log10(
-                    max(
-                        params.reduce_lr_cooldown,
-                        params.reduce_lr_burnin,
-                        1,
-                    )
-                )
-            )
+            int(math.log10(max(params.reduce_lr_cooldown, params.reduce_lr_burnin, 1,)))
             + 1
         )
         self.fmt_dict["rlr_patience_cd"] = "{{:0{}d}}".format(
@@ -567,8 +553,7 @@ class TrainingStateController(object):
             epoch_info = self[epoch]
             model_basename = self.params.saved_model_fmt.format(**epoch_info)
             model_state_dict = torch.load(
-                os.path.join(self.state_dir, model_basename),
-                map_location="cpu",
+                os.path.join(self.state_dir, model_basename), map_location="cpu",
             )
             model.load_state_dict(model_state_dict, strict=strict)
         else:
@@ -630,13 +615,11 @@ class TrainingStateController(object):
             model_basename = self.params.saved_model_fmt.format(**epoch_info)
             optimizer_basename = self.params.saved_optimizer_fmt.format(**epoch_info)
             model_state_dict = torch.load(
-                os.path.join(self.state_dir, model_basename),
-                map_location="cpu",
+                os.path.join(self.state_dir, model_basename), map_location="cpu",
             )
             model.load_state_dict(model_state_dict, strict=strict)
             optimizer_state_dict = torch.load(
-                os.path.join(self.state_dir, optimizer_basename),
-                map_location="cpu",
+                os.path.join(self.state_dir, optimizer_basename), map_location="cpu",
             )
             optimizer.load_state_dict(optimizer_state_dict)
         else:
@@ -722,12 +705,10 @@ class TrainingStateController(object):
         model_basename = self.params.saved_model_fmt.format(**info)
         optimizer_basename = self.params.saved_optimizer_fmt.format(**info)
         torch.save(
-            model.state_dict(),
-            os.path.join(self.state_dir, model_basename),
+            model.state_dict(), os.path.join(self.state_dir, model_basename),
         )
         torch.save(
-            optimizer.state_dict(),
-            os.path.join(self.state_dir, optimizer_basename),
+            optimizer.state_dict(), os.path.join(self.state_dir, optimizer_basename),
         )
 
     def save_info_to_hist(self, info: dict) -> None:

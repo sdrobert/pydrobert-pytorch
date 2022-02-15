@@ -37,7 +37,8 @@ import numpy as np
 import torch
 import torch.utils.data
 import param
-import pydrobert.torch.config as config
+
+from . import config
 
 __all__ = [
     "context_window_seq_to_batch",

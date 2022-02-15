@@ -18,6 +18,7 @@ import math
 
 from tempfile import mkdtemp
 from shutil import rmtree
+from zlib import adler32
 
 import torch
 
@@ -28,9 +29,7 @@ import pydrobert.torch._compat as compat
 if compat._v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
     compat.script = torch.jit.script
-    SKIP_SCRIPT = True
-else:
-    SKIP_SCRIPT = False
+    compat.unflatten = torch.jit.script(compat.unflatten)
 
 
 @pytest.fixture
@@ -62,7 +61,7 @@ def pytest_runtest_setup(item):
         if not CUDA_AVAIL:
             pytest.skip("cuda is not available")
     # implicitly seeds all tests for the sake of reproducibility
-    torch.manual_seed(abs(hash(item.name)))
+    torch.manual_seed(abs(adler32(bytes(item.name, "utf-8"))))
 
 
 @pytest.fixture(scope="session")
@@ -144,6 +143,4 @@ def populate_torch_dir():
     ]
 )
 def jit_type(request):
-    if request.param == "script" and SKIP_SCRIPT:
-        pytest.skip("Module scripting unsupported for PyTorch < 1.8.0")
     return request.param
