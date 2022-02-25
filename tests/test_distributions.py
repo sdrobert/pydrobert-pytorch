@@ -18,7 +18,7 @@ from pydrobert.torch.distributions import GumbelOneHotCategorical, LogisticBerno
 
 
 def test_logistic_bernoulli(device):
-    N, T = int(2e7), 10
+    N, T = int(3e7), 10
     probs = torch.rand(T, device=device)
     probs[0] = 0.0  # make sure it doesn't NaN
     dist = LogisticBernoulli(probs=probs)
@@ -43,7 +43,7 @@ def test_logistic_bernoulli(device):
 
 
 def test_gumbel_one_hot_categorical(device):
-    N, T, V = int(2e7), 4, 3
+    N, T, V = int(3e7), 4, 3
     probs = torch.rand(T, V, device=device)
     probs[0, 0] = 0.0  # make sure it doesn't NaN
     probs /= probs.sum(-1, keepdim=True)
