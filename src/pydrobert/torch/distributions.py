@@ -38,7 +38,14 @@ from torch.distributions.utils import (
     clamp_probs,
 )
 
-from ._compat import check_methods, euler_constant
+from ._compat import check_methods, euler_constant, one_hot
+
+__all__ = [
+    "ConditionalStraightThrough",
+    "GumbelOneHotCategorical",
+    "LogisticBernoulli",
+    "StraightThrough",
+]
 
 
 class StraightThrough(metaclass=abc.ABCMeta):
@@ -395,7 +402,7 @@ class GumbelOneHotCategorical(
         "logits": constraints.real_vector,
     }
     support = constraints.real_vector
-    thresholded_support = constraints.one_hot
+    thresholded_support = one_hot
     has_enumerate_support = False
     has_rsample = True
 

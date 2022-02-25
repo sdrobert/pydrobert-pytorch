@@ -4,6 +4,8 @@
 # https://github.com/pytorch/pytorch/blob/2367face24afb159f73ebf40dc6f23e46132b770/torch/functional.py
 # Code for TorchVersion was taken directly from PyTorch
 # https://github.com/pytorch/pytorch/blob/b737e09f60dd56dbae520e436648e1f3ebc1f937/torch/torch_version.py
+# Code for one_hot was taken directly from PyTorch.
+# https://github.com/pytorch/pytorch/blob/89c844db9b3120223bc4e45a1dcbb2368301e956/torch/distributions/constraints.py
 # See LICENSE_pytorch in project root directory for PyTorch license.
 #
 # Code for check_methods was taken directly from CPython
@@ -42,6 +44,7 @@ __all__ = [
     "jit_isinstance",
     "linalg_solve",
     "meshgrid",
+    "one_hot",
     "pad_sequence",
     "script",
     "SpoofPackedSequence",
@@ -236,9 +239,21 @@ if _v < "1.8.0":
         else:
             return _jit_isinstance(obj, x)
 
+    from torch.distributions.constraints import Constraint
+
+    class one_hot(Constraint):
+        is_discrete = True
+        event_dim = 1
+
+        def check(self, value):
+            is_boolean = (value == 0) | (value == 1)
+            is_normalized = value.sum(-1).eq(1)
+            return is_boolean.all(-1) & is_normalized
+
 
 else:
     from torch.distributions.utils import euler_constant
+    from torch.distributions.constraints import one_hot
 
     pad_sequence = torch.nn.utils.rnn.pad_sequence
     linalg_solve = torch.linalg.solve
