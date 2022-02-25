@@ -5,6 +5,16 @@
 # Code for TorchVersion was taken directly from PyTorch
 # https://github.com/pytorch/pytorch/blob/b737e09f60dd56dbae520e436648e1f3ebc1f937/torch/torch_version.py
 # See LICENSE_pytorch in project root directory for PyTorch license.
+#
+# Code for check_methods was taken directly from CPython
+# https://github.com/python/cpython/blob/2085bd0877e17ad4d98a4586d5eabb6faecbb190/Lib/_collections_abc.py
+# With the following PSF license
+#
+# Copyright 2007 Google, Inc. All Rights Reserved.
+# Licensed to PSF under a Contributor Agreement.
+#
+# with the additional notices
+# https://docs.python.org/3/copyright.html?highlight=copyright
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,6 +37,7 @@ from . import config
 
 __all__ = [
     "broadcast_shapes",
+    "check_methods",
     "jit_isinstance",
     "linalg_solve",
     "meshgrid",
@@ -35,6 +46,24 @@ __all__ = [
     "SpoofPackedSequence",
     "trunc_divide",
 ]
+
+
+def check_methods(C, *methods):
+    try:
+        mro = C.__mro__
+        for method in methods:
+            for B in mro:
+                if method in B.__dict__:
+                    if B.__dict__[method] is None:
+                        return NotImplemented
+                    break
+            else:
+                return NotImplemented
+    except AttributeError:
+        for method in methods:
+            if getattr(C, method, None) is None:
+                return NotImplemented
+    return True
 
 
 # to avoid some scripting issues with torch.utils.nn.PackedSequence
