@@ -38,6 +38,7 @@ from . import config
 __all__ = [
     "broadcast_shapes",
     "check_methods",
+    "euler_constant",
     "jit_isinstance",
     "linalg_solve",
     "meshgrid",
@@ -174,6 +175,7 @@ except ModuleNotFoundError:
     _v = TorchVersion(internal_version)
 
 if _v < "1.8.0":
+    from torch.distributions.gumbel import euler_constant
 
     @script
     def pad_sequence(
@@ -236,6 +238,8 @@ if _v < "1.8.0":
 
 
 else:
+    from torch.distributions.utils import euler_constant
+
     pad_sequence = torch.nn.utils.rnn.pad_sequence
     linalg_solve = torch.linalg.solve
     jit_isinstance = torch.jit.isinstance

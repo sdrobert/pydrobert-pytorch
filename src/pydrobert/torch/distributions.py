@@ -32,14 +32,13 @@ import torch
 
 from torch.distributions import constraints
 from torch.distributions.utils import (
-    euler_constant,
     lazy_property,
     probs_to_logits,
     logits_to_probs,
     clamp_probs,
 )
 
-from ._compat import check_methods
+from ._compat import check_methods, euler_constant
 
 
 class StraightThrough(metaclass=abc.ABCMeta):
