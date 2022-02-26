@@ -314,7 +314,7 @@ class LogisticBernoulli(torch.distributions.Distribution, ConditionalStraightThr
         probs = clamp_probs(self.probs)
         zcond = v / ((1 - v) * ((1 - b) * probs + b * (1 - probs))) + 1
         zcond = (2 * b - 1) * zcond.log()
-        return zcond
+        return zcond + b * torch.finfo(b.dtype).eps
 
     def clog_prob(self, zcond: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         bcond = self.threshold(zcond)  # validates zcond
@@ -481,11 +481,15 @@ class GumbelOneHotCategorical(
             self._validate_thresholded_sample(b)
         probs = clamp_probs(self.probs)
         log_v = clamp_probs(torch.rand_like(b)).log()
-        zcond = (
-            -b * (-log_v).log()
-            - (1 - b) * (-log_v / probs - (log_v * b).sum(-1, keepdim=True)).log()
-        )
-        return zcond
+        zcond_match = -(-log_v).log() * b
+        zcond_match_k = zcond_match.sum(-1, keepdim=True)
+        zcond_nomatch = -(-log_v / probs - (log_v * b).sum(-1, keepdim=True)).log()
+        # this reparameterization isn't very stable, so there's a small chance
+        # zcond_nomatch ends up with the same value as zcond_match_k
+        zcond_nomatch = torch.min(
+            zcond_match_k - torch.finfo(b.dtype).eps, zcond_nomatch
+        ) * (1 - b)
+        return zcond_match + zcond_nomatch
 
     def clog_prob(self, zcond: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         bcond = self.threshold(zcond)  # validates zcond
