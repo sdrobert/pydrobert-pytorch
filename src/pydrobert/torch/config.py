@@ -19,8 +19,10 @@ changed, the changes will propagate to any submodules.
 """
 
 import os
+import math
+import torch
 
-__all__ = ["INDEX_PAD_VALUE", "USE_JIT"]
+__all__ = ["INDEX_PAD_VALUE", "USE_JIT", "EPS_NINF", "EPS_0"]
 
 
 INDEX_PAD_VALUE = -100
@@ -42,4 +44,18 @@ If :obj:`True`, :mod:`pydrobert.torch` compile all functions it can with JIT on 
 Otherwise, if using PyTorch >= 1.8.0, relevant items will be decorated with
 :func:`torch.jit.script_if_tracing`. The default is :obj:`True` if and only if the
 environment variable ``PYTORCH_JIT=1``.
+"""
+
+EPS_NINF = math.log(torch.finfo(torch.float32).tiny) / 2
+"""A small enough value in log space that exponentiating it is very close to zero
+
+This number is sometimes used in place of -infinity in log-space values to avoid
+masking. Increasing it will decrease the accuracy of computations, but may avoid NaNs.
+"""
+
+EPS_0 = math.log1p(-2 * torch.finfo(torch.float32).eps)
+"""A large enough value in log space that exponentiating it is very close to 1
+
+This number is sometimes used in place of 0 in log-space values to avoid masking.
+Increasing it will decrease the accuracy of computations, but may avoid NaNs.
 """

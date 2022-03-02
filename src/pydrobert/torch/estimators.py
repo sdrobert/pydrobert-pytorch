@@ -23,19 +23,147 @@ See Also
     A description of how to use this module, as well as an example
 """
 
-from typing import Callable
+import abc
+import functools
+from typing import Any, Callable, Dict, Optional
 import warnings
 
 import torch
 
+from . import config
+
 __all__ = [
-    "to_z",
-    "to_b",
-    "to_fb",
-    "reinforce",
-    "relax",
-    "REBARControlVariate",
+    "MonteCarloEstimator",
 ]
+
+
+class MonteCarloEstimator(metaclass=abc.ABCMeta):
+    r"""A Monte Carlo estimator base class
+
+    A Monte Carlo estimator estimates the quantity
+
+    .. math::
+
+        z = \mathbb{E}_{b \sim P}[f(b)]
+    
+    by taking the sample average of :math:`N` samples from some distribution
+    (usually :math:`P`) and optionally weighing them with :math:`W(b)` (usually 1):
+
+    .. math::
+
+        z \approx  \frac{1}{N} \sum_{n=1}^N W(b^{(n)}) f(b^{(n)})
+
+    Parameters
+    ----------
+    proposal : torch.distributions.Distribution
+        The distribution which is sampled from, usually identical to the distribution of
+        the expectation.
+    func : callable
+        The function :math:`f`. May be called any number times. If ``shape`` represents
+        the shape of the returned tensor from a call to ``proposal.sample``, `func`
+        should accept a single positional argument `sample` of shape ``(mc_samples,) +
+        shape`` and return a tensor of shape ``(mc_samples, *)``, where the first
+        dimension represents the MC sample dimension.
+    is_log : bool, optional
+        If :obj:`True`, `func` returns :math:`\log f(b)` rather than :math:`f(b)` and
+        the return value is also logged:
+
+        .. math::
+
+            \log \left(\frac{1}{N} \sum_{n=1}^N W(b^{(n)}) f(b^{(n)})\right)
+        
+        By Jensen's Inequality, the estimate is a (biased) lower bound on :math:`\log z`
+        which gets tighter as :math:`N` increases [burda2016]_. The estimate of
+        :math:`z` may be acquired by simply exponentiating the result.
+    func_kwargs : keyword arguments, optional
+        Passed alongside the sample as keyword arguments to `func`.
+    """
+
+    proposal: torch.distributions.Distribution
+    func: Callable[..., torch.Tensor]
+    func_kwargs: Dict[str, Any]
+    is_log: bool
+
+    def __init__(
+        self,
+        proposal: torch.distributions.Distribution,
+        func: Callable[..., torch.Tensor],
+        is_log: bool = False,
+        **func_kwargs
+    ) -> None:
+        super().__init__()
+        self.proposal = proposal
+        self.func = func
+        self.is_log = is_log
+        self.func_kwargs = func_kwargs
+
+    @abc.abstractmethod
+    def estimate(self, mc_samples: int) -> torch.Tensor:
+        """Perform the MC estimation
+        
+        Parameters
+        ----------
+        mc_samples : int
+            The number of Monte Carlo samples to estimate with.
+        
+        Returns
+        -------
+        z : torch.Tensor
+            The MC estimate. The MC dimension should already be reduced.
+        """
+        raise NotImplementedError
+
+
+class ReinforceEstimator(MonteCarloEstimator):
+
+    cv: Optional[Callable[..., torch.Tensor]]
+    cv_mean: Optional[torch.Tensor]
+
+    def __init__(
+        self,
+        proposal: torch.distributions.Distribution,
+        func: Callable[..., torch.Tensor],
+        cv: Optional[Callable[..., torch.Tensor]] = None,
+        cv_mean: Optional[torch.Tensor] = None,
+        **kwargs
+    ):
+        if (cv is None) != (cv_mean is None):
+            raise ValueError("Either both cv and cv_mean is specified or neither")
+        self.cv = cv
+        self.cv_mean = cv_mean
+        super().__init__(proposal, func, False, **kwargs)
+
+    def estimate(self, N: int) -> torch.Tensor:
+        b = self.proposal.sample([N])
+        fb = self.func(b, **self.func_kwargs)
+        if self.cv is not None:
+            cb, c = self.cv(b, **self.func_kwargs), self.cv_mean
+            fb = fb - cb
+        else:
+            cb = c = torch.tensor(
+                config.EPS_NINF if self.is_log else 0, device=fb.device, dtype=fb.dtype
+            )
+        log_pb = self.proposal.log_prob(b)
+        dlog_pb = (fb.detach() * log_pb).clamp(config.EPS_NINF, config.EPS_0)
+        z = (fb + dlog_pb - dlog_pb.detach() + c).mean(0)
+        return z
+
+
+# ==== OLD
+
+
+def deprecate(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        warnings.warn(
+            "functional interface for estimators is deprecated. "
+            "See pydrobert.torch.estimators.Estimator for how to use the new interface."
+        )
+        return wrapper.__func(*args, **kwargs)
+
+    wrapper.__func = func
+    return wrapper
+
 
 BERNOULLI_SYNONYMS = {"bern", "Bern", "bernoulli", "Bernoulli"}
 CATEGORICAL_SYNONYMS = {"cat", "Cat", "categorical", "Categorical"}
@@ -56,6 +184,7 @@ ONEHOT_SYNONYMS = {"onehot", "OneHotCategorical"}
 # numerically stable (though unbiased) than just taking the softmax beforehand
 
 
+@deprecate
 def to_z(logits: torch.Tensor, dist: str, warn: bool = True) -> torch.Tensor:
     """Samples a continuous relaxation of `dist` parameterized by `logits`
 
@@ -91,6 +220,7 @@ def to_z(logits: torch.Tensor, dist: str, warn: bool = True) -> torch.Tensor:
     return z
 
 
+@deprecate
 def to_b(z: torch.Tensor, dist: str) -> torch.Tensor:
     """Converts z to a discrete sample using a deterministic mapping
 
@@ -114,11 +244,13 @@ def to_b(z: torch.Tensor, dist: str) -> torch.Tensor:
     return b
 
 
+@deprecate
 def to_fb(f: Callable[..., torch.Tensor], b: torch.Tensor, **kwargs) -> torch.Tensor:
     """Simply call f(b)"""
     return f(b, **kwargs)
 
 
+@deprecate
 def reinforce(
     fb: torch.Tensor, b: torch.Tensor, logits: torch.Tensor, dist: str
 ) -> torch.Tensor:
@@ -182,6 +314,7 @@ def reinforce(
     return g
 
 
+@deprecate
 def relax(
     fb: torch.Tensor,
     b: torch.Tensor,

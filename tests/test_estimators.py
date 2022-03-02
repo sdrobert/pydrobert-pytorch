@@ -19,6 +19,31 @@ import pytest
 import pydrobert.torch.estimators as estimators
 
 
+def test_reinforce(device):
+    N, T = int(1e5), 30
+    logits = torch.randn(T, device=device, requires_grad=True)
+    theta = torch.rand(1, device=device, requires_grad=True)
+    mask = torch.randint(2, (T,), device=device) == 1
+    probs = logits.sigmoid().masked_fill(mask, 0)
+    v = (theta * probs).sum()
+    exp_loss = (v - T / 2) ** 2
+    exp_g_logits, exp_g_theta = torch.autograd.grad(exp_loss, [logits, theta])
+    assert (exp_g_logits.masked_select(mask) == 0).all()
+
+    def func(b):
+        return b * theta
+
+    probs = logits.sigmoid().masked_fill(mask, 0)
+    dist = torch.distributions.Bernoulli(probs=probs)
+    estimator = estimators.ReinforceEstimator(dist, func)
+    v = estimator.estimate(N).sum()
+    act_loss = (v - T / 2) ** 2
+    assert torch.isclose(exp_loss, act_loss, atol=1)
+    act_g_logits, act_g_theta = torch.autograd.grad(act_loss, [logits, theta])
+    assert torch.isclose(exp_g_theta, act_g_theta, atol=1)
+    assert torch.allclose(exp_g_logits, act_g_logits, atol=1e-1)
+
+
 def _expectation(f, logits, dist):
     if dist == "bern":
         pop = (

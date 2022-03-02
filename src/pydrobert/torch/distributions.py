@@ -23,6 +23,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""PyTorch distributions and interfaces"""
+
 import abc
 from typing import Optional, Sequence
 import warnings
@@ -42,6 +44,7 @@ from ._compat import check_methods, euler_constant, one_hot
 
 __all__ = [
     "ConditionalStraightThrough",
+    "Density",
     "GumbelOneHotCategorical",
     "LogisticBernoulli",
     "StraightThrough",
@@ -196,6 +199,22 @@ class ConditionalStraightThrough(StraightThrough, metaclass=abc.ABCMeta):
         if cls is ConditionalStraightThrough:
             return check_methods(C, "rsample", "threshold", "csample", "clog_prob")
         return NotImplemented
+
+
+class Density(metaclass=abc.ABCMeta):
+    """Interface for a density function
+
+    A density is a non-negative function over some domain. A density implements the
+    method :func:`log_prob` which returns the log of the density applied to that sample. 
+    
+    While :func:`log_prob` is not necessarily a log probability for all densities, the
+    name was chosen to match the method of :class:`torch.distributions.Distribution`.
+    All probability densities are densities.
+    """
+
+    @abc.abstractmethod
+    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
 
 
 class LogisticBernoulli(torch.distributions.Distribution, ConditionalStraightThrough):
