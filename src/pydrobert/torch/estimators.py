@@ -31,6 +31,7 @@ import warnings
 import torch
 
 from . import config
+from .distributions import Density
 
 __all__ = [
     "MonteCarloEstimator",
@@ -64,17 +65,6 @@ class MonteCarloEstimator(metaclass=abc.ABCMeta):
         should accept a single positional argument `sample` of shape ``(mc_samples,) +
         shape`` and return a tensor of shape ``(mc_samples, *)``, where the first
         dimension represents the MC sample dimension.
-    is_log : bool, optional
-        If :obj:`True`, `func` returns :math:`\log f(b)` rather than :math:`f(b)` and
-        the return value is also logged:
-
-        .. math::
-
-            \log \left(\frac{1}{N} \sum_{n=1}^N W(b^{(n)}) f(b^{(n)})\right)
-        
-        By Jensen's Inequality, the estimate is a (biased) lower bound on :math:`\log z`
-        which gets tighter as :math:`N` increases [burda2016]_. The estimate of
-        :math:`z` may be acquired by simply exponentiating the result.
     func_kwargs : keyword arguments, optional
         Passed alongside the sample as keyword arguments to `func`.
     """
@@ -82,19 +72,16 @@ class MonteCarloEstimator(metaclass=abc.ABCMeta):
     proposal: torch.distributions.Distribution
     func: Callable[..., torch.Tensor]
     func_kwargs: Dict[str, Any]
-    is_log: bool
 
     def __init__(
         self,
         proposal: torch.distributions.Distribution,
         func: Callable[..., torch.Tensor],
-        is_log: bool = False,
         **func_kwargs
     ) -> None:
         super().__init__()
         self.proposal = proposal
         self.func = func
-        self.is_log = is_log
         self.func_kwargs = func_kwargs
 
     @abc.abstractmethod
@@ -131,22 +118,50 @@ class ReinforceEstimator(MonteCarloEstimator):
             raise ValueError("Either both cv and cv_mean is specified or neither")
         self.cv = cv
         self.cv_mean = cv_mean
-        super().__init__(proposal, func, False, **kwargs)
+        super().__init__(proposal, func, **kwargs)
 
-    def estimate(self, N: int) -> torch.Tensor:
-        b = self.proposal.sample([N])
+    def estimate(self, mc_samples: int) -> torch.Tensor:
+        b = self.proposal.sample([mc_samples])
         fb = self.func(b, **self.func_kwargs)
         if self.cv is not None:
-            cb, c = self.cv(b, **self.func_kwargs), self.cv_mean
-            fb = fb - cb
+            c = self.cv_mean
+            fb = fb - self.cv(b, **self.func_kwargs)
         else:
-            cb = c = torch.tensor(
-                config.EPS_NINF if self.is_log else 0, device=fb.device, dtype=fb.dtype
-            )
+            c = torch.tensor(0, device=fb.device, dtype=fb.dtype)
         log_pb = self.proposal.log_prob(b)
-        dlog_pb = (fb.detach() * log_pb).clamp(config.EPS_NINF, config.EPS_0)
-        z = (fb + dlog_pb - dlog_pb.detach() + c).mean(0)
-        return z
+        dlog_pb = fb.detach() * log_pb
+        return (fb + dlog_pb - dlog_pb.detach() + c).mean(0)
+
+
+class ImportanceSamplingEstimator(MonteCarloEstimator):
+
+    density: Density
+    self_normalize: bool
+
+    def __init__(
+        self,
+        proposal: torch.distributions.Distribution,
+        func: Callable[..., torch.Tensor],
+        density: Density,
+        self_normalize: bool = False,
+        **func_kwargs
+    ) -> None:
+        super().__init__(proposal, func, **func_kwargs)
+        self.density = density
+        self.self_normalize = self_normalize
+
+    def estimate(self, mc_samples: int) -> torch.Tensor:
+        with torch.no_grad():
+            b = self.proposal.sample([mc_samples])
+            lqb = self.proposal.log_prob(b)
+        lpb = self.density.log_prob(b)
+        llr = lpb - lqb
+        fb = self.func(b, **self.func_kwargs)
+        if self.self_normalize:
+            lr = llr.softmax(0) * mc_samples
+        else:
+            lr = llr.exp()
+        return (fb * lr).mean(0)
 
 
 # ==== OLD

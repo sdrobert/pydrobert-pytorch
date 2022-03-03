@@ -19,7 +19,7 @@ import pytest
 import pydrobert.torch.estimators as estimators
 
 
-def test_reinforce(device):
+def test_reinforce_estimator(device):
     N, T = int(1e5), 30
     logits = torch.randn(T, device=device, requires_grad=True)
     theta = torch.rand(1, device=device, requires_grad=True)
@@ -30,12 +30,54 @@ def test_reinforce(device):
     exp_g_logits, exp_g_theta = torch.autograd.grad(exp_loss, [logits, theta])
     assert (exp_g_logits.masked_select(mask) == 0).all()
 
+    probs = logits.sigmoid().masked_fill(mask, 0)
+
     def func(b):
         return b * theta
 
-    probs = logits.sigmoid().masked_fill(mask, 0)
+    def cv(b):
+        return probs.detach()
+
     dist = torch.distributions.Bernoulli(probs=probs)
-    estimator = estimators.ReinforceEstimator(dist, func)
+    estimator = estimators.ReinforceEstimator(dist, func, cv, probs.detach())
+    v = estimator.estimate(N).sum()
+    act_loss = (v - T / 2) ** 2
+    assert torch.isclose(exp_loss, act_loss, atol=1)
+    act_g_logits, act_g_theta = torch.autograd.grad(act_loss, [logits, theta])
+    assert torch.isclose(exp_g_theta, act_g_theta, atol=1)
+    assert torch.allclose(exp_g_logits, act_g_logits, atol=1e-1)
+
+
+@pytest.mark.parametrize("self_normalize", [True, False])
+def test_importance_sampling_estimator(device, self_normalize):
+    N, T = int(1e6), 15
+    logits = torch.randn(T, device=device, requires_grad=True)
+    theta = torch.rand(1, device=device, requires_grad=True)
+    mask = torch.randint(2, (T,), device=device) == 1
+    probs = logits.sigmoid().masked_fill(mask, 0)
+    v = (theta * probs).sum()
+    exp_loss = (v - T / 2) ** 2
+    exp_g_logits, exp_g_theta = torch.autograd.grad(exp_loss, [logits, theta])
+    assert (exp_g_logits.masked_select(mask) == 0).all()
+
+    probs = logits.sigmoid().masked_fill(mask, 0)
+
+    def func(b):
+        return b * theta
+
+    if self_normalize:
+
+        class MyDensity(torch.distributions.Bernoulli):
+            def log_prob(self, value):
+                return super().log_prob(value) - 1
+
+        density = MyDensity(probs=probs)
+    else:
+        density = torch.distributions.Bernoulli(probs=probs)
+    proposal = torch.distributions.Bernoulli(probs=torch.rand_like(probs))
+    estimator = estimators.ImportanceSamplingEstimator(
+        proposal, func, density, self_normalize
+    )
     v = estimator.estimate(N).sum()
     act_loss = (v - T / 2) ** 2
     assert torch.isclose(exp_loss, act_loss, atol=1)
