@@ -19,7 +19,26 @@ import pytest
 import pydrobert.torch.estimators as estimators
 
 
-def test_reinforce_estimator(device):
+@pytest.fixture(params=["log", "exp"])
+def is_log(request):
+    return request.param == "log"
+
+
+class Func:
+    def __init__(self, theta):
+        self.theta = theta
+
+    def __call__(self, b):
+        return b * self.theta
+
+
+class LogFunc(Func):
+    def __call__(self, b):
+        v = self.theta.log().expand_as(b)
+        return v.masked_fill(b == 0, -float("inf"))
+
+
+def test_reinforce_estimator(device, is_log):
     N, T = int(1e5), 30
     logits = torch.randn(T, device=device, requires_grad=True)
     theta = torch.rand(1, device=device, requires_grad=True)
@@ -31,15 +50,24 @@ def test_reinforce_estimator(device):
     assert (exp_g_logits.masked_select(mask) == 0).all()
 
     probs = logits.sigmoid().masked_fill(mask, 0)
+    func = (LogFunc if is_log else Func)(theta)
 
-    def func(b):
-        return b * theta
+    if is_log:
 
-    def cv(b):
-        return probs.detach()
+        c = logits.detach()
+
+        def cv(b):
+            return logits.detach().expand_as(b)
+
+    else:
+
+        c = probs.detach()
+
+        def cv(b):
+            return probs.detach().expand_as(b)
 
     dist = torch.distributions.Bernoulli(probs=probs)
-    estimator = estimators.ReinforceEstimator(dist, func, cv, probs.detach())
+    estimator = estimators.ReinforceEstimator(dist, func, cv, c, is_log)
     v = estimator.estimate(N).sum()
     act_loss = (v - T / 2) ** 2
     assert torch.isclose(exp_loss, act_loss, atol=1)
@@ -48,8 +76,8 @@ def test_reinforce_estimator(device):
     assert torch.allclose(exp_g_logits, act_g_logits, atol=1e-1)
 
 
-@pytest.mark.parametrize("self_normalize", [True, False])
-def test_importance_sampling_estimator(device, self_normalize):
+@pytest.mark.parametrize("self_normalize", [True, False], ids=["norm", "nonorm"])
+def test_importance_sampling_estimator(device, self_normalize, is_log):
     N, T = int(1e6), 15
     logits = torch.randn(T, device=device, requires_grad=True)
     theta = torch.rand(1, device=device, requires_grad=True)
@@ -61,9 +89,7 @@ def test_importance_sampling_estimator(device, self_normalize):
     assert (exp_g_logits.masked_select(mask) == 0).all()
 
     probs = logits.sigmoid().masked_fill(mask, 0)
-
-    def func(b):
-        return b * theta
+    func = (LogFunc if is_log else Func)(theta)
 
     if self_normalize:
 
@@ -76,7 +102,7 @@ def test_importance_sampling_estimator(device, self_normalize):
         density = torch.distributions.Bernoulli(probs=probs)
     proposal = torch.distributions.Bernoulli(probs=torch.rand_like(probs))
     estimator = estimators.ImportanceSamplingEstimator(
-        proposal, func, density, self_normalize
+        proposal, func, density, self_normalize, is_log
     )
     v = estimator.estimate(N).sum()
     act_loss = (v - T / 2) ** 2

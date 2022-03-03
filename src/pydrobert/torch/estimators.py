@@ -23,9 +23,10 @@ See Also
     A description of how to use this module, as well as an example
 """
 
+import math
 import abc
 import functools
-from typing import Any, Callable, Dict, Optional
+from typing import Callable, Optional
 import warnings
 
 import torch
@@ -34,8 +35,25 @@ from . import config
 from .distributions import Density
 
 __all__ = [
+    "FunctionOnSample",
+    "ImportanceSamplingEstimator",
     "MonteCarloEstimator",
+    "ReinforceEstimator",
 ]
+
+
+FunctionOnSample = Callable[[torch.Tensor], torch.Tensor]
+"""Type for functions of samples used in MC estimation
+
+This type is intended for use in subclasses implementing :class:`MonteCarloEstimator`.
+
+A `FunctionOnSample` is a callable which accepts a :class:`torch.Tensor` and returns a
+:class:`torch.Tensor`. The input is of shape ``(mc_samples,) + batch_size +
+event_size``, where ``mc_samples`` is some number of Monte Carlo samples and
+``batch_size`` and ``event_size`` are determined by the proposal distribution. The
+return value is of shape ``(mc_samples, *)`` representing the values of the function
+evaluated on all the MC samples.
+"""
 
 
 class MonteCarloEstimator(metaclass=abc.ABCMeta):
@@ -59,30 +77,28 @@ class MonteCarloEstimator(metaclass=abc.ABCMeta):
     proposal : torch.distributions.Distribution
         The distribution which is sampled from, usually identical to the distribution of
         the expectation.
-    func : callable
-        The function :math:`f`. May be called any number times. If ``shape`` represents
-        the shape of the returned tensor from a call to ``proposal.sample``, `func`
-        should accept a single positional argument `sample` of shape ``(mc_samples,) +
-        shape`` and return a tensor of shape ``(mc_samples, *)``, where the first
-        dimension represents the MC sample dimension.
-    func_kwargs : keyword arguments, optional
-        Passed alongside the sample as keyword arguments to `func`.
+    func : FunctionOnSample
+        The function :math:`f` or :math:`\log f`, depending on the value of `is_log`.
+    is_log : bool, optional
+        If :obj:`True`, evaluations of any :class:`FunctionOnSample` return log values.
+        The return values should be the same as if `is_log` were false and the function
+        values were exponentiated, and vice-versa. Some estimators will be more
+        numerically stable using log values.
     """
 
     proposal: torch.distributions.Distribution
-    func: Callable[..., torch.Tensor]
-    func_kwargs: Dict[str, Any]
+    func: FunctionOnSample
+    is_log: bool
 
     def __init__(
         self,
         proposal: torch.distributions.Distribution,
-        func: Callable[..., torch.Tensor],
-        **func_kwargs
+        func: FunctionOnSample,
+        is_log: bool = False,
     ) -> None:
-        super().__init__()
         self.proposal = proposal
         self.func = func
-        self.func_kwargs = func_kwargs
+        self.is_log = is_log
 
     @abc.abstractmethod
     def estimate(self, mc_samples: int) -> torch.Tensor:
@@ -103,34 +119,37 @@ class MonteCarloEstimator(metaclass=abc.ABCMeta):
 
 class ReinforceEstimator(MonteCarloEstimator):
 
-    cv: Optional[Callable[..., torch.Tensor]]
+    cv: Optional[FunctionOnSample]
     cv_mean: Optional[torch.Tensor]
 
     def __init__(
         self,
         proposal: torch.distributions.Distribution,
-        func: Callable[..., torch.Tensor],
-        cv: Optional[Callable[..., torch.Tensor]] = None,
+        func: FunctionOnSample,
+        cv: Optional[FunctionOnSample] = None,
         cv_mean: Optional[torch.Tensor] = None,
-        **kwargs
+        is_log: bool = False,
     ):
+        super().__init__(proposal, func, is_log)
         if (cv is None) != (cv_mean is None):
             raise ValueError("Either both cv and cv_mean is specified or neither")
         self.cv = cv
         self.cv_mean = cv_mean
-        super().__init__(proposal, func, **kwargs)
 
     def estimate(self, mc_samples: int) -> torch.Tensor:
         b = self.proposal.sample([mc_samples])
-        fb = self.func(b, **self.func_kwargs)
+        fb = self.func(b)
+        if self.is_log:
+            fb = fb.exp()
         if self.cv is not None:
             c = self.cv_mean
-            fb = fb - self.cv(b, **self.func_kwargs)
-        else:
-            c = torch.tensor(0, device=fb.device, dtype=fb.dtype)
+            cvb = self.cv(b)
+            if self.is_log:
+                c, cvb = c.exp(), cvb.exp()
+            fb = fb - cvb + c
         log_pb = self.proposal.log_prob(b)
         dlog_pb = fb.detach() * log_pb
-        return (fb + dlog_pb - dlog_pb.detach() + c).mean(0)
+        return (fb + dlog_pb - dlog_pb.detach()).mean(0)
 
 
 class ImportanceSamplingEstimator(MonteCarloEstimator):
@@ -141,12 +160,12 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
     def __init__(
         self,
         proposal: torch.distributions.Distribution,
-        func: Callable[..., torch.Tensor],
+        func: FunctionOnSample,
         density: Density,
         self_normalize: bool = False,
-        **func_kwargs
+        is_log: bool = False,
     ) -> None:
-        super().__init__(proposal, func, **func_kwargs)
+        super().__init__(proposal, func, is_log)
         self.density = density
         self.self_normalize = self_normalize
 
@@ -156,12 +175,14 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
             lqb = self.proposal.log_prob(b)
         lpb = self.density.log_prob(b)
         llr = lpb - lqb
-        fb = self.func(b, **self.func_kwargs)
+        fb = self.func(b)
         if self.self_normalize:
-            lr = llr.softmax(0) * mc_samples
+            llr = llr.log_softmax(0) + math.log(mc_samples)
+        if self.is_log:
+            z = (fb.clamp_min(config.EPS_NINF) + llr).exp()
         else:
-            lr = llr.exp()
-        return (fb * lr).mean(0)
+            z = fb * llr.exp()
+        return z.mean(0)
 
 
 # ==== OLD
@@ -260,7 +281,7 @@ def to_b(z: torch.Tensor, dist: str) -> torch.Tensor:
 
 
 @deprecate
-def to_fb(f: Callable[..., torch.Tensor], b: torch.Tensor, **kwargs) -> torch.Tensor:
+def to_fb(f: FunctionOnSample, b: torch.Tensor, **kwargs) -> torch.Tensor:
     """Simply call f(b)"""
     return f(b, **kwargs)
 
@@ -335,7 +356,7 @@ def relax(
     b: torch.Tensor,
     logits: torch.Tensor,
     z: torch.Tensor,
-    c: Callable[..., torch.Tensor],
+    c: FunctionOnSample,
     dist: str,
     components: bool = False,
     **kwargs
@@ -487,7 +508,7 @@ class REBARControlVariate(torch.nn.Module):
 
     def __init__(
         self,
-        f: Callable[..., torch.Tensor],
+        f: FunctionOnSample,
         dist: str,
         start_temp: float = 0.1,
         start_eta: float = 1.0,
