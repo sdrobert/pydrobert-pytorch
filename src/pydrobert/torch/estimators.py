@@ -23,166 +23,28 @@ See Also
     A description of how to use this module, as well as an example
 """
 
-import math
-import abc
 import functools
-from typing import Callable, Optional
 import warnings
 
 import torch
-
-from . import config
-from .distributions import Density
+from ._mc import (
+    FunctionOnSample,
+    ImportanceSamplingEstimator,
+    MonteCarloEstimator,
+    ReinforceEstimator,
+    RELAXEstimator,
+    BERNOULLI_SYNONYMS,
+    CATEGORICAL_SYNONYMS,
+    ONEHOT_SYNONYMS,
+)
 
 __all__ = [
     "FunctionOnSample",
     "ImportanceSamplingEstimator",
     "MonteCarloEstimator",
     "ReinforceEstimator",
+    "RELAXEstimator",
 ]
-
-
-FunctionOnSample = Callable[[torch.Tensor], torch.Tensor]
-"""Type for functions of samples used in MC estimation
-
-This type is intended for use in subclasses implementing :class:`MonteCarloEstimator`.
-
-A `FunctionOnSample` is a callable which accepts a :class:`torch.Tensor` and returns a
-:class:`torch.Tensor`. The input is of shape ``(mc_samples,) + batch_size +
-event_size``, where ``mc_samples`` is some number of Monte Carlo samples and
-``batch_size`` and ``event_size`` are determined by the proposal distribution. The
-return value is of shape ``(mc_samples, *)`` representing the values of the function
-evaluated on all the MC samples.
-"""
-
-
-class MonteCarloEstimator(metaclass=abc.ABCMeta):
-    r"""A Monte Carlo estimator base class
-
-    A Monte Carlo estimator estimates the quantity
-
-    .. math::
-
-        z = \mathbb{E}_{b \sim P}[f(b)]
-    
-    by taking the sample average of :math:`N` samples from some distribution
-    (usually :math:`P`) and optionally weighing them with :math:`W(b)` (usually 1):
-
-    .. math::
-
-        z \approx  \frac{1}{N} \sum_{n=1}^N W(b^{(n)}) f(b^{(n)})
-
-    Parameters
-    ----------
-    proposal : torch.distributions.Distribution
-        The distribution which is sampled from, usually identical to the distribution of
-        the expectation.
-    func : FunctionOnSample
-        The function :math:`f` or :math:`\log f`, depending on the value of `is_log`.
-    is_log : bool, optional
-        If :obj:`True`, evaluations of any :class:`FunctionOnSample` return log values.
-        The return values should be the same as if `is_log` were false and the function
-        values were exponentiated, and vice-versa. Some estimators will be more
-        numerically stable using log values.
-    """
-
-    proposal: torch.distributions.Distribution
-    func: FunctionOnSample
-    is_log: bool
-
-    def __init__(
-        self,
-        proposal: torch.distributions.Distribution,
-        func: FunctionOnSample,
-        is_log: bool = False,
-    ) -> None:
-        self.proposal = proposal
-        self.func = func
-        self.is_log = is_log
-
-    @abc.abstractmethod
-    def estimate(self, mc_samples: int) -> torch.Tensor:
-        """Perform the MC estimation
-        
-        Parameters
-        ----------
-        mc_samples : int
-            The number of Monte Carlo samples to estimate with.
-        
-        Returns
-        -------
-        z : torch.Tensor
-            The MC estimate. The MC dimension should already be reduced.
-        """
-        raise NotImplementedError
-
-
-class ReinforceEstimator(MonteCarloEstimator):
-
-    cv: Optional[FunctionOnSample]
-    cv_mean: Optional[torch.Tensor]
-
-    def __init__(
-        self,
-        proposal: torch.distributions.Distribution,
-        func: FunctionOnSample,
-        cv: Optional[FunctionOnSample] = None,
-        cv_mean: Optional[torch.Tensor] = None,
-        is_log: bool = False,
-    ):
-        super().__init__(proposal, func, is_log)
-        if (cv is None) != (cv_mean is None):
-            raise ValueError("Either both cv and cv_mean is specified or neither")
-        self.cv = cv
-        self.cv_mean = cv_mean
-
-    def estimate(self, mc_samples: int) -> torch.Tensor:
-        b = self.proposal.sample([mc_samples])
-        fb = self.func(b)
-        if self.is_log:
-            fb = fb.exp()
-        if self.cv is not None:
-            c = self.cv_mean
-            cvb = self.cv(b)
-            if self.is_log:
-                c, cvb = c.exp(), cvb.exp()
-            fb = fb - cvb + c
-        log_pb = self.proposal.log_prob(b)
-        dlog_pb = fb.detach() * log_pb
-        return (fb + dlog_pb - dlog_pb.detach()).mean(0)
-
-
-class ImportanceSamplingEstimator(MonteCarloEstimator):
-
-    density: Density
-    self_normalize: bool
-
-    def __init__(
-        self,
-        proposal: torch.distributions.Distribution,
-        func: FunctionOnSample,
-        density: Density,
-        self_normalize: bool = False,
-        is_log: bool = False,
-    ) -> None:
-        super().__init__(proposal, func, is_log)
-        self.density = density
-        self.self_normalize = self_normalize
-
-    def estimate(self, mc_samples: int) -> torch.Tensor:
-        with torch.no_grad():
-            b = self.proposal.sample([mc_samples])
-            lqb = self.proposal.log_prob(b)
-        lpb = self.density.log_prob(b)
-        llr = lpb - lqb
-        fb = self.func(b)
-        if self.self_normalize:
-            llr = llr.log_softmax(0) + math.log(mc_samples)
-        if self.is_log:
-            z = (fb.clamp_min(config.EPS_NINF) + llr).exp()
-        else:
-            z = fb * llr.exp()
-        return z.mean(0)
 
 
 # ==== OLD
@@ -200,10 +62,6 @@ def deprecate(func):
     wrapper.__func = func
     return wrapper
 
-
-BERNOULLI_SYNONYMS = {"bern", "Bern", "bernoulli", "Bernoulli"}
-CATEGORICAL_SYNONYMS = {"cat", "Cat", "categorical", "Categorical"}
-ONEHOT_SYNONYMS = {"onehot", "OneHotCategorical"}
 
 # XXX(sdrobert): Implementation detail
 # The Gumbel relaxation does not *require* a softmax to be applied to the
@@ -359,7 +217,7 @@ def relax(
     c: FunctionOnSample,
     dist: str,
     components: bool = False,
-    **kwargs
+    **kwargs,
 ) -> torch.Tensor:
     r"""Perform RELAX gradient estimation
 
@@ -514,6 +372,10 @@ class REBARControlVariate(torch.nn.Module):
         start_eta: float = 1.0,
         warn: bool = True,
     ):
+        warnings.warn(
+            "pydrobert.torch.estimators.REBARControlVariate is deprecated. See "
+            "RelaxEstimator for more details on how to replace it."
+        )
         if start_temp <= 0.0:
             raise ValueError("start_temp must be positive")
         super(REBARControlVariate, self).__init__()

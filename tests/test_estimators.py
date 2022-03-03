@@ -16,7 +16,9 @@ from itertools import product
 
 import torch
 import pytest
+import pydrobert.torch.distributions as distributions
 import pydrobert.torch.estimators as estimators
+import pydrobert.torch.modules as modules
 
 
 @pytest.fixture(params=["log", "exp"])
@@ -24,9 +26,10 @@ def is_log(request):
     return request.param == "log"
 
 
-class Func:
-    def __init__(self, theta):
-        self.theta = theta
+class Func(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.theta = torch.nn.Parameter(torch.rand(1))
 
     def __call__(self, b):
         return b * self.theta
@@ -34,23 +37,21 @@ class Func:
 
 class LogFunc(Func):
     def __call__(self, b):
-        v = self.theta.log().expand_as(b)
-        return v.masked_fill(b == 0, -float("inf"))
+        return (b * self.theta).masked_fill(b == 0, 0.0).log()
 
 
 def test_reinforce_estimator(device, is_log):
     N, T = int(1e5), 30
     logits = torch.randn(T, device=device, requires_grad=True)
-    theta = torch.rand(1, device=device, requires_grad=True)
     mask = torch.randint(2, (T,), device=device) == 1
     probs = logits.sigmoid().masked_fill(mask, 0)
-    v = (theta * probs).sum()
+    func = (LogFunc if is_log else Func)().to(device)
+    v = (func.theta * probs).sum()
     exp_loss = (v - T / 2) ** 2
-    exp_g_logits, exp_g_theta = torch.autograd.grad(exp_loss, [logits, theta])
+    exp_g_logits, exp_g_theta = torch.autograd.grad(exp_loss, [logits, func.theta])
     assert (exp_g_logits.masked_select(mask) == 0).all()
 
     probs = logits.sigmoid().masked_fill(mask, 0)
-    func = (LogFunc if is_log else Func)(theta)
 
     if is_log:
 
@@ -71,25 +72,24 @@ def test_reinforce_estimator(device, is_log):
     v = estimator.estimate(N).sum()
     act_loss = (v - T / 2) ** 2
     assert torch.isclose(exp_loss, act_loss, atol=1)
-    act_g_logits, act_g_theta = torch.autograd.grad(act_loss, [logits, theta])
+    act_g_logits, act_g_theta = torch.autograd.grad(act_loss, [logits, func.theta])
     assert torch.isclose(exp_g_theta, act_g_theta, atol=1)
     assert torch.allclose(exp_g_logits, act_g_logits, atol=1e-1)
 
 
 @pytest.mark.parametrize("self_normalize", [True, False], ids=["norm", "nonorm"])
 def test_importance_sampling_estimator(device, self_normalize, is_log):
-    N, T = int(1e6), 15
+    N, T = int(1e6), 30
     logits = torch.randn(T, device=device, requires_grad=True)
-    theta = torch.rand(1, device=device, requires_grad=True)
     mask = torch.randint(2, (T,), device=device) == 1
     probs = logits.sigmoid().masked_fill(mask, 0)
-    v = (theta * probs).sum()
+    func = (LogFunc if is_log else Func)().to(device)
+    v = (func.theta * probs).sum()
     exp_loss = (v - T / 2) ** 2
-    exp_g_logits, exp_g_theta = torch.autograd.grad(exp_loss, [logits, theta])
+    exp_g_logits, exp_g_theta = torch.autograd.grad(exp_loss, [logits, func.theta])
     assert (exp_g_logits.masked_select(mask) == 0).all()
 
     probs = logits.sigmoid().masked_fill(mask, 0)
-    func = (LogFunc if is_log else Func)(theta)
 
     if self_normalize:
 
@@ -107,9 +107,71 @@ def test_importance_sampling_estimator(device, self_normalize, is_log):
     v = estimator.estimate(N).sum()
     act_loss = (v - T / 2) ** 2
     assert torch.isclose(exp_loss, act_loss, atol=1)
-    act_g_logits, act_g_theta = torch.autograd.grad(act_loss, [logits, theta])
+    act_g_logits, act_g_theta = torch.autograd.grad(act_loss, [logits, func.theta])
     assert torch.isclose(exp_g_theta, act_g_theta, atol=1)
     assert torch.allclose(exp_g_logits, act_g_logits, atol=1e-1)
+
+
+def test_rebar_estimator_bernoulli(device, is_log):
+    N, T = int(1e5), 30
+    logits = torch.randn(T, device=device, requires_grad=True)
+    mask = torch.randint(2, (T,), device=device) == 1
+    probs = logits.sigmoid().masked_fill(mask, 0)
+    func = (LogFunc if is_log else Func)().to(device)
+    v = (func.theta * probs).sum()
+    exp_loss = (v - T / 2) ** 2
+    exp_g_logits, exp_g_theta = torch.autograd.grad(exp_loss, [logits, func.theta])
+    assert (exp_g_logits.masked_select(mask) == 0).all()
+
+    probs = logits.sigmoid().masked_fill(mask, 0)
+    dist = distributions.LogisticBernoulli(probs=probs)
+    cv = modules.LogisticBernoulliREBARControlVariate(func).to(device)
+    estimator = estimators.RELAXEstimator(dist, func, cv, is_log)
+    v = estimator.estimate(N).sum()
+    act_loss = (v - T / 2) ** 2
+    assert torch.isclose(exp_loss, act_loss, atol=1)
+    act_g_logits, act_g_theta, g_log_temp, g_eta = torch.autograd.grad(
+        act_loss, [logits, func.theta, cv.log_temp, cv.eta]
+    )
+    assert torch.isclose(exp_g_theta, act_g_theta, atol=1)
+    assert torch.allclose(exp_g_logits, act_g_logits, atol=1e-1)
+    zero_ = torch.tensor(0.0, device=device)
+    assert not torch.isclose(g_log_temp, zero_)
+    assert not torch.isclose(g_eta, zero_)
+
+
+def test_rebar_estimator_categorical(device):
+    N, T, V = int(1e5), 12, 5
+    logits = torch.randn((T, V), device=device, requires_grad=True)
+    mask = torch.randint_like(logits, 2) == 1
+    mask[..., 0] = False
+    logits_ = logits.masked_fill(mask, -float("inf"))
+    probs = logits_.softmax(-1)
+    theta = torch.arange(V, device=device, dtype=logits.dtype, requires_grad=True)
+    v = (probs * theta / V).sum()
+    exp_loss = (v - T / 2) ** 2
+    exp_g_logits, exp_g_theta = torch.autograd.grad(exp_loss, [logits, theta])
+    assert (exp_g_logits.masked_select(mask) == 0).all()
+
+    def func(b):
+        return (b * theta / V).sum(-1)
+
+    logits_ = logits.masked_fill(mask, -float("inf"))
+    probs = logits_.softmax(-1)
+    dist = distributions.GumbelOneHotCategorical(probs=probs)
+    cv = modules.GumbelOneHotCategoricalREBARControlVariate(func).to(device)
+    estimator = estimators.RELAXEstimator(dist, func, cv)
+    v = estimator.estimate(N).sum()
+    act_loss = (v - T / 2) ** 2
+    assert torch.isclose(exp_loss, act_loss, atol=1)
+    act_g_logits, act_g_theta, g_log_temp, g_eta = torch.autograd.grad(
+        act_loss, [logits, theta, cv.log_temp, cv.eta]
+    )
+    assert torch.allclose(exp_g_theta, act_g_theta, atol=1)
+    assert torch.allclose(exp_g_logits, act_g_logits, atol=1e-1)
+    zero_ = torch.tensor(0.0, device=device)
+    assert not torch.isclose(g_log_temp, zero_)
+    assert not torch.isclose(g_eta, zero_)
 
 
 def _expectation(f, logits, dist):
