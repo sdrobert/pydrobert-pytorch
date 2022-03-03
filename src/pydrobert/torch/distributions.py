@@ -34,10 +34,11 @@ import torch
 
 from torch.distributions import constraints
 from torch.distributions.utils import (
-    lazy_property,
-    probs_to_logits,
-    logits_to_probs,
+    broadcast_all,
     clamp_probs,
+    lazy_property,
+    logits_to_probs,
+    probs_to_logits,
 )
 
 from ._compat import check_methods, euler_constant, one_hot
@@ -80,6 +81,24 @@ class StraightThrough(metaclass=abc.ABCMeta):
         -------
         b : torch.Tensor
             The discrete sample acquired by applying a threshold function to `z`.
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def tlog_prob(self, b: torch.Tensor) -> torch.Tensor:
+        """The log probability of a thresholded sample
+        
+        Parameters
+        ----------
+        b : torch.Tensor
+            A discrete sample. Usually the result of drawing a relaxed sample from
+            this instance's :func:`rsample` method, then applying a discrete threshold
+            to it via :func:`threshold`.
+        
+        Returns
+        -------
+        lp : torch.Tensor
+            The log probability of the sample.
         """
         raise NotImplementedError
 
@@ -130,7 +149,7 @@ class StraightThrough(metaclass=abc.ABCMeta):
     @classmethod
     def __subclasscheck__(cls, C) -> bool:
         if cls is StraightThrough:
-            return check_methods(C, "rsample", "threshold")
+            return check_methods(C, "rsample", "threshold", "tlog_prob")
         return NotImplemented
 
 
@@ -197,7 +216,9 @@ class ConditionalStraightThrough(StraightThrough, metaclass=abc.ABCMeta):
     @classmethod
     def __subclasscheck__(cls, C) -> bool:
         if cls is ConditionalStraightThrough:
-            return check_methods(C, "rsample", "threshold", "csample", "clog_prob")
+            return check_methods(
+                C, "rsample", "threshold", "tlog_prob", "csample", "clog_prob"
+            )
         return NotImplemented
 
 
@@ -325,6 +346,14 @@ class LogisticBernoulli(torch.distributions.Distribution, ConditionalStraightThr
         if straight_through:
             b = b + z - z.detach()
         return b
+
+    def tlog_prob(self, b: torch.Tensor) -> torch.Tensor:
+        if self._validate_args:
+            self._validate_thresholded_sample(b)
+        logits, b = broadcast_all(self.logits, b)
+        return -torch.nn.functional.binary_cross_entropy_with_logits(
+            logits, b, reduction="none"
+        )
 
     def csample(self, b: torch.Tensor) -> torch.Tensor:
         if self._validate_args:
@@ -494,6 +523,12 @@ class GumbelOneHotCategorical(
         if straight_through:
             b = b + z - z.detach()
         return b
+
+    def tlog_prob(self, b: torch.Tensor) -> torch.Tensor:
+        if self._validate_args:
+            self._validate_thresholded_sample(b)
+        lp_shape = b.shape[:-1]
+        return self.logits.expand_as(b).masked_select(b.bool()).view(lp_shape)
 
     def csample(self, b: torch.Tensor) -> torch.Tensor:
         if self._validate_args:

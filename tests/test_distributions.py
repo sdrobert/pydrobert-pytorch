@@ -33,7 +33,7 @@ def test_logistic_bernoulli(device):
     assert torch.allclose(zz.mean(0), dist.mean, atol=1)
     assert torch.allclose(zz.std(0), dist.stddev, atol=1e-2)
     exp_log_prob = dist.log_prob(zz)
-    act_log_prob = torch.distributions.Bernoulli(probs=probs).log_prob(b)
+    act_log_prob = dist.tlog_prob(b)
     assert exp_log_prob.shape == act_log_prob.shape
     act_log_prob += dist.clog_prob(zz, b)
     assert exp_log_prob.shape == act_log_prob.shape
@@ -58,7 +58,7 @@ def test_gumbel_one_hot_categorical(device):
     assert torch.allclose(zz.mean(0), dist.mean, atol=1)
     assert torch.allclose(zz.std(0), dist.stddev, atol=1e-2)
     exp_log_prob = dist.log_prob(zz)
-    act_log_prob = torch.distributions.OneHotCategorical(probs=probs).log_prob(b)
+    act_log_prob = dist.tlog_prob(b)
     assert exp_log_prob.shape == act_log_prob.shape
     act_log_prob += dist.clog_prob(zz, b)
     assert exp_log_prob.shape == act_log_prob.shape
