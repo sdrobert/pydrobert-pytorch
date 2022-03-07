@@ -32,7 +32,7 @@ from ._mc import (
     ImportanceSamplingEstimator,
     MonteCarloEstimator,
     ReinforceEstimator,
-    RELAXEstimator,
+    RelaxEstimator,
     BERNOULLI_SYNONYMS,
     CATEGORICAL_SYNONYMS,
     ONEHOT_SYNONYMS,
@@ -43,7 +43,7 @@ __all__ = [
     "ImportanceSamplingEstimator",
     "MonteCarloEstimator",
     "ReinforceEstimator",
-    "RELAXEstimator",
+    "RelaxEstimator",
 ]
 
 
