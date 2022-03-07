@@ -151,9 +151,9 @@ class ReinforceEstimator(MonteCarloEstimator):
         The distribution to sample from, :math:`P`.
         The function :math:`f`.
     cv : FunctionOnSample or None, optional
-        The function :math:`c`. If specified, `cv_mean` must also be specified.
+        The function :math:`c`.
     cv_mean : torch.Tensor or None, optional
-        The value :math:`\mu_c`. If specified, `cv` must also be specified.
+        The value :math:`\mu_c`.
     is_log : bool, optional
         If :obj:`True`, `func` and `c` are :math:`\log f` and :math:`\log c`
         respectively. Their return values will be exponentiated inside the call
@@ -178,8 +178,6 @@ class ReinforceEstimator(MonteCarloEstimator):
         is_log: bool = False,
     ):
         super().__init__(proposal, func, is_log)
-        if (cv is None) != (cv_mean is None):
-            raise ValueError("Either both cv and cv_mean is specified or neither")
         self.cv = cv
         self.cv_mean = cv_mean
 
@@ -193,13 +191,11 @@ class ReinforceEstimator(MonteCarloEstimator):
             cvb = self.cv(b)
             if self.is_log:
                 c, cvb = c.exp(), cvb.exp()
-            fb = fb - cvb
-        else:
-            c = 0
+            fb = fb - cvb + c
         log_pb = self.proposal.log_prob(b)
         dlog_pb = fb.detach() * log_pb
         z = fb + dlog_pb - dlog_pb.detach()
-        return z.mean(0) + c
+        return z.mean(0)
 
 
 class ImportanceSamplingEstimator(MonteCarloEstimator):
