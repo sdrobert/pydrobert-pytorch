@@ -31,6 +31,7 @@ __all__ = [
     "random_shift",
     "random_walk_advance",
     "sequence_log_probs",
+    "simple_random_sampling_without_replacement",
     "sparse_image_warp",
     "spec_augment_apply_parameters",
     "spec_augment_draw_parameters",
@@ -39,6 +40,7 @@ __all__ = [
     "warp_1d_grid",
 ]
 
+from ._conditional_bernoulli import simple_random_sampling_without_replacement
 from ._decoding import (
     beam_search_advance,
     ctc_greedy_search,

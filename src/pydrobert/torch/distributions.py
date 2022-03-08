@@ -14,6 +14,7 @@
 
 """PyTorch distributions and interfaces"""
 
+from ._conditional_bernoulli import SimpleRandomSamplingWithoutReplacement
 from ._straight_through import (
     ConditionalStraightThrough,
     Density,
@@ -27,6 +28,7 @@ __all__ = [
     "Density",
     "GumbelOneHotCategorical",
     "LogisticBernoulli",
+    "SimpleRandomSamplingWithoutReplacement",
     "StraightThrough",
 ]
 
