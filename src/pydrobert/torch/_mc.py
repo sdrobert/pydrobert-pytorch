@@ -140,7 +140,7 @@ class ReinforceEstimator(MonteCarloEstimator):
     In the backward pass, the gradient of the expectation is estimated using REINFORCE
     [williams1992]_:
 
-        \nabla_\theta z \approx \frac{1}{N} \sum_{n=1}^N \nabla_\theta
+        \nabla z \approx \frac{1}{N} \sum_{n=1}^N \nabla
             \left(f\left(b^{(n)}\right) - c\left(b^{(n)}\right) + \mu_c\right)\log P(b).
     
     With the control variate terms excluded if they were not specified.
@@ -219,8 +219,8 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
 
     .. math::
 
-        \nabla_\theta z \approx \frac{1}{N} \sum_{n=1}^N \frac{1}{Q\left(b^{(n)}\right)
-            \nabla_\theta P\left(b^{(n)}\right)f\left(b^{(n)}\right).
+        \nabla z \approx \frac{1}{N} \sum_{n=1}^N \frac{1}{Q\left(b^{(n)}\right)
+            \nabla P\left(b^{(n)}\right)f\left(b^{(n)}\right).
     
     Note that the gradient with respect to parameters of :math:`Q` will be defined but
     set to zero.
@@ -236,8 +236,8 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
     [williams1992]_:
     
     .. math::
-        \nabla_\theta z \approx \frac{1}{N} \sum_{n=1}^N
-            \nabla_\theta \omega_n f\left(b^{(n)}\right) \log Q(b).
+        \nabla z \approx \frac{1}{N} \sum_{n=1}^N
+            \nabla \omega_n f\left(b^{(n)}\right) \log Q(b).
         
     
     In this case the gradient of :math:`Q` can be nonzero. The self-normalized estimate
@@ -306,7 +306,78 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
 class RelaxEstimator(MonteCarloEstimator):
     r"""RELAX estimator
 
-    The RELAX esimator []
+    The RELAX estimator [grathwohl2017]_ estimates the expectation :math:`z =
+    \mathbb{E}_{b \sim P}[f(b)]` for discrete :math:`b` via MC estimation, attempting to
+    minimize the variance of the estimator using control variates over their continuous
+    relaxations.
+    
+    Let :math:`z^{(1:N)}` be :math:`N` continous relaxation variables drawn i.i.d.
+    :math:`z^{(n)} \sim P(\cdot)` and :math:`b^{(1:N)}` be their discretizations
+    :math:`H(z^{(n)}) = b^{(n)}`. Let :math:`P(z|b)` be a conditional s.t. the joint
+    distribution satisfies :math:`P(b)P(z|b) = P(z, b) = P(z)I[H(z) = b]` and
+    :math:`\tilde{z}^{(1:N)}` be samples drawn from those conditionals
+    :math:`\tilde{z}^{(n)} \sim P(\cdot|b^{(n)})`. Let :math:`c` be some control variate
+    accepting relaxed samples. Then the (unbiased) RELAX estimator is:
+
+    .. math::
+
+        z \approx \frac{1}{N} \sum^N_{n=1}
+            f\left(b^{(n)}\right) - c\left(\tilde{z}^{(n)}\right)
+                                  + c\left(z^{(n)}\right).
+    
+    Pairing this estimator with one of the REBAR control variates from
+    :mod:`pydrobert.torch.modules` yields the REBAR estimator [tucker2017]_.
+
+    We offer two ways of estimating the gradient :math:`\nabla z`. The first is a
+    REINFORCE-style estimate:
+
+    .. math::
+
+        \nabla z \approx \frac{1}{N} \sum^N_{n=1} \nabla \left(
+            \left(f\left(b^{(n)}\right) - c\left(\tilde{z}^{(n)}\right)\right)\log P(b)
+                                  + c\left(z^{(n)}\right)\right).
+    
+    The above estimate requires no special consideration for any variable for which the
+    gradient is being calculated. The second, following [grathwohl2017]_, specially
+    optimizes the control variate parameters to minimize the variance of the gradient
+    estimates of the parameters involved in drawing :math:`z`. Let :math:`\theta_{1:K}`
+    be the set of such parameters, :math:`g_{\theta_k} \approx \nabla_{\theta_k}` be a
+    REINFORCE-style estimate of the :math:`k`-th :math:`z` parameter using the equation
+    above, and let :math:`\gamma` be a control variate parameter. Then the
+    variance-minimizing loss can be approximated by:
+
+    .. math::
+
+        \nabla_\gamma \mathrm{Var}(z) \approx \frac{1}{K} \nabla_\gamma
+            \left(\sum_{k=1}^K g^2_{\theta_k}\right).
+    
+    The remaining parameters are calculated with the REINFORCE-style estimator above.
+    The proposal parameters `proposal_params` and control variate parameters `cv_params`
+    must be specified to use this loss function.
+
+    Parameters
+    ----------
+    proposal : torch.distributions.Distribution
+        The distribution :math:`P`. Must implement
+        :class:`pydrobert.torch.distributions.ConditionalStraightThrough`.
+    func : FunctionOnSample
+        The function :math:`f`.
+    cv : FunctionOnSample
+        The control variate :math:`c`.
+    proposal_params : sequence of torch.Tensor, optional
+        A sequence of parameters used in the computation of :math:`z` and
+        :math:`P(H(z)`. Does not have to be specified unless using the
+        variance-minimizing control variate objective. If non-empty, `cv_params` must
+        be non-empty as well.
+    cv_params : sequence of torch.Tensor, optional
+        A sequence of parameters used in the computation of control variate values. Does
+        not have to be specified unless using the variance-minimizing control variate
+        objective. If non-empty, `proposal_params` must be non-empty as well.
+    is_log : bool, optional
+        If :obj:`True`, `func` and `c` are :math:`\log f` and :math:`\log c`
+        respectively. Their return values will be exponentiated inside the call to
+        :func:`estimate`. There will be little difference from pre-exponentiating the
+        return values inside the respective functions/tensors.
     """
 
     cv: FunctionOnSample
@@ -377,7 +448,7 @@ class RelaxEstimator(MonteCarloEstimator):
 def _attach_grad(x: torch.tensor, g: torch.Tensor):
     def hook(grad):
         hook.__handle.remove()
-        hook.__handle = None  # sanity check to ensure this handle isn't called again
+        hook.__handle = None  # dies if this hook is called again
         return hook.__grad
 
     hook.__grad = g
@@ -410,9 +481,9 @@ class _RebarControlVariate(torch.nn.Module):
         return f"start_temp={self.start_temp},start_eta={self.start_eta}"
 
 
-_REBAR_DOCS = """Rebar control variate for {dist} relaxation
+_REBAR_DOCS = """REBAR control variate for {dist} relaxation
 
-Rebar [tucker2017]_ is a special case of the RELAX estimator [grathwohl2017]_ with
+REBAR [tucker2017]_ is a special case of the RELAX estimator [grathwohl2017]_ with
 a control variate that passes a temperature-based transformation of the relaxed sample
 to the function :math:`f` the expectation is being taken over. That is:
 
