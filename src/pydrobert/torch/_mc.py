@@ -86,6 +86,10 @@ class MonteCarloEstimator(metaclass=abc.ABCMeta):
     .. code-block:: shell
 
         DO_MC_BENCHMARK=1 pytest tests/test_mc.py -k benchmark -s
+    
+    Warnings
+    --------
+    Subclasses of :class:`MonteCarloEstimator` cannot be JIT scripted or traced.
     """
 
     proposal: torch.distributions.Distribution
@@ -501,6 +505,11 @@ start_temp : float, optional
     The temperature the :math:`\\lambda` parameter is initialized to.
 start_eta : float, optional
     The coefficient the :math:`\\eta` parameter is initialzied to.
+
+Warnings
+--------
+This control variate can be traced but not scripted. Note that the MC estimator this
+is passed to is likely unable to be scripted or traced.
 
 See Also
 --------

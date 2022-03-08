@@ -41,6 +41,16 @@ class LogFunc(Func):
         return (b * self.theta).masked_fill(b == 0, 0.0).log()
 
 
+class FuncCat(torch.nn.Module):
+    def __init__(self, V: int):
+        super().__init__()
+        self.V = V
+        self.theta = torch.nn.Parameter(torch.rand(V))
+
+    def __call__(self, b):
+        return (b * self.theta / self.V).sum(-1)
+
+
 def test_reinforce_estimator(device, is_log):
     N, T = int(1e5), 30
     logits = torch.randn(T, device=device, requires_grad=True)
@@ -119,13 +129,13 @@ def test_importance_sampling_estimator(device, self_normalize, is_log):
 
 
 @pytest.mark.parametrize("varmin", [True, False], ids=["varmin", "mc"])
-def test_rebar_estimator_bernoulli(device, is_log, varmin):
+def test_rebar_estimator_bernoulli(device, is_log, varmin, jit_type):
     N, T = int(1e5), 30
     logits = torch.randn(T, device=device, requires_grad=True)
     mask = torch.randint(2, (T,), device=device) == 1
     probs = logits.sigmoid().masked_fill(mask, 0)
     func = (LogFunc if is_log else Func)().to(device)
-    v = (func.theta * probs).sum()
+    v = (probs * func.theta).sum()
     exp_loss = (v - T / 2) ** 2
     exp_g_logits, exp_g_theta = torch.autograd.grad(exp_loss, [logits, func.theta])
     assert (exp_g_logits.masked_select(mask) == 0).all()
@@ -133,6 +143,10 @@ def test_rebar_estimator_bernoulli(device, is_log, varmin):
     probs = logits.sigmoid().masked_fill(mask, 0)
     dist = distributions.LogisticBernoulli(probs=probs)
     cv = modules.LogisticBernoulliRebarControlVariate(func).to(device)
+    if jit_type == "script":
+        pytest.xfail(reason="scripting not supported for REBAR control variates")
+    elif jit_type == "trace":
+        cv = torch.jit.trace(cv, [torch.empty(1, device=device)])
     if varmin:
         args = [probs], [cv.log_temp, cv.eta]
     else:
@@ -152,26 +166,27 @@ def test_rebar_estimator_bernoulli(device, is_log, varmin):
 
 
 @pytest.mark.parametrize("varmin", [True, False], ids=["varmin", "mc"])
-def test_rebar_estimator_categorical(device, varmin):
+def test_rebar_estimator_categorical(device, varmin, jit_type):
     N, T, V = int(1e5), 12, 5
     logits = torch.randn((T, V), device=device, requires_grad=True)
     mask = torch.randint_like(logits, 2) == 1
     mask[..., 0] = False
     logits_ = logits.masked_fill(mask, -float("inf"))
     probs = logits_.softmax(-1)
-    theta = torch.arange(V, device=device, dtype=logits.dtype, requires_grad=True)
-    v = (probs * theta / V).sum()
+    func = FuncCat(V).to(device)
+    v = func(probs).sum()
     exp_loss = (v - T / 2) ** 2
-    exp_g_logits, exp_g_theta = torch.autograd.grad(exp_loss, [logits, theta])
+    exp_g_logits, exp_g_theta = torch.autograd.grad(exp_loss, [logits, func.theta])
     assert (exp_g_logits.masked_select(mask) == 0).all()
-
-    def func(b):
-        return (b * theta / V).sum(-1)
 
     logits_ = logits.masked_fill(mask, -float("inf"))
     probs = logits_.softmax(-1)
     dist = distributions.GumbelOneHotCategorical(probs=probs)
     cv = modules.GumbelOneHotCategoricalRebarControlVariate(func).to(device)
+    if jit_type == "script":
+        pytest.xfail(reason="scripting not supported for REBAR control variates")
+    elif jit_type == "trace":
+        cv = torch.jit.trace(cv, [torch.empty(1, 1, device=device)])
     if varmin:
         args = [probs], [cv.log_temp, cv.eta]
     else:
@@ -181,7 +196,7 @@ def test_rebar_estimator_categorical(device, varmin):
     act_loss = (v - T / 2) ** 2
     assert torch.isclose(exp_loss, act_loss, atol=1)
     act_g_logits, act_g_theta, g_log_temp, g_eta = torch.autograd.grad(
-        act_loss, [logits, theta, cv.log_temp, cv.eta]
+        act_loss, [logits, func.theta, cv.log_temp, cv.eta]
     )
     assert torch.allclose(exp_g_theta, act_g_theta, atol=1)
     assert torch.allclose(exp_g_logits, act_g_logits, atol=1e-1)
