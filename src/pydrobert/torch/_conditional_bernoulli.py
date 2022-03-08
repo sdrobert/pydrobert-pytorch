@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from multiprocessing.sharedctypes import Value
 from typing import Optional, Union
 
 import torch
@@ -27,30 +28,67 @@ from ._compat import script
 def simple_random_sampling_without_replacement(
     total_count: torch.Tensor,
     given_count: torch.Tensor,
-    total_count_max: Optional[int] = None,
+    out_size: Optional[int] = None,
 ) -> torch.Tensor:
-    if total_count_max is None:
-        total_count_max = int(total_count.max().item())
+    """Draw a binary vector with uniform probabilities but fixed cardinality
+
+    Uses the algorithm proposed in [fan1962]_.
+
+    Parameters
+    ----------
+    total_count : torch.Tensor
+        The nonnegative sizes of the individual binary vectors. Must broadcast with
+        `given_count`.
+    given_count : torch.Tensor
+        The cardinalities of the individual binary vectors. Must broadcast with
+        and not exceed the values of `total_count`.
+    out_size : int or None, optional
+        The vector size. Must be at least the value of ``total_count.max()``. If unset,
+        will default to that value.
+    
+    Returns
+    -------
+    b : torch.Tensor
+        A tensor of shape ``(*, out_size)``, where ``(*,)`` is the broadcasted
+        shape of `total_count` and `given_count`. The final dimension is the vector
+        dimension. The ``n``-th vector of `b` is right-padded with zero for all values
+        exceeding ``total_count[n]``, i.e. ``b[n, total_count[n]:].sum() == 0``. The
+        remaining ``total_count[n]`` elements of the vector sum to associated given
+        count, i.e. ``b[n, :total_count[n]].sum() == given_count[n]``.
+
+    See Also
+    --------
+    pydrobert.torch.distributions.SimpleRandomSamplingWithoutReplacement
+        For information on the distribution.
+    """
+    total_count_max = int(total_count.max().item())
+    if out_size is None:
+        out_size = total_count_max
     total_count, given_count = torch.broadcast_tensors(total_count, given_count)
     if (given_count > total_count).any():
         raise RuntimeError("given_count cannot exceed total_count")
+    if out_size < total_count_max:
+        raise RuntimeError(
+            f"out_size ({out_size}) must not be less than max of total_count "
+            f"({total_count_max})"
+        )
     b = torch.empty(
-        torch.Size([total_count_max]) + total_count.shape, device=total_count.device
+        torch.Size([out_size]) + total_count.shape, device=total_count.device
     )
     remainder_ell = given_count
     remainder_t = total_count.clamp_min(1)
-    for t in range(total_count_max):
+    for t in range(out_size):
         p = remainder_ell / remainder_t
         b_t = torch.bernoulli(p)
         b[t] = b_t
         remainder_ell = remainder_ell - b_t
         remainder_t = (remainder_t - 1).clamp_min_(1)
-    return b.view(total_count_max, -1).T.view(
-        total_count.shape + torch.Size([total_count_max])
-    )
+    return b.view(out_size, -1).T.view(total_count.shape + torch.Size([out_size]))
 
 
-class CardinalityConstraint(constraints.Constraint):
+class BinaryCardinalityConstraint(constraints.Constraint):
+    """Ensures a vector of binary values sums to the required cardinality"""
+
     is_discrete = True
     event_dim = 1
 
@@ -72,10 +110,38 @@ class CardinalityConstraint(constraints.Constraint):
 
 
 class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFamily):
+    r"""Draw binary vectors with uniform probability but fixed cardinality
+    
+    `Simple Random Sampling Without Replacement
+    <https://en.wikipedia.org/wiki/Simple_random_sample>`__ (SRSWOR) is a uniform
+    distribution over binary vectors of length :math:`T` with a fixed sum :math:`L`:
+
+    .. math::
+
+        P(b|L) = I\left[\sum^T_{t=1} b_t = L\right] \frac{1}{T \mathrm{\>choose\>} L}
+    
+    where :math:`I[\cdot]` is the indicator function. The distribution is a special
+    case of the Conditional Bernoulli [chen1994]_ and a member of the
+    `Exponential Family <https://en.wikipedia.org/wiki/Exponential_family>`__.
+
+    Parameters
+    ----------
+    total_count : int or torch.Tensor
+        The value(s) :math:`T`. Must broadcast with `given_count`. Represents the sizes
+        of the sample vectors. If not all equal or less than `out_size`, samples will be
+        right-padded with zeros.
+    given_count : int or torch.Tensor
+        The value(s) :math:`L`. Must broadcast with and have values no greater than
+        `total_count`. Represents the cardinality constraints of the sample vectors.
+    out_size : int or None, optional
+        The length of the binary vectors. If it exceeds some value of `total_count`,
+        that sample will be right-padded with zeros. Must be no less than
+        ``total_count.max()``. If unset, defaults to that value.        
+    """
 
     arg_constraints = {
-        "total_count": constraints.nonnegative_integer,
-        "given_count": constraints.nonnegative_integer,
+        "total_count": constraints.dependent(is_discrete=True, event_dim=0),
+        "given_count": constraints.dependent(is_discrete=True, event_dim=0),
     }
     _mean_carrier_measure = 0
 
@@ -88,9 +154,20 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
     ):
         given_count = torch.as_tensor(given_count)
         total_count = torch.as_tensor(total_count)
+        total_count_max = int(total_count.max().item())
         if out_size is None:
-            out_size = total_count.max()
+            out_size = total_count_max
         given_count, total_count = torch.broadcast_tensors(given_count, total_count)
+        if validate_args:
+            if (total_count < 0).any():
+                raise ValueError("total_count must be nonnegative")
+            if (given_count > total_count).any():
+                raise ValueError("given_count cannot exceed total count")
+            if out_size < total_count_max:
+                raise ValueError(
+                    f"out_size ({out_size}) must not be less than max of total_count "
+                    f"({total_count_max})"
+                )
         batch_shape = given_count.size()
         event_shape = torch.Size([out_size])
         self.total_count, self.given_count = total_count, given_count
@@ -98,7 +175,7 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
 
     @constraints.dependent_property
     def support(self) -> torch.Tensor:
-        return CardinalityConstraint(
+        return BinaryCardinalityConstraint(
             self.total_count, self.given_count, self.event_shape[0]
         )
 

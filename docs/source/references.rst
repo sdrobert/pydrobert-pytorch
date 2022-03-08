@@ -1,12 +1,19 @@
 References
 ==========
 
+.. [fan1962] C. T. Fan, M. E. Muller, and I. Rezucha, "Development of sampling
+   plans by using sequential (item by item) selection techniques and digital
+   computers," vol. 57, no. 298, pp. 387-402, Jun. 1962, doi:
+   10.1080/01621459.1962.10480667.
 .. [williams1992] R. J. Williams, "Simple statistical gradient-following
    algorithms for connectionist reinforcement learning," Machine Learning,
    vol. 8, no. 3, pp. 229-256, May 1992.
+.. [chen1994] X.-H. Chen, A. P. Dempster, and J. S. Liu, "Weighted finite
+   population sampling to maximize entropy," Biometrika, vol. 81, no. 3, pp.
+   457-69, 1994, doi: 10.2307/2337119.
 .. [graves2006] A. Graves, S. Fernández, F. Gomez, and J. Schmidhuber,
    "Connectionist Temporal Classification: Labelling unsegmented sequence data
-   with recurrent neural networks," New York, NY, USA, 2006, pp. 369–376.
+   with recurrent neural networks," New York, NY, USA, 2006, pp. 369-376.
    doi: 10.1145/1143844.1143891.
 .. [mikolov2010] T. Mikolov, M. Karafiát, L. Burget, J. Černocký, and S.
    Khudanpur, "Recurrent neural network based language model," presented at

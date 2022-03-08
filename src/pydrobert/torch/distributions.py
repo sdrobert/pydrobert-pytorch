@@ -12,9 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""PyTorch distributions and interfaces"""
+"""PyTorch distributions and interfaces
 
-from ._conditional_bernoulli import SimpleRandomSamplingWithoutReplacement
+Warnings
+--------
+Distributions cannot be JIT scripted or traced.
+"""
+
+from ._conditional_bernoulli import (
+    BinaryCardinalityConstraint,
+    SimpleRandomSamplingWithoutReplacement,
+)
 from ._straight_through import (
     ConditionalStraightThrough,
     Density,
@@ -24,6 +32,7 @@ from ._straight_through import (
 )
 
 __all__ = [
+    "BinaryCardinalityConstraint",
     "ConditionalStraightThrough",
     "Density",
     "GumbelOneHotCategorical",

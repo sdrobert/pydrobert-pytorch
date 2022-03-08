@@ -34,6 +34,8 @@ def test_simple_random_sampling_without_replacement(device, jit_type):
         )
         b = srswor_(tmax.expand(mmax, nmax), lmax.expand(mmax, nmax), tmax_max)
     elif jit_type == "trace":
+        # trace doesn't support integer parameters, so we'll redefine tmax_max to the
+        # computed default
         tmax_max = int(tmax.max().item())
         srswor = distributions.SimpleRandomSamplingWithoutReplacement(
             lmax, tmax, tmax_max, True
