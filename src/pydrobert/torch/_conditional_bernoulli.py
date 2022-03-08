@@ -140,8 +140,8 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
     """
 
     arg_constraints = {
-        "total_count": constraints.dependent(is_discrete=True, event_dim=0),
-        "given_count": constraints.dependent(is_discrete=True, event_dim=0),
+        "total_count": constraints.nonnegative_integer,
+        "given_count": constraints.nonnegative_integer,
     }
     _mean_carrier_measure = 0
 
@@ -158,7 +158,11 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
         if out_size is None:
             out_size = total_count_max
         given_count, total_count = torch.broadcast_tensors(given_count, total_count)
-        if validate_args:
+        batch_shape = given_count.size()
+        event_shape = torch.Size([out_size])
+        self.total_count, self.given_count = total_count, given_count
+        super().__init__(batch_shape, event_shape, validate_args)
+        if self._validate_args:
             if (total_count < 0).any():
                 raise ValueError("total_count must be nonnegative")
             if (given_count > total_count).any():
@@ -168,10 +172,6 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
                     f"out_size ({out_size}) must not be less than max of total_count "
                     f"({total_count_max})"
                 )
-        batch_shape = given_count.size()
-        event_shape = torch.Size([out_size])
-        self.total_count, self.given_count = total_count, given_count
-        super().__init__(batch_shape, event_shape, validate_args)
 
     @constraints.dependent_property
     def support(self) -> torch.Tensor:
