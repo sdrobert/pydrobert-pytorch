@@ -17,9 +17,10 @@ import math
 import torch
 
 import pydrobert.torch.distributions as distributions
+import pydrobert.torch.functional as functional
 
 
-def test_simple_random_sampling_without_replacement(device):
+def test_simple_random_sampling_without_replacement(device, jit_type):
     tmax_max, nmax, mmax = 16, 8, 2 ** 15
     tmax = torch.randint(tmax_max + 1, size=(nmax,), dtype=torch.float, device=device)
     lmax = (torch.rand(nmax, device=device) * (tmax + 1)).floor_()
@@ -27,7 +28,23 @@ def test_simple_random_sampling_without_replacement(device):
     srswor = distributions.SimpleRandomSamplingWithoutReplacement(
         lmax, tmax, tmax_max, True
     )
-    b = srswor.sample([mmax])
+    if jit_type == "script":
+        srswor_ = torch.jit.script(
+            functional.simple_random_sampling_without_replacement
+        )
+        b = srswor_(tmax.expand(mmax, nmax), lmax.expand(mmax, nmax), tmax_max)
+    elif jit_type == "trace":
+        tmax_max = int(tmax.max().item())
+        srswor = distributions.SimpleRandomSamplingWithoutReplacement(
+            lmax, tmax, tmax_max, True
+        )
+        srswor_ = torch.jit.trace(
+            functional.simple_random_sampling_without_replacement,
+            [torch.ones(1), torch.zeros(1)],
+        )
+        b = srswor_(tmax.expand(mmax, nmax), lmax.expand(mmax, nmax))
+    else:
+        b = srswor.sample([mmax])
     assert ((b == 0.0) | (b == 1.0)).all()
     assert (b.sum(-1) == lmax).all()
     tmax_mask = tmax.unsqueeze(1) > torch.arange(tmax_max, device=device)
@@ -47,3 +64,4 @@ def test_simple_random_sampling_without_replacement(device):
     lp_exp = torch.tensor(lp_exp, device=device).expand(mmax, nmax)
     lp_act = srswor.log_prob(b)
     assert torch.allclose(lp_exp, lp_act)
+

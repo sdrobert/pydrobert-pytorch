@@ -29,8 +29,8 @@ def simple_random_sampling_without_replacement(
     given_count: torch.Tensor,
     total_count_max: Optional[int] = None,
 ) -> torch.Tensor:
-    if total_count is None:
-        total_count = int(total_count.max().item())
+    if total_count_max is None:
+        total_count_max = int(total_count.max().item())
     total_count, given_count = torch.broadcast_tensors(total_count, given_count)
     if (given_count > total_count).any():
         raise RuntimeError("given_count cannot exceed total_count")
@@ -38,14 +38,16 @@ def simple_random_sampling_without_replacement(
         torch.Size([total_count_max]) + total_count.shape, device=total_count.device
     )
     remainder_ell = given_count
-    remainder_t = total_count
+    remainder_t = total_count.clamp_min(1)
     for t in range(total_count_max):
         p = remainder_ell / remainder_t
         b_t = torch.bernoulli(p)
         b[t] = b_t
         remainder_ell = remainder_ell - b_t
         remainder_t = (remainder_t - 1).clamp_min_(1)
-    return b.movedim(0, -1)
+    return b.view(total_count_max, -1).T.view(
+        total_count.shape + torch.Size([total_count_max])
+    )
 
 
 class CardinalityConstraint(constraints.Constraint):
