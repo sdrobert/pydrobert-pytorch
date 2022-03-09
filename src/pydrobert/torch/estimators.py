@@ -12,15 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-r"""Gradient estimators
-
-Much of this code has been adapted from `David Duvenaud's repo
-<https://github.com/duvenaud/relax>`_.
+r"""Interfaces and classes for estimating expectations
 
 See Also
 --------
-:ref:`Gradient Estimators`
-    A description of how to use this module, as well as an example
+Estimator
+    The base class for all estimators
 """
 
 import functools
@@ -28,20 +25,21 @@ import warnings
 
 import torch
 from ._enumerate_estimator import EnumerateEstimator
-from ._estimators import FunctionOnSample
+from ._estimators import Estimator, FunctionOnSample
 from ._mc import (
+    DirectEstimator,
     ImportanceSamplingEstimator,
     MonteCarloEstimator,
-    ReinforceEstimator,
     RelaxEstimator,
 )
 
 __all__ = [
+    "Estimator",
     "EnumerateEstimator",
     "FunctionOnSample",
     "ImportanceSamplingEstimator",
     "MonteCarloEstimator",
-    "ReinforceEstimator",
+    "DirectEstimator",
     "RelaxEstimator",
 ]
 

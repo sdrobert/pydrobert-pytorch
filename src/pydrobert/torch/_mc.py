@@ -20,47 +20,20 @@ import torch
 
 from . import config
 from .distributions import Density, ConditionalStraightThrough
-from ._estimators import FunctionOnSample
+from ._estimators import Estimator, FunctionOnSample
 
 
-class MonteCarloEstimator(metaclass=abc.ABCMeta):
+class MonteCarloEstimator(Estimator, metaclass=abc.ABCMeta):
     r"""A Monte Carlo estimator base class
 
-    A Monte Carlo estimator estimates the quantity
+    A Monte Carlo estimator estimates an expectation with some form of random sampling
+    from a proposal. Letting :math:`N` represent some number of Monte Carlo samples,
+    :math:`b^{(1:N)}` represent `N` samples drawn from a proposal (usually but not
+    necessarily :math:`P`), the estimator :func:`G` is unbiased iff
 
     .. math::
 
-        z = \mathbb{E}_{b \sim P}[f(b)]
-    
-    by replacing the expectation with some form of random sampling. Letting :math:`N`
-    represent some number of Monte Carlo samples, :math:`b^{(1:N)}` represent `N`
-    samples drawn from a proposal (usually but not necessarily :math:`P`), the estimator
-    :func:`G` is unbiased iff
-
-    .. math::
-
-        \mathbb{E}_{b^{(1:N)}}[G(b)] = z
-    
-    The general pattern for using an estimator is as follows:
-
-    .. code-block:: python
-
-        def func(b):
-            # return the value of f(b) here
-        
-        # ...
-        # training loop
-        for epoch in range(num_epochs):
-            # ...
-            # 1. Determine parameterization (logits) from inputs.
-            # 2. Initialize the distribution and estimator in the training loop. Avoids
-            #    issues with missing computation graphs.
-            dist = torch.distributions.SomeDistribution(logits=logits)
-            estimator = pydrobert.torch.estimators.SomeEstimator(dist, func, ...)
-            z = estimator.estimate(num_mc_samples)
-            # 3. calculate loss as a function of z
-            loss.backwards()
-            # ...
+        \mathbb{E}_{b^{(1:N)} \sim P}[G(b)] = z.
     
     A toy example can be found in the `source repository
     <https://github.com/sdrobert/pydrobert-pytorch/blob/master/tests/test_mc.py>`_ under
@@ -70,43 +43,31 @@ class MonteCarloEstimator(metaclass=abc.ABCMeta):
 
         DO_MC_BENCHMARK=1 pytest tests/test_mc.py -k benchmark -s
     
-    Warnings
-    --------
-    Subclasses of :class:`MonteCarloEstimator` cannot be JIT scripted or traced.
+    Parameters
+    ----------
+    proposal : torch.distributions.Distribution
+    func : FunctionOnSample
+    mc_samples : int
+        The number of samples to draw from `proposal`, :math:`N`.
+    is_log : bool, optional
     """
 
-    proposal: torch.distributions.Distribution
-    func: FunctionOnSample
-    is_log: bool
+    mc_samples: int
 
     def __init__(
         self,
         proposal: torch.distributions.Distribution,
         func: FunctionOnSample,
+        mc_samples: int,
         is_log: bool = False,
     ) -> None:
-        self.proposal = proposal
-        self.func = func
-        self.is_log = is_log
-
-    @abc.abstractmethod
-    def estimate(self, mc_samples: int) -> torch.Tensor:
-        """Perform the MC estimation
-        
-        Parameters
-        ----------
-        mc_samples : int
-            The number of Monte Carlo samples to estimate with.
-        
-        Returns
-        -------
-        z : torch.Tensor
-            The MC estimate. The MC dimension should already be reduced.
-        """
-        raise NotImplementedError
+        if mc_samples <= 0:
+            raise ValueError(f"mc_samples must be a natural number, got {mc_samples}")
+        super().__init__(proposal, func, is_log)
+        self.mc_samples = mc_samples
 
 
-class ReinforceEstimator(MonteCarloEstimator):
+class DirectEstimator(MonteCarloEstimator):
     r"""Direct MC estimate using REINFORCE gradient estimate
 
     The expectation :math:`z = \mathbb{E}_{b \sim P}[f(b)]` is estimated by drawing
@@ -135,22 +96,14 @@ class ReinforceEstimator(MonteCarloEstimator):
     Parameters
     ----------
     proposal : torch.distributions.Distribution
-        The distribution to sample from, :math:`P`.
-        The function :math:`f`.
-    cv : FunctionOnSample or None, optional
+    func : FunctionOnSample
+    mc_samples : int
+        The number of samples to draw from `proposal`, :math:`N`.
+    cv : FunctionOnSample or :obj:`None`, optional
         The function :math:`c`.
-    cv_mean : torch.Tensor or None, optional
+    cv_mean : torch.Tensor or :obj:`None`, optional
         The value :math:`\mu_c`.
     is_log : bool, optional
-        If :obj:`True`, `func` and `c` are :math:`\log f` and :math:`\log c`
-        respectively. Their return values will be exponentiated inside the call
-        to :func:`estimate`. There will be little difference from pre-exponentiating
-        the return values inside the respective functions/tensors.
-    
-    See Also
-    --------
-    pydrobert.torch.estimators.MonteCarloEstimator
-        For general information on how to use Monte Carlo estimators.
     """
 
     cv: Optional[FunctionOnSample]
@@ -160,16 +113,17 @@ class ReinforceEstimator(MonteCarloEstimator):
         self,
         proposal: torch.distributions.Distribution,
         func: FunctionOnSample,
+        mc_samples: int,
         cv: Optional[FunctionOnSample] = None,
         cv_mean: Optional[torch.Tensor] = None,
         is_log: bool = False,
     ):
-        super().__init__(proposal, func, is_log)
+        super().__init__(proposal, func, mc_samples, is_log)
         self.cv = cv
         self.cv_mean = cv_mean
 
-    def estimate(self, mc_samples: int) -> torch.Tensor:
-        b = self.proposal.sample([mc_samples])
+    def __call__(self) -> torch.Tensor:
+        b = self.proposal.sample([self.mc_samples])
         fb = self.func(b)
         if self.is_log:
             fb = fb.exp()
@@ -235,22 +189,20 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
     Parameters
     ----------
     proposal : torch.distributions.Distribution
-        The distribution :math:`Q`.
+        The distribution over which the expectation is taken. In this case, `proposal`
+        has probability density :math:`Q`, not :math:`P`.
     func : FunctionOnSample
         The function :math:`f`.
+    mc_samples : int
     density : pydrobert.torch.distributions.Density
         The density :math:`P`. Can be unnormalized.
     self_normalize : bool, optional
         Whether to use the self-normalized estimator.
     is_log : bool, optional
-        If :obj:`True`, `func` is :math:`\log f`. Its return values will be
-        exponentiated inside the call to :func:`estimate`. Results might be more
-        numerically stable than if return values are pre-exponentiated inside `func`.
-
-    See Also
-    --------
-    pydrobert.torch.estimators.MonteCarloEstimator
-        For general information on how to use Monte Carlo estimators.
+        If :obj:`True`, `func` and `c` are :math:`\log f` and :math:`\log c`
+        respectively. Their return values will be exponentiated inside the call to
+        :func:`estimate`. There will be little difference from pre-exponentiating the
+        return values inside the respective functions/tensors.
     """
 
     density: Density
@@ -260,22 +212,23 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
         self,
         proposal: torch.distributions.Distribution,
         func: FunctionOnSample,
+        mc_samples: int,
         density: Density,
         self_normalize: bool = False,
         is_log: bool = False,
     ) -> None:
-        super().__init__(proposal, func, is_log)
+        super().__init__(proposal, func, mc_samples, is_log)
         self.density = density
         self.self_normalize = self_normalize
 
-    def estimate(self, mc_samples: int) -> torch.Tensor:
-        b = self.proposal.sample([mc_samples])
+    def __call__(self) -> torch.Tensor:
+        b = self.proposal.sample([self.mc_samples])
         lqb = self.proposal.log_prob(b)
         lpb = self.density.log_prob(b)
         fb = self.func(b)
         if self.self_normalize:
             llr = lpb - lqb
-            llr = llr.log_softmax(0) + math.log(mc_samples)
+            llr = llr.log_softmax(0) + math.log(self.mc_samples)
         else:
             llr = lpb - lqb.detach()
         if self.is_log:
@@ -345,12 +298,11 @@ class RelaxEstimator(MonteCarloEstimator):
     Parameters
     ----------
     proposal : torch.distributions.Distribution
-        The distribution :math:`P`. Must implement
+        The distribution over which the expectation is taken, :math:`P`. Must implement
         :class:`pydrobert.torch.distributions.ConditionalStraightThrough`.
     func : FunctionOnSample
-        The function :math:`f`.
+    mc_samples : int
     cv : FunctionOnSample
-        The control variate :math:`c`.
     proposal_params : sequence of torch.Tensor, optional
         A sequence of parameters used in the computation of :math:`z` and
         :math:`P(H(z)`. Does not have to be specified unless using the
@@ -375,6 +327,7 @@ class RelaxEstimator(MonteCarloEstimator):
         self,
         proposal: torch.distributions.Distribution,
         func: FunctionOnSample,
+        mc_samples: int,
         cv: FunctionOnSample,
         proposal_params: Sequence[torch.Tensor] = tuple(),
         cv_params: Sequence[torch.Tensor] = tuple(),
@@ -388,13 +341,13 @@ class RelaxEstimator(MonteCarloEstimator):
             raise ValueError(
                 "either both proposal_params and cv_params must be specified or neither"
             )
-        super().__init__(proposal, func, is_log)
+        super().__init__(proposal, func, mc_samples, is_log)
         self.cv = cv
         self.proposal_params = proposal_params
         self.cv_params = cv_params
 
-    def estimate(self, mc_samples: int,) -> torch.Tensor:
-        z = self.proposal.rsample([mc_samples])
+    def __call__(self) -> torch.Tensor:
+        z = self.proposal.rsample([self.mc_samples])
         b = self.proposal.threshold(z)
         zcond = self.proposal.csample(b)
         log_pb = self.proposal.tlog_prob(b)
@@ -491,8 +444,8 @@ start_eta : float, optional
 
 Warnings
 --------
-This control variate can be traced but not scripted. Note that the MC estimator this
-is passed to is likely unable to be scripted or traced.
+This control variate can be traced but not scripted. Note that
+:class:`pydrobert.torch.estimators.RelaxEstimator` is unable to be traced or scripted.
 
 See Also
 --------

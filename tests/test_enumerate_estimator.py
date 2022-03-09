@@ -48,7 +48,7 @@ def test_enumerate_estimator(device, is_log):
     probs = logits_.softmax(-1)
     dist = torch.distributions.OneHotCategorical(probs=probs)
     estimator = estimators.EnumerateEstimator(dist, func, is_log)
-    act_loss = estimator.estimate().mean()
+    act_loss = estimator().mean()
     assert torch.allclose(exp_loss, act_loss)
     (act_g,) = torch.autograd.grad(act_loss, [logits])
     assert torch.allclose(exp_g, act_g)

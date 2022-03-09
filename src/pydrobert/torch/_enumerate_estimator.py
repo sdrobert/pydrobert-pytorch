@@ -15,10 +15,10 @@
 from typing import Optional
 import torch
 
-from ._estimators import FunctionOnSample
+from ._estimators import Estimator, FunctionOnSample
 
 
-class EnumerateEstimator:
+class EnumerateEstimator(Estimator):
     r"""Calculate expectation exactly by enumerating the support of the distribution
 
     An unbiased, zero-variance "estimate" of an expectation over a discrete variable
@@ -34,13 +34,13 @@ class EnumerateEstimator:
     Parameters
     ----------
     proposal : torch.distributions.Distribution
-        The distribution :math:`P`. Must be able to enumerate its support through
-        ``proposal.enumerate_support()`` (``proposal.has_enumerate_support == True``).
+        The distribution over which the expectation is taken, :math:`P`. Must be able to
+        enumerate its support through
+        :func:`torch.distributions.Distribution.enumerate_support`
+        (``proposal.has_enumerate_support == True``).
     func : FunctionOnSample
         The function :math:`f`.
     is_log : bool, optional
-        If :obj:`True`, `func` is :math:`\log f`. Results may be more numerically
-        stable than if `func` were pre-exponentiated.
     return_log : bool, optional
         If :obj:`True`, the log of the expectation is returned instead of the
         expectation. Results may be more numerically stable if ``return_log == is_log``.
@@ -48,13 +48,10 @@ class EnumerateEstimator:
     
     Warnings
     --------
-    :func:`estimate` may be both compute- and memory-intensive, depending on the size of
-    the support.
+    The call may be both compute- and memory-intensive, depending on the size of the
+    support.
     """
 
-    proposal: torch.distributions.Distribution
-    func: FunctionOnSample
-    is_log: bool
     return_log: bool
 
     def __init__(
@@ -69,12 +66,10 @@ class EnumerateEstimator:
                 "proposal must be able to enumerate its support "
                 "(proposal.has_enumerate_support == True)"
             )
-        self.proposal = proposal
-        self.func = func
-        self.is_log = is_log
-        self.return_log = is_log if return_log is None else return_log
+        super().__init__(proposal, func, is_log)
+        self.return_log = self.is_log if return_log is None else return_log
 
-    def estimate(self) -> torch.Tensor:
+    def __call__(self) -> torch.Tensor:
         b = self.proposal.enumerate_support()
         log_pb = self.proposal.log_prob(b)
         fb = self.func(b)

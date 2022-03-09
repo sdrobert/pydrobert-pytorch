@@ -51,7 +51,7 @@ class FuncCat(torch.nn.Module):
         return (b * self.theta / self.V).sum(-1)
 
 
-def test_reinforce_estimator(device, is_log):
+def test_direct_estimator(device, is_log):
     N, T = int(1e5), 30
     logits = torch.randn(T, device=device, requires_grad=True)
     mask = torch.randint(2, (T,), device=device) == 1
@@ -79,8 +79,8 @@ def test_reinforce_estimator(device, is_log):
             return probs.detach().expand_as(b)
 
     dist = torch.distributions.Bernoulli(probs=probs)
-    estimator = estimators.ReinforceEstimator(dist, func, cv, c, is_log)
-    v = estimator.estimate(N).sum()
+    estimator = estimators.DirectEstimator(dist, func, N, cv, c, is_log)
+    v = estimator().sum()
     act_loss = (v - T / 2) ** 2
     assert torch.isclose(exp_loss, act_loss, atol=1)
     act_g_logits, act_g_theta = torch.autograd.grad(act_loss, [logits, func.theta])
@@ -114,9 +114,9 @@ def test_importance_sampling_estimator(device, self_normalize, is_log):
     q_probs = torch.rand_like(probs, requires_grad=True)
     proposal = torch.distributions.Bernoulli(probs=q_probs)
     estimator = estimators.ImportanceSamplingEstimator(
-        proposal, func, density, self_normalize, is_log
+        proposal, func, N, density, self_normalize, is_log
     )
-    v = estimator.estimate(N).sum()
+    v = estimator().sum()
     act_loss = (v - T / 2) ** 2
     assert torch.isclose(exp_loss, act_loss, atol=1)
     act_g_logits, act_g_theta, g_q_probs = torch.autograd.grad(
@@ -151,8 +151,8 @@ def test_rebar_estimator_bernoulli(device, is_log, varmin, jit_type):
         args = [probs], [cv.log_temp, cv.eta]
     else:
         args = tuple()
-    estimator = estimators.RelaxEstimator(dist, func, cv, *args, is_log=is_log)
-    v = estimator.estimate(N).sum()
+    estimator = estimators.RelaxEstimator(dist, func, N, cv, *args, is_log=is_log)
+    v = estimator().sum()
     act_loss = (v - T / 2) ** 2
     assert torch.isclose(exp_loss, act_loss, atol=1)
     act_g_logits, act_g_theta, g_log_temp, g_eta = torch.autograd.grad(
@@ -191,8 +191,8 @@ def test_rebar_estimator_categorical(device, varmin, jit_type):
         args = [probs], [cv.log_temp, cv.eta]
     else:
         args = tuple()
-    estimator = estimators.RelaxEstimator(dist, func, cv, *args)
-    v = estimator.estimate(N).sum()
+    estimator = estimators.RelaxEstimator(dist, func, N, cv, *args)
+    v = estimator().sum()
     act_loss = (v - T / 2) ** 2
     assert torch.isclose(exp_loss, act_loss, atol=1)
     act_g_logits, act_g_theta, g_log_temp, g_eta = torch.autograd.grad(
@@ -214,7 +214,7 @@ def test_rebar_estimator_categorical(device, varmin, jit_type):
 @pytest.mark.parametrize("mc_samples_per_iter", [1, 10, 100, 1000])
 @pytest.mark.parametrize(
     "estimator",
-    ["REINFORCE", "IS", "IS-sn", "REBAR", "REBAR-varmin", "RELAX", "RELAX-varmin"],
+    ["Direct", "IS", "IS-sn", "REBAR", "REBAR-varmin", "RELAX", "RELAX-varmin"],
 )
 @pytest.mark.parametrize("num_bernoullis", [10])
 def test_benchmark(mc_samples_per_iter, estimator, num_bernoullis):
@@ -225,11 +225,11 @@ def test_benchmark(mc_samples_per_iter, estimator, num_bernoullis):
     # This is a very basic objective which is unlikely to be representative of your use
     # case. It is largely intended as a sanity check and an illustrative example.
     #
-    # - REINFORCE:     REINFORCE estimate, no control variate.
+    # - Direct:        Direct estimate, no control variate.
     # - IS:            Importance Sampling estimate with proposal = density. Note using
     #                  the actual distribution as the proposal is nearly optimal from a
     #                  variance-minimizing perspective, but leads to an estimate not
-    #                  very different from REINFORCE.
+    #                  very different from direct estimation.
     # - IS-sn:         Same as IS but self-normalizing.
     # - REBAR:         REBAR estimate. Control variate is optimized with the gradient of
     #                  the MC estimate.
@@ -282,21 +282,27 @@ def test_benchmark(mc_samples_per_iter, estimator, num_bernoullis):
         # We always have to reinitialize the estimator in the inner loop because the
         # distribution may instantiate tensors whose backwards graphs aren't kept.
         # Fortunately, the cost of reinitialization should be negligible.
-        if estimator == "REINFORCE":
+        if estimator == "Direct":
             dist = torch.distributions.Bernoulli(logits=hyp_logits)
-            estimator_ = estimators.ReinforceEstimator(dist, func)
+            estimator_ = estimators.DirectEstimator(dist, func, mc_samples_per_iter)
         elif estimator.startswith("IS"):
             dist = torch.distributions.Bernoulli(logits=hyp_logits)
             estimator_ = estimators.ImportanceSamplingEstimator(
-                dist, func, dist, self_normalize=estimator.endswith("-sn")
+                dist,
+                func,
+                mc_samples_per_iter,
+                dist,
+                self_normalize=estimator.endswith("-sn"),
             )
         else:  # REBAR or RELAX
             args = tuple()
             if estimator.endswith("-varmin"):
                 args = ([hyp_logits], cv.parameters())
             dist = distributions.LogisticBernoulli(logits=hyp_logits)
-            estimator_ = estimators.RelaxEstimator(dist, func, cv, *args)
-        z = estimator_.estimate(mc_samples_per_iter)
+            estimator_ = estimators.RelaxEstimator(
+                dist, func, mc_samples_per_iter, cv, *args
+            )
+        z = estimator_()
         loss = loss_fn(z, ref_logits.sigmoid())
         loss.backward()
         optimizer.step()

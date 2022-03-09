@@ -2,6 +2,18 @@
 
 ## HEAD
 
+- `SimpleRandomSamplingWithoutReplacement` has been added as a new
+  distribution.
+- `EnumerateEstimator` and `ImportanceSamplingEstimator` have been added as a
+  new estimators.
+- `pydrobert.torch.estimators` has been rewritten from the ground-up, with old
+  functionality deprecated. Distribution-related functions have been rewritten
+  as `torch.distributions.Distribution` classes implementing a
+  `ConditionalStraightThrough` interface and stored in
+  `pydrobert.torch.distributions`. The REINFORCE and RELAX estimators now have
+  an object-oriented interface subclassing `MonteCarloEstimator` as
+  `DirectEstimator` and `RelaxEstimator`, respectively.  The REBAR control
+  variate is now distribution-specific and found in `pydrobert.torch.modules`.
 - Bug fixes to `OptimalCompletion` and `HardOptimalCompletionDistillationLoss`
   involving batch sizes.
 - Refactored code to move modules to `pydrobert.torch.modules` and functions
@@ -14,8 +26,7 @@
 - Added compatibility wrappers to avoid warnings across supported pytorch
   versions.
 - Refactored code and added tests to support JIT tracing and scripting for most
-  functions/modules in pytorch >= 1.8.1. Did not handle those in
-  `pydrobert.torch.estimators` yet because I plan on revamping that code
+  functions/modules in pytorch >= 1.8.1.
   before the next release. I'll write up documentation shortly.
 - Added `pydrobert.torch.config` to store constants used in the module.
 - Removed `setup.py`.
