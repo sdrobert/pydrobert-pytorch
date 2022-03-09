@@ -27,18 +27,17 @@ import functools
 import warnings
 
 import torch
+from ._enumerate_estimator import EnumerateEstimator
+from ._estimators import FunctionOnSample
 from ._mc import (
-    FunctionOnSample,
     ImportanceSamplingEstimator,
     MonteCarloEstimator,
     ReinforceEstimator,
     RelaxEstimator,
-    BERNOULLI_SYNONYMS,
-    CATEGORICAL_SYNONYMS,
-    ONEHOT_SYNONYMS,
 )
 
 __all__ = [
+    "EnumerateEstimator",
     "FunctionOnSample",
     "ImportanceSamplingEstimator",
     "MonteCarloEstimator",
@@ -48,6 +47,10 @@ __all__ = [
 
 
 # ==== OLD
+
+BERNOULLI_SYNONYMS = {"bern", "Bern", "bernoulli", "Bernoulli"}
+CATEGORICAL_SYNONYMS = {"cat", "Cat", "categorical", "Categorical"}
+ONEHOT_SYNONYMS = {"onehot", "OneHotCategorical"}
 
 
 def deprecate(func):

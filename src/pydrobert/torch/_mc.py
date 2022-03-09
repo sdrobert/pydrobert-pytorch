@@ -14,30 +14,13 @@
 
 import math
 import abc
-from typing import Callable, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 import torch
 
 from . import config
 from .distributions import Density, ConditionalStraightThrough
-
-BERNOULLI_SYNONYMS = {"bern", "Bern", "bernoulli", "Bernoulli"}
-CATEGORICAL_SYNONYMS = {"cat", "Cat", "categorical", "Categorical"}
-ONEHOT_SYNONYMS = {"onehot", "OneHotCategorical"}
-
-FunctionOnSample = Callable[[torch.Tensor], torch.Tensor]
-"""Type for functions of samples used in MC estimation
-
-This type is intended for use in subclasses implementing :class:`MonteCarloEstimator`.
-
-A `FunctionOnSample` is a callable which accepts a :class:`torch.Tensor` and returns a
-:class:`torch.Tensor`. The input is of shape ``(mc_samples,) + batch_size +
-event_size``, where ``mc_samples`` is some number of Monte Carlo samples and
-``batch_size`` and ``event_size`` are determined by the proposal distribution. The
-return value is a tensor which broadcasts with ``(mc_samples,) + batch_size``,
-usually of that shape, storing the values of the function evaluated on each
-sample.
-"""
+from ._estimators import FunctionOnSample
 
 
 class MonteCarloEstimator(metaclass=abc.ABCMeta):
