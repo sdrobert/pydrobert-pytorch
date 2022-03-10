@@ -88,6 +88,46 @@ def test_direct_estimator(device, is_log):
     assert torch.allclose(exp_g_logits, act_g_logits, atol=1e-1)
 
 
+def test_reparameterization_estimator(device):
+    N, T = int(1e5), 30
+    mu = torch.randn(T, device=device, requires_grad=True)
+    func = Func().to(device)
+    v = (func.theta * mu).sum()
+    exp_loss = (v - T / 2) ** 2
+    exp_g_mu, exp_g_theta = torch.autograd.grad(exp_loss, [mu, func.theta])
+
+    dist = torch.distributions.Normal(mu, 1)
+    estimator = estimators.ReparameterizationEstimator(dist, func, N)
+    v = estimator().sum()
+    act_loss = (v - T / 2) ** 2
+    assert torch.isclose(exp_loss, act_loss, atol=1)
+    act_g_mu, act_g_theta = torch.autograd.grad(act_loss, [mu, func.theta])
+    assert torch.allclose(exp_g_mu, act_g_mu, atol=1e-1)
+    assert torch.isclose(exp_g_theta, act_g_theta, atol=1)
+
+
+def test_straight_through_estimator(device, is_log):
+    N, T = int(1e5), 30
+    logits = torch.randn(T, device=device, requires_grad=True)
+    mask = torch.randint(2, (T,), device=device) == 1
+    func = (LogFunc if is_log else Func)().to(device)
+    probs = logits.sigmoid().masked_fill(mask, 0)
+    v = (func.theta * probs).sum()
+    exp_loss = (v - T / 2) ** 2
+
+    dist = distributions.LogisticBernoulli(probs=probs)
+    estimator = estimators.StraightThroughEstimator(dist, func, N, is_log)
+    v = estimator().sum()
+    act_loss = (v - T / 2) ** 2
+    assert torch.isclose(exp_loss, act_loss, atol=1)
+    # the gradient is biased, so we just do some sanity checks
+    act_g_logits, act_g_theta = torch.autograd.grad(act_loss, [logits, func.theta])
+    assert (act_g_logits == act_g_logits).all()  # no nans
+    assert (act_g_logits != 0).any()
+    assert (act_g_logits.masked_select(mask) == 0).all()
+    assert act_g_theta == act_g_theta != 0
+
+
 @pytest.mark.parametrize("self_normalize", [True, False], ids=["norm", "nonorm"])
 def test_importance_sampling_estimator(device, self_normalize, is_log):
     N, T = int(1e6), 30
@@ -302,16 +342,14 @@ def test_benchmark(mc_samples_per_iter, estimator, num_bernoullis):
             estimator_ = estimators.RelaxEstimator(
                 dist, func, mc_samples_per_iter, cv, *args
             )
-        z = estimator_()
-        loss = loss_fn(z, ref_logits.sigmoid())
+        v = estimator_()
+        loss = loss_fn(v, ref_logits.sigmoid())
         loss.backward()
         optimizer.step()
         if torch.allclose(ref_logits, hyp_logits, atol=atol, rtol=0):
             elapsed = int(time.time() - start)
             converge_points.append((atol, iter, elapsed))
             atol *= atol_scale_factor
-        # if not (iter % 100):
-        # print(loss.item(), cv.log_temp.item(), cv.eta.item(), z.sum().item())
     elapsed = int(time.time() - start)
     diff = (ref_logits - hyp_logits).abs().max().item()
     print(f"Finished {max_iters} in about {elapsed}s.")

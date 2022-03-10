@@ -43,10 +43,10 @@ class Estimator(metaclass=abc.ABCMeta):
 
     .. math::
 
-        z = \mathbb{E}_{b \sim P}\left[f(b)\right]
+        v = \mathbb{E}_{b \sim P}\left[f(b)\right]
           = \int_{b \in \mathrm{supp}(P)} f(b) \mathrm{d}P(b).
     
-    The value of :math:`z` can be estimated in many ways. This base class serves as the
+    The value of :math:`v` can be estimated in many ways. This base class serves as the
     common foundation for those estimators. The usage pattern is as follows:
 
     .. code-block:: python
@@ -62,8 +62,8 @@ class Estimator(metaclass=abc.ABCMeta):
             # 2. Initialize the distribution and estimator in the training loop.
             dist = torch.distributions.SomeDistribution(logits=logits)
             estimator = pydrobert.torch.estimators.SomeEstimator(dist, func, ...)
-            z = estimator()  # of shape dist.batch_shape
-            # 3. calculate loss as a function of z
+            v = estimator()  # of shape dist.batch_shape
+            # 3. calculate loss as a function of v
             loss.backwards()
             # ...
 

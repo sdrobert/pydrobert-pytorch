@@ -21,10 +21,16 @@ References
 .. [heafield2011] K. Heafield, "KenLM: Faster and smaller language model
    queries," in Proceedings of the Sixth Workshop on Statistical Machine
    Translation, Edinburgh, Scotland, 2011, pp. 187-197.
-.. [cho2014] [K. Cho et al., "Learning phrase representations using RNN
+.. [bengio2013] Y. Bengio, N. Léonard, and A. C. Courville, "Estimating or
+   Propagating Gradients Through Stochastic Neurons for Conditional
+   Computation.," CoRR, vol. abs/1308.3432, 2013, [Online]. Available:
+   http://arxiv.org/abs/1308.3432
+.. [cho2014] K. Cho et al., "Learning phrase representations using RNN
    Encoder-Decoder for Statistical Machine Translation," Doha, Qatar, 2014,
    pp. 1724--1734. [Online]. Available:
    https://www.aclweb.org/anthology/D14-1179
+.. [kingma2014] D. P. Kingma and M. Welling, "Auto-encoding variational Bayes,"
+   Banf, Canada, 2014. [Online]. Available: http://arxiv.org/abs/1312.6114
 .. [bahdanau2015] D. Bahdanau, K. Cho, and Y. Bengio, "Neural machine
    translation by jointly learning to align and translate.," in 3rd
    International Conference on Learning Representations, ICLR 2015, San Diego,

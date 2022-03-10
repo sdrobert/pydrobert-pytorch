@@ -46,8 +46,8 @@ class StraightThrough(metaclass=abc.ABCMeta):
     """Interface for distributions for which a straight through estimate is possible
 
     Classes implementing this interface supply both a method for drawing a relaxed
-    sample :func:`rsample` and a method for thresholding it into a discrete sample
-    :func:`threshold`.
+    sample :func:`rsample` (``dist.has_rsample == True``) and a method for thresholding
+    it into a discrete sample :func:`threshold`.
     """
 
     @abc.abstractmethod
@@ -139,6 +139,9 @@ class StraightThrough(metaclass=abc.ABCMeta):
     @classmethod
     def __subclasscheck__(cls, C) -> bool:
         if cls is StraightThrough:
+            has_rsample = getattr(C, "has_rsample", False)
+            if not has_rsample:
+                return NotImplemented
             return check_methods(C, "rsample", "threshold", "tlog_prob")
         return NotImplemented
 
@@ -206,9 +209,9 @@ class ConditionalStraightThrough(StraightThrough, metaclass=abc.ABCMeta):
     @classmethod
     def __subclasscheck__(cls, C) -> bool:
         if cls is ConditionalStraightThrough:
-            return check_methods(
-                C, "rsample", "threshold", "tlog_prob", "csample", "clog_prob"
-            )
+            if not issubclass(C, ConditionalStraightThrough):
+                return NotImplemented
+            return check_methods(C, "csample", "clog_prob")
         return NotImplemented
 
 
@@ -216,8 +219,11 @@ class Density(metaclass=abc.ABCMeta):
     """Interface for a density function
 
     A density is a non-negative function over some domain. A density implements the
-    method :func:`log_prob` which returns the log of the density applied to that sample. 
+    method :func:`log_prob` which returns the log of the density applied to some number
+    of samples. 
     
+    Notes
+    -----
     While :func:`log_prob` is not necessarily a log probability for all densities, the
     name was chosen to match the method of :class:`torch.distributions.Distribution`.
     All probability densities are densities.

@@ -19,7 +19,7 @@ from typing import Optional, Sequence, Tuple
 import torch
 
 from . import config
-from .distributions import Density, ConditionalStraightThrough
+from .distributions import Density, StraightThrough, ConditionalStraightThrough
 from ._estimators import Estimator, FunctionOnSample
 
 
@@ -33,7 +33,7 @@ class MonteCarloEstimator(Estimator, metaclass=abc.ABCMeta):
 
     .. math::
 
-        \mathbb{E}_{b^{(1:N)} \sim P}[G(b)] = z.
+        \mathbb{E}_{b^{(1:N)} \sim P}[G(b)] = \mathbb{E}_{b \sim P}[f(b)].
     
     A toy example can be found in the `source repository
     <https://github.com/sdrobert/pydrobert-pytorch/blob/master/tests/test_mc.py>`_ under
@@ -70,17 +70,17 @@ class MonteCarloEstimator(Estimator, metaclass=abc.ABCMeta):
 class DirectEstimator(MonteCarloEstimator):
     r"""Direct MC estimate using REINFORCE gradient estimate
 
-    The expectation :math:`z = \mathbb{E}_{b \sim P}[f(b)]` is estimated by drawing
+    The expectation :math:`v = \mathbb{E}_{b \sim P}[f(b)]` is estimated by drawing
     :math:`N` samples :math:`b^{(1:N)}` i.i.d. from :math:`P` and taking the sample
     average:
 
     .. math::
 
-        z \approx \frac{1}{N} \sum_{n=1}^N f\left(b^{(n)}\right).
+        v \approx \frac{1}{N} \sum_{n=1}^N f\left(b^{(n)}\right).
     
     An optional control variate :math:`c` can be specified:
 
-        z \approx \frac{1}{N} \sum_{n=1}^N
+        v \approx \frac{1}{N} \sum_{n=1}^N
             f\left(b^{(n)}\right) - c\left(b^{(n)}\right) + \mu_c
     
     which is unbiased when :math:`\mathbb{E}_{b \sim P}[c(b)] = \mu_c`.
@@ -88,7 +88,7 @@ class DirectEstimator(MonteCarloEstimator):
     In the backward pass, the gradient of the expectation is estimated using REINFORCE
     [williams1992]_:
 
-        \nabla z \approx \frac{1}{N} \sum_{n=1}^N \nabla
+        \nabla v \approx \frac{1}{N} \sum_{n=1}^N \nabla
             \left(f\left(b^{(n)}\right) - c\left(b^{(n)}\right) + \mu_c\right)\log P(b).
     
     With the control variate terms excluded if they were not specified.
@@ -135,21 +135,144 @@ class DirectEstimator(MonteCarloEstimator):
             fb = fb - cvb + c
         log_pb = self.proposal.log_prob(b)
         dlog_pb = fb.detach() * log_pb
-        z = fb + dlog_pb - dlog_pb.detach()
-        return z.mean(0)
+        v = fb + dlog_pb - dlog_pb.detach()
+        return v.mean(0)
+
+
+class ReparameterizationEstimator(MonteCarloEstimator):
+    r"""MC estimation of continuous variables with reparameterization gradient
+    
+    This estimator applies to distributions over continuous random variables :math:`z
+    \sim P` whose values can be decomposed into the sum of a deterministic, learnable
+    (i.e. with gradient) part :math:`\theta` and a random, unlearnable part
+    :math:`\epsilon`:
+
+    .. math::
+
+        z = \theta + \epsilon,\>\epsilon \sim P' \\
+        \nabla P(z) = \nabla P'(\epsilon) = 0
+    
+    The expectation :math:`v = \mathbb{E}_{z \sim P}[f(z)]` is estimated by drawing
+    :math:`N` samples :math:`z^{(1:N)}` i.i.d. from :math:`P` and taking the sample
+    average:
+
+    .. math::
+    
+        v \approx \frac{1}{N} \sum^N_{n=1} f\left(z^{(n)}\right).
+    
+    We can ignore the probabilities in the bacward direction because :math:`\nabla P(z)
+    = 0`, leaving the unbiased estimate of the gradient:
+
+    .. math::
+
+        \nabla v \approx \frac{1}{N} \sum^N_{n=1} \nabla f\left(z^{(n)}\right).
+    
+    Parameters
+    ----------
+    proposal : torch.distributions.Distribution
+        The distribution over which the expectation is taken, :math:`P` (not
+        :math:`P'`). `proposal` must implement the
+        :func:`torch.distributions.Distribution.rsample` method (``proposal.has_rsample
+        == True``).
+    func : FunctionOnSample
+    mc_samples : int
+    is_log : bool, optional
+    """
+
+    def __init__(
+        self,
+        proposal: torch.distributions.Distribution,
+        func: FunctionOnSample,
+        mc_samples: int,
+        is_log: bool = False,
+    ) -> None:
+        if not proposal.has_rsample:
+            raise ValueError("proposal must implement rsample")
+        super().__init__(proposal, func, mc_samples, is_log)
+
+    def __call__(self) -> torch.Tensor:
+        z = self.proposal.rsample([self.mc_samples])
+        fz = self.func(z)
+        if self.is_log:
+            fz = fz.exp()
+        return fz.mean(0)
+
+
+class StraightThroughEstimator(MonteCarloEstimator):
+    r"""MC estimation of discrete variables with continuous relaxation's reparam grad
+    
+    A straight-through estimator [bengio2013]_ is like a
+    :class:`ReparameterizationEstimator` but fudges the fact that the samples are
+    actually discrete to compute the gradient. To estimate :math:`v = \mathbb{E}_{b \sim
+    P}[f(b)]`, we need a distribution over discrete samples' continuous relaxations,
+
+    .. math::
+
+        z = \theta + \epsilon,\>\epsilon \sim P'
+    
+    and a threshold function :math:`H(z) = b` such that :math:`P(H(z)) = P(b)`. The 
+    estimate of :math:`v` is computed by drawing :math:`N` relaxed values
+    `z^{(1:N)}` and taking the sample average on thresholded values:
+
+    .. math::
+
+        v \approx \frac{1}{N} \sum^N_{n=1} f\left(H\left(z^{(n)}\right)\right).
+    
+    This estimate is unbiased. In the backward direction, we approximate
+
+    .. math::
+
+        \nabla P(H(z)) \approx \nabla P(z) = \nabla P'(\epsilon) = 0
+    
+    and end up with a biased estimate of the gradient resembling that of
+    :class:`ReparameterizationEstimator`:
+
+    .. math::
+
+        \nabla v \approx \frac{1}{N} \sum^N_{n=1}
+            \nabla \left(H\left(z^{(n)}\right)\right).
+    
+    Parameters
+    ----------
+    proposal : torch.distributions.Distribution
+        The distribution over which the expectation is taken, :math:`P` (not
+        :math:`P'`). `proposal` must implement :class:`StraightThrough`.
+    func : FunctionOnSample
+    mc_samples : int
+    is_log : bool, optional
+    """
+
+    def __init__(
+        self,
+        proposal: torch.distributions.Distribution,
+        func: FunctionOnSample,
+        mc_samples: int,
+        is_log: bool = False,
+    ) -> None:
+        if not isinstance(proposal, StraightThrough):
+            raise ValueError("proposal must implement StraightThrough")
+        super().__init__(proposal, func, mc_samples, is_log)
+
+    def __call__(self) -> torch.Tensor:
+        z = self.proposal.rsample([self.mc_samples])
+        b = self.proposal.threshold(z, True)
+        fb = self.func(b)
+        if self.is_log:
+            fb = fb.exp()
+        return fb.mean(0)
 
 
 class ImportanceSamplingEstimator(MonteCarloEstimator):
     r"""Importance Sampling MC estimate
     
-    The expectation :math:`z = \mathbb{E}_{b \sim P}[f(b)]` is estimated by drawing
+    The expectation :math:`v = \mathbb{E}_{b \sim P}[f(b)]` is estimated by drawing
     :math:`N` samples :math:`b^{(1:N)}` i.i.d. from the proposal distribution :math:`Q`,
     weighing the values :math:`f(b)` according to the likelihood ratio of
     :math:`P(b)` over :math:`Q(b)`, and taking the sample average:
 
     .. math::
 
-        z \approx \frac{1}{N} \sum_{n=1}^N w_n f\left(b^{(n)}\right) \\
+        v \approx \frac{1}{N} \sum_{n=1}^N w_n f\left(b^{(n)}\right) \\
         w_n = \frac{P\left(b^{(n)}\right)}{Q\left(b^{(n)}\right)}.
     
     The estimate is unbiased iff :math:`Q` dominates :math:`P`, that is
@@ -160,24 +283,24 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
 
     .. math::
 
-        \nabla z \approx \frac{1}{N} \sum_{n=1}^N \frac{1}{Q\left(b^{(n)}\right)
+        \nabla v \approx \frac{1}{N} \sum_{n=1}^N \frac{1}{Q\left(b^{(n)}\right)
             \nabla P\left(b^{(n)}\right)f\left(b^{(n)}\right).
     
     Note that the gradient with respect to parameters of :math:`Q` will be defined but
     set to zero.
     
-    If `self_normalized` is set to :obj:`True`, :math:`z` is instead estimated as:
+    If `self_normalized` is set to :obj:`True`, :math:`v` is instead estimated as:
 
     .. math::
 
-        z \approx \frac{1}{N} \sum_{n=1}^N \omega_n f\left(b^{(n)}\right) \\
+        v \approx \frac{1}{N} \sum_{n=1}^N \omega_n f\left(b^{(n)}\right) \\
         \omega_n = \frac{P\left(b^{(n)}\right)}{Q\left(b^{(n)}\right)}
 
     with gradients defined for :math:`Q(b)` using the log trick from REINFORCE
     [williams1992]_:
     
     .. math::
-        \nabla z \approx \frac{1}{N} \sum_{n=1}^N
+        \nabla v \approx \frac{1}{N} \sum_{n=1}^N
             \nabla \omega_n f\left(b^{(n)}\right) \log Q(b).
         
     
@@ -232,21 +355,21 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
         else:
             llr = lpb - lqb.detach()
         if self.is_log:
-            z = (fb.clamp_min(config.EPS_NINF) + llr).exp()
+            v = (fb.clamp_min(config.EPS_NINF) + llr).exp()
         else:
-            z = fb * llr.exp()
+            v = fb * llr.exp()
         if self.self_normalize:
-            dlqb = z.detach() * lqb
+            dlqb = v.detach() * lqb
         else:
             dlqb = 0 * lqb  # ensure we get a zero gradient
-        z = z + dlqb - dlqb.detach()
-        return z.mean(0)
+        v = v + dlqb - dlqb.detach()
+        return v.mean(0)
 
 
 class RelaxEstimator(MonteCarloEstimator):
     r"""RELAX estimator
 
-    The RELAX estimator [grathwohl2017]_ estimates the expectation :math:`z =
+    The RELAX estimator [grathwohl2017]_ estimates the expectation :math:`v =
     \mathbb{E}_{b \sim P}[f(b)]` for discrete :math:`b` via MC estimation, attempting to
     minimize the variance of the estimator using control variates over their continuous
     relaxations.
@@ -261,7 +384,7 @@ class RelaxEstimator(MonteCarloEstimator):
 
     .. math::
 
-        z \approx \frac{1}{N} \sum^N_{n=1}
+        v \approx \frac{1}{N} \sum^N_{n=1}
             f\left(b^{(n)}\right) - c\left(\tilde{z}^{(n)}\right)
                                   + c\left(z^{(n)}\right).
     
@@ -273,7 +396,7 @@ class RelaxEstimator(MonteCarloEstimator):
 
     .. math::
 
-        \nabla z \approx \frac{1}{N} \sum^N_{n=1} \nabla \left(
+        \nabla v \approx \frac{1}{N} \sum^N_{n=1} \nabla \left(
             \left(f\left(b^{(n)}\right) - c\left(\tilde{z}^{(n)}\right)\right)\log P(b)
                                   + c\left(z^{(n)}\right)\right).
     
@@ -288,7 +411,7 @@ class RelaxEstimator(MonteCarloEstimator):
 
     .. math::
 
-        \nabla_\gamma \mathrm{Var}(z) \approx \frac{1}{K} \nabla_\gamma
+        \nabla_\gamma \mathrm{Var}(v) \approx \frac{1}{K} \nabla_\gamma
             \left(\sum_{k=1}^K g^2_{\theta_k}\right).
     
     The remaining parameters are calculated with the REINFORCE-style estimator above.
@@ -357,11 +480,11 @@ class RelaxEstimator(MonteCarloEstimator):
         if self.is_log:
             fb, cvz, cvzcond = fb.exp(), cvz.exp(), cvzcond.exp()
         if self.cv_params:
-            z_ = ((fb - cvzcond) * log_pb + cvz).mean(0)
+            v_ = ((fb - cvzcond) * log_pb + cvz).mean(0)
             gs_proposal = torch.autograd.grad(
-                z_,
+                v_,
                 self.proposal_params,
-                torch.ones_like(z_),
+                torch.ones_like(v_),
                 create_graph=True,
                 retain_graph=True,
             )
@@ -381,8 +504,8 @@ class RelaxEstimator(MonteCarloEstimator):
 
         fb_cvzcond = fb - cvzcond
         dlog_pb = fb_cvzcond.detach() * log_pb
-        z = fb_cvzcond + cvz + dlog_pb - dlog_pb.detach()
-        return z.mean(0)
+        v = fb_cvzcond + cvz + dlog_pb - dlog_pb.detach()
+        return v.mean(0)
 
 
 def _attach_grad(x: torch.tensor, g: torch.Tensor):

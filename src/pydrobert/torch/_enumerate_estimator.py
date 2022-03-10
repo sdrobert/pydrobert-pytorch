@@ -29,7 +29,7 @@ class EnumerateEstimator(Estimator):
 
         \mathbb{E}_{b \sim P}[f(b)] = \sum_b P(b) f(b).
     
-    When the instance's :func:`estimate` function is called, it does just that.
+    When called, the instance does just that.
 
     Parameters
     ----------

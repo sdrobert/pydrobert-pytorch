@@ -31,6 +31,8 @@ from ._mc import (
     ImportanceSamplingEstimator,
     MonteCarloEstimator,
     RelaxEstimator,
+    ReparameterizationEstimator,
+    StraightThroughEstimator,
 )
 
 __all__ = [
@@ -41,6 +43,8 @@ __all__ = [
     "MonteCarloEstimator",
     "DirectEstimator",
     "RelaxEstimator",
+    "ReparameterizationEstimator",
+    "StraightThroughEstimator",
 ]
 
 
