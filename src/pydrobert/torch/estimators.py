@@ -29,6 +29,7 @@ from ._estimators import Estimator, FunctionOnSample
 from ._mc import (
     DirectEstimator,
     ImportanceSamplingEstimator,
+    IndependentMetropolisHastingsEstimator,
     MonteCarloEstimator,
     RelaxEstimator,
     ReparameterizationEstimator,
@@ -40,6 +41,7 @@ __all__ = [
     "EnumerateEstimator",
     "FunctionOnSample",
     "ImportanceSamplingEstimator",
+    "IndependentMetropolisHastingsEstimator",
     "MonteCarloEstimator",
     "DirectEstimator",
     "RelaxEstimator",

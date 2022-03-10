@@ -36,7 +36,7 @@ References
    International Conference on Learning Representations, ICLR 2015, San Diego,
    CA, USA, May 7-9, 2015, Conference Track Proceedings, 2015.
 .. [burda2016] Y. Burda, R. B. Grosse, and R. Salakhutdinov, "Importance
-   weighted autoencoders,"" San Juan, Puerto Rico, 2016. [Online]. Available:
+   weighted autoencoders," San Juan, Puerto Rico, 2016. [Online]. Available:
    http://arxiv.org/abs/1509.00519
 .. [gulcehre2015] Ç. Gülçehre et al., "On using monolingual corpora in neural
    machine translation," CoRR, vol. abs/1503.03535, 2015, [Online]. Available:

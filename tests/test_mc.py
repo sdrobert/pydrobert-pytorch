@@ -168,6 +168,27 @@ def test_importance_sampling_estimator(device, self_normalize, is_log):
         assert (g_q_probs == 0).all()
 
 
+def test_independent_metropolis_hastings_estimator(device, is_log):
+    N, T = int(1e4), 30
+    logits = torch.randn(T, device=device)
+    mask = torch.randint(2, (T,), device=device) == 1
+    probs = logits.sigmoid().masked_fill(mask, 0)
+    func = (LogFunc if is_log else Func)().to(device)
+    v = (func.theta * probs).sum()
+    exp_loss = (v - T / 2) ** 2
+
+    probs = logits.sigmoid().masked_fill(mask, 0)
+    density = torch.distributions.Bernoulli(probs=probs)
+    q_probs = torch.rand_like(probs)
+    proposal = torch.distributions.Bernoulli(probs=q_probs)
+    estimator = estimators.IndependentMetropolisHastingsEstimator(
+        proposal, func, N, density, burn_in=N // 2, is_log=is_log
+    )
+    v = estimator().sum()
+    act_loss = (v - T / 2) ** 2
+    assert torch.isclose(exp_loss, act_loss, atol=1)
+
+
 @pytest.mark.parametrize("varmin", [True, False], ids=["varmin", "mc"])
 def test_rebar_estimator_bernoulli(device, is_log, varmin, jit_type):
     N, T = int(1e5), 30
