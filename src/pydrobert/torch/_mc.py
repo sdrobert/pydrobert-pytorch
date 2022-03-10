@@ -442,6 +442,13 @@ class RelaxEstimator(MonteCarloEstimator):
         respectively. Their return values will be exponentiated inside the call to
         :func:`estimate`. There will be little difference from pre-exponentiating the
         return values inside the respective functions/tensors.
+    
+    Warnings
+    --------
+    The current implmentation does not support auxiliary loss functions for the
+    control variate parameters when the variance-minimizing objective is used
+    (`proposal_params` and `cv_params` are specified). Auxiliary loss functions for
+    parameters other than `cv_params` are fine.
     """
 
     cv: FunctionOnSample

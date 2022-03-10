@@ -4,8 +4,8 @@
 
 - `SimpleRandomSamplingWithoutReplacement` has been added as a new
   distribution.
-- `EnumerateEstimator` and `ImportanceSamplingEstimator` have been added as a
-  new estimators.
+- `EnumerateEstimator`, `ImportanceSamplingEstimator`, and
+  `IndependentMetropolisHastingsEstimator` have been added as a new estimators.
 - `pydrobert.torch.estimators` has been rewritten from the ground-up, with old
   functionality deprecated. Distribution-related functions have been rewritten
   as `torch.distributions.Distribution` classes implementing a
