@@ -511,6 +511,67 @@ class RelaxEstimator(MonteCarloEstimator):
 
 
 class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
+    r"""Independent Metropolis Hastings MCMC estimator
+
+    Independent Metropolis Hastings (IMH) is a Markov Chain Monte Carlo (MCMC) technique
+    for estimating the value :math:`v = \mathbb{E}_{b \sim P}[f(b)] < \infty`. A
+    Markov Chain of :math:`N` samples :math:`b^{(1:N)}` is contructed sequentially by
+    iteratively drawing samples from a proposal :math:`b' \sim Q` and either accepting
+    it or rejecting it and taking :math:`b^{(n-1)}` as the next sample in the chain,
+    :math:`b^{(n)}`, according to the following rules:
+
+    .. math::
+
+        u \sim \mathrm{Uniform}([0, 1]) \\
+        b^{(n)} = \begin{cases}
+            b' & \alpha(b', b^{(n-1)}) > u \\
+            b^{(n-1)} & \mathmrm{otherwise}
+        \end{cases} \\
+        \alpha(b', b^{(n-1)}) = \min\left(
+            \frac{P(b')Q(b^{(n-1)})}{P(b^{(n-1)}Q(b'))}, 1\right).
+    
+    The sample estimate from the Markov Chain
+
+    .. math::
+
+        v \approx \frac{1}{N - M} \sum_{n=M + 1}^N  f\left(b^{(n)}\right)
+    
+    for a fixed number of burn-in samples :math:`M \in [0, N)` is biased but converges
+    asymptotically (:math:`\lim N \to \infty`) to :math:`v` with strong guarantees
+    as long as there exists some constant :math:`\epsilon` such that [mengerson1996]_
+
+    .. math::
+
+        P(b) > 0 \implies \frac{P(b)}{Q(b)} \leq \epsilon.
+    
+    Parameters
+    ----------
+    proposal : torch.distributions.Distribution
+        The proposal distribution :math:`Q`.
+    func : FunctionOnSample
+    mc_samples : int
+    density : Density
+        The density :math:`P`. Does not have to be a probability distribution
+        (can be unnormalized).
+    burn_in : int, optional
+        The number of samples in the chain discarded from the estimate, :math:`M`.
+    initial_sample : torch.Tensor or None, optional
+        If specified, `initial_sample` is used as the value :math:`b^{(0)}` to start the
+        chain. Of size either ``proposal.batch_size + proposal.event_size`` or ``(1,) +
+        proposal.batch_size + proposal.event_size``. A :class:`ValueError` will be
+        thrown if any elements are outside the support of :math:`P` (`density`). If
+        unspecified, :math:`b^{(0)}` will be decided by randomly drawing from `proposal`
+        until all elements are in the support of `density`.
+    initial_sample_tries : int, optional
+        If `initial_sample` is unspecified, `initial_sample_tries` dictates the
+        maximum number of draws from `proposal` allowed in order to find elements in
+        the support of `density` before a :class:`RuntimeError` is thrown.
+
+    Warnings
+    --------
+    The resulting estimate has no gradient attached to it and therefore cannot be
+    backpropagated through.
+    """
 
     density: Density
     initial_sample: Optional[torch.Tensor]
@@ -555,6 +616,7 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
 
     @torch.no_grad()
     def find_initial_sample(self, tries: Optional[int] = None) -> torch.Tensor:
+        """Find an initial sample by randomly sampling from the proposal"""
         if tries is None:
             tries = self.initial_sample_tries
         if tries < 1:

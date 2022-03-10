@@ -11,6 +11,9 @@ References
 .. [chen1994] X.-H. Chen, A. P. Dempster, and J. S. Liu, "Weighted finite
    population sampling to maximize entropy," Biometrika, vol. 81, no. 3, pp.
    457-69, 1994, doi: 10.2307/2337119.
+.. [mengerson1996] K. L. Mengersen and R. L. Tweedie, "Rates of convergence of
+   the Hastings and Metropolis algorithms," The Annals of Statistics, vol. 24,
+   no. 1, pp. 101-121, Feb. 1996, doi: 10.1214/aos/1033066201.
 .. [graves2006] A. Graves, S. Fernández, F. Gomez, and J. Schmidhuber,
    "Connectionist Temporal Classification: Labelling unsegmented sequence data
    with recurrent neural networks," New York, NY, USA, 2006, pp. 369-376.
