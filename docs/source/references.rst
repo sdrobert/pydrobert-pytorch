@@ -1,12 +1,22 @@
 References
 ==========
 
+.. [fan1962] C. T. Fan, M. E. Muller, and I. Rezucha, "Development of sampling
+   plans by using sequential (item by item) selection techniques and digital
+   computers," vol. 57, no. 298, pp. 387-402, Jun. 1962, doi:
+   10.1080/01621459.1962.10480667.
 .. [williams1992] R. J. Williams, "Simple statistical gradient-following
    algorithms for connectionist reinforcement learning," Machine Learning,
    vol. 8, no. 3, pp. 229-256, May 1992.
+.. [chen1994] X.-H. Chen, A. P. Dempster, and J. S. Liu, "Weighted finite
+   population sampling to maximize entropy," Biometrika, vol. 81, no. 3, pp.
+   457-69, 1994, doi: 10.2307/2337119.
+.. [mengerson1996] K. L. Mengersen and R. L. Tweedie, "Rates of convergence of
+   the Hastings and Metropolis algorithms," The Annals of Statistics, vol. 24,
+   no. 1, pp. 101-121, Feb. 1996, doi: 10.1214/aos/1033066201.
 .. [graves2006] A. Graves, S. Fernández, F. Gomez, and J. Schmidhuber,
    "Connectionist Temporal Classification: Labelling unsegmented sequence data
-   with recurrent neural networks," New York, NY, USA, 2006, pp. 369–376.
+   with recurrent neural networks," New York, NY, USA, 2006, pp. 369-376.
    doi: 10.1145/1143844.1143891.
 .. [mikolov2010] T. Mikolov, M. Karafiát, L. Burget, J. Černocký, and S.
    Khudanpur, "Recurrent neural network based language model," presented at
@@ -14,14 +24,23 @@ References
 .. [heafield2011] K. Heafield, "KenLM: Faster and smaller language model
    queries," in Proceedings of the Sixth Workshop on Statistical Machine
    Translation, Edinburgh, Scotland, 2011, pp. 187-197.
-.. [cho2014] [K. Cho et al., "Learning phrase representations using RNN
+.. [bengio2013] Y. Bengio, N. Léonard, and A. C. Courville, "Estimating or
+   Propagating Gradients Through Stochastic Neurons for Conditional
+   Computation.," CoRR, vol. abs/1308.3432, 2013, [Online]. Available:
+   http://arxiv.org/abs/1308.3432
+.. [cho2014] K. Cho et al., "Learning phrase representations using RNN
    Encoder-Decoder for Statistical Machine Translation," Doha, Qatar, 2014,
    pp. 1724--1734. [Online]. Available:
    https://www.aclweb.org/anthology/D14-1179
+.. [kingma2014] D. P. Kingma and M. Welling, "Auto-encoding variational Bayes,"
+   Banf, Canada, 2014. [Online]. Available: http://arxiv.org/abs/1312.6114
 .. [bahdanau2015] D. Bahdanau, K. Cho, and Y. Bengio, "Neural machine
    translation by jointly learning to align and translate.," in 3rd
    International Conference on Learning Representations, ICLR 2015, San Diego,
    CA, USA, May 7-9, 2015, Conference Track Proceedings, 2015.
+.. [burda2016] Y. Burda, R. B. Grosse, and R. Salakhutdinov, "Importance
+   weighted autoencoders," San Juan, Puerto Rico, 2016. [Online]. Available:
+   http://arxiv.org/abs/1509.00519
 .. [gulcehre2015] Ç. Gülçehre et al., "On using monolingual corpora in neural
    machine translation," CoRR, vol. abs/1503.03535, 2015, [Online]. Available:
    http://arxiv.org/abs/1503.03535

@@ -12,34 +12,63 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-r"""Gradient estimators
-
-Much of this code has been adapted from `David Duvenaud's repo
-<https://github.com/duvenaud/relax>`_.
+r"""Interfaces and classes for estimating expectations
 
 See Also
 --------
-:ref:`Gradient Estimators`
-    A description of how to use this module, as well as an example
+Estimator
+    The base class for all estimators
 """
 
-from typing import Callable
+import functools
 import warnings
 
 import torch
+from ._enumerate_estimator import EnumerateEstimator
+from ._estimators import Estimator, FunctionOnSample
+from ._mc import (
+    DirectEstimator,
+    ImportanceSamplingEstimator,
+    IndependentMetropolisHastingsEstimator,
+    MonteCarloEstimator,
+    RelaxEstimator,
+    ReparameterizationEstimator,
+    StraightThroughEstimator,
+)
 
 __all__ = [
-    "to_z",
-    "to_b",
-    "to_fb",
-    "reinforce",
-    "relax",
-    "REBARControlVariate",
+    "Estimator",
+    "EnumerateEstimator",
+    "FunctionOnSample",
+    "ImportanceSamplingEstimator",
+    "IndependentMetropolisHastingsEstimator",
+    "MonteCarloEstimator",
+    "DirectEstimator",
+    "RelaxEstimator",
+    "ReparameterizationEstimator",
+    "StraightThroughEstimator",
 ]
+
+
+# ==== OLD
 
 BERNOULLI_SYNONYMS = {"bern", "Bern", "bernoulli", "Bernoulli"}
 CATEGORICAL_SYNONYMS = {"cat", "Cat", "categorical", "Categorical"}
 ONEHOT_SYNONYMS = {"onehot", "OneHotCategorical"}
+
+
+def deprecate(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        warnings.warn(
+            "functional interface for estimators is deprecated. "
+            "See pydrobert.torch.estimators.Estimator for how to use the new interface."
+        )
+        return wrapper.__func(*args, **kwargs)
+
+    wrapper.__func = func
+    return wrapper
+
 
 # XXX(sdrobert): Implementation detail
 # The Gumbel relaxation does not *require* a softmax to be applied to the
@@ -56,6 +85,7 @@ ONEHOT_SYNONYMS = {"onehot", "OneHotCategorical"}
 # numerically stable (though unbiased) than just taking the softmax beforehand
 
 
+@deprecate
 def to_z(logits: torch.Tensor, dist: str, warn: bool = True) -> torch.Tensor:
     """Samples a continuous relaxation of `dist` parameterized by `logits`
 
@@ -91,6 +121,7 @@ def to_z(logits: torch.Tensor, dist: str, warn: bool = True) -> torch.Tensor:
     return z
 
 
+@deprecate
 def to_b(z: torch.Tensor, dist: str) -> torch.Tensor:
     """Converts z to a discrete sample using a deterministic mapping
 
@@ -114,11 +145,13 @@ def to_b(z: torch.Tensor, dist: str) -> torch.Tensor:
     return b
 
 
-def to_fb(f: Callable[..., torch.Tensor], b: torch.Tensor, **kwargs) -> torch.Tensor:
+@deprecate
+def to_fb(f: FunctionOnSample, b: torch.Tensor, **kwargs) -> torch.Tensor:
     """Simply call f(b)"""
     return f(b, **kwargs)
 
 
+@deprecate
 def reinforce(
     fb: torch.Tensor, b: torch.Tensor, logits: torch.Tensor, dist: str
 ) -> torch.Tensor:
@@ -182,15 +215,16 @@ def reinforce(
     return g
 
 
+@deprecate
 def relax(
     fb: torch.Tensor,
     b: torch.Tensor,
     logits: torch.Tensor,
     z: torch.Tensor,
-    c: Callable[..., torch.Tensor],
+    c: FunctionOnSample,
     dist: str,
     components: bool = False,
-    **kwargs
+    **kwargs,
 ) -> torch.Tensor:
     r"""Perform RELAX gradient estimation
 
@@ -339,12 +373,16 @@ class REBARControlVariate(torch.nn.Module):
 
     def __init__(
         self,
-        f: Callable[..., torch.Tensor],
+        f: FunctionOnSample,
         dist: str,
         start_temp: float = 0.1,
         start_eta: float = 1.0,
         warn: bool = True,
     ):
+        warnings.warn(
+            "pydrobert.torch.estimators.REBARControlVariate is deprecated. See "
+            "RelaxEstimator for more details on how to replace it."
+        )
         if start_temp <= 0.0:
             raise ValueError("start_temp must be positive")
         super(REBARControlVariate, self).__init__()

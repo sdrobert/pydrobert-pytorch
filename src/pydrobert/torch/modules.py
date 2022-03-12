@@ -26,7 +26,9 @@ __all__ = [
     "ExtractableSequentialLanguageModel",
     "GeneralizedDotProductSoftAttention",
     "GlobalSoftAttention",
+    "GumbelOneHotCategoricalRebarControlVariate",
     "HardOptimalCompletionDistillationLoss",
+    "LogisticBernoulliRebarControlVariate",
     "LookupLanguageModel",
     "MinimumErrorRateLoss",
     "MixableSequentialLanguageModel",
@@ -72,6 +74,10 @@ from ._lm import (
     LookupLanguageModel,
     MixableSequentialLanguageModel,
     SequentialLanguageModel,
+)
+from ._mc import (
+    LogisticBernoulliRebarControlVariate,
+    GumbelOneHotCategoricalRebarControlVariate,
 )
 from ._rl import TimeDistributedReturn
 from ._string import (

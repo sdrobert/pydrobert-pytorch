@@ -25,6 +25,7 @@ except ImportError:
 __all__ = [
     "config",
     "data",
+    "distributions",
     "estimators",
     "functional",
     "modules",

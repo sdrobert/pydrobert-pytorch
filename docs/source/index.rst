@@ -7,7 +7,6 @@
 
    advanced_attention
    lm
-   estimators
    references
    modules
 
