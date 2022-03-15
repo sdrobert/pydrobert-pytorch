@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import itertools
+from random import Random
 
 import torch
 import pytest
@@ -24,7 +25,9 @@ from pydrobert.torch.modules import (
     CTCGreedySearch,
     CTCPrefixSearch,
     MixableSequentialLanguageModel,
+    RandomWalk,
     SequenceLogProbabilities,
+    SequentialLanguageModel,
 )
 from pydrobert.torch.functional import (
     beam_search_advance,
@@ -729,6 +732,75 @@ def test_beam_search_advance(device):
     assert (y_next_lens_act[:, 0] == y_next_lens_0_exp).all()
     assert (next_src_act[:, 0] == next_src_0_exp).all()
     assert (y_next_act[:Kp, :, 0] == y_next_0_exp).all()
+
+
+def test_random_walk(device):
+    class StationaryLM(SequentialLanguageModel):
+        def __init__(self, vocab_size: int):
+            super().__init__(vocab_size)
+            self.logits = torch.nn.Parameter(torch.randn(vocab_size, vocab_size))
+
+        def calc_idx_log_probs(
+            self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
+        ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+            if idx == 0:
+                hist = torch.zeros(
+                    1, hist.size(1), device=hist.device, dtype=hist.dtype
+                )
+            return self.logits.index_select(0, hist[(idx - 1).clamp_min_(0)]), prev
+
+    T, V = 10000, 4
+    lm = StationaryLM(V).to(device)
+    stationary = lm.logits.detach().softmax(-1)
+    while True:
+        stationary_ = stationary @ stationary
+        if torch.allclose(stationary, stationary_):
+            break
+        stationary = stationary_
+    exp_expectation = (
+        stationary[0] * torch.arange(V, device=device, dtype=stationary.dtype)
+    ).sum()
+
+    random_walk = RandomWalk(lm, max_iters=T)
+    sample, lens, exp_lprobs = random_walk(
+        torch.empty(0, 1, device=device, dtype=torch.long)
+    )
+    assert sample.shape == (T, 1)
+    assert (lens == T).all()
+    lm_sample = lm(sample[:-1])
+    assert lm_sample.shape == (T, 1, V)
+    act_lprobs = lm_sample.gather(2, sample.unsqueeze(2)).sum()
+    assert torch.isclose(exp_lprobs / T, act_lprobs / T, atol=1e-2)
+    act_expectation = sample.float().mean()
+    assert torch.allclose(exp_expectation, act_expectation, atol=1e-2)
+
+
+def test_random_walk_batch(device, jit_type):
+    class SpinningLM(SequentialLanguageModel):
+        def calc_idx_log_probs(
+            self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
+        ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+            next_ = (hist[idx - 1] + 1) % self.vocab_size
+            return torch.nn.functional.one_hot(next_, self.vocab_size).log() - 1, prev
+
+    N, V = 128, 16
+    assert N >= V
+    lm = SpinningLM(V)
+    if jit_type == "script":
+        lm = torch.jit.script(lm)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for RandomWalk")
+    search = RandomWalk(lm, eos=V - 1).to(device)
+    if jit_type == "script":
+        search = torch.jit.script(search)
+    range_N = torch.arange(N, device=device)
+    sample, lens, lprobs = search((range_N % V).unsqueeze(0))
+    assert sample.shape == (V, N)
+    assert torch.allclose(lens.float(), -lprobs + 1)  # +1 includes the start token
+    for n in range(N):
+        exp_sample_n = (range_N[:V] + (n % V)).clamp_max(V - 1)
+        act_sample_n = sample[..., n]
+        assert (exp_sample_n == act_sample_n).all()
 
 
 def test_random_walk_advance(device):
