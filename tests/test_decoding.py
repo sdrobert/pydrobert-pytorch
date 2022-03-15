@@ -781,7 +781,10 @@ def test_random_walk_batch(device, jit_type):
             self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
         ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
             next_ = (hist[idx - 1] + 1) % self.vocab_size
-            return torch.nn.functional.one_hot(next_, self.vocab_size).log() - 1, prev
+            return (
+                torch.nn.functional.one_hot(next_, self.vocab_size).float().log() - 1,
+                prev,
+            )
 
     N, V = 128, 16
     assert N >= V
