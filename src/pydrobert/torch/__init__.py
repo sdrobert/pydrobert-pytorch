@@ -30,5 +30,4 @@ __all__ = [
     "functional",
     "modules",
     "training",
-    "util",
 ]

@@ -2,6 +2,14 @@
 
 ## HEAD
 
+- Fixed up formatting of CLI help documentation.
+- Data sets can now initialize some of their parameters with the values in
+  their associated param containers. For example, `sos` and `eos` are now
+  set in `SpectDataSet` by passing an optional `SpectDataParam` instance. The
+  old method (by argument) is now deprecated.
+- Renamed `DataSetParams` to `DataLoaderParams` and deprecated former naming
+  to better mesh with their use in data loaders.
+- Moved `pydrobert.torch.util.parse_arpa_lm` to `pydrobert.torch.data`
 - `SimpleRandomSamplingWithoutReplacement` has been added as a new
   distribution.
 - `EnumerateEstimator`, `ImportanceSamplingEstimator`, and
@@ -17,8 +25,8 @@
 - Bug fixes to `OptimalCompletion` and `HardOptimalCompletionDistillationLoss`
   involving batch sizes.
 - Refactored code to move modules to `pydrobert.torch.modules` and functions
-  to `pydrobert.torch.functional`. Deprecated `pydrobert.torch.layers` as well
-  as most of the contents of `pydrobert.torch.util`.
+  to `pydrobert.torch.functional`.
+- Deprecated `pydrobert.torch.layers` and `pydrobert.torch.util`.
 - Added a number of modules to `pydrobert.torch.modules` to wrap functional
   API. Moved docstrings to modules.
 - Fixed a problem with `warp_1d_grid`/`SpecAugment` which made it sensitive

@@ -28,6 +28,7 @@ from typing import Any, Optional, Tuple, TYPE_CHECKING, Union
 import torch
 
 from ._compat import meshgrid, script, linalg_solve
+from ._wrappers import functional_wrapper
 
 
 @script
@@ -121,7 +122,7 @@ def _solve_interpolation(
     return w, v
 
 
-@script
+@functional_wrapper("PolyharmonicSpline")
 def polyharmonic_spline(
     train_points: torch.Tensor,
     train_values: torch.Tensor,
@@ -130,13 +131,6 @@ def polyharmonic_spline(
     regularization_weight: float = 0.0,
     full_matrix: bool = True,
 ) -> torch.Tensor:
-    """Functional version of PolyharmonicSpline
-    
-    See Also
-    --------
-    pydrobert.torch.layers.PolyharmonicSpline
-        For a description of this function and its parameters
-    """
     train_points = train_points.float()
     query_points = query_points.float()
 
@@ -254,6 +248,7 @@ def _deterimine_pinned_points(k: int, sizes: torch.Tensor) -> torch.Tensor:
     return torch.cat([bottom_edge, left_edge, top_edge, right_edge], 1)  # (N, 4k, 2)
 
 
+@functional_wrapper("Warp1DGrid")
 @script
 def warp_1d_grid(
     src: torch.Tensor,
@@ -262,13 +257,6 @@ def warp_1d_grid(
     max_length: Optional[int] = None,
     interpolation_order: int = 1,
 ) -> torch.Tensor:
-    """Functional version of Warp1DGrid
-
-    See Also
-    --------
-    pydrobert.torch.layers.Warp1DGrid
-        For a description of this function and its parameters
-    """
     device = src.device
     N = src.shape[0]
     if max_length is None:
@@ -366,6 +354,7 @@ class Warp1DGrid(torch.nn.Module):
         )
 
 
+@functional_wrapper("DenseImageWarp")
 @script
 def dense_image_warp(
     image: torch.Tensor,
@@ -374,13 +363,6 @@ def dense_image_warp(
     mode: str = "bilinear",
     padding_mode: str = "border",
 ) -> torch.Tensor:
-    """Functional version of DenseImageWarp
-    
-    See Also
-    --------
-    pydrobert.torch.layers.DenseImageWarp
-        For a description of this function and its parameters
-    """
     # from tfa.image.dense_image_warp
     # output[n, c, h, w] = image[n, c, h - flow[n, h, w, 0], w - flow[n, h, w, 1]]
     # outside of image uses border
@@ -641,6 +623,7 @@ def _sparse_image_warp_noflow(
 
 if TYPE_CHECKING:
 
+    @functional_wrapper("SparseImageWarp")
     def sparse_image_warp(
         image: torch.Tensor,
         source_points: torch.Tensor,
@@ -654,13 +637,6 @@ if TYPE_CHECKING:
         dense_padding_mode: str = "border",
         include_flow: bool = True,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """Functional version of SparseImageWarp
-        
-        See Also
-        --------
-        pydrobert.torch.layers.SparseImageWarp
-            For a description of this function and its parameters
-        """
         pass
 
 
@@ -871,6 +847,7 @@ class SparseImageWarp(torch.nn.Module):
             )
 
 
+@functional_wrapper("PadVariable")
 @script
 def pad_variable(
     x: torch.Tensor,
@@ -879,13 +856,6 @@ def pad_variable(
     mode: str = "constant",
     value: float = 0.0,
 ) -> torch.Tensor:
-    """Functional version of PadVariable
-
-    See Also
-    --------
-    pydrobert.torch.layers.PadVariable
-        For a description of this function and its parameters
-    """
     old_shape = x.shape
     ndim = len(old_shape)
     if ndim < 2:
@@ -1073,6 +1043,7 @@ class PadVariable(torch.nn.Module):
         return pad_variable(x, lens, pad, self.mode, self.value)
 
 
+@functional_wrapper("RandomShift")
 @script
 def random_shift(
     in_: torch.Tensor,
@@ -1082,13 +1053,6 @@ def random_shift(
     value: float,
     training: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Functional version of RandomShift
-
-    See Also
-    --------
-    RandomShift
-        For definitions of arguments and a description of this function
-    """
     if in_.dim() < 2:
         raise RuntimeError(f"in_ must be at least 2 dimensional")
     if in_lens.dim() != 1 or in_lens.size(0) != in_.size(0):
@@ -1246,6 +1210,7 @@ SpecAugmentParams = Tuple[
 ]
 
 
+@functional_wrapper("SpecAugment.draw_parameters")
 @script
 def spec_augment_draw_parameters(
     feats: torch.Tensor,
@@ -1259,13 +1224,6 @@ def spec_augment_draw_parameters(
     num_freq_mask: int,
     lengths: Optional[torch.Tensor] = None,
 ) -> SpecAugmentParams:
-    """Functional version of SpecAugment.draw_parameters
-
-    See Also
-    --------
-    SpecAugment
-        For definitions of arguments and a description of this function.
-    """
     _spec_augment_check_input(feats, lengths)
     N, T, F = feats.shape
     device = feats.device
@@ -1338,6 +1296,7 @@ def spec_augment_draw_parameters(
     return w_0, w, v_0, v, t_0, t, f_0, f
 
 
+@functional_wrapper("SpecAugment.apply_parameters")
 @script
 def spec_augment_apply_parameters(
     feats: torch.Tensor,
@@ -1345,13 +1304,6 @@ def spec_augment_apply_parameters(
     interpolation_order: int,
     lengths: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Functional version of SpecAugment.apply_parameters
-
-    See Also
-    --------
-    SpecAugment
-        For definitions of arguments and a description of this function.
-    """
     _spec_augment_check_input(feats, lengths)
     N, T, F = feats.shape
     device = feats.device
@@ -1416,6 +1368,7 @@ def spec_augment_apply_parameters(
     return new_feats
 
 
+@functional_wrapper("SpecAugment")
 @script
 def spec_augment(
     feats: torch.Tensor,
@@ -1431,13 +1384,6 @@ def spec_augment(
     lengths: Optional[torch.Tensor] = None,
     training: bool = True,
 ) -> torch.Tensor:
-    """Functional version of SpecAugment
-
-    See Also
-    --------
-    SpecAugment
-        For definitions of arguments and a description of this function.
-    """
     _spec_augment_check_input(feats, lengths)
     if not training:
         return feats

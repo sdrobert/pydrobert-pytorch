@@ -27,18 +27,64 @@ import torch
 import pydrobert.torch.data as data
 from ._string import error_rate
 
-__all__ = [
-    "compute_torch_token_data_dir_error_rates",
-    "ctm_to_torch_token_data_dir",
-    "get_torch_spect_data_dir_info",
-    "torch_token_data_dir_to_ctm",
-    "torch_token_data_dir_to_trn",
-    "trn_to_torch_token_data_dir",
-]
+
+_COMMON_ARGS = {
+    "--file-prefix": {
+        "default": "",
+        "help": "The file prefix indicating a torch data file",
+    },
+    "--file-suffix": {
+        "default": ".pt",
+        "help": "The file suffix indicating a torch data file",
+    },
+    "token2id": {
+        "type": argparse.FileType("r"),
+        "help": "A file containing mappings from tokens (e.g. words or phones) to "
+        'unique IDs. Each line has the format "<token> <id>". The flag "--swap" can be '
+        'used to swap the expected ordering (i.e. to "<id> <token>")',
+    },
+    "id2token": {
+        "type": argparse.FileType("r"),
+        "help": "A file containing mappings from unique IDs to tokens (e.g. words or "
+        'phones). Each line has the format "<id> <token>". The flag "--swap" can be '
+        'used to swap the expected ordering (i.e. to "<token> <id>")',
+    },
+    "--num-workers": {
+        "type": int,
+        "default": torch.multiprocessing.cpu_count(),
+        "help": "The number of workers to spawn to process the data. 0 is serial. "
+        "Defaults to the CPU count",
+    },
+    "--swap": {
+        "action": "store_true",
+        "default": False,
+        "help": "If set, swaps the order of the key and value in token/id mapping",
+    },
+    "--unk-symbol": {
+        "default": None,
+        "help": "If set, will map out-of-vocabulary tokens to this symbol",
+    },
+    "--frame-shift-ms": {
+        "type": float,
+        "default": 10.0,
+        "help": "The number of milliseconds that have passed between consecutive "
+        "frames. Used to convert between time in seconds and frame index. If your "
+        "features are the raw samples, set this to 1000 / sample_rate_hz",
+    },
+}
+
+
+def _add_common_arg(parser: argparse.ArgumentParser, flag: str):
+    assert flag in _COMMON_ARGS
+    kwargs = _COMMON_ARGS[flag]
+    parser.add_argument(flag, **kwargs)
 
 
 def _get_torch_spect_data_dir_info_parse_args(args):
-    parser = argparse.ArgumentParser(description=get_torch_spect_data_dir_info.__doc__,)
+    parser = argparse.ArgumentParser(
+        description=get_torch_spect_data_dir_info.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("dir", type=str, help="The torch data directory")
     parser.add_argument(
         "out_file",
@@ -47,14 +93,8 @@ def _get_torch_spect_data_dir_info_parse_args(args):
         default=sys.stdout,
         help="The file to write to. If unspecified, stdout",
     )
-    parser.add_argument(
-        "--file-prefix", default="", help="The file prefix indicating a torch data file"
-    )
-    parser.add_argument(
-        "--file-suffix",
-        default=".pt",
-        help="The file suffix indicating a torch data file",
-    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
     parser.add_argument(
         "--feat-subdir", default="feat", help="Subdirectory where features are stored"
     )
@@ -90,8 +130,7 @@ def _get_torch_spect_data_dir_info_parse_args(args):
 def get_torch_spect_data_dir_info(args: Optional[Sequence[str]] = None) -> None:
     """Write info about the specified SpectDataSet data dir
 
-    A torch :class:`pydrobert.torch.data.SpectDataSet` data dir is of the
-    form::
+    A torch SpectDataSet data dir is of the form
 
         dir/
             feat/
@@ -109,33 +148,32 @@ def get_torch_spect_data_dir_info(args: Optional[Sequence[str]] = None) -> None:
                 ...
             ]
 
-    Where ``feat`` contains float :class:`torch.Tensor`s of shape ``(N, F)``, where
-    ``N`` is the number of frames (variable) and ``F`` is the number of filters (fixed),
-    ``ali``, if there, contains long :class:`torch.Tensor`s of shape ``(N,)`` indicating
-    the appropriate class labels (likely pdf-ids for discriminative training in an
-    DNN-HMM), and ``ref``, if there, contains  long :class:`torch.Tensor`s of shape
-    ``(R, 3)`` indicating a sequence of reference tokens where element indexed by ``[i,
-    0]`` is a token id, ``[i, 1]`` is the inclusive start frame of the token (or a
-    negative value if unknown), and ``[i, 2]`` is the exclusive end frame of the token.
+    Where "feat/" contains float tensors of shape (N, F), where N is the number of
+    frames (variable) and F is the number of filters (fixed). "ali/" if there, contains
+    long tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids
+    for discriminative training in an DNN-HMM). "ref/", if there, contains long tensors
+    of shape (R, 3) indicating a sequence of reference tokens where element indexed by
+    "[i, 0]" is a token id, "[i, 1]" is the inclusive start frame of the token (or a
+    negative value if unknown), and "[i, 2]" is the exclusive end frame of the token.
 
     This command writes the following space-delimited key-value pairs to an
     output file in sorted order:
 
-    1. "max_ali_class", the maximum inclusive class id found over ``ali/``
-       (if available, ``-1`` if not)
-    2. "max_ref_class", the maximum inclussive class id found over ``ref/``
-       (if available, ``-1`` if not)
+    1. "max_ali_class", the maximum inclusive class id found over "ali/"
+       (if available, -1 if not)
+    2. "max_ref_class", the maximum inclussive class id found over "ref/"
+       (if available, -1 if not)
     3. "num_utterances", the total number of listed utterances
-    4. "num_filts", ``F``
-    5. "total_frames", ``sum(N)`` over the data dir
-    6. "count_<i>", the number of instances of the class "<i>" that appear in ``ali``
+    4. "num_filts", F
+    5. "total_frames", the sum of N over the data dir
+    6. "count_<i>", the number of instances of the class "<i>" that appear in "ali/"
        (if available). If "count_<i>" is a valid key, then so are "count_<0 to i>".
        "count_<i>" is left-padded with zeros to ensure that the keys remain in the same
-       order in the table as the class indices.  The maximum ``i`` will be equal to
-       ``maximum_ali_class``
+       order in the table as the class indices.  The maximum i will be equal to
+       the value of "max_ali_class"
 
-    Note that the output can be parsed as a `Kaldi <http://kaldi-asr.org/>`__ text table
-    of integers.
+    Note that the output can be parsed as a Kaldi (http://kaldi-asr.org/) text table of
+    integers.
     """
     try:
         options = _get_torch_spect_data_dir_info_parse_args(args)
@@ -195,16 +233,12 @@ def get_torch_spect_data_dir_info(args: Optional[Sequence[str]] = None) -> None:
 
 
 def _trn_to_torch_token_data_dir_parse_args(args):
-    parser = argparse.ArgumentParser(description=trn_to_torch_token_data_dir.__doc__,)
-    parser.add_argument("trn", type=argparse.FileType("r"), help="The input trn file")
-    parser.add_argument(
-        "token2id",
-        type=argparse.FileType("r"),
-        help="A file containing mappings from tokens (e.g. words or phones) "
-        "to unique IDs. Each line has the format ``<token> <id>``. The flag "
-        "``--swap`` can be used to swap the expected ordering (i.e. "
-        "``<id> <token>``)",
+    parser = argparse.ArgumentParser(
+        description=trn_to_torch_token_data_dir.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("trn", type=argparse.FileType("r"), help="The input trn file")
+    _add_common_arg(parser, "token2id")
     parser.add_argument(
         "dir",
         help="The directory to store token sequences to. If the directory "
@@ -218,32 +252,11 @@ def _trn_to_torch_token_data_dir_parse_args(args):
         'the "trn" file contains alternates. If "first", always treat the '
         "alternate as canon",
     )
-    parser.add_argument(
-        "--file-prefix", default="", help="The file prefix indicating a torch data file"
-    )
-    parser.add_argument(
-        "--file-suffix",
-        default=".pt",
-        help="The file suffix indicating a torch data file",
-    )
-    parser.add_argument(
-        "--swap",
-        action="store_true",
-        default=False,
-        help="If set, swaps the order of key and value in `token2id`",
-    )
-    parser.add_argument(
-        "--unk-symbol",
-        default=None,
-        help="If set, will map out-of-vocabulary tokens to this symbol",
-    )
-    parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=torch.multiprocessing.cpu_count(),
-        help="The number of workers to spawn to process the data. 0 is serial."
-        " Defaults to the cpu count",
-    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--swap")
+    _add_common_arg(parser, "--unk-symbol")
+    _add_common_arg(parser, "--num-workers")
     parser.add_argument(
         "--chunk-size",
         type=int,
@@ -417,17 +430,15 @@ def trn_to_torch_token_data_dir(args: Optional[Sequence[str]] = None) -> None:
     """Convert a NIST "trn" file to the specified SpectDataSet data dir
 
     A "trn" file is the standard transcription file without alignment information used
-    in the `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__
-    toolkit. It has the format::
+    in the sclite (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm)
+    toolkit. It has the format
 
         here is a transcription (utterance_a)
         here is another (utterance_b)
 
     This command reads in a "trn" file and writes its contents as token sequences
-    compatible with the ``ref/`` directory of a
-    :class:`pydrobert.torch.data.SpectDataSet`. See the command
-    :func:`get_torch_spect_data_dir_info` (command line "get-torch-spect-data-dir-info")
-    for more information on a :class:`pydrobert.torch.data.SpectDataSet`
+    compatible with the "ref/" directory of a SpectDataSet. See the command
+    "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory
     """
     try:
         options = _trn_to_torch_token_data_dir_parse_args(args)
@@ -477,42 +488,21 @@ def trn_to_torch_token_data_dir(args: Optional[Sequence[str]] = None) -> None:
 
 
 def _torch_token_data_dir_to_trn_parse_args(args):
-    parser = argparse.ArgumentParser(description=torch_token_data_dir_to_trn.__doc__)
-    parser.add_argument("dir", help="The directory to read token sequences from")
-    parser.add_argument(
-        "id2token",
-        type=argparse.FileType("r"),
-        help="A file containing the mappings from unique IDs to tokens (e.g. "
-        "words or phones). Each line has the format ``<id> <token>``. The "
-        "flag ``--swap`` can be used to swap the expected ordering (i.e. "
-        "``<token> <id>``)",
+    parser = argparse.ArgumentParser(
+        description=torch_token_data_dir_to_trn.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("dir", help="The directory to read token sequences from")
+    _add_common_arg(parser, "id2token")
     parser.add_argument(
         "trn",
         type=argparse.FileType("w"),
         help='The "trn" file to write transcriptions to',
     )
-    parser.add_argument(
-        "--file-prefix", default="", help="The file prefix indicating a torch data file"
-    )
-    parser.add_argument(
-        "--file-suffix",
-        default=".pt",
-        help="The file suffix indicating a torch data file",
-    )
-    parser.add_argument(
-        "--swap",
-        action="store_true",
-        default=False,
-        help="If set, swaps the order of key and value in `id2token`",
-    )
-    parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=torch.multiprocessing.cpu_count(),
-        help="The number of workers to spawn to process the data. 0 is serial."
-        " Defaults to the cpu count",
-    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--swap")
+    _add_common_arg(parser, "--num-workers")
     return parser.parse_args(args)
 
 
@@ -587,18 +577,16 @@ def torch_token_data_dir_to_trn(args: Optional[Sequence[str]] = None) -> None:
     """Convert a SpectDataSet token data dir to a NIST trn file
 
     A "trn" file is the standard transcription file without alignment information used
-    in the `sclite <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_
-    toolkit. It has the format::
+    in the sclite (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm)
+    toolkit. It has the format
 
         here is a transcription (utterance_a)
         here is another (utterance_b)
 
-    This command scans the contents of a directory like ``ref/`` in a
-    :class:`pydrobert.torch.data.SpectDataSet` and converts each such file into a
-    transcription. Each such transcription is then written to a "trn" file. See the
-    command :func:`get_torch_spect_data_dir_info` (command line
-    "get-torch-spect-data-dir-info") for more information on a
-    :class:`pydrobert.torch.data.SpectDataSet`.
+    This command scans the contents of a directory like "ref/" in a SpectDataSeet and
+    converts each such file into a transcription. Each such transcription is then
+    written to a "trn" file. See the command "get-torch-spect-data-dir-info" for more
+    info about a SpectDataSet directory.
     """
     try:
         options = _torch_token_data_dir_to_trn_parse_args(args)
@@ -621,39 +609,24 @@ def torch_token_data_dir_to_trn(args: Optional[Sequence[str]] = None) -> None:
 
 
 def _ctm_to_torch_token_data_dir_parse_args(args):
-    parser = argparse.ArgumentParser(description=ctm_to_torch_token_data_dir.__doc__)
+    parser = argparse.ArgumentParser(
+        description=ctm_to_torch_token_data_dir.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "ctm",
         type=argparse.FileType("r"),
         help='The "ctm" file to read token segments from',
     )
-    parser.add_argument(
-        "token2id",
-        type=argparse.FileType("r"),
-        help="A file containing mappings from tokens (e.g. words or phones) "
-        "to unique IDs. Each line has the format ``<token> <id>``. The flag "
-        "``--swap`` can be used to swap the expected ordering (i.e. "
-        "``<id> <token>``)",
-    )
+    _add_common_arg(parser, "token2id")
     parser.add_argument(
         "dir",
         help="The directory to store token sequences to. If the "
         "directory does not exist, it will be created",
     )
-    parser.add_argument(
-        "--file-prefix", default="", help="The file prefix indicating a torch data file"
-    )
-    parser.add_argument(
-        "--file-suffix",
-        default=".pt",
-        help="The file suffix indicating a torch data file",
-    )
-    parser.add_argument(
-        "--swap",
-        action="store_true",
-        default=False,
-        help="If set, swaps the order of key and value in `token2id`",
-    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--swap")
     parser.add_argument(
         "--frame-shift-ms",
         type=float,
@@ -668,9 +641,9 @@ def _ctm_to_torch_token_data_dir_parse_args(args):
         type=argparse.FileType("r"),
         default=None,
         help="A file mapping wavefile name and channel combinations (e.g. "
-        "``utt_1 A``) to utterance IDs. Each line of the file has the format "
-        '``<wavefile_name> <channel> <utt_id>``. If neither "--wc2utt" nor '
-        '"--utt2wc" has been specied, the wavefile name will be treated as '
+        "'utt_1 A') to utterance IDs. Each line of the file has the format "
+        "'<wavefile_name> <channel> <utt_id>'. If neither '--wc2utt' nor "
+        "'--utt2wc' has been specied, the wavefile name will be treated as "
         "the utterance ID",
     )
     utt_group.add_argument(
@@ -678,16 +651,12 @@ def _ctm_to_torch_token_data_dir_parse_args(args):
         type=argparse.FileType("r"),
         default=None,
         help="A file mapping utterance IDs to wavefile name and channel "
-        "combinations (e.g. ``utt_1 A``). Each line of the file has the "
-        'format ``<utt_id> <wavefile_name> <channel>``. If neither "--wc2utt" '
-        'nor "--utt2wc" has been specied, the wavefile name will be treated '
+        "combinations (e.g. 'utt_1 A'). Each line of the file has the "
+        "format '<utt_id> <wavefile_name> <channel>'. If neither '--wc2utt' "
+        "nor '--utt2wc' has been specied, the wavefile name will be treated "
         "as the utterance ID",
     )
-    parser.add_argument(
-        "--unk-symbol",
-        default=None,
-        help="If set, will map out-of-vocabulary tokens to this symbol",
-    )
+    _add_common_arg(parser, "--unk-symbol")
     return parser.parse_args(args)
 
 
@@ -724,9 +693,9 @@ def ctm_to_torch_token_data_dir(args: Optional[Sequence[str]] = None) -> None:
     """Convert a NIST "ctm" file to a SpectDataSet token data dir
 
     A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
-    conversation file) used in the `sclite
-    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`_ toolkit. Here is
-    the format::
+    conversation file) used in the sclite
+    (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>) toolkit. Here is
+    the format
 
         utt_1 A 0.2 0.1 hi
         utt_1 A 0.3 1.0 there  ;; comment
@@ -737,10 +706,8 @@ def ctm_to_torch_token_data_dir(args: Optional[Sequence[str]] = None) -> None:
     the duration.
 
     This command reads in a "ctm" file and writes its contents as token sequences
-    compatible with the ``ref/`` directory of a
-    :class:`pydrobert.torch.data.SpectDataSet`. See the command
-    :func:`get_torch_spect_data_dir_info` (command line "get-torch-spect-data-dir-info")
-    for more information on a :class:`pydrobert.torch.data.SpectDataSet`
+    compatible with the "ref/" directory of a SpectDataSet. See the command
+    "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory.
     """
     try:
         options = _ctm_to_torch_token_data_dir_parse_args(args)
@@ -773,35 +740,20 @@ def ctm_to_torch_token_data_dir(args: Optional[Sequence[str]] = None) -> None:
 
 
 def _torch_token_data_dir_to_ctm_parse_args(args):
-    parser = argparse.ArgumentParser(description=torch_token_data_dir_to_ctm.__doc__)
-    parser.add_argument("dir", help="The directory to read token sequences from")
-    parser.add_argument(
-        "id2token",
-        type=argparse.FileType("r"),
-        help="A file containing mappings from unique IDs to tokens (e.g. "
-        "words or phones). Each line has the format ``<id> <token>``. The "
-        "``--swap`` can be used to swap the expected ordering (i.e. "
-        "``<token> <id>``)",
+    parser = argparse.ArgumentParser(
+        description=torch_token_data_dir_to_ctm.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("dir", help="The directory to read token sequences from")
+    _add_common_arg(parser, "id2token")
     parser.add_argument(
         "ctm",
         type=argparse.FileType("w"),
         help='The "ctm" file to write token segments to',
     )
-    parser.add_argument(
-        "--file-prefix", default="", help="The file prefix indicating a torch data file"
-    )
-    parser.add_argument(
-        "--file-suffix",
-        default=".pt",
-        help="The file suffix indicating a torch data file",
-    )
-    parser.add_argument(
-        "--swap",
-        action="store_true",
-        default=False,
-        help="If set, swaps the order of key and value in `id2token`",
-    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--swap")
     parser.add_argument(
         "--frame-shift-ms",
         type=float,
@@ -816,16 +768,16 @@ def _torch_token_data_dir_to_ctm_parse_args(args):
         type=argparse.FileType("r"),
         default=None,
         help="A file mapping wavefile name and channel combinations (e.g. "
-        "``utt_1 A``) to utterance IDs. Each line of the file has the format "
-        "``<wavefile_name> <channel> <utt_id>``",
+        "'utt_1 A') to utterance IDs. Each line of the file has the format "
+        "'<wavefile_name> <channel> <utt_id>'.",
     )
     utt_group.add_argument(
         "--utt2wc",
         type=argparse.FileType("r"),
         default=None,
         help="A file mapping utterance IDs to wavefile name and channel "
-        "combinations (e.g. ``utt_1 A``). Each line of the file has the "
-        "format ``<utt_id> <wavefile_name> <channel>``",
+        "combinations (e.g. 'utt_1 A'). Each line of the file has the "
+        "format '<utt_id> <wavefile_name> <channel>'.",
     )
     utt_group.add_argument(
         "--channel",
@@ -841,9 +793,9 @@ def torch_token_data_dir_to_ctm(args: Optional[Sequence[str]] = None) -> None:
     """Convert a SpectDataSet token data directory to a NIST "ctm" file
 
     A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
-    conversation file) used in the `sclite
-    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__ toolkit. Here is
-    the format::
+    conversation file) used in the sclite
+    (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm) toolkit. Here is the
+    format::
 
         utt_1 A 0.2 0.1 hi
         utt_1 A 0.3 1.0 there  ;; comment
@@ -853,12 +805,11 @@ def torch_token_data_dir_to_ctm(args: Optional[Sequence[str]] = None) -> None:
     Where the first number specifies the token start time (in seconds) and the second
     the duration.
 
-    This command scans the contents of a directory like ``ref/`` in a
-    :class:`pydrobert.torch.data.SpectDataSet` and converts each such file into a
-    transcription. Every token in a given transcription must have information about its
-    duration. Each such transcription is then written to the "ctm" file. See the command
-    :func:`get_torch_spect_data_dir_info` (command line "get-torch-spect-data-dir-info")
-    for more information on a :class:`pydrobert.torch.data.SpectDataSet`
+    This command scans the contents of a directory like "ref/" in a SpectDataSete and
+    converts each such file into a transcription. Every token in a given transcription
+    must have information about its duration. Each such transcription is then written to
+    the "ctm" file. See the command "get-torch-spect-data-dir-info" for more info about
+    a SpectDataSet directory.
     """
     try:
         options = _torch_token_data_dir_to_ctm_parse_args(args)
@@ -884,14 +835,15 @@ def torch_token_data_dir_to_ctm(args: Optional[Sequence[str]] = None) -> None:
 
 def _compute_torch_token_data_dir_parse_args(args):
     parser = argparse.ArgumentParser(
-        description=compute_torch_token_data_dir_error_rates.__doc__
+        description=compute_torch_token_data_dir_error_rates.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "dir",
-        help="If the `hyp` argument is not specified, this is the "
-        "parent directory of two subdirectories, ``ref/`` and ``hyp/``, which "
+        help="If the 'hyp' argument is not specified, this is the "
+        "parent directory of two subdirectories, 'ref/' and 'hyp/', which "
         "contain the reference and hypothesis transcripts, respectively. If "
-        "the ``--hyp`` argument is specified, this is the reference "
+        "the '--hyp' argument is specified, this is the reference "
         "transcript directory",
     )
     parser.add_argument(
@@ -908,12 +860,7 @@ def _compute_torch_token_data_dir_parse_args(args):
         "--id2token",
         type=argparse.FileType("r"),
         default=None,
-        help="A file containing mappings from unique IDs to tokens (e.g. "
-        "words or phones). Each line has the format ``<id> <token>``. The "
-        "``--swap`` flag can be used to swap the expected ordering (i.e. "
-        "``<token> <id>``). ``--id2token`` can be used to collapse unique IDs "
-        "together. Also, ``--ignore`` will contain a list of strings instead "
-        "of IDs",
+        help=_COMMON_ARGS["id2token"]["help"],
     )
     parser.add_argument(
         "--replace",
@@ -921,9 +868,9 @@ def _compute_torch_token_data_dir_parse_args(args):
         default=None,
         help="A file containing pairs of elements per line. The first is the "
         "element to replace, the second what to replace it with. If "
-        "``--id2token`` is specified, the file should contain tokens. If "
-        "``--id2token`` is not specified, the file should contain IDs "
-        "(integers). This is processed before ``--ignore``",
+        "'--id2token' is specified, the file should contain tokens. If "
+        "'--id2token' is not specified, the file should contain IDs "
+        "(integers). This is processed before '--ignore'",
     )
     parser.add_argument(
         "--ignore",
@@ -931,24 +878,13 @@ def _compute_torch_token_data_dir_parse_args(args):
         default=None,
         help="A file containing a whitespace-delimited list of elements to "
         "ignore in both the reference and hypothesis transcripts. If "
-        "``--id2token`` is specified, the file should contain tokens. If "
-        "``--id2token`` is not specified, the file should contain IDs "
-        "(integers). This is processed after ``--replace``",
+        "'--id2token' is specified, the file should contain tokens. If "
+        "'--id2token' is not specified, the file should contain IDs "
+        "(integers). This is processed after '--replace'",
     )
-    parser.add_argument(
-        "--file-prefix", default="", help="The file prefix indicating a torch data file"
-    )
-    parser.add_argument(
-        "--file-suffix",
-        default=".pt",
-        help="The file suffix indicating a torch data file",
-    )
-    parser.add_argument(
-        "--swap",
-        action="store_true",
-        default=False,
-        help="If set, swaps the order of key and value in `id2token`",
-    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--swap")
     parser.add_argument(
         "--warn-missing",
         action="store_true",
@@ -1007,30 +943,29 @@ def compute_torch_token_data_dir_error_rates(
 ) -> None:
     """Compute error rates between reference and hypothesis token data dirs
 
+    WARNING!!!!
+    The error rates reported by this command have changed since version v0.3.0 of
+    pydrobert-pytorch when the insertion, deletion, and substitution costs do not all
+    equal 1. Consult the documentation of "pydrobert.torch.functional.error_rate" for
+    more information.
+
     This is a very simple script that computes and prints the error rates between the
-    ``ref/`` (reference/gold standard) token sequences and ``hyp/``
-    (hypothesis/generated) token sequences in a
-    :class:`pydrobert.torch.data.SpectDataSet` directory. Consult the Wikipedia article
-    on the `Levenshtein distance <https://en.wikipedia.org/wiki/Levenshtein_distance>`__
-    for more info on error rates. The error rate for the entire partition will be
-    calculated as the total number of insertions, deletions, and substitutions made in
-    all transcriptions divided by the sum of lengths of reference transcriptions.
+    "ref/" (reference/gold standard) token sequences and "hyp/" (hypothesis/generated)
+    token sequences in a SpectDataSet directory. Consult the Wikipedia article on the
+    Levenshtein distance (https://en.wikipedia.org/wiki/Levenshtein_distance>) for more
+    info on error rates. The error rate for the entire partition will be calculated as
+    the total number of insertions, deletions, and substitutions made in all
+    transcriptions divided by the sum of lengths of reference transcriptions.
 
     Error rates are printed as ratios, not by "percentage."
 
     While convenient and accurate, this script has very few features. Consider pairing
-    the command ``torch-token-data-dir-to-trn`` with `sclite
-    <http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>`__ instead.
-
-    Warnings
-    --------
-    The error rates reported by this command have changed since version ``v0.3.0`` of
-    ``pydrobert-pytorch`` when the insertion, deletion, and substitution costs do not
-    all equal 1. Consult the documentation of :func:`error_rate` for more information.
+    the command "torch-token-data-dir-to-trn" with sclite
+    (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm) instead.
 
     Many tasks will ignore some tokens (e.g. silences) or collapse others (e.g. phones).
-    Please consult a standard recipe (such as those in `Kaldi
-    <http://kaldi-asr.org/>`__) before performing these computations.
+    Please consult a standard recipe (such as those in Kaldi http://kaldi-asr.org/)
+    before performing these computations.
     """
     try:
         options = _compute_torch_token_data_dir_parse_args(args)
