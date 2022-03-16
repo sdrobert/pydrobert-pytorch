@@ -15,19 +15,14 @@
 import torch
 
 from ._compat import script
+from ._wrappers import functional_wrapper
 
 
+@functional_wrapper("TimeDistributedReturn")
 @script
 def time_distributed_return(
     r: torch.Tensor, gamma: float, batch_first: bool = False
 ) -> torch.Tensor:
-    """Functional version of TimeDistributedReturn
-    
-    See Also
-    --------
-    pydrobert.torch.layers.TimeDistributedReturn
-        For a description of this function and its parameters
-    """
     if r.dim() != 2:
         raise RuntimeError("r must be 2 dimensional")
     if not gamma:

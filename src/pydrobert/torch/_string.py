@@ -20,7 +20,8 @@ from typing import Optional
 import torch
 
 from . import config
-from ._compat import script, pad_sequence
+from ._compat import script
+from ._wrappers import functional_wrapper
 
 
 @script
@@ -275,6 +276,7 @@ def _string_matching(
     return er
 
 
+@functional_wrapper("ErrorRate")
 def error_rate(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -287,12 +289,6 @@ def error_rate(
     sub_cost: float = 1.0,
     warn: bool = True,
 ) -> torch.Tensor:
-    """Functional version of ErrorRate
-
-    See Also
-    --------
-    pydrobert.torch.layers.ErrorRate
-    """
     return _string_matching(
         ref,
         hyp,
@@ -308,6 +304,7 @@ def error_rate(
     )
 
 
+@functional_wrapper("EditDistance")
 def edit_distance(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -320,13 +317,6 @@ def edit_distance(
     sub_cost: float = 1.0,
     warn: bool = True,
 ) -> torch.Tensor:
-    """Functional version of EditDistance
-
-    See Also
-    --------
-    pydrobert.torch.layers.EditDistance
-        For information about this module and its associated parameters.
-    """
     return _string_matching(
         ref,
         hyp,
@@ -341,6 +331,7 @@ def edit_distance(
     )
 
 
+@functional_wrapper("OptimalCompletion")
 @script
 def optimal_completion(
     ref: torch.Tensor,
@@ -355,13 +346,6 @@ def optimal_completion(
     exclude_last: bool = False,
     warn: bool = True,
 ) -> torch.Tensor:
-    """Functional version of OptimalCompletion
-    
-    See Also
-    --------
-    pydrobert.torch.layers.OptimalCompletion
-        For information about this module and its associated parameters.
-    """
     mask = _string_matching(
         ref,
         hyp,
@@ -402,6 +386,7 @@ def optimal_completion(
     return targets
 
 
+@functional_wrapper("PrefixErrorRates")
 def prefix_error_rates(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -416,13 +401,6 @@ def prefix_error_rates(
     exclude_last: bool = False,
     warn: bool = True,
 ) -> torch.Tensor:
-    """Functional version of PrefixErrorRates
-    
-    See Also
-    --------
-    pydrobert.torch.layers.PrefixErrorRates
-        For information about this module and its associated parameters.
-    """
     return _string_matching(
         ref,
         hyp,
@@ -441,6 +419,7 @@ def prefix_error_rates(
     )
 
 
+@functional_wrapper("PrefixEditDistances")
 def prefix_edit_distances(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -455,13 +434,6 @@ def prefix_edit_distances(
     exclude_last: bool = False,
     warn: bool = True,
 ) -> torch.Tensor:
-    """Functional version of PrefixEditDistances
-
-    See Also
-    --------
-    pydrobert.torch.layers.PrefixEditDistances
-        For information about this module and its associated parameters.
-    """
     return _string_matching(
         ref,
         hyp,
@@ -1259,6 +1231,7 @@ class OptimalCompletion(_StringMatching):
         )
 
 
+@functional_wrapper("HardOptimalCompletionDistillationLoss")
 @script
 def hard_optimal_completion_distillation_loss(
     logits: torch.Tensor,
@@ -1275,13 +1248,6 @@ def hard_optimal_completion_distillation_loss(
     ignore_index: int = -2,
     warn: bool = True,
 ) -> torch.Tensor:
-    """Functional version of HardOptimalCompletionDistillationLoss
-
-    See Also
-    --------
-    HardOptimalCompletionDistillationLoss
-        The :class:`torch.nn.Module` version. Describes the arguments.
-    """
     if logits.dim() != 3:
         raise RuntimeError("logits must be 3 dimensional")
     if logits.shape[:-1] != hyp.shape:
@@ -1468,6 +1434,7 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         )
 
 
+@functional_wrapper("MinimumErrorRateLoss")
 @script
 def minimum_error_rate_loss(
     log_probs: torch.Tensor,
@@ -1484,13 +1451,6 @@ def minimum_error_rate_loss(
     reduction: str = "mean",
     warn: bool = True,
 ) -> torch.Tensor:
-    """Functional version of MinimumErrorRateLoss
-
-    See Also
-    --------
-    MinimumErrorRateLoss
-        The :class:`torch.nn.Module` version. Describes the arguments
-    """
     if log_probs.dim() != 2:
         raise RuntimeError("log_probs must be 2 dimensional")
     if hyp.dim() != 3:
