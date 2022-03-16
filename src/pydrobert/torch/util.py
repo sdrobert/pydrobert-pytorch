@@ -12,110 +12,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Utility functions which are neither pytorch modules nor functions"""
-
-import functools
 import warnings
 
-__all__ = ["parse_arpa_lm"]
+warnings.warn(
+    "pydrobert.torch.util is deprecated. Use pydrobert.torch.functional for "
+    "functions. parse_arpa_lm has been moved to pydrobert.torch.data.",
+    DeprecationWarning,
+    2,
+)
 
-from ._lm import parse_arpa_lm
+import warnings
 
-
-def import_and_deprecate(func):
-    from . import functional
-
-    name = func.__name__
-    func = getattr(functional, name)
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        warnings.warn(
-            "pytorch function access through pydrobert.torch.util is deprecated. "
-            "Use pydrobert.torch.functional instead",
-            DeprecationWarning,
-        )
-        return wrapper.__func(*args, **kwargs)
-
-    wrapper.__func = func
-    return wrapper
-
-
-@import_and_deprecate
-def beam_search_advance():
-    pass
-
-
-@import_and_deprecate
-def ctc_greedy_search():
-    pass
-
-
-@import_and_deprecate
-def ctc_prefix_search_advance():
-    pass
-
-
-@import_and_deprecate
-def dense_image_warp():
-    pass
-
-
-@import_and_deprecate
-def edit_distance():
-    pass
-
-
-@import_and_deprecate
-def error_rate():
-    pass
-
-
-@import_and_deprecate
-def optimal_completion():
-    pass
-
-
-@import_and_deprecate
-def pad_variable():
-    pass
-
-
-@import_and_deprecate
-def polyharmonic_spline():
-    pass
-
-
-@import_and_deprecate
-def prefix_edit_distances():
-    pass
-
-
-@import_and_deprecate
-def prefix_error_rates():
-    pass
-
-
-@import_and_deprecate
-def random_walk_advance():
-    pass
-
-
-@import_and_deprecate
-def sequence_log_probs():
-    pass
-
-
-@import_and_deprecate
-def sparse_image_warp():
-    pass
-
-
-@import_and_deprecate
-def time_distributed_return():
-    pass
-
-
-@import_and_deprecate
-def warp_1d_grid():
-    pass
+from .functional import (
+    beam_search_advance,
+    ctc_greedy_search,
+    ctc_prefix_search_advance,
+    dense_image_warp,
+    edit_distance,
+    error_rate,
+    optimal_completion,
+    pad_variable,
+    polyharmonic_spline,
+    prefix_edit_distances,
+    prefix_error_rates,
+    random_walk_advance,
+    sequence_log_probs,
+    sparse_image_warp,
+    time_distributed_return,
+    warp_1d_grid,
+)
+from .data import parse_arpa_lm
