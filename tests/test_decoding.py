@@ -774,6 +774,8 @@ def test_random_walk(device):
 
 
 def test_random_walk_batch(device, jit_type):
+
+    # it's deterministic and always terminates
     class SpinningLM(SequentialLanguageModel):
         def calc_idx_log_probs(
             self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
@@ -784,24 +786,48 @@ def test_random_walk_batch(device, jit_type):
                 prev,
             )
 
-    N, V = 128, 16
-    assert N >= V
+    N, V, S_prev = 128, 16, 10
     lm = SpinningLM(V)
     if jit_type == "script":
         lm = torch.jit.script(lm)
     elif jit_type == "trace":
         pytest.xfail("trace unsupported for RandomWalk")
-    search = RandomWalk(lm, eos=V - 1).to(device)
+    walk = RandomWalk(lm, eos=V - 1).to(device)
     if jit_type == "script":
-        search = torch.jit.script(search)
-    range_N = torch.arange(N, device=device)
-    sample, lens, lprobs = search((range_N % V).unsqueeze(0))
-    assert sample.shape == (V, N)
-    assert torch.allclose(lens.float(), -lprobs + 1)  # +1 includes the start token
-    for n in range(N):
-        exp_sample_n = (range_N[:V] + (n % V)).clamp_max(V - 1)
-        act_sample_n = sample[..., n]
-        assert (exp_sample_n == act_sample_n).all()
+        walk = torch.jit.script(walk)
+    y_prev = torch.randint(0, V, (S_prev, N), device=device)
+    y_prev[0, 0] = V - 1
+
+    exps = []
+    for y_prev_n in y_prev.T:
+        y_prev_n = y_prev_n.unsqueeze(1)
+        y_n_exp, y_lens_n_exp, log_probs_n_exp = walk(y_prev_n)
+        y_n_exp = y_n_exp.squeeze(1)
+        y_lens_n_exp = y_lens_n_exp.squeeze()
+        log_probs_n_exp = log_probs_n_exp.squeeze()
+        exps.append((y_n_exp, y_lens_n_exp, log_probs_n_exp))
+
+    y_act, y_lens_act, log_probs_act = walk(y_prev)
+    assert y_lens_act[0] == 1
+    for (
+        (y_n_exp, y_lens_n_exp, log_probs_n_exp),
+        y_n_act,
+        y_lens_n_act,
+        log_probs_n_act,
+    ) in zip(exps, y_act.T, y_lens_act, log_probs_act):
+        assert y_n_exp.size(0) <= y_n_act.size(0)
+        assert y_lens_n_exp.shape == y_lens_n_act.shape
+        assert log_probs_n_exp.shape == log_probs_n_act.shape
+        assert (y_lens_n_exp == y_lens_n_act).all()
+        assert torch.allclose(log_probs_n_exp, log_probs_n_act)
+        rem = y_n_act.size(0) - y_n_exp.size(0)
+        if rem > 0:
+            y_n_exp = torch.cat([y_n_exp, y_n_exp.new_empty(rem)])
+            assert y_n_exp.shape == y_n_act.shape
+        len_mask = torch.arange(y_n_exp.size(0), device=device) >= y_lens_n_exp
+        y_n_exp = y_n_exp.masked_fill_(len_mask, -1)
+        y_n_act = y_n_act.masked_fill_(len_mask, -1)
+        assert (y_n_exp == y_n_act).all()
 
 
 @pytest.mark.parametrize("dim", [0, 2, -1, None])

@@ -20,7 +20,6 @@ import warnings
 __all__ = ["parse_arpa_lm"]
 
 from ._lm import parse_arpa_lm
-from ._decoding import random_walk_advance
 
 
 def import_and_deprecate(func):
@@ -94,6 +93,11 @@ def prefix_edit_distances():
 
 @import_and_deprecate
 def prefix_error_rates():
+    pass
+
+
+@import_and_deprecate
+def random_walk_advance():
     pass
 
 

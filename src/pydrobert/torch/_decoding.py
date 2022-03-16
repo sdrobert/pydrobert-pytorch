@@ -15,11 +15,9 @@
 import math
 
 from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING, Union
-import warnings
 
 import torch
 
-from . import config
 from ._lm import (
     ExtractableSequentialLanguageModel,
     MixableSequentialLanguageModel,
@@ -37,14 +35,12 @@ def beam_search_advance(
     y_prev: torch.Tensor,
     y_prev_lens: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    r"""Beam search step function
-
-    The step function of any beam search.
+    """Beam search step function
 
     Parameters
     ----------
     log_probs_t : torch.Tensor
-        A tensor of shape ``(N, old_width, V)`` containing the probabilities of
+        A tensor of shape ``(N, old_width, V)`` containing the log probabilities of
         extending a given path with a token of a given type in the vocabulary.
     width : int
         The beam width
@@ -54,9 +50,10 @@ def beam_search_advance(
     y_prev : torch.Tensor
         A tensor of shape ``(S, N, old_width)`` containing the path prefixes.
     y_prev_lens : torch.Tensor or None, optional
-        A tensor of shape ``(N, old_width)`` specifying the lengths of the prefixes.
-        For batch element ``n``, only the values ``y_prev[:y_prev_lens[n, k], n, k]``
-        are valid. If unspecified, it is assumed ``y_prev_lens[n, k] == S``.
+        A tensor of shape ``(N, old_width)`` specifying the lengths of the prefixes. For
+        batch element ``n`` and path ``k`` in the beam, only the values
+        ``y_prev[:y_prev_lens[n, k], n, k]`` are valid. If unspecified, it is assumed
+        ``y_prev_lens[:, :] == S``.
 
     Returns
     -------
@@ -66,6 +63,9 @@ def beam_search_advance(
         with `width`. ``next_src` is a long tensor of shape ``(N, width)`` such that the
         value ``k_old = next_src[n, k_new]`` is the index from the previous step (over
         ``old_width``) that is a prefix of the new path at ``k_new`` (i.e. its source).
+        `y_next` is of shape either ``(S, N, width)`` or ``(S + 1, N, width)``,
+        depending on whether `y_prev` needed to grow in order to accommodate the newest
+        tokens in the path.
 
     Warnings
     --------
@@ -77,6 +77,11 @@ def beam_search_advance(
     an invalid path cannot be distibguished from a 0-probability path. Consider using a
     very negative value as a replacement for ``log 0``, e.g. ``log_probs_t =
     log_probs_t.clamp(min=torch.finfo(torch.float).min / 2)``.
+
+    See Also
+    --------
+    pydrobert.torch.modules.BeamSearch
+        For the full beam search.
     """
     if log_probs_t.dim() != 3:
         raise RuntimeError("log_probs_t must be 3 dimensional")
@@ -105,24 +110,25 @@ def beam_search_advance(
     cand_log_probs = (log_probs_prev.unsqueeze(2) + log_probs_t).flatten(1)
     log_probs_next, next_ind = cand_log_probs.topk(K, 1)
     next_src = trunc_divide(next_ind, V)
-    next_token = (next_ind % V).unsqueeze(0)  # (1, N, K)
+    y_t = (next_ind % V).unsqueeze(0)  # (1, N, K)
 
     if tm1:
-        y_prev_prefix = y_prev.gather(2, next_src.unsqueeze(0).expand(tm1, N, K))
-        y_next = torch.cat([y_prev_prefix, next_token], 0)
+        y_next = y_prev.gather(2, next_src.unsqueeze(0).expand(tm1, N, K))
         if y_prev_lens is None:
-            y_next_lens = next_token.new_full((N, K), tm1 + 1)
+            y_next = torch.cat([y_next, y_t], 0)
+            y_next_lens = y_t.new_full((N, K), tm1 + 1)
         else:
+            # don't make y bigger unless we have to
+            if int(y_prev_lens.max().item()) >= tm1:
+                y_next = torch.cat([y_next, y_t], 0)
             y_prev_lens_prefix = y_prev_lens.gather(1, next_src)
-            y_next = y_next.scatter(0, y_prev_lens_prefix.unsqueeze(0), next_token)
+            y_next = y_next.scatter(0, y_prev_lens_prefix.unsqueeze(0), y_t)
             y_next_lens = y_prev_lens_prefix + 1
     elif y_prev_lens is not None and (y_prev_lens != 0).any():
         raise RuntimeError("Invalid lengths for t=0")
     else:
-        y_next = next_token
-        y_next_lens = torch.ones(
-            (N, K), dtype=next_token.dtype, device=next_token.device
-        )
+        y_next = y_t
+        y_next_lens = torch.ones((N, K), dtype=y_t.dtype, device=y_t.device)
 
     if K < width:
         rem = width - K
@@ -1148,69 +1154,83 @@ class CTCPrefixSearch(torch.nn.Module):
             return y_prev, y_prev_lens, probs_prev
 
 
+@script
 def random_walk_advance(
-    logits_t: torch.Tensor,
-    num_samp: int,
-    y_prev: Optional[torch.Tensor] = None,
-    eos: int = config.INDEX_PAD_VALUE,
-    lens: Optional[torch.Tensor] = None,
-    prevent_eos: bool = False,
-    include_relaxation: bool = False,
-) -> Union[torch.Tensor, Tuple[torch.Tensor]]:
-    warnings.warn(
-        "random_walk_advance is deprecated and will be removed in a future version. "
-        "Replace with pydrobert.torch.modules.RandomWalk",
-        DeprecationWarning,
-    )
-    if logits_t.dim() == 2:
-        logits_t = logits_t.unsqueeze(1)
-    elif logits_t.dim() != 3:
-        raise RuntimeError("logits_t must have dimension of either 2 or 3")
-    batch_size, old_samp, num_classes = logits_t.shape
-    if prevent_eos and 0 <= eos < num_classes:
-        logits_t[..., eos] = torch.tensor(-float("inf"), device=logits_t.device)
-    if old_samp != 1 and num_samp > old_samp:
-        raise RuntimeError("either old_samp == 1 or num_samp <= old_samp must be true")
-    eos_mask: Optional[torch.Tensor] = None
-    if y_prev is not None:
-        if y_prev.dim() == 2:
-            y_prev = y_prev.unsqueeze(2)
-        if y_prev.shape[1:] != logits_t.shape[:-1]:
-            raise RuntimeError(
-                "If logits_t of shape {} then y_prev must have shape "
-                "(*, {}, {})".format(
-                    (batch_size, old_samp, num_classes), batch_size, old_samp,
-                )
-            )
-        y_prev = y_prev.expand(-1, -1, num_samp)
-        eos_mask = y_prev[-1].eq(eos)
-        if eos_mask.any():
-            eos_mask = eos_mask[..., :num_samp]
-        t = y_prev.shape[0] + 1
+    log_probs_t: torch.Tensor,
+    log_probs_prev: torch.Tensor,
+    y_prev: torch.Tensor,
+    y_prev_lens: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Random walk step function
+    
+    Parameters
+    ----------
+    log_probs_t : torch.Tensor
+        A tensor of shape ``(N, V)`` containing the log probabilities of extending a
+        given path with a token of a given type in the vocabulary.
+    log_probs_prev : torch.Tensor
+        A tensor of shape ``(N,)`` containing the log probablities of the paths so far.
+    y_prev : torch.Tensor
+        A tensor of shape ``(S, N)`` containing the paths so far.
+    y_prev_lens : torch.Tensor or None, optional
+        A tensor of shape ``(N,)`` specifying the lengths of the prefixes.
+        For batch element ``n``, only the values  ``y_prev[:y_prev_lens[n], n]``
+        are valid. If unspecified, it is assumed that ``y_prev_lens[:] == S``.
+    
+    Returns
+    -------
+    y_next, log_probs_next : torch.Tensor, torch.Tensor
+        The ``*next**`` tensors can be interpreted in the same way as their ``*prev*``
+        counterparts, but after the step. `y_next` is of shape either ``(S, N)`` or ``(S
+        + 1, N)``, depending on whether the size of `y_prev` needed to grow in order to
+        accommodate the newest token in the path. Note the next path lengths are always
+        the previous path lengths plus one, i.e. ``y_next_lens = y_prev_lens + 1``.
+    
+    Warnings
+    --------
+    This function has been drastically simplified after v0.3.0. The logic for
+    end-of-sequence handling has been punted to the encapsulating search module. The
+    logic for the relaxation has been entirely removed given the revamp of
+    :mod:`pydrobert.torch.estimators`.
+
+    See Also
+    --------
+    pydrobert.torch.modules.RandomWalk
+        For the full random walk.
+    """
+    if log_probs_t.dim() != 2:
+        raise RuntimeError("log_probs_t must be 2-dimensional")
+    N, V = log_probs_t.shape
+    if log_probs_prev.shape != (N,):
+        raise RuntimeError(
+            f"Expected log_probs_prev to be of shape {(N,)}, got {log_probs_prev.shape}"
+        )
+    if y_prev.dim() != 2:
+        raise RuntimeError("y_prev must be 2-dimensional")
+    if y_prev.size(1) != N:
+        raise RuntimeError(f"Expected dim 1 of y_prev to be {N}, got {y_prev.size(-1)}")
+    tm1 = y_prev.size(0)
+    if y_prev_lens is not None and y_prev_lens.shape != (N,):
+        raise RuntimeError(
+            f"Expected y_prev_lens to have shape {(N,)}, got {y_prev_lens.shape}"
+        )
+    y_t = torch.multinomial(log_probs_t.exp(), 1, True)  # (N, 1)
+    log_probs_next = log_probs_prev + log_probs_t.gather(1, y_t).squeeze(1)
+    y_t = y_t.T  # (1, N)
+    if tm1:
+        if y_prev_lens is None:
+            y_next = torch.cat([y_prev, y_t], 0)
+        else:
+            # don't make y bigger unless we have to
+            if int(y_prev_lens.max().item()) >= tm1:
+                y_next = torch.cat([y_prev, y_t], 0)
+            else:
+                y_next = y_prev
+            y_next = y_next.scatter(0, y_prev_lens.unsqueeze(0), y_t)
     else:
-        t = 1
-    logits_t = logits_t.expand(-1, num_samp, -1)
-    if lens is not None:
-        if lens.shape != logits_t.shape[:1]:
-            raise RuntimeError("lens must be of shape ({},)".format(batch_size))
-        len_mask = lens.lt(t)
-        if torch.any(len_mask):
-            len_mask = len_mask.unsqueeze(1).expand(-1, num_samp)
-            eos_mask = len_mask if eos_mask is None else (eos_mask | len_mask)
-    u = torch.distributions.utils.clamp_probs(torch.rand_like(logits_t))
-    log_theta = torch.nn.functional.log_softmax(logits_t, dim=-1)
-    z = log_theta - torch.log(-torch.log(u))
-    y = z.argmax(dim=-1)
-    if eos_mask is not None:
-        y = y.masked_fill(eos_mask, eos)
-        z = z.masked_fill(eos_mask.unsqueeze(-1), -float("inf"))
-    y = y.unsqueeze(0)
-    if y_prev is not None:
-        y = torch.cat([y_prev, y], 0)
-    if include_relaxation:
-        return y, z
-    else:
-        return y
+        y_next = y_t
+
+    return y_next, log_probs_next
 
 
 class RandomWalk(torch.nn.Module):
@@ -1253,18 +1273,16 @@ class RandomWalk(torch.nn.Module):
         `eos` or `max_iters` must be set.
     """
 
-    __constants__ = ["eos", "max_iters", "_chunk_size"]
+    __constants__ = ["eos", "max_iters"]
 
     eos: Optional[int]
     max_iters: Optional[int]
-    _chunk_size: int
 
     def __init__(
         self,
         lm: SequentialLanguageModel,
         eos: Optional[int] = None,
         max_iters: Optional[int] = None,
-        _chunk_size: int = 128,
     ):
         super().__init__()
         if eos is not None:
@@ -1274,8 +1292,6 @@ class RandomWalk(torch.nn.Module):
                     f"{lm.vocab_size - 1}], got {eos}"
                 )
             eos = (eos + lm.vocab_size) % lm.vocab_size
-        else:
-            _chunk_size = max_iters
         if max_iters is not None and max_iters < 0:
             raise ValueError("max_iters must be non-negative")
         if eos is None and max_iters is None:
@@ -1283,7 +1299,6 @@ class RandomWalk(torch.nn.Module):
         self.lm = lm
         self.eos = eos
         self.max_iters = max_iters
-        self._chunk_size = min(max_iters if max_iters else float("inf"), _chunk_size)
 
     def reset_parameters(self) -> None:
         if hasattr(self.lm, "reset_parameters"):
@@ -1371,19 +1386,9 @@ class RandomWalk(torch.nn.Module):
                 max_iters = 1024 * 1024 * 1024 * 1024
             else:
                 max_iters = self.max_iters
-            y_ = y
             for t in range(S_prev, max_iters + S_prev):
                 if eos_mask.all():
                     break
-                if t >= y.size(0):
-                    y = torch.cat(
-                        [
-                            y,
-                            torch.empty(
-                                (self._chunk_size, N), device=device, dtype=y.dtype
-                            ),
-                        ]
-                    )
                 t = torch.tensor(t, device=device)
 
                 # determine extension probabilities
@@ -1405,23 +1410,20 @@ class RandomWalk(torch.nn.Module):
                     eos_mask_[..., self.eos + 1 :] = False
                     log_probs_t = log_probs_t.masked_fill(eos_mask_, 0.0)
 
-                y[t] = torch.multinomial(log_probs_t.exp(), 1, True).squeeze(1)
-                log_probs += ~eos_mask * log_probs_t.gather(
-                    1, y[t].unsqueeze(1)
-                ).squeeze(1)
+                y, log_probs = random_walk_advance(log_probs_t, log_probs, y, y_lens)
 
                 if self.eos is not None:
                     # if the thing prior to this was not an eos, then either this isn't
                     # an eos or its the first eos. Both add to lens. This is why we
                     # accumulate using the previous eos mask
                     y_lens += ~eos_mask
-                    eos_mask = y[t] == self.eos
+                    eos_mask = (
+                        y.gather(0, y_lens.unsqueeze(0) - 1).squeeze(0) == self.eos
+                    )
                 else:
                     y_lens += 1
 
-                y_ = y[: t + 1]
-
-            return y_, y_lens, log_probs
+            return y, y_lens, log_probs
 
 
 @script
