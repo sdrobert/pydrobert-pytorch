@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import itertools
-from random import Random
 
 import torch
 import pytest
@@ -32,7 +31,6 @@ from pydrobert.torch.modules import (
 from pydrobert.torch.functional import (
     beam_search_advance,
     ctc_prefix_search_advance,
-    random_walk_advance,
 )
 
 
@@ -804,74 +802,6 @@ def test_random_walk_batch(device, jit_type):
         exp_sample_n = (range_N[:V] + (n % V)).clamp_max(V - 1)
         act_sample_n = sample[..., n]
         assert (exp_sample_n == act_sample_n).all()
-
-
-def test_random_walk_advance(device):
-    N, T, S, C = 5, 1000, 4, 10
-    logits = torch.randn(C, N, C, device=device)
-    transitions = torch.nn.functional.softmax(logits.transpose(0, 1), -1)
-    last = transitions
-    stationary = torch.bmm(last, transitions)
-    while not torch.allclose(stationary, last):
-        last, stationary = stationary, torch.bmm(stationary, stationary)
-    assert torch.allclose(stationary.sum(2), torch.tensor(1.0, device=device))
-    exp = (stationary[:, 0] * torch.arange(float(C)).to(device)).sum(1)
-    y = None
-    for _ in range(T):
-        if y is None:
-            logits_t = logits[0]
-        else:
-            logits_t = torch.gather(
-                logits.unsqueeze(2).expand(C, N, S, C),
-                0,
-                y[-1].unsqueeze(0).unsqueeze(-1).expand(1, N, S, C),
-            ).squeeze(0)
-        y = random_walk_advance(logits_t, S, y)
-    act = y.float().mean(0).mean(1)
-    assert torch.allclose(exp, act, atol=0.1)
-
-
-def test_random_walk_advance_relaxation(device):
-    N, S, C = 23, 32, 12
-    logits_t = torch.randn(N, C, device=device, requires_grad=True)
-    y = random_walk_advance(logits_t, S)
-    y, z = random_walk_advance(logits_t, S, include_relaxation=True)
-    assert torch.all(y[-1] == z.argmax(dim=-1))
-    (g,) = torch.autograd.grad([z], [logits_t], grad_outputs=torch.ones_like(z))
-    assert g.ne(0.0).any()
-    y[..., : S // 2] = -1
-    logits_t = logits_t.unsqueeze(1).expand_as(z)
-    y, z = random_walk_advance(logits_t, S, y, eos=-1, include_relaxation=True)
-    assert y[..., : S // 2].eq(-1).all()
-    assert y[..., S // 2 :].ne(-1).all()
-    assert torch.isinf(-z[:, : S // 2]).all()
-    assert not torch.isinf(-z[:, S // 2 :]).any()
-    (g,) = torch.autograd.grad([z], [logits_t], grad_outputs=torch.ones_like(z))
-    assert g.ne(0.0).any()
-    assert g[:, : S // 2].eq(0.0).all()
-    y[-1] = -1
-    y, z = random_walk_advance(logits_t, S, y, eos=-1, include_relaxation=True)
-    # it should be defined, but zero
-    (g,) = torch.autograd.grad([z], [logits_t], grad_outputs=torch.ones_like(z))
-    assert g.eq(0.0).all()
-
-
-@pytest.mark.parametrize("prevent_eos", [True, False])
-@pytest.mark.parametrize("lens", [True, False])
-def test_random_walk_advance_config(device, prevent_eos, lens):
-    N, T, S, C = 20, 100, 5, 4
-    eos = 0 if prevent_eos else -1
-    lens = torch.randint(1, T, (N,), device=device) if lens else None
-    y = None
-    for _ in range(T):
-        logits_t = torch.randn(N, S, C, device=device)
-        y = random_walk_advance(logits_t, S, y, eos, lens, prevent_eos)
-    if lens is None:
-        lens = torch.tensor(T, device=device).expand(N)
-    for bt, l in enumerate(lens):
-        for smp in range(S):
-            assert torch.all(y[l.item() :, bt, smp] == eos)
-            assert not torch.any(y[: l.item(), bt, smp] == eos)
 
 
 @pytest.mark.parametrize("dim", [0, 2, -1, None])

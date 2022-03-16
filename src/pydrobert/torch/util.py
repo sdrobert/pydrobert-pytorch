@@ -20,6 +20,7 @@ import warnings
 __all__ = ["parse_arpa_lm"]
 
 from ._lm import parse_arpa_lm
+from ._decoding import random_walk_advance
 
 
 def import_and_deprecate(func):
@@ -32,7 +33,8 @@ def import_and_deprecate(func):
     def wrapper(*args, **kwargs):
         warnings.warn(
             "pytorch function access through pydrobert.torch.util is deprecated. "
-            "Use pydrobert.torch.functional instead"
+            "Use pydrobert.torch.functional instead",
+            DeprecationWarning,
         )
         return wrapper.__func(*args, **kwargs)
 
@@ -92,11 +94,6 @@ def prefix_edit_distances():
 
 @import_and_deprecate
 def prefix_error_rates():
-    pass
-
-
-@import_and_deprecate
-def random_walk_advance():
     pass
 
 

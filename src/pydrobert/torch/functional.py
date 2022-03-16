@@ -29,7 +29,6 @@ __all__ = [
     "prefix_edit_distances",
     "prefix_error_rates",
     "random_shift",
-    "random_walk_advance",
     "sequence_log_probs",
     "simple_random_sampling_without_replacement",
     "sparse_image_warp",
@@ -45,7 +44,6 @@ from ._decoding import (
     beam_search_advance,
     ctc_greedy_search,
     ctc_prefix_search_advance,
-    random_walk_advance,
     sequence_log_probs,
 )
 from ._img import (
