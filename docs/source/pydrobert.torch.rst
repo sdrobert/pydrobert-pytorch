@@ -4,13 +4,6 @@ pydrobert.torch package
 Submodules
 ----------
 
-pydrobert.torch.command\_line module
-------------------------------------
-
-.. automodule:: pydrobert.torch.command_line
-   :members:
-   :undoc-members:
-   :show-inheritance:
 
 pydrobert.torch.data module
 ---------------------------

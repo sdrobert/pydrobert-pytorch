@@ -20,7 +20,12 @@ import torch
 
 
 from . import config
-from ._datasets import SpectDataSet, ContextWindowDataSet
+from ._datasets import (
+    ContextWindowDataParams,
+    ContextWindowDataSet,
+    SpectDataParams,
+    SpectDataSet,
+)
 
 
 class EpochRandomSampler(torch.utils.data.Sampler):
@@ -165,23 +170,6 @@ class DataSetParams(param.Parameterized):
             val = trial.suggest_int(prefix + "batch_size", *bounds)
             params.batch_size = val
         return params
-
-
-class SpectDataParams(param.Parameterized):
-    """Parameters for spectral data"""
-
-    sos = param.Integer(
-        None,
-        doc="A special symbol used to indicate the start of a sequence "
-        "in reference and hypothesis transcriptions. If set, `sos` will be "
-        "prepended to every reference transcription on read",
-    )
-    eos = param.Integer(
-        None,
-        doc="A special symbol used to indicate the end of a sequence in "
-        "reference and hypothesis transcriptions. If set, `eos` will be "
-        "appended to every reference transcription on read",
-    )
 
 
 class SpectDataSetParams(SpectDataParams, DataSetParams):
@@ -430,11 +418,10 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
-            sos=self.data_params.sos,
-            eos=self.data_params.eos,
             feat_subdir=feat_subdir,
             ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
+            params=self.data_params,
         )
         if not self.data_source.has_ali and not self.data_source.has_ref:
             raise ValueError(
@@ -665,11 +652,10 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
             file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
-            sos=self.data_params.sos,
-            eos=self.data_params.eos,
             feat_subdir=feat_subdir,
             ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
+            params=self.data_params,
         )
         super(SpectEvaluationDataLoader, self).__init__(
             self.data_source,
@@ -718,58 +704,6 @@ def context_window_seq_to_batch(
     if batch_ali is not None:
         batch_ali = torch.cat(batch_ali)
     return windows, batch_ali
-
-
-class ContextWindowDataParams(SpectDataParams):
-    """Parameters for spectral data split into overlapping context windows
-
-    This implements the :class:`pydrobert.param.optuna.TunableParameterized`
-    interface
-    """
-
-    # context windows are more model parameters than data parameters, but
-    # we're going to extract them as part of the data loading process, which
-    # is easily parallelized by the DataLoader
-    context_left = param.Integer(
-        4,
-        bounds=(0, None),
-        softbounds=(3, 8),
-        doc="How many frames to the left of (before) the current frame are "
-        "included when determining the class of the current frame",
-    )
-    context_right = param.Integer(
-        4,
-        bounds=(0, None),
-        softbounds=(3, 8),
-        doc="How many frames to the right of (after) the current frame are "
-        "included when determining the class of the current frame",
-    )
-    reverse = param.Boolean(
-        False,
-        doc="Whether to reverse each context window along the time/frame " "dimension",
-    )
-
-    @classmethod
-    def get_tunable(cls):
-        """Returns a set of tunable parameters"""
-        return {"context_left", "context_right", "reverse"}
-
-    @classmethod
-    def suggest_params(cls, trial, base=None, only=None, prefix=""):
-        """Populate a parameterized instance with values from trial"""
-        params = cls() if base is None else base
-        if only is None:
-            only = cls._tunable
-        pdict = params.param.params()
-        for name in ("context_left", "context_right"):
-            if name in only:
-                softbounds = pdict[name].get_soft_bounds()
-                setattr(params, name, trial.suggest_int(prefix + name, *softbounds))
-        if "reverse" in only:
-            params.reverse = trial.suggest_categorical(
-                prefix + "reverse", [True, False]
-            )
-        return params
 
 
 class ContextWindowDataSetParams(ContextWindowDataParams, DataSetParams):
@@ -903,15 +837,13 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
             self.data_params = data_params
         self.data_source = ContextWindowDataSet(
             data_dir,
-            self.data_params.context_left,
-            self.data_params.context_right,
-            reverse=self.data_params.reverse,
             file_prefix=file_prefix,
             file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
             feat_subdir=feat_subdir,
             ali_subdir=ali_subdir,
+            params=self.data_params,
         )
         if not self.data_source.has_ali:
             raise ValueError(
@@ -1073,15 +1005,13 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
             self.data_params = data_params
         self.data_source = self.CWEvalDataSet(
             data_dir,
-            self.data_params.context_left,
-            self.data_params.context_right,
-            reverse=self.data_params.reverse,
             file_prefix=file_prefix,
             file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
             subset_ids=set(params.subset_ids) if params.subset_ids else None,
             feat_subdir=feat_subdir,
             ali_subdir=ali_subdir,
+            params=self.data_params,
         )
         super(ContextWindowEvaluationDataLoader, self).__init__(
             self.data_source,

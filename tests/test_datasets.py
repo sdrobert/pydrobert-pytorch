@@ -73,7 +73,8 @@ def test_valid_spect_data_set(
         torch.randint(100, (10, 5), dtype=feat_dtype),
         os.path.join(temp_dir, "feat", "fake", file_prefix + "fake.pt"),
     )
-    data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix, eos=eos)
+    params = data.SpectDataParams(eos=eos)
+    data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix, params=params)
     assert not data_set.has_ali and not data_set.has_ref
     assert len(utt_ids) == len(data_set.utt_ids)
     assert all(utt_a == utt_b for (utt_a, utt_b) in zip(utt_ids, data_set.utt_ids))
@@ -94,7 +95,8 @@ def test_valid_spect_data_set(
         eos_sym[0] = eos
         eos_sym = eos_sym.unsqueeze(0)
         refs = [torch.cat([x, eos_sym]) for x in refs]
-    data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix, sos=sos, eos=eos)
+    params.sos = sos
+    data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix, params=params)
     assert data_set.has_ali and data_set.has_ref
     assert len(utt_ids) == len(data_set.utt_ids)
     assert all(utt_a == utt_b for (utt_a, utt_b) in zip(utt_ids, data_set.utt_ids))
@@ -109,7 +111,7 @@ def test_valid_spect_data_set(
     )
     subset_ids = data_set.utt_ids[: num_utts // 2]
     data_set = data.SpectDataSet(
-        temp_dir, file_prefix=file_prefix, subset_ids=set(subset_ids), sos=sos, eos=eos
+        temp_dir, file_prefix=file_prefix, subset_ids=set(subset_ids), params=params
     )
     assert all(utt_a == utt_b for (utt_a, utt_b) in zip(subset_ids, data_set.utt_ids))
     assert all(
@@ -171,7 +173,8 @@ def test_spect_data_write_hyp(temp_dir, device, sos, eos):
     feat_dir = os.path.join(temp_dir, "feat")
     os.makedirs(feat_dir)
     torch.save(torch.rand(3, 3), os.path.join(feat_dir, "a.pt"))
-    data_set = data.SpectDataSet(temp_dir, sos=sos, eos=eos)
+    params = data.SpectDataParams(sos=sos, eos=eos)
+    data_set = data.SpectDataSet(temp_dir, params=params)
     z = torch.randint(10, (4, 3), dtype=torch.float)
     zz = z
     if sos:
@@ -222,7 +225,8 @@ def test_spect_data_set_validity(temp_dir, eos):
         ref_a_pt,
     )
     torch.save(torch.tensor([[0, 3, 4], [1, 1, 2]]), ref_b_pt)
-    data_set = data.SpectDataSet(temp_dir, eos=eos)
+    params = data.SpectDataParams(eos=eos)
+    data_set = data.SpectDataSet(temp_dir, params=params)
     data.validate_spect_data_set(data_set)
     torch.save(torch.rand(4, 4).long(), feats_b_pt)
     with pytest.raises(ValueError, match="not the same tensor type"):
@@ -320,7 +324,10 @@ def test_context_window_data_set(temp_dir, reverse):
     os.makedirs(feat_dir)
     a = torch.rand(2, 10)
     torch.save(a, os.path.join(feat_dir, "a.pt"))
-    data_set = data.ContextWindowDataSet(temp_dir, 1, 1, reverse=reverse)
+    params = data.ContextWindowDataParams(
+        context_left=1, context_right=1, reverse=reverse
+    )
+    data_set = data.ContextWindowDataSet(temp_dir, params=params)
     windowed, _ = data_set[0]
     assert tuple(windowed.shape) == (2, 3, 10)
     if reverse:

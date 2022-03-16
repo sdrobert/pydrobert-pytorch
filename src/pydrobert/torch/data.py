@@ -15,21 +15,21 @@
 """Classes and functions related to storing/retrieving speech data"""
 
 from ._datasets import (
-    SpectDataSet,
+    ContextWindowDataParams,
     ContextWindowDataSet,
-    validate_spect_data_set,
     extract_window,
+    SpectDataParams,
+    SpectDataSet,
+    validate_spect_data_set,
 )
 from ._dataloaders import (
     context_window_seq_to_batch,
-    ContextWindowDataParams,
     ContextWindowDataSetParams,
     ContextWindowEvaluationDataLoader,
     ContextWindowTrainingDataLoader,
     DataSetParams,
     EpochRandomSampler,
     spect_seq_to_batch,
-    SpectDataParams,
     SpectDataSetParams,
     SpectEvaluationDataLoader,
     SpectTrainingDataLoader,

@@ -18,6 +18,24 @@ import warnings
 from typing import Optional, Set, Tuple, Union
 
 import torch
+import param
+
+
+class SpectDataParams(param.Parameterized):
+    """Parameters for SpectDataSet"""
+
+    sos = param.Integer(
+        None,
+        doc="A special symbol used to indicate the start of a sequence "
+        "in reference and hypothesis transcriptions. If set, `sos` will be "
+        "prepended to every reference transcription on read",
+    )
+    eos = param.Integer(
+        None,
+        doc="A special symbol used to indicate the end of a sequence in "
+        "reference and hypothesis transcriptions. If set, `eos` will be "
+        "appended to every reference transcription on read",
+    )
 
 
 class SpectDataSet(torch.utils.data.Dataset):
@@ -82,39 +100,24 @@ class SpectDataSet(torch.utils.data.Dataset):
     subset_ids : set, optional
         If set, only utterances with ids listed in this set will count towards
         the data set. The rest will be ignored
-    sos : int, optional
-        `sos` is a special token used to delimit the start of a reference or
-        hypothesis sequence. If specified, an extra `sos` token without
-        positional information will be inserted at the front of each reference
-        transcript. It will also have ramifications for :func:`write_hyp`
-    eos : int, optional
-        `eos` is a special token used to delimit the end of a reference
-        or hypothesis sequence. If specified, an extra `eos` token without
-        positional information will be appended to the end of each reference
-        transcript. It will also have ramifications for :func:`write_hyp`
+    sos : int or None, optional
+        Specify the start-of-sequence token, if any. If unset, uses whatever is in
+        `params`. Specifying `sos` this way is deprecated; it should be done via
+        `params`.
+    eos : int or None, optional
+        `eos` is a special token used to delimit the end of a reference or hypothesis
+        sequence. If unset, uses whatever is in `params`. Specifying `eos` this way is
+        deprecated; it should be done via `params`.
     feat_subdir : str, optional
     ali_subdir : str, optional
     ref_subdir : str, optional
         Change the names of the subdirectories under which feats, alignments,
         and references are stored. If `ali_subdir` or `ref_subdir` is
         :obj:`None`, they will not be searched for
-
-    Attributes
-    ----------
-    data_dir, feat_subdir, ali_subdir, ref_subdir, file_suffix : str
-    has_ali : bool
-        Whether alignment data exist
-    has_ref : bool
-        Whether reference data exist
-    utt_ids : tuple
-        A tuple of all utterance ids extracted from the data directory. They
-        are stored in the same order as features and alignments via
-        :func:`__getitem__`. If the ``ali/`` or ``ref/`` directories exist,
-        `utt_ids` contains only the utterances in the intersection of each
-        directory (and `subset_ids`, if it was specified)
-    sos : int or None
-    eos : int or None
-
+    params : SpectDataParams or None, Optional
+        Populates the parameters of this class with the instance. If unset, a new
+        `SpectDataParams` instance is initialized.
+        
     Yields
     ------
     feat : torch.Tensor
@@ -185,6 +188,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         feat_subdir: str = "feat",
         ali_subdir: str = "ali",
         ref_subdir: str = "ref",
+        params: Optional[SpectDataParams] = None,
     ):
         super(SpectDataSet, self).__init__()
         self.data_dir = data_dir
@@ -193,8 +197,23 @@ class SpectDataSet(torch.utils.data.Dataset):
         self.ref_subdir = ref_subdir
         self.file_prefix = file_prefix
         self.file_suffix = file_suffix
-        self.sos = sos
-        self.eos = eos
+        if params is None:
+            params = SpectDataParams()
+        self.params = params
+        self.sos = params.sos
+        self.eos = params.eos
+        if sos is not None:
+            warnings.warn(
+                "Specifying sos by keyword argument is deprecated. Use params instead",
+                DeprecationWarning,
+            )
+            self.sos = sos
+        if eos is not None:
+            warnings.warn(
+                "Specifying eos by keyword argument is deprecated. Use params instead",
+                DeprecationWarning,
+            )
+            self.eos = eos
         if ali_subdir:
             self.has_ali = os.path.isdir(os.path.join(data_dir, ali_subdir))
         else:
@@ -653,6 +672,58 @@ def extract_window(
     return window
 
 
+class ContextWindowDataParams(SpectDataParams):
+    """Parameters for spectral data split into overlapping context windows
+
+    This implements the :class:`pydrobert.param.optuna.TunableParameterized`
+    interface
+    """
+
+    # context windows are more model parameters than data parameters, but
+    # we're going to extract them as part of the data loading process, which
+    # is easily parallelized by the DataLoader
+    context_left = param.Integer(
+        4,
+        bounds=(0, None),
+        softbounds=(3, 8),
+        doc="How many frames to the left of (before) the current frame are "
+        "included when determining the class of the current frame",
+    )
+    context_right = param.Integer(
+        4,
+        bounds=(0, None),
+        softbounds=(3, 8),
+        doc="How many frames to the right of (after) the current frame are "
+        "included when determining the class of the current frame",
+    )
+    reverse = param.Boolean(
+        False,
+        doc="Whether to reverse each context window along the time/frame dimension",
+    )
+
+    @classmethod
+    def get_tunable(cls):
+        """Returns a set of tunable parameters"""
+        return {"context_left", "context_right", "reverse"}
+
+    @classmethod
+    def suggest_params(cls, trial, base=None, only=None, prefix=""):
+        """Populate a parameterized instance with values from trial"""
+        params = cls() if base is None else base
+        if only is None:
+            only = cls._tunable
+        pdict = params.param.params()
+        for name in ("context_left", "context_right"):
+            if name in only:
+                softbounds = pdict[name].get_soft_bounds()
+                setattr(params, name, trial.suggest_int(prefix + name, *softbounds))
+        if "reverse" in only:
+            params.reverse = trial.suggest_categorical(
+                prefix + "reverse", [True, False]
+            )
+        return params
+
+
 class ContextWindowDataSet(SpectDataSet):
     """SpectDataSet, extracting fixed-width windows over the utterance
 
@@ -671,15 +742,22 @@ class ContextWindowDataSet(SpectDataSet):
     Parameters
     ----------
     data_dir : str
-    left : int
-    right : int
+    left : int or None, optional
+        The number of frames to the left of the center frame to be extracted in the
+        window. If unset, uses whatever is in ``params.context_left``. Specifying
+        `left` by argument is deprecated; use ``params.context_left``.
+    right : int or None, optional
+        The number of frames to the right of the center frame to be extracted in the
+        window. If unset, uses whatever is in ``params.context_right``. Specifying
+        `right` by argument is deprecated; use ``params.context_right``.
     file_prefix : str, optional
     file_suffix : str, optional
     warn_on_missing : bool, optional
     feat_subdir, ali_subdir : str, optional
-    reverse : bool, optional
-        If :obj:`True`, context windows will be reversed along the time
-        dimension
+    reverse : bool or None, optional
+        If :obj:`True`, context windows will be reversed along the time dimension. If
+        unset, uses whatever is in ``params.reverse``. Specifying `reverse` by argument
+        is deprecated; use ``params.reverse``.
 
     Attributes
     ----------
@@ -699,7 +777,7 @@ class ContextWindowDataSet(SpectDataSet):
     --------
 
     >>> # see 'SpectDataSet' to set up data directory
-    >>> data = ContextWindowDataSet('data', 3, 3)
+    >>> data = ContextWindowDataSet('data')
     >>> data[0]  # random access returns (window, ali) pairs
     >>> for window, ali in data:
     >>>     pass  # so does the iterator
@@ -709,16 +787,19 @@ class ContextWindowDataSet(SpectDataSet):
     def __init__(
         self,
         data_dir: str,
-        left: int,
-        right: int,
+        left: Optional[int] = None,
+        right: Optional[int] = None,
         file_prefix: str = "",
         file_suffix: str = ".pt",
         warn_on_missing: bool = True,
         subset_ids: Optional[Set[str]] = None,
         feat_subdir: str = "feat",
         ali_subdir: str = "ali",
-        reverse: bool = False,
+        reverse: Optional[bool] = None,
+        params: Optional[ContextWindowDataParams] = None,
     ):
+        if params is None:
+            params = ContextWindowDataParams()
         super(ContextWindowDataSet, self).__init__(
             data_dir,
             file_prefix=file_prefix,
@@ -728,10 +809,31 @@ class ContextWindowDataSet(SpectDataSet):
             feat_subdir=feat_subdir,
             ali_subdir=ali_subdir,
             ref_subdir=None,
+            params=params,
         )
-        self.left = left
-        self.right = right
-        self.reverse = reverse
+        self.left = self.params.context_left
+        self.right = self.params.context_right
+        self.reverse = self.params.reverse
+        if left is not None:
+            warnings.warn(
+                "Specifying left by argument is deprecated. Please use "
+                "params.context_left",
+                DeprecationWarning,
+            )
+            self.left = left
+        if right is not None:
+            warnings.warn(
+                "Specifying right by argument is deprecated. Please use "
+                "params.context_right",
+                DeprecationWarning,
+            )
+            self.right = right
+        if reverse is not None:
+            warnings.warn(
+                "Specifying reverse by argument is deprecated. Please use "
+                "params.reverse"
+            )
+            self.reverse = reverse
 
     def get_utterance_tuple(self, idx) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Get a tuple of features and alignments"""
