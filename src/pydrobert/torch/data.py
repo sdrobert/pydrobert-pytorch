@@ -14,6 +14,9 @@
 
 """Classes and functions related to storing/retrieving speech data"""
 
+import functools
+import warnings
+
 from ._datasets import (
     ContextWindowDataParams,
     ContextWindowDataSet,
@@ -24,13 +27,13 @@ from ._datasets import (
 )
 from ._dataloaders import (
     context_window_seq_to_batch,
-    ContextWindowDataSetParams,
+    ContextWindowDataLoaderParams,
     ContextWindowEvaluationDataLoader,
     ContextWindowTrainingDataLoader,
-    DataSetParams,
+    DataLoaderParams,
     EpochRandomSampler,
     spect_seq_to_batch,
-    SpectDataSetParams,
+    SpectDataLoaderParams,
     SpectEvaluationDataLoader,
     SpectTrainingDataLoader,
 )
@@ -49,10 +52,10 @@ __all__ = [
     "context_window_seq_to_batch",
     "ContextWindowDataParams",
     "ContextWindowDataSet",
-    "ContextWindowDataSetParams",
+    "ContextWindowDataLoaderParams",
     "ContextWindowEvaluationDataLoader",
     "ContextWindowTrainingDataLoader",
-    "DataSetParams",
+    "DataLoaderParams",
     "EpochRandomSampler",
     "extract_window",
     "parse_arpa_lm",
@@ -62,7 +65,7 @@ __all__ = [
     "spect_seq_to_batch",
     "SpectDataParams",
     "SpectDataSet",
-    "SpectDataSetParams",
+    "SpectDataLoaderParams",
     "SpectEvaluationDataLoader",
     "SpectTrainingDataLoader",
     "token_to_transcript",
@@ -71,3 +74,41 @@ __all__ = [
     "write_ctm",
     "write_trn",
 ]
+
+
+def import_and_deprecate(cls):
+
+    from . import _dataloaders
+
+    old_name = cls.__name__
+    new_name = old_name.replace("DataSet", "DataLoader")
+    cls = getattr(_dataloaders, new_name)
+
+    @functools.wraps(cls)
+    def wraps(*args, **kwargs):
+        warnings.warn(
+            f"The name '{wraps.__old}' is deprecated. Please swith to '{wraps.__new}'",
+            DeprecationWarning,
+        )
+        return wraps.__cls(*args, **kwargs)
+
+    wraps.__old = old_name
+    wraps.__new = new_name
+    wraps.__cls = cls
+
+    return wraps
+
+
+@import_and_deprecate
+class DataSetParams:
+    pass
+
+
+@import_and_deprecate
+class SpectDataSetParams:
+    pass
+
+
+@import_and_deprecate
+class ContextWindowDataSetParams:
+    pass

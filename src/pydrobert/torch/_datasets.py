@@ -673,7 +673,7 @@ def extract_window(
 
 
 class ContextWindowDataParams(SpectDataParams):
-    """Parameters for spectral data split into overlapping context windows
+    """Parameters for ContextWindowDataSet
 
     This implements the :class:`pydrobert.param.optuna.TunableParameterized`
     interface

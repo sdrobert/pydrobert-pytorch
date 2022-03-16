@@ -24,7 +24,7 @@ from pydrobert.torch.config import INDEX_PAD_VALUE
 
 
 @pytest.mark.cpu
-def test_epoch_random_sampler(temp_dir):
+def test_epoch_random_sampler():
     data_source = torch.utils.data.TensorDataset(torch.arange(100))
     sampler = data.EpochRandomSampler(data_source, base_seed=1)
     samples_ep0 = tuple(sampler)
@@ -54,7 +54,6 @@ def test_epoch_random_sampler(temp_dir):
 )
 @pytest.mark.parametrize("include_ali", [True, False])
 def test_context_window_seq_to_batch(feat_sizes, include_ali):
-    torch.manual_seed(1)
     feats = tuple(torch.rand(*x) for x in feat_sizes)
     if include_ali:
         alis = tuple(torch.randint(10, (x[0],), dtype=torch.long) for x in feat_sizes)
@@ -76,7 +75,6 @@ def test_context_window_seq_to_batch(feat_sizes, include_ali):
 )
 @pytest.mark.parametrize("batch_first", [True, False])
 def test_spect_seq_to_batch(include_ali, include_ref, batch_first, include_frame_shift):
-    torch.manual_seed(1)
     feat_sizes = tuple(
         torch.randint(1, 30, (1,)).item()
         for _ in range(torch.randint(3, 10, (1,)).item())
@@ -154,7 +152,6 @@ def test_spect_training_data_loader(
     include_frame_shift,
     feat_dtype,
 ):
-    torch.manual_seed(40)
     num_utts, batch_size, num_filts = 20, 5, 11
     populate_torch_dir(
         temp_dir,
@@ -164,10 +161,10 @@ def test_spect_training_data_loader(
         feat_dtype=feat_dtype,
     )
     if split_params:
-        params = data.DataSetParams(batch_size=batch_size)
+        params = data.DataLoaderParams(batch_size=batch_size)
         data_params = data.SpectDataParams(sos=sos, eos=eos)
     else:
-        params = data.SpectDataSetParams(batch_size=batch_size, sos=sos, eos=eos)
+        params = data.SpectDataLoaderParams(batch_size=batch_size, sos=sos, eos=eos)
         data_params = None
     # check missing either ali or ref gives None in batches
     data_loader = data.SpectTrainingDataLoader(
@@ -290,17 +287,16 @@ def test_spect_evaluation_data_loader(
     include_frame_shift,
     feat_dtype,
 ):
-    torch.manual_seed(41)
     feat_dir = os.path.join(temp_dir, "feat")
     ali_dir = os.path.join(temp_dir, "ali")
     os.makedirs(feat_dir)
     os.makedirs(ali_dir)
     batch_size = 5
     if split_params:
-        params = data.DataSetParams(batch_size=batch_size)
+        params = data.DataLoaderParams(batch_size=batch_size)
         data_params = data.SpectDataParams(sos=sos, eos=eos)
     else:
-        params = data.SpectDataSetParams(batch_size=batch_size, sos=sos, eos=eos)
+        params = data.SpectDataLoaderParams(batch_size=batch_size, sos=sos, eos=eos)
         data_params = None
     feats, ali, ref, feat_sizes, ref_sizes, utt_ids = populate_torch_dir(
         temp_dir, 20, include_frame_shift=include_frame_shift, feat_dtype=feat_dtype
@@ -402,12 +398,12 @@ def test_window_training_data_loader(temp_dir, populate_torch_dir, split_params)
     populate_torch_dir(temp_dir, 5, num_filts=2)
     seed, batch_size, context_left, context_right = 2, 5, 1, 1
     if split_params:
-        params = data.DataSetParams(batch_size=batch_size, drop_last=True)
+        params = data.DataLoaderParams(batch_size=batch_size, drop_last=True)
         data_params = data.ContextWindowDataParams(
             context_left=context_left, context_right=context_right
         )
     else:
-        params = data.ContextWindowDataSetParams(
+        params = data.ContextWindowDataLoaderParams(
             context_left=context_left,
             context_right=context_right,
             batch_size=batch_size,
@@ -470,16 +466,15 @@ def test_window_training_data_loader(temp_dir, populate_torch_dir, split_params)
 @pytest.mark.cpu
 @pytest.mark.parametrize("split_params", [True, False])
 def test_window_evaluation_data_loader(temp_dir, populate_torch_dir, split_params):
-    torch.manual_seed(1)
     feat_dir = os.path.join(temp_dir, "feat")
     ali_dir = os.path.join(temp_dir, "ali")
     os.makedirs(feat_dir)
     os.makedirs(ali_dir)
     if split_params:
-        params = data.DataSetParams(batch_size=5)
+        params = data.DataLoaderParams(batch_size=5)
         data_params = data.ContextWindowDataParams(context_left=1, context_right=1)
     else:
-        params = data.ContextWindowDataSetParams(
+        params = data.ContextWindowDataLoaderParams(
             context_left=1, context_right=1, batch_size=5
         )
         data_params = None
@@ -521,18 +516,18 @@ def test_pydrobert_param_optuna_hooks():
     poptuna = pytest.importorskip("pydrobert.param.optuna")
     optuna = pytest.importorskip("optuna")
     for class_ in (
-        data.DataSetParams,
-        data.SpectDataSetParams,
+        data.DataLoaderParams,
+        data.SpectDataLoaderParams,
         data.ContextWindowDataParams,
-        data.ContextWindowDataSetParams,
+        data.ContextWindowDataLoaderParams,
     ):
         assert issubclass(class_, poptuna.TunableParameterized)
     global_dict = {
-        "data_set": data.DataSetParams(),
+        "data_set": data.DataLoaderParams(),
         "spect_data": data.SpectDataParams(),
-        "spect_data_set": data.SpectDataSetParams(),
+        "spect_data_set": data.SpectDataLoaderParams(),
         "context_window_data": data.ContextWindowDataParams(),
-        "context_window_data_set": data.ContextWindowDataSetParams(),
+        "context_window_data_set": data.ContextWindowDataLoaderParams(),
     }
     assert {
         "data_set.batch_size",

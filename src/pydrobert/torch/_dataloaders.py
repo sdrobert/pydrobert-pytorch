@@ -91,47 +91,11 @@ class EpochRandomSampler(torch.utils.data.Sampler):
         return ret
 
 
-class DataSetParams(param.Parameterized):
-    """General parameters for a single partition of data
+class DataLoaderParams(param.Parameterized):
+    """General parameters for a DataSet from pydrobert.torch.data
 
     This implements the :class:`pydrobert.param.optuna.TunableParameterized`
-    interface
-
-    Notes
-    -----
-    Previously, :class:`DataSetParams` contained a `seed` parameter. Now, a
-    seed can be specified via keyword argument to training data loaders. There
-    are two reasons this was removed: one, not all data sets need a seed (e.g.
-    eval); and two, the initial seeding is likely redundant when paired with
-    the seed from :class:`pydrobert.torch.training.TrainingStateController`.
-
-    One can reproduce the old behaviour without using the `seed` keyword
-    argument by making "seed" an attribute in the `params` argument to training
-    data loaders. The loaders look for the attribute and use it if `seed` is
-    not explicitly set as a keyword argument. If you're okay with a warning,
-    you can force the attribute with:
-
-    >>> params = DataSetParams(seed=2)
-
-    To avoid the warning, first use a subclass with a seed parameter, such as
-    below
-
-    >>> class TrainingDataSetParams(DataSetParams):
-    >>>     seed = param.Integer(None)
-
-    Or maybe combine with :class:`pydrobert.torch.training.TrainingStateParams`
-
-    >>> class TrainingParams(DataSetParams, TrainingStateParams):
-    >>>     @classmethod
-    >>>     def build_from_optuna_trial(cls, trial, base=None, only=None):
-    >>>         base = cls() if base is None else base
-    >>>         params = DataSetParams.build_from_optuna_trial(
-    ...             trial, base, only)
-    >>>         params = TrainingStateParams.build_from_optuna_trial(
-    >>>             trial, params, only)
-    >>>         return params
-
-    The class method is only necessary if you plan on optimizing with Optuna.
+    interface.
     """
 
     batch_size = param.Integer(
@@ -172,11 +136,17 @@ class DataSetParams(param.Parameterized):
         return params
 
 
-class SpectDataSetParams(SpectDataParams, DataSetParams):
-    """Data set parameters for a specific partition of spectral data
+class SpectDataLoaderParams(SpectDataParams, DataLoaderParams):
+    """Parameters for a Spect*DataLoader
 
     This implements the :class:`pydrobert.param.optuna.TunableParameterized`
-    interface
+    interface.
+
+    See Also
+    --------
+    pydrobert.torch.data.SpectTrainingDataLoader
+    pydrobert.torch.data.SpectEvaluationDataLoader
+        Where to use these parameters.
     """
 
 
@@ -255,10 +225,11 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     Parameters
     ----------
     data_dir : str
-    params : SpectDataSetParams or DataSetParams
+    params : SpectDataLoaderParams or DataLoaderParams
         Either provides all the parameters necessary to instantiate this loader (a
-        :class:`SpectDataSetParams`) or just those related to the set/partition (a
-        :class:`DataSetParams`). If the latter, `data_params` must be specified
+        :class:`SpectDataLoaderParams`) or just those related to or just those related
+        to the loader (a :class:`DataLoaderParams`). If the latter, `data_params` must
+        be specified.
     file_prefix : str, optional
     file_suffix : str, optional
     warn_on_missing : bool, optional
@@ -266,17 +237,14 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     ali_subdir : str, optional
     ref_subdir : str, optional
     init_epoch : int, optional
-        Where training should resume from
+        Where training should resume from.
     batch_first : bool, optional
     data_params : SpectDataParams or :obj:`None`, optional
-        If non-null, provides general information on the data as a whole.
-        parameters from :class:`SpectDataParams` in `data_params` will pre-empt
-        any found in `params`. If :obj:`None`, it is assumed that `params`
-        is a :class:`SpectDataSetParams` and the requisite parameters from
-        :class:`SpectDataParams` come from `params`
+        If specified, provides the parameters necessary to instantiate the underlying
+        :class:`SpectDataSet`. Parameters in `data_params` will pre-empt any found in
+        `params`.
     seed : int or :obj:`None`, optional
-        The seed used to shuffle data. If :obj:`None`, `params` is checked for
-        a `seed` parameter or, if none is found, one will be generated randomly
+        The seed used to shuffle data. If unset, will be set randomly.
     kwargs : keyword arguments, optional
         Additional :class:`torch.utils.data.DataLoader` arguments
 
@@ -306,14 +274,8 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
 
     Attributes
     ----------
-    params : SpectDataSetParams or DataSetParams
-    data_params : SpectDataSetParams or SpectDataParams
-        Is the argument of `data_params` if not :obj:`None`, else `params`
-    data_dir : str
-    data_source : SpectDataSet
-        The instance that will serve unbatched utterances
     epoch : int
-    batch_first : bool
+        The current epoch.
 
     Notes
     -----
@@ -338,7 +300,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     >>> model = torch.nn.LSTM(num_filts, num_ali_classes)
     >>> optim = torch.optim.Adam(model.parameters())
     >>> loss = torch.nn.CrossEntropyLoss()
-    >>> params = SpectDataSetParams()
+    >>> params = SpectDataLoaderParams()
     >>> loader = SpectTrainingDataLoader('data', params, batch_first=False)
     >>> for feats, alis, _, feat_sizes, _ in loader:
     >>>     optim.zero_grad()
@@ -362,7 +324,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     ...     torch.nn.LogSoftmax(-1))
     >>> optim = torch.optim.Adam(model.parameters(), 1e-4)
     >>> loss = torch.nn.CTCLoss()
-    >>> params = SpectDataSetParams()
+    >>> params = SpectDataLoaderParams()
     >>> loader = SpectTrainingDataLoader('data', params)
     >>> for feats, _, refs, feat_sizes, ref_sizes in loader:
     >>>     optim.zero_grad()
@@ -377,7 +339,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     def __init__(
         self,
         data_dir: str,
-        params: DataSetParams,
+        params: DataLoaderParams,
         init_epoch: int = 0,
         file_prefix: str = "",
         file_suffix: str = ".pt",
@@ -405,8 +367,6 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
                 )
         self.data_dir = data_dir
         self.params = params
-        if seed is None and hasattr(params, "seed"):
-            seed = params.seed
         if data_params is None:
             self.data_params = params
         else:
@@ -470,34 +430,23 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     Parameters
     ----------
     data_dir : str
-    params : DataSetParams
-        Either provides all the parameters necessary to instantiate this
-        loader (a :class:`SpectDataSetParams`) or just those related to the
-        set/partition (a :class:`DataSetParams`). If the latter, `data_params`
-        must be specified
+    params : DataLoaderParams
+        Either provides all the parameters necessary to instantiate this loader (a
+        :class:`SpectDataLoaderParams`) or just those related to or just those related
+        to the loader (a :class:`DataLoaderParams`). If the latter, `data_params` must
+        be specified.
     file_prefix : str, optional
     file_suffix : str, optional
     warn_on_missing : bool, optional
     feat_subdir, ali_subdir, ref_subdir : str, optional
     batch_first : bool, optional
     data_params : SpectDataParams or :obj:`None`, optional
-        If non-null, provides general information on the data as a whole.
-        parameters from :class:`SpectDataParams` in `data_params` will pre-empt
-        any found in `params`. If :obj:`None`, it is assumed that `params`
-        is a :class:`SpectDataSetParams` and the requisite parameters from
-        :class:`SpectDataParams` come from `params`
+    data_params : SpectDataParams or :obj:`None`, optional
+        If specified, provides the parameters necessary to instantiate the underlying
+        :class:`SpectDataSet`. Parameters in `data_params` will pre-empt any found in
+        `params`.
     kwargs : keyword arguments, optional
         Additional :class:`torch.utils.data.DataLoader` arguments
-
-    Attributes
-    ----------
-    data_dir : str
-    params : SpectDataSetParams or DataSetParams
-    data_params : SpectDataSetParams or SpectDataParams
-        Is the argument of `data_params` if not :obj:`None`, else `params`
-    batch_first : bool
-    data_source : SpectEvaluationDataLoader.SEvalDataSet
-        Serves the utterances. A :class:`SpectDataSet`, but adds utterance IDs
 
     Yields
     ------
@@ -527,7 +476,6 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
 
     Notes
     -----
-
     Shorter utterances in `feats` are zero-padded to the right, `alis` and `refs` are
     padded with :const:`pydrobert.torch.config.INDEX_PAD_VALUE`
 
@@ -538,7 +486,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     >>> # see 'SpectDataSet' to initialize data set
     >>> num_filts, num_ali_classes = 40, 100
     >>> model = torch.nn.LSTM(num_filts, num_ali_classes)
-    >>> params = SpectDataSetParams()
+    >>> params = SpectDataLoaderParams()
     >>> loader = SpectEvaluationDataLoader('data', params, batch_first=False)
     >>> for feats, _, _, feat_sizes, _, utt_ids in loader:
     >>>     packed_feats = torch.nn.utils.rnn.pack_padded_sequence(
@@ -559,7 +507,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     ...     torch.nn.ReLU(),
     ...     torch.nn.Linear(num_filts, num_ref_classes),
     ...     torch.nn.LogSoftmax(-1)).eval()
-    >>> params = SpectDataSetParams()
+    >>> params = SpectDataLoaderParams()
     >>> loader = SpectEvaluationDataLoader('data', params)
     >>> for feats, _, _, feat_sizes, _, utt_ids in loader:
     >>>     feats = feats.unsqueeze(1)  # channels dim
@@ -615,7 +563,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     def __init__(
         self,
         data_dir: str,
-        params: DataSetParams,
+        params: DataLoaderParams,
         file_prefix: str = "",
         file_suffix: str = ".pt",
         warn_on_missing: bool = True,
@@ -706,22 +654,28 @@ def context_window_seq_to_batch(
     return windows, batch_ali
 
 
-class ContextWindowDataSetParams(ContextWindowDataParams, DataSetParams):
-    """Data set parameters for specific partition of windowed spectral data
+class ContextWindowDataLoaderParams(ContextWindowDataParams, DataLoaderParams):
+    """Parameters for a ContextWindow*DataLoader
 
     This implements the :class:`pydrobert.param.optuna.TunableParameterized`
     interface
+
+    See Also
+    --------
+    pydrobert.torch.data.ContextWindowTrainingDataLoader
+    pydrobert.torch.data.ContextWindowEvaluationDataLoader
+        Where to use these parameters.
     """
 
     @classmethod
     def get_tunable(cls):
         """Returns a set of tunable parameters"""
-        return DataSetParams.get_tunable() | ContextWindowDataParams.get_tunable()
+        return DataLoaderParams.get_tunable() | ContextWindowDataParams.get_tunable()
 
     @classmethod
     def suggest_params(cls, trial, base=None, only=None, prefix=""):
         """Populate a parameterized instance with values from trial"""
-        params = DataSetParams.suggest_params(
+        params = DataLoaderParams.suggest_params(
             trial, base=base, only=only, prefix=prefix
         )
         params = ContextWindowDataParams.suggest_params(
@@ -736,10 +690,10 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     Parameters
     ----------
     data_dir : str
-    params : ContextWindowDataSetParams or DataSetParams
+    params : ContextWindowDataLoaderParams or DataLoaderParams
         Either provides all the parameters necessary to instantiate this loader (a
-        :class:`ContextWindowDataSetParams`) or just those related to the set/partition
-        (a :class:`DataSetParams`). If the latter, `data_params` must be specified
+        :class:`ContextWindowDataLoaderParams`) or just those related to the loader
+        (a :class:`DataLoaderParams`). If the latter, `data_params` must be specified.
     file_prefix : str, optional
     file_suffix : str, optional
     warn_on_missing : bool, optional
@@ -747,11 +701,9 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     init_epoch : int, optional
         Where training should resume from
     data_params : ContextWindowDataParams or :obj:`None`, optional
-        If non-null, provides general information on the data as a whole.
-        parameters from :class:`ContextWindowDataParams` in `data_params` will
-        pre-empt any found in `params`. If :obj:`None`, it is assumed that
-        `params` is a :class:`ContextWindowDataSetParams` and the requisite
-        parameters from :class:`ContextWindowDataParams` come from `params`
+        If specified, provides the parameters necessary to instantiate the underlying
+        :class:`ContextWindowDataSet`. Parameters in `data_params` will pre-empt any
+        found in `params`.
     seed : int or :obj:`None`, optional
         The seed used to shuffle data. If :obj:`None`, `params` is checked for
         a `seed` parameter or, if none is found, one will be generated randomly
@@ -761,12 +713,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     Attributes
     ----------
     epoch : int
-    data_dir : str
-    params : ContextWindowDataSetParams or DataSetParams
-    data_params : ContextWindowDataSetParams or ContextWindowDataParams
-        Is the argument of `data_params` if not :obj:`None`, else `params`
-    data_source : ContextWindowDataSet
-        The instance that serves an utterance-worth of context windows
+        The current epoch.
 
     Yields
     ------
@@ -789,7 +736,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     ...     num_filts * window_width, num_ali_classes)
     >>> optim = torch.optim.Adam(model.parameters())
     >>> loss = torch.nn.CrossEntropyLoss()
-    >>> params = ContextWindowDataSetParams(
+    >>> params = ContextWindowDataLoaderParams(
     ...     context_left=left, context_right=right)
     >>> loader = ContextWindowTrainingDataLoader('data', params)
     >>> for windows, alis in loader:
@@ -803,7 +750,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     def __init__(
         self,
         data_dir: str,
-        params: DataSetParams,
+        params: DataLoaderParams,
         init_epoch: int = 0,
         file_prefix: str = "",
         file_suffix: str = ".pt",
@@ -877,33 +824,20 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     Parameters
     ----------
     data_dir : str
-    params : ContextWindowDataSetParams or DataSetParams
-        Either provides all the parameters necessary to instantiate this
-        loader (a :class:`ContextWindowDataSetParams`) or just those related to
-        the set/partition (a :class:`DataSetParams`). If the latter,
-        `data_params` must be specified
+    params : ContextWindowDataLoaderParams or DataLoaderParams
+        Either provides all the parameters necessary to instantiate this loader (a
+        :class:`ContextWindowDataLoaderParams`) or just those related to the loader
+        (a :class:`DataLoaderParams`). If the latter, `data_params` must be specified.
     file_prefix : str, optional
     file_suffix : str, optional
     warn_on_missing : bool, optional
     feat_subdir, ali_subdir : str, optional
     data_params : ContextWindowDataParams or :obj:`None`, optional
-        If non-null, provides general information on the data as a whole.
-        parameters from :class:`ContextWindowDataParams` in `data_params` will
-        pre-empt any found in `params`. If :obj:`None`, it is assumed that
-        `params` is a :class:`ContextWindowDataSetParams` and the requisite
-        parameters from :class:`ContextWindowDataParams` come from `params`
+        If specified, provides the parameters necessary to instantiate the underlying
+        :class:`ContextWindowDataSet`. Parameters in `data_params` will pre-empt any
+        found in `params`.
     kwargs : keyword arguments, optional
         Additional :class:`torch.utils.data.DataLoader` arguments
-
-    Attributes
-    ----------
-    data_dir : str
-    params : ContextWindowDataSetParams or DataSetParams
-    data_params : ContextWindowDataSetParams or ContextWindowDataParams
-        Is the argument of `data_params` if not :obj:`None`, else `params`
-    data_source : ContextWindowEvaluationDataLoader.CWEvalDataSet
-        Serves utterances. A :class:`ContextWindowDataSet`, but adds feature
-        sizes and utterance ids to each yielded tuple
 
     Yields
     ------
@@ -932,7 +866,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     >>> window_width = left + right + 1
     >>> model = torch.torch.nn.Linear(
     ...     num_filts * window_width, num_ali_classes).eval()
-    >>> params = ContextWindowDataSetParams(
+    >>> params = ContextWindowDataLoaderParams(
     ...     context_left=left, context_right=right)
     >>> loader = ContextWindowEvaluationDataLoader('data', params)
     >>> for windows, _, win_sizes, utt_ids in loader:
@@ -975,7 +909,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     def __init__(
         self,
         data_dir: str,
-        params: DataSetParams,
+        params: DataLoaderParams,
         file_prefix: str = "",
         file_suffix: str = ".pt",
         warn_on_missing: bool = True,
