@@ -3,6 +3,10 @@
 ## HEAD
 
 - Fixed up formatting of CLI help documentation.
+- Data sets can now initialize some of their parameters with the values in
+  their associated param containers. For example, `sos` and `eos` are now
+  set in `SpectDataSet` by passing an optional `SpectDataParam` instance. The
+  old method (by argument) is now deprecated.
 - Renamed `DataSetParams` to `DataLoaderParams` and deprecated former naming
   to better mesh with their use in data loaders.
 - Moved `pydrobert.torch.util.parse_arpa_lm` to `pydrobert.torch.data`
