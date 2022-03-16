@@ -97,7 +97,9 @@ the previous LSTM states `prev` into the LSTM layer to get back hidden and cell
 states `cur`; pass the hidden states through the feedforward layer to get
 `logits`; and return the normalized `logits` and `cur`. Normalizing the
 `logits` into log probabilities is not strictly necessary for this example,
-though it is when pairing with a search algorithm.
+though it is when pairing with a search algorithm. A random walk with a few
+more bells and whistles can be accomplished by the module
+:class:`pydrobert.torch.modules.RandomWalk`.
 
 Note at the beginning of the method that we check if `idx == 0`. This is for
 when we're generating the first token. Since we can't extract a previous token

@@ -39,6 +39,7 @@ __all__ = [
     "PrefixEditDistances",
     "PrefixErrorRates",
     "RandomShift",
+    "RandomWalk",
     "SequenceLogProbabilities",
     "SequentialLanguageModel",
     "SparseImageWarp",
@@ -58,6 +59,7 @@ from ._decoding import (
     BeamSearch,
     CTCGreedySearch,
     CTCPrefixSearch,
+    RandomWalk,
     SequenceLogProbabilities,
 )
 from ._img import (

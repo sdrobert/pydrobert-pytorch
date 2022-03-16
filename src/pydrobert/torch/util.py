@@ -32,7 +32,8 @@ def import_and_deprecate(func):
     def wrapper(*args, **kwargs):
         warnings.warn(
             "pytorch function access through pydrobert.torch.util is deprecated. "
-            "Use pydrobert.torch.functional instead"
+            "Use pydrobert.torch.functional instead",
+            DeprecationWarning,
         )
         return wrapper.__func(*args, **kwargs)
 

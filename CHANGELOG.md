@@ -36,13 +36,13 @@
 - `version.py` -> `_version.py`.
 - A number of modifications and additions related to decoding and language
   models, including:
-  - `beam_search_advance` has been simplified, with much of the end-of-sequence
-    logic punted to `BeamSearch`
+  - `beam_search_advance` and `random_walk_advance` have been simplified, with much of the end-of-sequence logic punted to their associated modules.
   - Rejigged `SequentialLanguageModel` and `LookupLanguageModel` to be both
     simpler and compatible with decoder interfaces.
-  - `ctc_greedy_search` and `ctc_prefix_search` functions have been added.
+  - `ctc_greedy_search` and `ctc_prefix_search_advance` functions have been
+    added.
   - `ExtractableSequentialLanguageModel`, `MixableSequentialLanguageModel`,
-    `BeamSearch`, and `CTCPrefixSearch` modules have been added.
+    `BeamSearch`, `RandomWalk`, and `CTCPrefixSearch` modules have been added.
   - A new documentation page on how to deal with all of that.
 - Fixed bug in controller that always compared thresholds against best, not the
   last point that reset the countdown (#55)

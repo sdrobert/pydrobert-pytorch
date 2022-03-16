@@ -24,12 +24,13 @@ from pydrobert.torch.modules import (
     CTCGreedySearch,
     CTCPrefixSearch,
     MixableSequentialLanguageModel,
+    RandomWalk,
     SequenceLogProbabilities,
+    SequentialLanguageModel,
 )
 from pydrobert.torch.functional import (
     beam_search_advance,
     ctc_prefix_search_advance,
-    random_walk_advance,
 )
 
 
@@ -731,72 +732,102 @@ def test_beam_search_advance(device):
     assert (y_next_act[:Kp, :, 0] == y_next_0_exp).all()
 
 
-def test_random_walk_advance(device):
-    N, T, S, C = 5, 1000, 4, 10
-    logits = torch.randn(C, N, C, device=device)
-    transitions = torch.nn.functional.softmax(logits.transpose(0, 1), -1)
-    last = transitions
-    stationary = torch.bmm(last, transitions)
-    while not torch.allclose(stationary, last):
-        last, stationary = stationary, torch.bmm(stationary, stationary)
-    assert torch.allclose(stationary.sum(2), torch.tensor(1.0, device=device))
-    exp = (stationary[:, 0] * torch.arange(float(C)).to(device)).sum(1)
-    y = None
-    for _ in range(T):
-        if y is None:
-            logits_t = logits[0]
-        else:
-            logits_t = torch.gather(
-                logits.unsqueeze(2).expand(C, N, S, C),
-                0,
-                y[-1].unsqueeze(0).unsqueeze(-1).expand(1, N, S, C),
-            ).squeeze(0)
-        y = random_walk_advance(logits_t, S, y)
-    act = y.float().mean(0).mean(1)
-    assert torch.allclose(exp, act, atol=0.1)
+def test_random_walk(device):
+    class StationaryLM(SequentialLanguageModel):
+        def __init__(self, vocab_size: int):
+            super().__init__(vocab_size)
+            self.logits = torch.nn.Parameter(torch.randn(vocab_size, vocab_size))
+
+        def calc_idx_log_probs(
+            self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
+        ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+            if idx == 0:
+                hist = torch.zeros(
+                    1, hist.size(1), device=hist.device, dtype=hist.dtype
+                )
+            return self.logits.index_select(0, hist[(idx - 1).clamp_min_(0)]), prev
+
+    T, V = 10000, 4
+    lm = StationaryLM(V).to(device)
+    stationary = lm.logits.detach().softmax(-1)
+    while True:
+        stationary_ = stationary @ stationary
+        if torch.allclose(stationary, stationary_):
+            break
+        stationary = stationary_
+    exp_expectation = (
+        stationary[0] * torch.arange(V, device=device, dtype=stationary.dtype)
+    ).sum()
+
+    random_walk = RandomWalk(lm, max_iters=T)
+    sample, lens, exp_lprobs = random_walk(
+        torch.empty(0, 1, device=device, dtype=torch.long)
+    )
+    assert sample.shape == (T, 1)
+    assert (lens == T).all()
+    lm_sample = lm(sample[:-1])
+    assert lm_sample.shape == (T, 1, V)
+    act_lprobs = lm_sample.gather(2, sample.unsqueeze(2)).sum()
+    assert torch.isclose(exp_lprobs / T, act_lprobs / T, atol=1e-2)
+    act_expectation = sample.float().mean()
+    assert torch.allclose(exp_expectation, act_expectation, atol=1e-2)
 
 
-def test_random_walk_advance_relaxation(device):
-    N, S, C = 23, 32, 12
-    logits_t = torch.randn(N, C, device=device, requires_grad=True)
-    y = random_walk_advance(logits_t, S)
-    y, z = random_walk_advance(logits_t, S, include_relaxation=True)
-    assert torch.all(y[-1] == z.argmax(dim=-1))
-    (g,) = torch.autograd.grad([z], [logits_t], grad_outputs=torch.ones_like(z))
-    assert g.ne(0.0).any()
-    y[..., : S // 2] = -1
-    logits_t = logits_t.unsqueeze(1).expand_as(z)
-    y, z = random_walk_advance(logits_t, S, y, eos=-1, include_relaxation=True)
-    assert y[..., : S // 2].eq(-1).all()
-    assert y[..., S // 2 :].ne(-1).all()
-    assert torch.isinf(-z[:, : S // 2]).all()
-    assert not torch.isinf(-z[:, S // 2 :]).any()
-    (g,) = torch.autograd.grad([z], [logits_t], grad_outputs=torch.ones_like(z))
-    assert g.ne(0.0).any()
-    assert g[:, : S // 2].eq(0.0).all()
-    y[-1] = -1
-    y, z = random_walk_advance(logits_t, S, y, eos=-1, include_relaxation=True)
-    # it should be defined, but zero
-    (g,) = torch.autograd.grad([z], [logits_t], grad_outputs=torch.ones_like(z))
-    assert g.eq(0.0).all()
+def test_random_walk_batch(device, jit_type):
 
+    # it's deterministic and always terminates
+    class SpinningLM(SequentialLanguageModel):
+        def calc_idx_log_probs(
+            self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
+        ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+            next_ = (hist[idx - 1] + 1) % self.vocab_size
+            return (
+                torch.nn.functional.one_hot(next_, self.vocab_size).float().log() - 1,
+                prev,
+            )
 
-@pytest.mark.parametrize("prevent_eos", [True, False])
-@pytest.mark.parametrize("lens", [True, False])
-def test_random_walk_advance_config(device, prevent_eos, lens):
-    N, T, S, C = 20, 100, 5, 4
-    eos = 0 if prevent_eos else -1
-    lens = torch.randint(1, T, (N,), device=device) if lens else None
-    y = None
-    for _ in range(T):
-        logits_t = torch.randn(N, S, C, device=device)
-        y = random_walk_advance(logits_t, S, y, eos, lens, prevent_eos)
-    if lens is None:
-        lens = torch.tensor(T, device=device).expand(N)
-    for bt, l in enumerate(lens):
-        for smp in range(S):
-            assert torch.all(y[l.item() :, bt, smp] == eos)
-            assert not torch.any(y[: l.item(), bt, smp] == eos)
+    N, V, S_prev = 128, 16, 10
+    lm = SpinningLM(V)
+    if jit_type == "script":
+        lm = torch.jit.script(lm)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for RandomWalk")
+    walk = RandomWalk(lm, eos=V - 1).to(device)
+    if jit_type == "script":
+        walk = torch.jit.script(walk)
+    y_prev = torch.randint(0, V, (S_prev, N), device=device)
+    y_prev[0, 0] = V - 1
+
+    exps = []
+    for y_prev_n in y_prev.T:
+        y_prev_n = y_prev_n.unsqueeze(1)
+        y_n_exp, y_lens_n_exp, log_probs_n_exp = walk(y_prev_n)
+        y_n_exp = y_n_exp.squeeze(1)
+        y_lens_n_exp = y_lens_n_exp.squeeze()
+        log_probs_n_exp = log_probs_n_exp.squeeze()
+        exps.append((y_n_exp, y_lens_n_exp, log_probs_n_exp))
+
+    y_act, y_lens_act, log_probs_act = walk(y_prev)
+    assert y_lens_act[0] == 1
+    for (
+        (y_n_exp, y_lens_n_exp, log_probs_n_exp),
+        y_n_act,
+        y_lens_n_act,
+        log_probs_n_act,
+    ) in zip(exps, y_act.T, y_lens_act, log_probs_act):
+        assert y_n_exp.size(0) <= y_n_act.size(0)
+        assert y_lens_n_exp.shape == y_lens_n_act.shape
+        assert log_probs_n_exp.shape == log_probs_n_act.shape
+        assert (y_lens_n_exp == y_lens_n_act).all()
+        assert torch.allclose(log_probs_n_exp, log_probs_n_act)
+        rem = y_n_act.size(0) - y_n_exp.size(0)
+        if rem > 0:
+            y_n_exp = torch.cat([y_n_exp, y_n_exp.new_empty(rem)])
+            assert y_n_exp.shape == y_n_act.shape
+        len_mask = torch.arange(y_n_exp.size(0), device=device) >= y_lens_n_exp
+        y_n_exp = y_n_exp.masked_fill_(len_mask, -1)
+        y_n_act = y_n_act.masked_fill_(len_mask, -1)
+        assert (y_n_exp == y_n_act).all()
 
 
 @pytest.mark.parametrize("dim", [0, 2, -1, None])
