@@ -39,20 +39,21 @@ extensions = [
     "sphinx.ext.autosectionlabel",
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
+    "sphinx_autodoc_typehints",
     "myst_parser",
 ]
 
-# napoleon
 napoleon_numpy_docstring = True
 napoleon_google_docstring = False
-# napoleon_preprocess_types = True
-# napoleon_use_ivars = True
-
-# autodoc
-autodoc_mock_imports = ["numpy", "torch"]
-autodoc_type_aliases = {
-    "FunctionOnSample": "pydrobert.torch.estimators.FunctionOnSample"
+napoleon_include_init_with_doc = True
+napoleon_custom_sections = {
+    ("Call Parameters", "params_style"),
+    ("Variables", "params_style"),
 }
+autodoc_mock_imports = ["numpy", "torch"]
+autodoc_member_order = "bysource"
+autodoc_inherit_docstrings = False
+autodoc_preserve_defaults = True
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
@@ -98,7 +99,7 @@ ipython_colours = {
 }
 
 
-def my_handler(app, what, name, obj, options, lines):
+def docstring_handler(app, what, name, obj, options, lines):
     if "Params" in name.split(".")[-1]:
         pdict = obj.param.objects(instance=False)
         del pdict["name"]
@@ -124,5 +125,12 @@ def my_handler(app, what, name, obj, options, lines):
         options["undoc-members"] = False
 
 
+# def preprocess_signature(app, obj, bound_method):
+#     import inspect
+
+#     print(obj, inspect.signature(obj))
+
+
 def setup(app):
-    app.connect("autodoc-process-docstring", my_handler)
+    # app.connect("autodoc-before-process-signature", preprocess_signature)
+    app.connect("autodoc-process-docstring", docstring_handler)

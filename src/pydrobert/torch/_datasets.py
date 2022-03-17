@@ -467,7 +467,7 @@ def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
        tensors.
     3. A reference token with only a start or end bound (but not both) will have the
        existing one removed.
-    5. A reference token with an exclusive boundary exceeding the number of features by
+    4. A reference token with an exclusive boundary exceeding the number of features by
        one will be decreased by one. This is only possible if the exclusive end remains
        above the inclusive start.
     """

@@ -32,15 +32,10 @@ References
    Encoder-Decoder for Statistical Machine Translation," Doha, Qatar, 2014,
    pp. 1724--1734. [Online]. Available:
    https://www.aclweb.org/anthology/D14-1179
-.. [kingma2014] D. P. Kingma and M. Welling, "Auto-encoding variational Bayes,"
-   Banf, Canada, 2014. [Online]. Available: http://arxiv.org/abs/1312.6114
 .. [bahdanau2015] D. Bahdanau, K. Cho, and Y. Bengio, "Neural machine
    translation by jointly learning to align and translate.," in 3rd
    International Conference on Learning Representations, ICLR 2015, San Diego,
    CA, USA, May 7-9, 2015, Conference Track Proceedings, 2015.
-.. [burda2016] Y. Burda, R. B. Grosse, and R. Salakhutdinov, "Importance
-   weighted autoencoders," San Juan, Puerto Rico, 2016. [Online]. Available:
-   http://arxiv.org/abs/1509.00519
 .. [gulcehre2015] Ç. Gülçehre et al., "On using monolingual corpora in neural
    machine translation," CoRR, vol. abs/1503.03535, 2015, [Online]. Available:
    http://arxiv.org/abs/1503.03535
@@ -51,9 +46,6 @@ References
 .. [chan2016] W. Chan, N. Jaitly, Q. V. Le, and O. Vinyals, "Listen, Attend and
    Spell: A neural network for Large Vocabulary Conversational Speech
    Recognition," Mar. 2016, pp. 4960-4964. doi: 10.1109/ICASSP.2016.7472621.
-.. [maddison2016] C. J. Maddison, A. Mnih, and Y. W. Teh, "The Concrete
-   distribution: A continuous relaxation of discrete random variables," CoRR,
-   vol. abs/1611.00712, 2016.
 .. [grathwohl2017] W. Grathwohl, D. Choi, Y. Wu, G. Roeder, and D. K. Duvenaud,
    "Backpropagation through the Void: Optimizing control variates for
    black-box gradient estimation," CoRR, vol. abs/1711.00123, 2017.
@@ -73,10 +65,6 @@ References
    (ICASSP), 2018, pp. 4839-4843.
 .. [sabour2018] S. Sabour, W. Chan, and M. Norouzi, "Optimal Completion
    Distillation for Sequence Learning," CoRR, vol. abs/1810.01398, 2018.
-.. [tjandra2018] A. Tjandra, S. Sakti, and S. Nakamura, "Sequence-to-sequence
-   ASR optimization via reinforcement learning," presented at the 2018 IEEE
-   International Conference on Acoustics, Speech and Signal Processing
-   (ICASSP), 2018, pp. 5829-5833.
 .. [bert2019] J. Devlin, M.-W. Chang, K. Lee, and K. Toutanova, "BERT:
    Pre-training of deep bidirectional Transformers for language understanding,"
    Minneapolis, USA, 2019, vol. 1, pp. 4171-4186. [Online].

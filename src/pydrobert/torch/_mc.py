@@ -99,15 +99,15 @@ class DirectEstimator(MonteCarloEstimator):
 
     Parameters
     ----------
-    proposal : torch.distributions.Distribution
-    func : FunctionOnSample
-    mc_samples : int
+    proposal
+    func
+    mc_samples
         The number of samples to draw from `proposal`, :math:`N`.
-    cv : FunctionOnSample or :obj:`None`, optional
+    cv
         The function :math:`c`.
-    cv_mean : torch.Tensor or :obj:`None`, optional
+    cv_mean
         The value :math:`\mu_c`.
-    is_log : bool, optional
+    is_log
     """
 
     cv: Optional[FunctionOnSample]
@@ -173,14 +173,14 @@ class ReparameterizationEstimator(MonteCarloEstimator):
     
     Parameters
     ----------
-    proposal : torch.distributions.Distribution
+    proposal
         The distribution over which the expectation is taken, :math:`P` (not
         :math:`P'`). `proposal` must implement the
-        :func:`torch.distributions.Distribution.rsample` method (``proposal.has_rsample
-        == True``).
-    func : FunctionOnSample
-    mc_samples : int
-    is_log : bool, optional
+        :func:`torch.distributions.distribution.Distribution.rsample` method
+        (``proposal.has_rsample == True``).
+    func
+    mc_samples
+    is_log
     """
 
     def __init__(
@@ -214,9 +214,9 @@ class StraightThroughEstimator(MonteCarloEstimator):
 
         z = \theta + \epsilon,\>\epsilon \sim P'
     
-    and a threshold function :math:`H(z) = b` such that :math:`P(H(z)) = P(b)`. The 
+    and a threshold function :math:`H(z) = b` such that :math:`P(H(z)) = P(b)`. The
     estimate of :math:`v` is computed by drawing :math:`N` relaxed values
-    `z^{(1:N)}` and taking the sample average on thresholded values:
+    :math:`z^{(1:N)}` and taking the sample average on thresholded values:
 
     .. math::
 
@@ -238,12 +238,12 @@ class StraightThroughEstimator(MonteCarloEstimator):
     
     Parameters
     ----------
-    proposal : torch.distributions.Distribution
+    proposal
         The distribution over which the expectation is taken, :math:`P` (not
         :math:`P'`). `proposal` must implement :class:`StraightThrough`.
-    func : FunctionOnSample
-    mc_samples : int
-    is_log : bool, optional
+    func
+    mc_samples
+    is_log
     """
 
     def __init__(
@@ -284,6 +284,8 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
     .. math::
 
         \forall b \quad P(b) > 0 \implies Q(b) > 0.
+    
+    The gradient is estimated as
 
     .. math::
 
@@ -315,17 +317,16 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
 
     Parameters
     ----------
-    proposal : torch.distributions.Distribution
+    proposal
         The distribution over which the expectation is taken. In this case, `proposal`
         has probability density :math:`Q`, not :math:`P`.
-    func : FunctionOnSample
-        The function :math:`f`.
-    mc_samples : int
-    density : pydrobert.torch.distributions.Density
+    func
+    mc_samples
+    density
         The density :math:`P`. Can be unnormalized.
-    self_normalize : bool, optional
+    self_normalize
         Whether to use the self-normalized estimator.
-    is_log : bool, optional
+    is_log
         If :obj:`True`, `func` and `c` are :math:`\log f` and :math:`\log c`
         respectively. Their return values will be exponentiated inside the call to
         :func:`estimate`. There will be little difference from pre-exponentiating the
@@ -408,7 +409,7 @@ class RelaxEstimator(MonteCarloEstimator):
     gradient is being calculated. The second, following [grathwohl2017]_, specially
     optimizes the control variate parameters to minimize the variance of the gradient
     estimates of the parameters involved in drawing :math:`z`. Let :math:`\theta_{1:K}`
-    be the set of such parameters, :math:`g_{\theta_k} \approx \nabla_{\theta_k}` be a
+    be the set of such parameters, :math:`g_{\theta_k} \approx \nabla_{\theta_k} v` be a
     REINFORCE-style estimate of the :math:`k`-th :math:`z` parameter using the equation
     above, and let :math:`\gamma` be a control variate parameter. Then the
     variance-minimizing loss can be approximated by:
@@ -424,22 +425,22 @@ class RelaxEstimator(MonteCarloEstimator):
 
     Parameters
     ----------
-    proposal : torch.distributions.Distribution
+    proposal
         The distribution over which the expectation is taken, :math:`P`. Must implement
         :class:`pydrobert.torch.distributions.ConditionalStraightThrough`.
-    func : FunctionOnSample
-    mc_samples : int
-    cv : FunctionOnSample
-    proposal_params : sequence of torch.Tensor, optional
+    func
+    mc_samples
+    cv
+    proposal_params
         A sequence of parameters used in the computation of :math:`z` and
         :math:`P(H(z)`. Does not have to be specified unless using the
-        variance-minimizing control variate objective. If non-empty, `cv_params` must
-        be non-empty as well.
-    cv_params : sequence of torch.Tensor, optional
+        variance-minimizing control variate objective. If non-empty, `cv_params` must be
+        non-empty as well.
+    cv_params
         A sequence of parameters used in the computation of control variate values. Does
         not have to be specified unless using the variance-minimizing control variate
         objective. If non-empty, `proposal_params` must be non-empty as well.
-    is_log : bool, optional
+    is_log
         If :obj:`True`, `func` and `c` are :math:`\log f` and :math:`\log c`
         respectively. Their return values will be exponentiated inside the call to
         :func:`estimate`. There will be little difference from pre-exponentiating the
@@ -534,7 +535,7 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
         u \sim \mathrm{Uniform}([0, 1]) \\
         b^{(n)} = \begin{cases}
             b' & \alpha(b', b^{(n-1)}) > u \\
-            b^{(n-1)} & \mathmrm{otherwise}
+            b^{(n-1)} & \mathrm{otherwise}
         \end{cases} \\
         \alpha(b', b^{(n-1)}) = \min\left(
             \frac{P(b')Q(b^{(n-1)})}{P(b^{(n-1)}Q(b'))}, 1\right).
@@ -555,23 +556,23 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
     
     Parameters
     ----------
-    proposal : torch.distributions.Distribution
+    proposal
         The proposal distribution :math:`Q`.
-    func : FunctionOnSample
-    mc_samples : int
-    density : Density
-        The density :math:`P`. Does not have to be a probability distribution
-        (can be unnormalized).
-    burn_in : int, optional
+    func
+    mc_samples
+    density
+        The density :math:`P`. Does not have to be a probability distribution (can be
+        unnormalized).
+    burn_in
         The number of samples in the chain discarded from the estimate, :math:`M`.
-    initial_sample : torch.Tensor or None, optional
+    initial_sample
         If specified, `initial_sample` is used as the value :math:`b^{(0)}` to start the
         chain. Of size either ``proposal.batch_size + proposal.event_size`` or ``(1,) +
         proposal.batch_size + proposal.event_size``. A :class:`ValueError` will be
         thrown if any elements are outside the support of :math:`P` (`density`). If
         unspecified, :math:`b^{(0)}` will be decided by randomly drawing from `proposal`
         until all elements are in the support of `density`.
-    initial_sample_tries : int, optional
+    initial_sample_tries
         If `initial_sample` is unspecified, `initial_sample_tries` dictates the
         maximum number of draws from `proposal` allowed in order to find elements in
         the support of `density` before a :class:`RuntimeError` is thrown.
@@ -733,12 +734,19 @@ For the {dist} distribution, :math:`\\sigma` is the {sigma} function.
 
 Parameters
 ----------
-func : pydrobert.torch.estimators.FunctionOnSample
+func
     The function :math:`f`. Must be able to accept relaxed samples.
-start_temp : float, optional
+start_temp
     The temperature the :math:`\\lambda` parameter is initialized to.
-start_eta : float, optional
+start_eta
     The coefficient the :math:`\\eta` parameter is initialzied to.
+
+Variables
+---------
+log_temp
+    A scalar initialized to ``log(start_temp)``.
+eta
+    A scalar initialized to ``start_eta``.
 
 Warnings
 --------

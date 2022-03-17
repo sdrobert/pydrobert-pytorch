@@ -21,19 +21,6 @@ import torch
 from ._compat import TypeAlias
 
 FunctionOnSample: TypeAlias = Callable[[torch.Tensor], torch.Tensor]
-"""Type for functions of samples used in estimators
-
-This type is intended for use in estimators subclassing :class:`Estimator`.
-
-A `FunctionOnSample` is a callable which accepts a :class:`torch.Tensor` and returns a
-:class:`torch.Tensor`. The input is of shape ``(N,) + batch_size + event_size``, where
-``N`` is some number of samples and ``batch_size`` and ``event_size`` are determined by
-the proposal distribution. The return value is a tensor which broadcasts with ``(N,) +
-batch_size``, usually of that shape, storing the values of the function evaluated on
-each sample.
-
-`FunctionOnSample` can be a :class:`torch.nn.Module`.
-"""
 
 
 class Estimator(metaclass=abc.ABCMeta):
@@ -75,7 +62,10 @@ class Estimator(metaclass=abc.ABCMeta):
         always :math:`P` (see :class:`ImportanceSamplingEstimator` for a
         counterexample).
     func
-        The function :math:`f`.
+        The function :math:`f`. A callable (such as a :class:`pydrobert.torch.Module`)
+        which accepts a sample tensor as input of shape ``(num_samples,) +
+        proposal.batch_shape + proposal.event_shape`` and returns a tensor of shape
+        ``(num_samples,) + proposal.batch_shape``.
     is_log
         If :obj:`True`, `func` defines :math:`\log f` instead of :math:`f`. Unless
         otherwise specified, `is_log` being true is semantically identical to redefining
@@ -86,6 +76,11 @@ class Estimator(metaclass=abc.ABCMeta):
         
         and setting `is_log` to :obj:`False`. Practically, `is_log` may improve the
         numerical stability of certain estimators.
+    
+    Returns
+    -------
+    v : torch.Tensor
+        A tensor containing the estimated value. Of shape ``proposal.batch_shape``.
     
     Notes
     -----
