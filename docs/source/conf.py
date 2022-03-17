@@ -20,12 +20,10 @@ param.parameterized.docstring_describe_params = False
 sys.path.insert(0, os.path.abspath("../../src"))
 
 
-autodoc_mock_imports = ["numpy", "torch", "pydrobert.torch._compat"]
-
 # -- Project information -----------------------------------------------------
 
 project = "pydrobert-pytorch"
-copyright = "2021, Sean Robertson"
+copyright = "2022, Sean Robertson"
 author = "Sean Robertson"
 
 language = "en"
@@ -44,7 +42,17 @@ extensions = [
     "myst_parser",
 ]
 
-naploeon_numpy_docstring = True
+# napoleon
+napoleon_numpy_docstring = True
+napoleon_google_docstring = False
+# napoleon_preprocess_types = True
+# napoleon_use_ivars = True
+
+# autodoc
+autodoc_mock_imports = ["numpy", "torch"]
+autodoc_type_aliases = {
+    "FunctionOnSample": "pydrobert.torch.estimators.FunctionOnSample"
+}
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]

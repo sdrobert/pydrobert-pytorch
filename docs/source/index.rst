@@ -7,8 +7,8 @@
 
    advanced_attention
    lm
-   references
    modules
+   references
 
 Indices and tables
 ==================

@@ -18,8 +18,6 @@ pinning the version in the requirements or by forking.**
 ## Documentation
 
 - [Latest](https://pydrobert-pytorch.readthedocs.io/en/latest/)
-  *This documentation needs to be cleaned up after the latest refactoring.*
-  Please wait a week or two.
 - [Stable](https://pydrobert-pytorch.readthedocs.io/en/stable/)
 
 ## Installation
@@ -36,10 +34,17 @@ pip install pydrobert-pytorch
 Please see the [pydrobert page](https://github.com/sdrobert/pydrobert) for more
 details.
 
-Implementations of `pydrobert.torch.util.polyharmonic_spline` and
-`pydrobert.torch.util.sparse_image_warp` are based off Tensorflow's codebase,
-which is Apache 2.0 licensed.
+Implementations of
+`pydrobert.torch._img.{polyharmonic_spline,sparse_image_warp}` are based off
+Tensorflow's codebase, which is Apache 2.0 licensed.
 
-Implementation of `pydrobert.torch._compat.broadcast_shapes` was directly
-taken from the Pytorch codebase, which has a BSD-style license, found in
-the file `LICENSE_pytorch`.
+Implementations of
+`pydrobert.torch._compat.{broadcast_shapes,TorchVersion,one_hot}` were directly
+taken from the PyTorch codebase. A number of methods and functions in
+`pydrobert.torch._straight_through` modify PyTorch code (see the file for more
+info). PyTorch has a BSD-style license which can be found in the file
+`LICENSE_pytorch`.
+
+The implementation of `pydrobert.torch._compat.check_methods` was taken
+directly from the CPython codebase, Copyright 2007 Google with additional
+notices at <https://docs.python.org/3/copyright.html?highlight=copyright>.

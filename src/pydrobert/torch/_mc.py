@@ -14,8 +14,6 @@
 
 import math
 import abc
-from multiprocessing.sharedctypes import Value
-from random import sample
 from typing import Optional, Sequence, Tuple
 
 import torch
@@ -47,11 +45,11 @@ class MonteCarloEstimator(Estimator, metaclass=abc.ABCMeta):
     
     Parameters
     ----------
-    proposal : torch.distributions.Distribution
-    func : FunctionOnSample
-    mc_samples : int
+    proposal
+    func
+    mc_samples
         The number of samples to draw from `proposal`, :math:`N`.
-    is_log : bool, optional
+    is_log
     """
 
     mc_samples: int
@@ -82,6 +80,8 @@ class DirectEstimator(MonteCarloEstimator):
     
     An optional control variate :math:`c` can be specified:
 
+    .. math::
+
         v \approx \frac{1}{N} \sum_{n=1}^N
             f\left(b^{(n)}\right) - c\left(b^{(n)}\right) + \mu_c
     
@@ -89,6 +89,8 @@ class DirectEstimator(MonteCarloEstimator):
 
     In the backward pass, the gradient of the expectation is estimated using REINFORCE
     [williams1992]_:
+
+    .. math::
 
         \nabla v \approx \frac{1}{N} \sum_{n=1}^N \nabla
             \left(f\left(b^{(n)}\right) - c\left(b^{(n)}\right) + \mu_c\right)\log P(b).

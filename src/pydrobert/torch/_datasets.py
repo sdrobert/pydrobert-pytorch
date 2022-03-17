@@ -441,11 +441,9 @@ def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
     3. All features have two dimensions
     4. All features have the same size second dimension
     5. If alignments are present
-
        1. All alignments are long tensor instances
        2. All alignments have one dimension
        3. Features and alignments have the same size first axes for a given utterance id
-
     6. If reference sequences are present
 
        1. All references are long tensor instances
@@ -470,8 +468,8 @@ def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
     3. A reference token with only a start or end bound (but not both) will have the
        existing one removed.
     5. A reference token with an exclusive boundary exceeding the number of features by
-       one will be decreased by one. This is only possible if the exclusive end
-       remains above the inclusive start.
+       one will be decreased by one. This is only possible if the exclusive end remains
+       above the inclusive start.
     """
     num_filts = None
     ref_is_2d = None

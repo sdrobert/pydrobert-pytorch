@@ -704,67 +704,67 @@ def _string_matching(
 
 
 _SM_ARGS = """\
-`ref` is a long tensor of shape ``(max_ref_steps, batch_size)`` such that the
-``n``-th reference (gold-standard) token sequence is stored in ``ref[:, n]``. `hyp`
-is a long tensor of shape ``(max_hyp_steps, batch_size)`` containing the hypothesis
-(machine-generated) sequences."""
+`ref` is a long tensor of shape ``(max_ref_steps, batch_size)`` such that
+    the ``n``-th reference (gold-standard) token sequence is stored in ``ref[:, n]``.
+    `hyp` is a long tensor of shape ``(max_hyp_steps, batch_size)`` containing the
+    hypothesis (machine-generated) sequences."""
 
 _SM_PARAM_DICT = {
     "eos": """\
-    eos : int or None, optional
+eos : int or None, optional
         A special token in `ref` and `hyp` whose first occurrence in each batch
         indicates the end of a transcript. This allows for variable-length transcripts
         in the batch.
     """,
     "include_eos": """\
-    include_eos : bool, optional
+include_eos : bool, optional
         Whether to include the first instance of `eos` found in both `ref` and `hyp` as
         valid tokens to be computed as part of the rate. This is useful when gauging
         if a model is learning to emit the `eos` properly, but is not usually included
         in an evaluation. Only the first `eos` per transcript is included.
     """,
     "norm": """\
-    norm : bool, optional
+norm : bool, optional
         If :obj:`True`, will normalize the distance by the number of tokens in the
         reference sequence (making the returned value a divergence)
     """,
     "batch_first": """\
-    batch_first : bool, optional
+batch_first : bool, optional
         If :obj:`True`, the first two dimensions of `ref`, `hyp`, and the return value
         are transposed from those above.
     """,
     "ins_cost": """\
-    ins_cost : float, optional
+ins_cost : float, optional
         The cost of an adding an extra token to a sequence in `ref`
     """,
     "del_cost": """\
-    del_cost : float, optional
+del_cost : float, optional
         The cost of removing a token from a sequence in `ref`
     """,
     "sub_cost": """\
-    sub_cost : float, optional
+sub_cost : float, optional
         The cost of swapping a token from `ref` with one from `hyp`
     """,
     "warn": """\
-    warn : bool, optional
+warn : bool, optional
         Whether to display warnings on irregularities. Currently, this can happen in
         three ways:
 
         1. If :obj:`True` and `ins_cost`, `del_cost`, or `sub_cost` is not 1, a warning
-           about a difference in computations will be raised. See the below warning for
-           more info.
+            about a difference in computations will be raised. See the below warning for
+            more info.
         2. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
-           transcription has zero length
+            transcription has zero length
         3. If `eos` is set and `include_eos` is :obj:`True`, will warn when a transcript
-           does not include an `eos` symbol
+            does not include an `eos` symbol
     """,
     "padding": """\
-    padding : int, optional
+padding : int, optional
         The value to right-pad unequal-length sequences with. Defauls to
         :obj:`pydrobert.torch.config.INDEX_PAD_VALUE`.
     """,
     "exclude_last": """\
-    exclude_last : bool, optional
+exclude_last : bool, optional
         If true, will exclude the final prefix, consisting of the entire transcript,
         from the return value. It will be of shape ``(max_hyp_steps, batch_size,
         max_unique_next)``
@@ -854,7 +854,8 @@ class EditDistance(_StringMatching):
 
         ed = edit_distance(ref, hyp)
 
-    {_SM_ARGS}  The return value `ed` is a tensor of shape ``(batch_size,)`` storing the
+    {_SM_ARGS}
+    The return value `ed` is a tensor of shape ``(batch_size,)`` storing the
     associated edit distances.
 
     Parameters
@@ -1085,7 +1086,7 @@ class PrefixErrorRates(_StringMatching):
     When instantiated, this module has the signature::
 
         prefix_ers = prefix_error_rates(ref, hyp)
-    
+
     {_SM_ARGS} The return value `prefix_ers` is of shape ``(max_hyp_steps + 1,
     batch_size)`` and contains the error rates for each prefix of each hypothesis,
     starting from the empty prefix.
@@ -1585,13 +1586,6 @@ class MinimumErrorRateLoss(torch.nn.Module):
         Specifies the reduction to be applied to the output. 'none': no
         reduction will be applied. 'sum': the output will be summed. 'mean':
         the output will be averaged.
-
-    Attributes
-    ----------
-    eos, ignore_index : int
-    include_eos, sub_avg, batch_first, norm : bool
-    ins_cost, del_cost, sub_cost : float
-    reduction : {'mean', 'none', 'sum'}
 
     Notes
     -----

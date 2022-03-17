@@ -184,7 +184,7 @@ class PolyharmonicSpline(torch.nn.Module):
         improve numerical accuracy at the cost of twice the run time and more memory
         usage.
 
-    Throws
+    Raises
     ------
     RuntimeError
         This module can return a :class`RuntimeError` when no unique spline can be
@@ -354,8 +354,8 @@ class Warp1DGrid(torch.nn.Module):
         )
 
 
-@functional_wrapper("DenseImageWarp")
 @script
+@functional_wrapper("DenseImageWarp")
 def dense_image_warp(
     image: torch.Tensor,
     flow: torch.Tensor,
@@ -642,6 +642,7 @@ if TYPE_CHECKING:
 
 else:
 
+    @functional_wrapper("SparseImageWarp")
     def sparse_image_warp(
         image: torch.Tensor,
         source_points: torch.Tensor,
@@ -847,8 +848,8 @@ class SparseImageWarp(torch.nn.Module):
             )
 
 
-@functional_wrapper("PadVariable")
 @script
+@functional_wrapper("PadVariable")
 def pad_variable(
     x: torch.Tensor,
     lens: torch.Tensor,
@@ -1078,13 +1079,13 @@ class RandomShift(torch.nn.Module):
     variable-length sequence dimension (e.g. speech recognition). It pads each input
     sequence with some number of elements at its beginning and end. The number of
     elements is randomly chosen but bounded above by some proportion of the input length
-    specified by the user. Its call signature is
+    specified by the user. Its call signature is::
 
         out, out_lens = layer(in_, in_lens)
 
-    Where: `in_` is a tensor of shape ``(N, T, *)`` where ``N`` is the batch dimension
+    Where: ``in_`` is a tensor of shape ``(N, T, *)`` where ``N`` is the batch dimension
     and ``T`` is the sequence dimension; `in_lens` is a long tensor of shape ``(N,)``;
-    `out` is a tensor of the same type as `in_` of shape ``(N, T', *)``; and `out_lens`
+    `out` is a tensor of the same type as ``in_`` of shape ``(N, T', *)``; and `out_lens`
     is of shape ``(N,)``. The ``n``-th input sequence is stored in the range
     ``in_[n, :in_lens[n]]``. The padded ``n``-th sequence is stored in the range
     ``out[n, :out_lens[n]]``. Values outside of these ranges are undefined.

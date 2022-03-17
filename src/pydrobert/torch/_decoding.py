@@ -680,13 +680,13 @@ def ctc_prefix_search_advance(
 
     See Also
     --------
-    pydrobert.torch.layers.CTCPrefixSearch
+    pydrobert.torch.modules.CTCPrefixSearch
         Performs the entirety of the search.
 
     Warnings
     --------
     This function treats large widths the same as
-    :func:`pydrobert.torch.layers.CTCPrefixSearch`: the beam will be filled to `width`
+    :func:`pydrobert.torch.modules.CTCPrefixSearch`: the beam will be filled to `width`
     but invalid prefixes will be assigned a total probability of :obj:`-float("inf")`.
     However, this function will only set the non-blank probabilities of invalid prefixes
     to negative infinity; blank probabilities of invalid prefixes may be :obj:`0`
@@ -1512,7 +1512,7 @@ def sequence_log_probs(
 
     See Also
     --------
-    pydrobert.torch.layers.SequentialLogProbabilities
+    pydrobert.torch.modules.SequentialLogProbabilities
         For more details about the parameters
     """
     if isinstance(logits, torch.Tensor):

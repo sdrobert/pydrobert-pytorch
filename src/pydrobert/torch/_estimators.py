@@ -18,8 +18,9 @@ from typing import Callable
 
 import torch
 
+from ._compat import TypeAlias
 
-FunctionOnSample = Callable[[torch.Tensor], torch.Tensor]
+FunctionOnSample: TypeAlias = Callable[[torch.Tensor], torch.Tensor]
 """Type for functions of samples used in estimators
 
 This type is intended for use in estimators subclassing :class:`Estimator`.
@@ -69,13 +70,13 @@ class Estimator(metaclass=abc.ABCMeta):
 
     Parameters
     ----------
-    proposal : torch.distributions.Distribution
+    proposal
         The distribution over which the expectation is taken. This is usually but not
         always :math:`P` (see :class:`ImportanceSamplingEstimator` for a
         counterexample).
-    func : FunctionOnSample
+    func
         The function :math:`f`.
-    is_log : bool, optional
+    is_log
         If :obj:`True`, `func` defines :math:`\log f` instead of :math:`f`. Unless
         otherwise specified, `is_log` being true is semantically identical to redefining
         `func` as::
@@ -93,13 +94,13 @@ class Estimator(metaclass=abc.ABCMeta):
     output 
     """
 
-    proposal: torch.distributions.Distribution
+    proposal: torch.distributions.distribution.Distribution
     func: FunctionOnSample
     is_log: bool
 
     def __init__(
         self,
-        proposal: torch.distributions.Distribution,
+        proposal: torch.distributions.distribution.Distribution,
         func: FunctionOnSample,
         is_log: bool = False,
     ):

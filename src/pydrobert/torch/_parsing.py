@@ -573,7 +573,7 @@ def transcript_to_token(
     :math:`\Delta` milliseconds apart, they will usually be overlapping. Because of this
     overlap, the coefficients of frames :math:`s_f - 1` and :math:`e_f` may be in part
     dependent on the audio samples within the segment. Second, ignoring frame length,
-    :frac:`e_f = ceil(1000e_s/\Delta)` would be more appropriate for an exclusive upper
+    :math:`e_f = ceil(1000e_s/\Delta)` would be more appropriate for an exclusive upper
     bound. However, :mod:`pydrobert.speech.compute` (and other, mainstream feature
     computation packages), the total number of frames in the utterance is calculated as
     :math:`T_f = ceil(1000T_s/\Delta)`, where :math:`T_s` is the length of the utterance

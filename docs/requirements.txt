@@ -1,4 +1,4 @@
-param
-Sphinx>=4
+Sphinx>=4.4
 sphinxcontrib-programoutput
 myst-parser
+param

@@ -20,7 +20,6 @@ changed, the changes will propagate to any submodules.
 
 import os
 import math
-import torch
 
 __all__ = ["INDEX_PAD_VALUE", "USE_JIT", "EPS_NINF", "EPS_0"]
 
@@ -46,14 +45,14 @@ Otherwise, if using PyTorch >= 1.8.0, relevant items will be decorated with
 environment variable ``PYTORCH_JIT=1``.
 """
 
-EPS_NINF = math.log(torch.finfo(torch.float32).tiny) / 2
+EPS_NINF = math.log(1.1754943508222875e-38) / 2
 """A small enough value in log space that exponentiating it is very close to zero
 
 This number is sometimes used in place of -infinity in log-space values to avoid
 masking. Increasing it will decrease the accuracy of computations, but may avoid NaNs.
 """
 
-EPS_0 = math.log1p(-2 * torch.finfo(torch.float32).eps)
+EPS_0 = math.log1p(-2 * 1.1920928955078125e-07)
 """A large enough value in log space that exponentiating it is very close to 1
 
 This number is sometimes used in place of 0 in log-space values to avoid masking.

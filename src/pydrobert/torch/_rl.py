@@ -75,11 +75,6 @@ class TimeDistributedReturn(torch.nn.Module):
         The discount factor :math:`\gamma`.
     batch_first : bool, optional
         Transposes the dimensions of `r` and `R` if :obj:`True`.
-
-    See Also
-    --------
-    :ref:`Gradient Estimators`
-        Provides an example of reinforcement learning that uses this function
     """
 
     __constants__ = ["gamma", "batch_first"]
