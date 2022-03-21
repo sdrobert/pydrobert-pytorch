@@ -289,7 +289,7 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
 
     .. math::
 
-        \nabla v \approx \frac{1}{N} \sum_{n=1}^N \frac{1}{Q\left(b^{(n)}\right)
+        \nabla v \approx \frac{1}{N} \sum_{n=1}^N \frac{1}{Q\left(b^{(n)}\right)}
             \nabla P\left(b^{(n)}\right)f\left(b^{(n)}\right).
     
     Note that the gradient with respect to parameters of :math:`Q` will be defined but
@@ -300,12 +300,13 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
     .. math::
 
         v \approx \frac{1}{N} \sum_{n=1}^N \omega_n f\left(b^{(n)}\right) \\
-        \omega_n = \frac{P\left(b^{(n)}\right)}{Q\left(b^{(n)}\right)}
+        \omega_n = \frac{w_n}{\sum_{n'=1}^N w_{n'}}
 
     with gradients defined for :math:`Q(b)` using the log trick from REINFORCE
     [williams1992]_:
     
     .. math::
+
         \nabla v \approx \frac{1}{N} \sum_{n=1}^N
             \nabla \omega_n f\left(b^{(n)}\right) \log Q(b).
         
