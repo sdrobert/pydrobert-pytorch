@@ -260,34 +260,15 @@ class TrainingStateController(object):
     stored in `params` have not changed when resuming a run. It is also used to control
     learning rates and early stopping.
 
-    Examples
-    --------
-
-    >>> params = TrainingStateParams(num_epochs=5)
-    >>> model = torch.nn.Linear(10, 1)
-    >>> optimizer = torch.optim.Adam(model.parameters())
-    >>> controller = TrainingStateController(
-    ...    params,
-    ...    state_csv_path='log.csv',
-    ...    state_dir='states')
-    >>> # load previous
-    >>> controller.load_model_and_optimizer_for_epoch(model, optimizer)
-    >>> for epoch in range(params.num_epochs):
-    >>>     # do training loop for epoch
-    >>>     train_loss, val_loss = 0.1, 0.01
-    >>>     if not controller.update_for_epoch(
-    ...             model, optimizer, train_loss, val_loss):
-    >>>         break  # early stopping
-
     Parameters
     ----------
-    params : TrainingStateParams
-    state_csv_path : str or None, optional
+    params
+    state_csv_path
         A path to where training state information is stored. It stores in
-        comma-separated-values format the following information. Note that
-        stored values represent the state *after* updates due to epoch
-        results, such as the learning rate. That way, an experiment can be
-        resumed without worrying about updating the loaded results
+        comma-separated-values format the following information. Note that stored values
+        represent the state *after* updates due to epoch results, such as the learning
+        rate. That way, an experiment can be resumed without worrying about updating the
+        loaded results.
 
         1. "epoch": the epoch associated with this row of information
         2. "es_resume_cd": the number of epochs left before the early
@@ -305,26 +286,31 @@ class TrainingStateController(object):
            is assumed to be lower is better
         9. Any additional entries added through :func:`add_entry`
 
-        If unset, the history will not be stored/loaded
-    state_dir : str or None, optional
+        If unset, the history will not be stored/loaded.
+    state_dir
         A path to a directory to store/load model and optimizer states. If
-        unset, the information will not be stored/loaded
-    warn : bool, optional
+        unset, the information will not be stored/loaded.
+    warn
         Whether to warn using :mod:`warnings` module when a format string does
-        not contain the "epoch" field
-
-    Attributes
-    ----------
-    params : TrainingStateParams
-    state_csv_path : str or None
-    state_dir : str or None
-    user_entry_types : OrderedDict
-        A collection of user entries specified by :func:`add_entry`
-    cache_hist : dict
-        A dictionary of cached results per epoch. Is not guaranteed to be
-        up-to-date with `state_csv_path` unless :func:`update_cache` is called
-    fmt_dict : dict
-        A dictionary of format strings for the CSV entries
+        not contain the "epoch" field.
+    
+    Examples
+    --------
+    >>> params = TrainingStateParams(num_epochs=5)
+    >>> model = torch.nn.Linear(10, 1)
+    >>> optimizer = torch.optim.Adam(model.parameters())
+    >>> controller = TrainingStateController(
+    ...    params,
+    ...    state_csv_path='log.csv',
+    ...    state_dir='states')
+    >>> # load previous
+    >>> controller.load_model_and_optimizer_for_epoch(model, optimizer)
+    >>> for epoch in range(params.num_epochs):
+    >>>     # do training loop for epoch
+    >>>     train_loss, val_loss = 0.1, 0.01
+    >>>     if not controller.update_for_epoch(
+    ...             model, optimizer, train_loss, val_loss):
+    >>>         break  # early stopping
     """
 
     def __init__(
@@ -381,25 +367,26 @@ class TrainingStateController(object):
     """
     SCIENTIFIC_PRECISION = 5
 
-    def add_entry(self, name: str, type_: type = str, fmt: str = "{}") -> None:
+    def add_entry(self, name: str, typ: type = str, fmt: str = "{}") -> None:
         """Add an entry to to be stored and retrieved at every epoch
 
         This method is useful when training loops need specialized, persistent
         information on every epoch. Prior to the first time any information is saved via
         :func:`update_for_epoch`, this method can be called with an entry `name` and
-        optional `type_`. The user is then expected to provide a keyword argument with
+        optional `typ`. The user is then expected to provide a keyword argument with
         that `name` every time :func:`update_for_epoch` is called. The values of those
-        entries can be retrieved via :func:`get_info`, cast to `type_`, for any saved
+        entries can be retrieved via :func:`get_info`, cast to `typ`, for any saved
         epoch
 
         Parameters
         ----------
-        name : str
-        type_ : type, optional
-            `type_` should be a type that is serialized from a string via
-            ``type_(str_obj)`` and serialized to a string via ``fmt.format(obj)``
-        fmt : str, optional
-            The format string used to serialize the objects into strings
+        name
+            The name/key of the entry.
+        typ
+            Should be a type that is serialized from a string via ``typ(str_obj)`` and
+            serialized to a string via ``fmt.format(obj)``.
+        fmt
+            The format string used to serialize the objects into strings.
 
         Examples
         --------
@@ -417,12 +404,11 @@ class TrainingStateController(object):
 
         Notes
         -----
-        :func:`add_entry` must be called prior to :func:`update_for_epoch`
-        or :func:`save_info_to_hist`, or it may corrupt the experiment history.
-        However, the controller can safely ignore additional entries when
-        loading history from a CSV. Thus, there is no need to call
-        :func:`add_entry` if no new training is to be done (unless those
-        entries are needed outside of training)
+        :func:`add_entry` must be called prior to :func:`update_for_epoch` or
+        :func:`save_info_to_hist`, or it may corrupt the experiment history. However,
+        the controller can safely ignore additional entries when loading history from a
+        CSV. Thus, there is no need to call :func:`add_entry` if no new training is to
+        be done (unless those entries are needed outside of training)
         """
         if name in {
             "epoch",
@@ -435,9 +421,9 @@ class TrainingStateController(object):
             "val_met",
         }:
             raise ValueError('"{}" is a reserved entry name'.format(name))
-        if not isinstance(type_, type):
-            raise ValueError("type_ ({}) must be a type".format(type_))
-        self.user_entry_types[name] = type_
+        if not isinstance(typ, type):
+            raise ValueError("typ ({}) must be a type".format(typ))
+        self.user_entry_types[name] = typ
         self.fmt_dict[name] = fmt
         self.update_cache()
 
@@ -478,7 +464,7 @@ class TrainingStateController(object):
                     self.cache_hist[epoch][name] = type_(row[name])
 
     def get_last_epoch(self) -> int:
-        """int : last finished epoch from training, or 0 if no history"""
+        """Return the last finished epoch from training, or 0 if no history"""
         self.update_cache()
         return max(self.cache_hist)
 
@@ -490,7 +476,7 @@ class TrainingStateController(object):
 
         Parameters
         ----------
-        train_met : bool, optional
+        train_met
             If :obj:`True` look for the best training metric value instead
 
         Returns
@@ -501,9 +487,9 @@ class TrainingStateController(object):
         Notes
         -----
         Negligible differences between epochs are determined by
-        :obj:`TrainingStateController.METRIC_PRECISION`, which is relative
-        to the metrics base 10. This is in contrast to early stopping criteria
-        and learning rate annealing, whose thresholds are absolute.
+        :obj:`TrainingStateController.METRIC_PRECISION`, which is relative to the
+        metrics base 10. This is in contrast to early stopping criteria and learning
+        rate annealing, whose thresholds are absolute.
         """
         ent = "train_met" if train_met else "val_met"
         fmt = self.fmt_dict[ent]
@@ -525,17 +511,16 @@ class TrainingStateController(object):
 
         Parameters
         ----------
-        model : torch.nn.Module
-            Model state will be loaded into this
-        epoch : int or :obj:`None`, optional
+        model
+            Model state will be loaded into this.
+        epoch
             The epoch from which the states should be loaded. We look for the
-            appropriately named files in ``self.state_dir``. If `epoch` is
-            :obj:`None`, the best epoch in recorded history will be loaded. If
-            it's 0, the model is initialized with states from the beginning of
-            the experiment
-        strict : bool, optional
-            Whether to strictly enforce that the keys in ``model.state_dict()``
-            match those that were saved
+            appropriately named files in ``self.state_dir``. If `epoch` is :obj:`None`,
+            the best epoch in recorded history will be loaded. If it's 0, the model is
+            initialized with states from the beginning of the experiment.
+        strict
+            Whether to strictly enforce that the keys in ``model.state_dict()`` match
+            those that were saved.
         """
         if epoch is None:
             epoch = self.get_best_epoch()
@@ -573,19 +558,18 @@ class TrainingStateController(object):
 
         Parameters
         ----------
-        model : torch.nn.Module
-            Model state will be loaded into this
-        optimizer : torch.optim.Optimizer
-            Optimizer state will be loaded into this
-        epoch : int or :obj:`None`, optional
+        model
+            Model state will be loaded into this.
+        optimizer
+            Optimizer state will be loaded into this.
+        epoch
             The epoch from which the states should be loaded. We look for the
-            appropriately named files in ``self.state_dir``. If `epoch` is
-            :obj:`None`, the last epoch in recorded history will be loaded. If
-            it's 0, the model and optimizer are initialized with states
-            for the beginning of the experiment.
-        strict : bool, optional
+            appropriately named files in ``self.state_dir``. If `epoch` is unset, the
+            last epoch in recorded history will be loaded. If it's 0, the model and
+            optimizer are initialized with states for the beginning of the experiment.
+        strict
             Whether to strictly enforce that the keys in ``model.state_dict()``
-            match those that were saved
+            match those that were saved.
         """
         if epoch is None:
             epoch = self.get_last_epoch()
@@ -631,14 +615,13 @@ class TrainingStateController(object):
     def delete_model_and_optimizer_for_epoch(self, epoch: int) -> None:
         """Delete state dicts for model and epoch off of disk, if they exist
 
-        This method does nothing if the epoch records or the files do not
-        exist. It is called during :func:`update_for_epoch` if the parameter
+        This method does nothing if the epoch records or the files do not exist. It is
+        called during :func:`update_for_epoch` if the parameter
         ``keep_last_and_best_only`` is :obj:`True`
 
         Parameters
         ----------
-        epoch : int
-            The epoch in question
+        epoch
         """
         if self.state_dir is None:
             return
@@ -681,7 +664,7 @@ class TrainingStateController(object):
     def save_model_and_optimizer_with_info(
         self, model: torch.nn.Module, optimizer: torch.optim.Optimizer, info: dict
     ) -> None:
-        """Save model and optimizer state dictionaries to file given epoch info
+        """Save model and optimizer state dictionaries to files given epoch info
 
         This is called automatically during :func:`update_for_epoch`. Does not save if
         there is no directory to save to (i.e. ``self.state_dir is None``). Format
@@ -690,13 +673,13 @@ class TrainingStateController(object):
 
         Parameters
         ----------
-        model : AcousticModel
-        optimizer : torch.optim.Optimizer
-        info : dict
-            A dictionary with the entries "epoch", "es_resume_cd",
-            "es_patience_cd", "rlr_resume_cd", "rlr_patience_cd", "lr",
-            "train_met", "val_met", and any entries specified through
-            :func:`add_entry`
+        model
+            The model whose state dictionary will be saved.
+        optimizer
+            The optimizer whose state dictionary will be saved.
+        info
+            The history dictionary. Entries can be used in the state dict's path's
+            format strings.
         """
         if self.state_dir is None:
             return
@@ -721,10 +704,7 @@ class TrainingStateController(object):
 
         Parameters
         ----------
-        info : dict
-            A dictionary with the entries "epoch", "es_resume_cd", "es_patience_cd",
-            "rlr_resume_cd", "rlr_patience_cd", "lr", "train_met", "val_met", and any
-            other entries specified via :func:`add_entry`
+        info
         """
         self.cache_hist[info["epoch"]] = info
         if self.state_csv_path is None:
@@ -757,9 +737,9 @@ class TrainingStateController(object):
 
         Parameters
         ----------
-        epoch : int or :obj:`None`, optional
-            The epoch to check the history of. If :obj:`None`, the last epoch
-            will be inferred
+        epoch
+            The epoch to check the history of. If unset, the last epoch will be
+            inferred.
 
         Returns
         -------
@@ -786,28 +766,30 @@ class TrainingStateController(object):
         epoch: Optional[int] = None,
         **kwargs
     ) -> bool:
-        """Update history and optimizer after latest epoch results
+        """Update history, model, and optimizer after latest epoch results
 
         Parameters
         ----------
-        model : AcousticModel
-        optimizer : torch.optim.Optimizer
-        train_met : float
-            Mean value of metric on training set for epoch
-        val_met : float
-            Mean value of metric on validation set for epoch
-        epoch : int, optional
-            The epoch that just finished. If unset, it is inferred to be one
-            after the last epoch in the history
-        kwargs : Keyword arguments, optional
-            Additional keyword arguments can be used to specify the values
-            of entries specified via :func:`add_entry`
+        model
+            The model after the epoch that just finished.
+        optimizer
+            The optimizer after the epoch that just finished.
+        train_met
+            Mean value of metric on training set for epoch.
+        val_met
+            Mean value of metric on validation set for epoch.
+        epoch
+            The epoch that just finished. If unset, it is inferred to be one after the
+            last epoch in the history.
+        **kwargs
+            Additional keyword arguments can be used to specify the values of entries
+            specified via :func:`add_entry`.
 
         Returns
         -------
         cont : bool
-            Whether to continue training. This can be set to :obj:`False`
-            either by hitting the max number of epochs or by early stopping
+            Whether to continue training. This can be set to :obj:`False` either by
+            hitting the max number of epochs or by early stopping.
         """
         if epoch is None:
             epoch = self.get_last_epoch() + 1

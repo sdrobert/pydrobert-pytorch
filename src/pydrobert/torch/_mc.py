@@ -50,6 +50,10 @@ class MonteCarloEstimator(Estimator, metaclass=abc.ABCMeta):
     mc_samples
         The number of samples to draw from `proposal`, :math:`N`.
     is_log
+
+    Returns
+    -------
+    v : torch.Tensor
     """
 
     mc_samples: int
@@ -108,6 +112,10 @@ class DirectEstimator(MonteCarloEstimator):
     cv_mean
         The value :math:`\mu_c`.
     is_log
+
+    Returns
+    -------
+    v : torch.Tensor
     """
 
     cv: Optional[FunctionOnSample]
@@ -175,12 +183,15 @@ class ReparameterizationEstimator(MonteCarloEstimator):
     ----------
     proposal
         The distribution over which the expectation is taken, :math:`P` (not
-        :math:`P'`). `proposal` must implement the
-        :func:`torch.distributions.distribution.Distribution.rsample` method
+        :math:`P'`). `proposal` must implement the :func:`Distribution.rsample` method
         (``proposal.has_rsample == True``).
     func
     mc_samples
     is_log
+
+    Returns
+    -------
+    v : torch.Tensor
     """
 
     def __init__(
@@ -240,10 +251,15 @@ class StraightThroughEstimator(MonteCarloEstimator):
     ----------
     proposal
         The distribution over which the expectation is taken, :math:`P` (not
-        :math:`P'`). `proposal` must implement :class:`StraightThrough`.
+        :math:`P'`). `proposal` must implement
+        :class:`pydrobert.torch.distributions.StraightThrough`.
     func
     mc_samples
     is_log
+
+    Returns
+    -------
+    v : torch.Tensor
     """
 
     def __init__(
@@ -332,6 +348,10 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
         respectively. Their return values will be exponentiated inside the call to
         :func:`estimate`. There will be little difference from pre-exponentiating the
         return values inside the respective functions/tensors.
+    
+    Returns
+    -------
+    v : torch.Tensor
     """
 
     density: Density
@@ -446,6 +466,10 @@ class RelaxEstimator(MonteCarloEstimator):
         respectively. Their return values will be exponentiated inside the call to
         :func:`estimate`. There will be little difference from pre-exponentiating the
         return values inside the respective functions/tensors.
+    
+    Returns
+    -------
+    v : torch.Tensor
     
     Warnings
     --------
@@ -577,6 +601,10 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
         If `initial_sample` is unspecified, `initial_sample_tries` dictates the
         maximum number of draws from `proposal` allowed in order to find elements in
         the support of `density` before a :class:`RuntimeError` is thrown.
+    
+    Returns
+    -------
+    v : torch.Tensor
 
     Warnings
     --------
@@ -729,7 +757,7 @@ to the function :math:`f` the expectation is being taken over. That is:
 
 .. math::
 
-    c_{{\\lambda,\\eta}}(z) = \\eta * f(\\sigma(z / \\lambda))
+    c_{{\\lambda,\\eta}}(z) = \\eta f(\\sigma(z / \\lambda))
 
 For the {dist} distribution, :math:`\\sigma` is the {sigma} function.
 
@@ -749,6 +777,16 @@ log_temp
 eta
     A scalar initialized to ``start_eta``.
 
+Call Parameters
+---------------
+z : torch.Tensor
+    A tensor of shape ``{shape}`` representing the relaxed sample.
+
+Returns
+-------
+z_temp : torch.Tensor
+    A tensor of the same shape as `z` storing the value :math:`c_{{\\lambda,\\eta}}(z)`.
+
 Warnings
 --------
 This control variate can be traced but not scripted. Note that
@@ -762,14 +800,16 @@ pydrobert.torch.estimators.RelaxEstimator
 
 
 class LogisticBernoulliRebarControlVariate(_RebarControlVariate):
-    __doc__ = _REBAR_DOCS.format(dist="LogisticBernoulli", sigma="sigmoid")
+    __doc__ = _REBAR_DOCS.format(dist="LogisticBernoulli", sigma="sigmoid", shape="(*)")
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         return self.eta * self.func((z / self.log_temp.exp()).sigmoid())
 
 
 class GumbelOneHotCategoricalRebarControlVariate(_RebarControlVariate):
-    __doc__ = _REBAR_DOCS.format(dist="GumbelOneHotCategorical", sigma="softmax")
+    __doc__ = _REBAR_DOCS.format(
+        dist="GumbelOneHotCategorical", sigma="softmax", shape="(*, V)"
+    )
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         return self.eta * self.func((z / self.log_temp.exp()).softmax(-1))

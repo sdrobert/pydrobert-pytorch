@@ -35,10 +35,10 @@ def simple_random_sampling_without_replacement(
 
     Parameters
     ----------
-    total_count : torch.Tensor
+    total_count
         The nonnegative sizes of the individual binary vectors. Must broadcast with
         `given_count`.
-    given_count : torch.Tensor
+    given_count
         The cardinalities of the individual binary vectors. Must broadcast with
         and not exceed the values of `total_count`.
     out_size : int or None, optional
@@ -48,7 +48,7 @@ def simple_random_sampling_without_replacement(
     Returns
     -------
     b : torch.Tensor
-        A tensor of shape ``(*, out_size)``, where ``(*,)`` is the broadcasted
+        A sample tensor of shape ``(*, out_size)``, where ``(*,)`` is the broadcasted
         shape of `total_count` and `given_count`. The final dimension is the vector
         dimension. The ``n``-th vector of `b` is right-padded with zero for all values
         exceeding ``total_count[n]``, i.e. ``b[n, total_count[n]:].sum() == 0``. The
@@ -125,14 +125,14 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
 
     Parameters
     ----------
-    total_count : int or torch.Tensor
+    total_count
         The value(s) :math:`T`. Must broadcast with `given_count`. Represents the sizes
         of the sample vectors. If not all equal or less than `out_size`, samples will be
         right-padded with zeros.
-    given_count : int or torch.Tensor
+    given_count
         The value(s) :math:`L`. Must broadcast with and have values no greater than
         `total_count`. Represents the cardinality constraints of the sample vectors.
-    out_size : int or None, optional
+    out_size
         The length of the binary vectors. If it exceeds some value of `total_count`,
         that sample will be right-padded with zeros. Must be no less than
         ``total_count.max()``. If unset, defaults to that value.        

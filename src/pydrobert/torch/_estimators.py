@@ -80,7 +80,7 @@ class Estimator(metaclass=abc.ABCMeta):
     Returns
     -------
     v : torch.Tensor
-        A tensor containing the estimated value. Of shape ``proposal.batch_shape``.
+        An estimate of :math:`v`. Of shape ``proposal.batch_shape``.
     
     Notes
     -----

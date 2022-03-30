@@ -35,10 +35,10 @@ language = "en"
 # ones.
 extensions = [
     "sphinx.ext.autodoc",
-    "sphinx.ext.napoleon",
     "sphinx.ext.autosectionlabel",
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
+    "sphinx.ext.napoleon",
     "sphinx_autodoc_typehints",
     "myst_parser",
 ]
@@ -51,9 +51,18 @@ napoleon_custom_sections = {
     ("Variables", "params_style"),
 }
 autodoc_mock_imports = ["numpy", "torch"]
-autodoc_member_order = "bysource"
+# autodoc_member_order = "bysource"
+# autodoc_type_aliases = napoleon_type_aliases = {
+#     "pydrobert.torch._mc.MonteCarloEstimator": "pydrobert.torch.estimators.MonteCarloEstimator",
+#     "pydrobert.torch._straight_through.Density": "pydrobert.torch.distributions.Density",
+# }
+autodoc_typehints = "none"
 autodoc_inherit_docstrings = False
-autodoc_preserve_defaults = True
+# autodoc_preserve_defaults = True
+napoleon_preprocess_types = True
+# napoleon_use_param = True
+typehints_document_rtype = False
+napoleon_use_rtype = False
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]

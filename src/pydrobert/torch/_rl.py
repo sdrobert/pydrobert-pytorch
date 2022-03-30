@@ -56,25 +56,23 @@ class TimeDistributedReturn(torch.nn.Module):
     is the discount factor. :math:`\gamma \in [0, 1)` implies convergence, but this is
     not enforced here.
 
-    When instantiated, this module has the signature::
-
-        R = time_distributed_return(r)
-    
-    where `r` is a two-dimensional tensor of shape ``(steps, batch_size)``, ``r[t, n]``
-    being the (0-indexed) ``t``-th element of the ``n``-th batch element sequence.
-    The return value `R` is a tensor of the same shape.
-
-
     Parameters
     ----------
-    r : torch.Tensor
-        A two-dimensional float tensor of shape ``(steps, batch_size)`` (or
-        ``(batch_size, steps)`` if `batch_first` is :obj:`True`) of local rewards. The
-        :math:`t` dimension is the step dimension
-    gamma : float
+    gamma
         The discount factor :math:`\gamma`.
-    batch_first : bool, optional
+    batch_first
         Transposes the dimensions of `r` and `R` if :obj:`True`.
+
+    Call Parameters
+    ---------------
+    r : torch.Tensor
+        A tensor of shape ``(T, N)`` of local rewards, where ``T`` is the sequence size
+        and ``N`` is the batch size. The local rewards :math:`r`.
+    
+    Returns
+    -------
+    R : torch.Tensor
+        A tensor of shape ``(T, N)`` of the time-distributed rewards.
     """
 
     __constants__ = ["gamma", "batch_first"]

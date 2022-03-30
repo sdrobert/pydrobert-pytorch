@@ -27,25 +27,28 @@ class EnumerateEstimator(Estimator):
 
     .. math::
 
-        \mathbb{E}_{b \sim P}[f(b)] = \sum_b P(b) f(b).
+        v = \mathbb{E}_{b \sim P}[f(b)] = \sum_b P(b) f(b).
     
     When called, the instance does just that.
 
     Parameters
     ----------
-    proposal : torch.distributions.Distribution
+    proposal
         The distribution over which the expectation is taken, :math:`P`. Must be able to
         enumerate its support through
         :func:`torch.distributions.Distribution.enumerate_support`
         (``proposal.has_enumerate_support == True``).
-    func : FunctionOnSample
-        The function :math:`f`.
-    is_log : bool, optional
-    return_log : bool, optional
+    func
+    is_log
+    return_log
         If :obj:`True`, the log of the expectation is returned instead of the
         expectation. Results may be more numerically stable if ``return_log == is_log``.
         If unset, `return_log` defaults to the value of `is_log`.
     
+    Returns
+    -------
+    v : torch.Tensor
+
     Warnings
     --------
     The call may be both compute- and memory-intensive, depending on the size of the
@@ -56,7 +59,7 @@ class EnumerateEstimator(Estimator):
 
     def __init__(
         self,
-        proposal: torch.distributions.Distribution,
+        proposal: torch.distributions.distribution.Distribution,
         func: FunctionOnSample,
         is_log: bool = False,
         return_log: Optional[bool] = None,

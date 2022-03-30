@@ -13,9 +13,8 @@
 # limitations under the License.
 
 import abc
-import re
 
-from typing import Any, Dict, Optional, Sequence, Tuple, TYPE_CHECKING, Union
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import torch
 
@@ -38,41 +37,57 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     probability of the current token is based only on a fixed-length history, as well as
     recurrent neural language models [mikolov2010]_.
 
-    Subclasses are called with the following signature:
-
-        lm(hist, prev=None, idx=None)
-
-    `hist` is a long tensor of shape ``(S, N)`` consisting of prefixes up to length
-    ``S``. ``hist[:, n]`` is the n-th prefix :math:`(w^{(n)}_0, w^{(n)}_1, \ldots,
-    w^{(n)}_{S-1})`.
-
-    If `idx` is not specified, it outputs a float tensor `log_probs` of shape ``(S + 1,
-    N, vocab_size)`` where each ``log_probs[s, n, v]`` equals :math:`\log P(w^{(n)}_{s}
-    = v | w^{(n)}_{s - 1}, \ldots)`. That is, each distribution over types conditioned
-    on each prefix of tokens (``:0``, ``:1``, ``:2``, etc.) is returned.
-
-    If `idx` is specified, it must etiher be an integer or a long tensor of shape
-    ``(,)`` or ``(N,)``. The call returns a pair. The first element is `log_probs_idx`
-    of shape ``(N, vocab_size)``, where ``log_probs[n, v]`` equals :math:`\log
-    P(w^{(n)}_{idx[n]} = v | w^{(n)}_{idx[n]-1}, \ldots)`. That is, the distributions
-    over the next type conditioned on token prefixes up to and excluding ``s = idx`` are
-    returned. The second element, `in_next`, is discussed in relation to `prev` below.
-
-    The `prev` argument is a dictionary of tensors which represents some additional
-    input used in the computation. It may contain static input (e.g. a tensor of encoder
-    output in neural machine translation) and/or dynamic input from prior calls to the
-    LM (e.g. the previous hidden state in an RNN-based language model). `in_next`, the
-    second element in the return pair, will be fed to the next forward call as the
-    argument `prev` (assuming the new value for `idx` is `idx + 1`).
-
     Parameters
     ----------
-    vocab_size : int
+    vocab_size
         The vocabulary size. Controls the size of the final output dimension,
         as well as what values of `hist` are considered in-vocabulary
+    
+    Call Parameters
+    ---------------
+    hist : torch.Tensor
+        A long tensor of shape ``(S, N)`` where ``S`` is the sequence dimension and
+        ``N`` is the batch dimension. ``hist[:, n]`` is the n-th token prefix
+        :math:`(w^{(n)}_0, w^{(n)}_1, \ldots, w^{(n)}_{S-1})`.
+    prev : Dict[str, torch.Tensor], optional
+        A dictionary of tensors which represents some additional state information which
+        can be used in the computation. It may contain static input (e.g. a tensor of
+        encoder output in neural machine translation) and/or dynamic input from prior
+        calls to the LM (e.g. the previous hidden state in an RNN-based language model).
+    idx : int or torch.Tensor or None, optional
+        If specified, it is either a single integer or a long tensor of shape ``(N,)``
+        specifying the indices of the tokens with which to return a distribution over.
+        See the return value below.
+
+    Returns
+    -------
+    log_probs : torch.Tensor or tuple of torch.Tensor
+        The return value changes depending on whether `idx` was specified.
+        
+        If `idx` was not specified, the distributions over the next token over all
+        prefixes in `hist` are returned. `log_probs` is a tensor of shape ``(S + 1, N,
+        vocab_size)`` where each ``log_probs[s, n, v]`` equals :math:`\log P(w^{(n)}_{s}
+        = v | w^{(n)}_{s - 1}, \ldots)`. That is, each distribution over types
+        conditioned on each prefix of tokens (``:0``, ``:1``, ``:2``, etc.) is returned.
+
+        If `idx` was specified, the distributions over only the token at those indices
+        are returned. `log_probs` is a pair of tensors ``log_probs_idx, next_``.
+        `log_probs_idx` is of shape ``(N, vocab_size)`` and ``log_probs[n, v]`` equals
+        :math:`\log P(w^{(n)}_{idx[n]} = v | w^{(n)}_{idx[n]-1}, \ldots)`. That is, the
+        distributions over the next type conditioned on token prefixes up to and
+        excluding ``s = idx``. `next_` is a dictionary of tensors representing the
+        updated state of the language model after computing these log probabilities,
+        assuming `prev` represented the state at ``idx - 1``.
 
     Notes
     -----
+    When this module is scripted, its return type will be :class:`typing.Any`. This
+    reflects the fact that either `warped` is returned on its own (a tensor) or both
+    `warped_` and `flow` (a tuple). Use :func:`torch.jit.isinstance` for type refinement
+    in subsequent scripting. Tracing will infer the correct type. Alternatively, one can
+    use the methods :func:`update_input`, :func:`calc_idx_log_probs`, and
+    :func:`calc_full_log_probs` to avoid ambiguity in the return type altogether.
+
     This module has changed considerably since version 0.3.0. The primary changes are a)
     to replace the boolean switch `full` with `idx`; b) the inclusion of the `prev`
     argument for shared computations; c) the removal of `eos`, `sos`, and `oov`
@@ -84,6 +99,11 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     while also speeding up iterative computations. The removal of the `eos` and `sos`
     was due to a lack of generalizability. `oov` was removed because the user probably
     has to handle OOVs on her own when computing the loss.
+
+    See Also
+    --------
+    Language Modelling and Decoding
+        For a tutorial on how to build and use a language model.
     """
 
     __constants__ = ["vocab_size"]
@@ -102,10 +122,25 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     ) -> Dict[str, torch.Tensor]:
         """Update whatever is passed in as input to the language model
 
-        This method is called in the :func:`forward`. The return value should replace
-        `prev` with whatever additional information is necessary before
-        :func:`calc_idx_log_probs` if it is not already there, such as an initial hidden
-        state. The implementation should be robust to repeated calls.
+        Parameters
+        ----------
+        prev
+            The initial `prev` dictionary passed prior to calculating any log
+            probabilities.
+        hist
+            The initial `hist` tensor passed prior to calculating any log probabilites.
+
+        Returns
+        -------
+        prev_ : Dict[str, torch.Tensor]
+            The updated `prev`, populated with any additional information necessary to
+            calculating log probabilities. 
+        
+        Warnings
+        --------
+        This method should be robust to repeated calls prior to computing log
+        probabilities. That is, the result of ``update_input(prev, hist)`` should
+        be the same as ``update_input(update_input(prev, hist), hist)``.
         """
         return prev
 
@@ -119,9 +154,22 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Calculates log_prob_idx over types at prefix up to and excluding idx
 
-        Subclasses implement this. Values in idx are guaranteed to be between ``[0,
-        hist.size(0)]``. Return should be a pair of ``log_prob_idx, in_cur``. Note `idx`
-        may be a scalar if all batch indices are the same.
+        Implements the :func:`forward` call when `idx` is specified. See the class
+        description for more information on the parameters and returns. Note that `idx`
+        is guaranteed to be a tensor, either of shape ``(,)`` (scalar) or ``(N,)``, with
+        values in the range ``[0, hist.size(0)]``. `prev` can also be assumed to have
+        been initialized using :func:`update_input` when the index is zero.
+
+        Parameters
+        ----------
+        hist
+        prev
+        idx
+
+        Returns
+        -------
+        log_probs_idx : torch.Tensor
+        next_ : Dict[str, torch.Tensor]
         """
         raise NotImplementedError()
 
@@ -129,10 +177,20 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     def calc_full_log_probs(
         self, hist: torch.Tensor, prev: Dict[str, torch.Tensor]
     ) -> torch.Tensor:
-        """Calculates log_prob over all prefixes and stacks them on the first dim
+        """Calculates log_prob over all prefixes
 
-        Implemented in :class:`SequentialLanguageModel` as a simple loop. Subclasses
-        may overload this function if the result can be calculated more quickly.
+        Implements the :func:`forward` call when `idx` is not specified. See the class
+        description for more information on the parameters and returns. `prev` can be
+        assumed to have been initialized using :func:`update_input`.
+
+        Parameters
+        ----------
+        hist
+        prev
+
+        Returns
+        -------
+        log_probs : torch.Tensor
         """
         log_probs = []
         for idx in torch.arange(hist.size(0) + 1, device=hist.device):
@@ -140,54 +198,42 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
             log_probs.append(log_probs_idx)
         return torch.stack(log_probs, 0)
 
-    if TYPE_CHECKING:
-
-        def forward(
-            self,
-            hist: torch.Tensor,
-            prev: Optional[Dict[str, torch.Tensor]] = None,
-            idx: Optional[Union[int, torch.Tensor]] = None,
-        ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
-            pass
-
-    else:
-
-        def forward(
-            self,
-            hist: torch.Tensor,
-            prev: Optional[Dict[str, torch.Tensor]] = None,
-            idx: Optional[Any] = None,
-        ) -> Any:
-            if prev is None:
-                prev = dict()
-            if hist.dim() != 2:
-                raise RuntimeError("hist must be 2 dimensional")
-            S, N = hist.shape
-            idx_ = torch.empty(0)
-            if idx is not None:
-                if isinstance(idx, int):
-                    idx_ = torch.as_tensor(idx, dtype=torch.long, device=hist.device)
-                elif isinstance(idx, torch.Tensor):
-                    idx_ = idx
-                if not idx_.numel():
-                    raise RuntimeError("idx_ must be at least one element")
-                if idx_.dim() == 1:
-                    if idx_.size(0) == 1:
-                        idx_ = idx_.squeeze(0)
-                    elif idx_.size(0) != N:
-                        raise RuntimeError(
-                            f"Expected dim 0 of idx_ to be of size {N}, got {idx_.size(0)}"
-                        )
-                if ((idx_ < -S - 1) | (idx_ > S)).any():
+    def forward(
+        self,
+        hist: torch.Tensor,
+        prev: Optional[Dict[str, torch.Tensor]] = None,
+        idx: Optional[Any] = None,
+    ) -> Any:
+        if prev is None:
+            prev = dict()
+        if hist.dim() != 2:
+            raise RuntimeError("hist must be 2 dimensional")
+        S, N = hist.shape
+        idx_ = torch.empty(0)
+        if idx is not None:
+            if isinstance(idx, int):
+                idx_ = torch.as_tensor(idx, dtype=torch.long, device=hist.device)
+            elif isinstance(idx, torch.Tensor):
+                idx_ = idx
+            if not idx_.numel():
+                raise RuntimeError("idx_ must be at least one element")
+            if idx_.dim() == 1:
+                if idx_.size(0) == 1:
+                    idx_ = idx_.squeeze(0)
+                elif idx_.size(0) != N:
                     raise RuntimeError(
-                        f"All values in idx_ must be between ({-S - 1}, {S})"
+                        f"Expected dim 0 of idx_ to be of size {N}, got {idx_.size(0)}"
                     )
-                idx_ = (idx_ + S + 1) % (S + 1)
-            prev = self.update_input(prev, hist)
-            if idx is None:
-                return self.calc_full_log_probs(hist, prev)
-            else:
-                return self.calc_idx_log_probs(hist, prev, idx_)
+            if ((idx_ < -S - 1) | (idx_ > S)).any():
+                raise RuntimeError(
+                    f"All values in idx_ must be between ({-S - 1}, {S})"
+                )
+            idx_ = (idx_ + S + 1) % (S + 1)
+        prev = self.update_input(prev, hist)
+        if idx is None:
+            return self.calc_full_log_probs(hist, prev)
+        else:
+            return self.calc_idx_log_probs(hist, prev, idx_)
 
 
 class ExtractableSequentialLanguageModel(
@@ -199,8 +245,8 @@ class ExtractableSequentialLanguageModel(
     :class:`SequentialLanguageModel` which is also a
     :class:`ExtractableSequentialLanguageModel` promises that, were we to rearrange
     and/or choose only some of those batch elements in `hist` to continue computations
-    with, we can call the model's :func:`extract_by_src` method to rearrange/extract
-    the relevant values in `prev` or `in_next` in the same way.
+    with, we can call the model's :func:`extract_by_src` method to rearrange/extract the
+    relevant values in `prev` or `next_` in the same way.
     """
 
     @abc.abstractmethod
@@ -216,15 +262,15 @@ class ExtractableSequentialLanguageModel(
 
         Parameters
         ----------
-        prev : dict
-            An input/output value for a step of the lm
-        src : torch.Tensor
+        prev
+            An input/output value for a step of the language model.
+        src
             A tensor of shape ``(N,)`` containing the indices of the old batch index
             (of possibly different size) to extract the new batch elements from.
 
         Returns
         -------
-        new_prev : dict
+        new_prev : Dict[str, torch.Tensor]
 
         Examples
         --------
@@ -247,8 +293,8 @@ class MixableSequentialLanguageModel(
 
     In addition to the functionality of :class:`ExtractableSequentialLanguageModel`, a
     :class:`MixableSequentialLanguageModel` can also account for transformations from
-    pairs of histories `hist_a` and `hist_b` into one `new_hist` such that each path
-    in the latter is either from `hist_a` or `hist_b`. :func:`mix_by_mask` accomplishes
+    pairs of histories `hist_a` and `hist_b` into one `new_hist` such that each path in
+    the latter is either from `hist_a` or `hist_b`. :func:`mix_by_mask` accomplishes
     this for the dictionaries `prev` and `in_next`.
     """
 
@@ -266,16 +312,15 @@ class MixableSequentialLanguageModel(
         in each are of different lengths, we've also padded them appropriately.
         ``hist_new[:, n] = hist_true[:, n]`` when ``mask[n] == True`` and ``hist_new[:,
         n] = hist_false[:, n]`` otherwise. This method should apply the same
-        transformation between `prev_true` and `prev_false` to come up with
-        `prev_new`.
+        transformation between `prev_true` and `prev_false` to come up with `prev_new`.
 
         Parameters
         ----------
-        prev_true : dict
+        prev_true
             The input/output dictionary for the true branch of `mask`
-        prev_false : dict
+        prev_false
             The input/output dictionary for the false branch of `mask`
-        mask : torch.Tensor
+        mask
             A boolean tensor of shape ``(N,)``
 
         Returns
@@ -466,9 +511,9 @@ def _lookup_calc_idx_log_probs(
 class LookupLanguageModel(MixableSequentialLanguageModel):
     r"""Construct a backoff n-gram model from a fixed lookup table
 
-    An instance of this model will search for a stored log-probability of the
-    current token given a fixed-length history in a lookup table. If it can't
-    find it, it backs off to a shorter length history and incurs a penalty:
+    An instance of this model will search for a stored log-probability of the current
+    token given a fixed-length history in a lookup table. If it can't find it, it backs
+    off to a shorter length history and incurs a penalty:
 
     .. math::
 
@@ -484,19 +529,29 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
 
     Parameters
     ----------
-    vocab_size : int
-    sos : int or None, optional
-        The start of sequence token. Any prefix with fewer tokens than the maximum order
-        of n-grams minus 1 will be prepended up to that length with this token.
-    prob_list : sequence or None, optional
-        A list of dictionaries whose entry at index ``i`` corresponds to a
-        table of ``i+1``-gram probabilities. Keys must all be ids, not strings.
-        Unigram keys are just ids; for n > 1 keys are tuples of ids with the
-        latest word last. Values in the dictionary of the highest order n-gram
-        dictionaries (last in `prob_list`) are the log-probabilities of the
-        keys. Lower order dictionaries' values are pairs of log-probability and
-        log-backoff penalty. If `prob_list` is not specified, a unigram model
-        with a uniform prior will be built
+    vocab_size
+    sos
+        The start of sequence token. If specified, any prefix with fewer tokens than the
+        maximum order of n-grams minus 1 will be prepended up to that length with this
+        token.
+    prob_list
+        A list of dictionaries whose entry at index ``i`` corresponds to a table of
+        ``i+1``-gram probabilities. Keys must all be ids, not strings. Unigram keys are
+        just ids; for n > 1 keys are tuples of ids with the latest word last. Values in
+        the dictionary of the highest order n-gram dictionaries (last in `prob_list`)
+        are the log-probabilities of the keys. Lower order dictionaries' values are
+        pairs of log-probability and log-backoff penalty. If `prob_list` is not
+        specified, a unigram model with a uniform prior will be built
+    
+    Call Parameters
+    ---------------
+    hist : torch.Tensor
+    prev : Dict[str, torch.Tensor], optional
+    idx : int or torch.Tensor or None, optional
+
+    Returns
+    -------
+    log_probs : torch.Tensor or tuple of torch.Tensor
 
     Notes
     -----

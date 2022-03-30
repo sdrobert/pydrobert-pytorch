@@ -62,7 +62,7 @@ class StraightThrough(metaclass=abc.ABCMeta):
         
         Parameters
         ----------
-        z : torch.Tensor
+        z
             A relaxed sample, usually drawn via this instance's :func:`rsample` method.
         straight_through : bool, optional
             If true, attach the gradient of `z` to the discrete sample.
@@ -80,7 +80,7 @@ class StraightThrough(metaclass=abc.ABCMeta):
         
         Parameters
         ----------
-        b : torch.Tensor
+        b
             A discrete sample. Usually the result of drawing a relaxed sample from
             this instance's :func:`rsample` method, then applying a discrete threshold
             to it via :func:`threshold`.
@@ -88,14 +88,14 @@ class StraightThrough(metaclass=abc.ABCMeta):
         Returns
         -------
         lp : torch.Tensor
-            The log probability of the sample.
+            The log probability of the sample. Of shape ``sample_size + batch_size``.
         """
         raise NotImplementedError
 
     def _validate_thresholded_sample(self, value: torch.Tensor):
         """Argument validation for methods with a thresholded (discrete) sample arg
         
-        Akin to :func:`torch.distributions.Distribution._validate_sample`
+        Akin to :func:`Distribution._validate_sample`
         """
         if not isinstance(value, torch.Tensor):
             raise ValueError("The b argument must be a Tensor")
@@ -161,7 +161,7 @@ class ConditionalStraightThrough(StraightThrough, metaclass=abc.ABCMeta):
 
         Parameters
         ----------
-        b : torch.Tensor
+        b
             A discrete sample. Usually the result of drawing a relaxed sample from
             this instance's :func:`rsample` method, then applying a discrete threshold
             to it via :func:`threshold`.
@@ -193,9 +193,9 @@ class ConditionalStraightThrough(StraightThrough, metaclass=abc.ABCMeta):
 
         Parameters
         ----------
-        zcond : torch.Tensor
+        zcond
             A relaxed sample.
-        b : torch.Tensor
+        b
             A discrete sample. Usually the result of drawing a relaxed sample from
             this instance's :func:`rsample` method, then applying a discrete threshold
             to it via :func:`threshold`.
@@ -203,6 +203,7 @@ class ConditionalStraightThrough(StraightThrough, metaclass=abc.ABCMeta):
         Returns
         -------
         lp : torch.Tensor
+            The log probabilities of shape ``sample_shape + batch_shape``.
         """
         raise NotImplementedError
 
@@ -238,17 +239,17 @@ class LogisticBernoulli(torch.distributions.Distribution, ConditionalStraightThr
     r"""A Logistic distribution which can be thresholded to Bernoulli samples
     
     This distribution should be treated as a (normalized) `Logistic distribution
-    <https://en.wikipedia.org/wiki/Logistic_distribution>`__ with the option to
+    <https://en.wikipedia.org/wiki/Logistic_distribution>`_ with the option to
     discretize to Bernoulli values, not the other way around. :func:`sample`,
     :func:`rsample`, and statistics like the mean and standard deviation are all
     relative to the relaxed sample.
 
-   The relaxation, threshold, and conditional relaxed sample defined in
+    The relaxation, threshold, and conditional relaxed sample defined in
     [tucker2017]_. The relaxation :math:`z` is sampled as
 
     .. math::
 
-        u_i \sim Uniform([0, 1]) \\
+        u_i \sim \mathrm{Uniform}([0, 1]) \\
         z_i = logits_i + log(u_i) - log (1 - u_i)
 
     which can be transformed into a Bernoulli sample by threshold
@@ -265,7 +266,7 @@ class LogisticBernoulli(torch.distributions.Distribution, ConditionalStraightThr
 
     .. math::
 
-        v_i \sim Uniform([0, 1]) \\
+        v_i \sim \mathrm{Uniform}([0, 1]) \\
         z^{cond}_i = \begin{cases}
             \log\left(\frac{v_i}{(1 - v_i)(1 - probs_i)} + 1 \right) & b_i = 1 \\
             -\log\left(\frac{v_i}{(1 - v_i)probs_i} + 1\right) & b_i = 0
@@ -415,7 +416,7 @@ class GumbelOneHotCategorical(
 
     .. math::
 
-        u_{i,j} \sim Uniform([0, 1]) \\
+        u_{i,j} \sim \mathrm{Uniform}([0, 1]) \\
         z_{i,j} = \log probs_{i,j} - \log(-\log u_{i,j})
     
     which can be transformed into a (one-hot) categorical sample via by threshold
@@ -432,7 +433,7 @@ class GumbelOneHotCategorical(
 
     .. math::
 
-        v_{i,j} \sim Uniform([0, 1]) \\
+        v_{i,j} \sim \mathrm{Uniform}([0, 1]) \\
         z^{cond}_{i,j} = \begin{cases}
             -\log(-\log v_{i,j}) & b_{i,j} = 1 \\
             -\log\left(
