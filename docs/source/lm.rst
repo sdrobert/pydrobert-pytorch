@@ -8,7 +8,7 @@ A Simple-ish Example
 Sequential LMs are more easily integrated into the transcription/decoding
 process for Automatic Speech Recognition (ASR) than non-sequential ones like
 BERT [bert2019]_. We will start with a basic implementation of the interface
-:class:`pydrobert.torch.layers.SequentialLanguageModel` and extend it until we
+:class:`pydrobert.torch.modules.SequentialLanguageModel` and extend it until we
 can perform a `Beam Search
 <https://medium.com/@dhartidhami/beam-search-in-seq2seq-model-7606d55b21a5>`__
 or a Connectionist Temporal Classification (CTC) `Prefix Search
@@ -19,7 +19,7 @@ adapted to the GPU by sending models and tensors to the appropriate device.
 .. code-block:: python
 
   import torch
-  from pydrobert.torch.layers import SequentialLanguageModel
+  from pydrobert.torch.modules import SequentialLanguageModel
 
   class RNNLM(SequentialLanguageModel):
       def __init__(self, vocab_size, embed_size=128, hidden_size=512):
@@ -111,14 +111,14 @@ a tensor of start-of-sequence tokens whenever ``idx == 0``.
 To perform some form of search for the purposes of decoding, like a beam search
 or a CTC prefix search, the module needs to get more complicated. This is
 because the search needs to know how to manipulate the language model state
-(`prev` or `cur`). For :class:`pydrobert.torch.layers.BeamSearch`, the LM must
-implement :class:`pydrobert.torch.layers.ExtractableSequentialLanguageModel`,
+(`prev` or `cur`). For :class:`pydrobert.torch.modules.BeamSearch`, the LM must
+implement :class:`pydrobert.torch.modules.ExtractableSequentialLanguageModel`,
 which extends :class:`SequentialLanguageModel`. We reimplement our LM below:
 
 .. code-block:: python
 
     import torch
-    from pydrobert.torch.layers import ExtractableSequentialLanguageModel
+    from pydrobert.torch.modules import ExtractableSequentialLanguageModel
 
     class RNNLM(ExtractableSequentialLanguageModel):
         def __init__(self, vocab_size, embed_size=128, hidden_size=512):
@@ -214,7 +214,7 @@ decoding is as follows:
 
 .. code-block:: python
 
-    from pydrobert.torch.layers import BeamSearch
+    from pydrobert.torch.modules import BeamSearch
 
     torch.manual_seed(1)
     vocab_size, batch_size, sequence_length, epochs, eos = 520, 5, 15, 30, 0
@@ -253,7 +253,7 @@ function ignores the padded values. This training code would work just as well
 with our previous version of :class:`RNNLM`.
 
 The decoding code is much simpler than that we used for the random walk. We
-merely create a :class:`pydrobert.torch.layers.BeamSearch` module, pass the LM,
+merely create a :class:`pydrobert.torch.modules.BeamSearch` module, pass the LM,
 beam width, and end-of-sequence type to it, and then call the module. The first
 argument to the module is `y_prev`. Usually this is just an empty tensor of
 shape ``(0, batch_size)``, though it can be of size ``(S, batch_size)`` to pass
@@ -269,7 +269,7 @@ and ``log_probs`` is of shape ``(batch_size, beam_width)`` containing the
 (pseudo-)log probabilities of each path.
 
 Extending :class:`RNNLM` for a CTC prefix search with shallow fusion requires
-implementing :class:`pydrobert.torch.layers.MixableSequentialLanguageModel`.
+implementing :class:`pydrobert.torch.modules.MixableSequentialLanguageModel`.
 The interface adds only one additional method but is otherwise identical to the
 previous implementation. For brevity, we forego rewriting the other methods
 below:
@@ -277,7 +277,7 @@ below:
 .. code-block:: python
 
     import torch
-    from pydrobert.torch.layers import MixableSequentialLanguageModel
+    from pydrobert.torch.modules import MixableSequentialLanguageModel
 
     class RNNLM(MixableSequentialLanguageModel):
 
@@ -318,7 +318,7 @@ code has been updated for CTC:
 
 .. code-block:: python
 
-    from pydrobert.torch.layers import CTCPrefixSearch
+    from pydrobert.torch.modules import CTCPrefixSearch
 
     torch.manual_seed(2)
     
@@ -375,7 +375,7 @@ implementation:
 .. code-block:: python
 
     import torch
-    from pydrobert.torch.layers import (
+    from pydrobert.torch.modules import (
         MixableSequentialLanguageModel,
         DotProductSoftAttention,
         BeamSearch,
@@ -487,7 +487,7 @@ however, to implement an attention-based decoder which just recalculates all
 its hidden states every time :func:`calc_idx_log_probs` is called using all the
 values of `hist`.
 
-The class :class:`pydrobert.torch.layers.LookupLanguageModel`, which loads
+The class :class:`pydrobert.torch.modules.LookupLanguageModel`, which loads
 pre-trained n-gram language models, implements
 :class:`MixableSequentialLanguageModel` and is therefore compatible with both
 :class:`BeamSearch` and :class:`CTCPrefixSearch`.
@@ -521,7 +521,7 @@ example, our :class:`RNNLM` can implement it as:
 .. code-block:: python
 
     import torch
-    from pydrobert.torch.layers import MixableSequentialLanguageModel, BeamSearch
+    from pydrobert.torch.modules import MixableSequentialLanguageModel, BeamSearch
 
     class RNNLM(MixableSequentialLanguageModel):
         def __init__(self, vocab_size, embed_size=128, hidden_size=512):
@@ -563,15 +563,15 @@ search will modify the path probabilities and/or the stopping criteria.
 beam must be complete, or some cut-off length is achieved. Consult the class
 documentation for more detail. More complicated stopping criteria will require
 reimplementing beam search, at which point the low-level function
-:func:`pydrobert.torch.util.beam_search_advance` might be a good starting
+:func:`pydrobert.torch.functional.beam_search_advance` might be a good starting
 point. Modifying path probabilities is much easier. To do so, one may sublclass
 :class:`BeamSearch` and reimplement the method
-:func:`pydrobert.torch.layers.BeamSearch.update_log_probs_for_step`. Here's an
+:func:`pydrobert.torch.modules.BeamSearch.update_log_probs_for_step`. Here's an
 example which normalizes the log probabilities of paths by their lengths:
 
 .. code-block:: python
 
-    from pydrobert.torch.layers import BeamSearch
+    from pydrobert.torch.modules import BeamSearch
     
     class LengthNormalizedBeamSearch(BeamSearch):
 
@@ -602,5 +602,5 @@ together, the extended path pseudo-log-probability will be normalzied by
 ``y_prev_lens + 1``.
 
 This is just one implementation of many. Consult the documentation of
-:func:`pydrobert.torch.layers.BeamSearch.update_log_probs_for_step` for more
+:func:`pydrobert.torch.modules.BeamSearch.update_log_probs_for_step` for more
 information.

@@ -18,7 +18,7 @@ pinning the version in the requirements or by forking.**
 ## Documentation
 
 - [Latest](https://pydrobert-pytorch.readthedocs.io/en/latest/)
-- [Stable](https://pydrobert-pytorch.readthedocs.io/en/stable/)
+- [v0.3.0](https://pydrobert-pytorch.readthedocs.io/en/v0.3.0/)
 
 ## Installation
 

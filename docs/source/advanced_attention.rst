@@ -25,14 +25,14 @@ We'll illustrate with an example. Here, we've designed a barebones version of a
 transformer network. There are lots of extra bits in a full transformer network
 -- check [vaswani2017]_. Here we focus on the single-headed attention mechanism
 (though a multi-headed version would be trivial to implement with
-:class:`pydrobert.torch.layers.MultiHeadedAttention`). You can probably skip
+:class:`pydrobert.torch.modules.MultiHeadedAttention`). You can probably skip
 the explanation in the middle if all you want to make is a transformer network
 -- these settings should work.
 
 First the requisite imports:
 
 >>> import torch
->>> from pydrobert.torch.layers import *
+>>> from pydrobert.torch.modules import *
 
 The encoder is going to take in transcripts `inp` of shape ``(T, num_batch)``,
 which have been right-padded along dimension 0. It will output both its
