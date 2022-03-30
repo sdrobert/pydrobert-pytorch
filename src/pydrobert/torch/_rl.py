@@ -15,7 +15,7 @@
 import torch
 
 from ._compat import script
-from ._wrappers import functional_wrapper
+from ._wrappers import functional_wrapper, proxy
 
 
 @functional_wrapper("TimeDistributedReturn")
@@ -90,3 +90,5 @@ class TimeDistributedReturn(torch.nn.Module):
 
     def forward(self, r: torch.Tensor) -> torch.Tensor:
         return time_distributed_return(r, self.gamma, self.batch_first)
+
+    __call__ = proxy(forward)

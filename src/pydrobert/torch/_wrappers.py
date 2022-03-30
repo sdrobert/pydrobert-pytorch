@@ -1,4 +1,7 @@
 # Copyright 2022 Sean Robertson
+#
+# proxy(...) is from
+# https://medium.com/@ppeetteerrs/adding-type-hints-to-pytorch-call-function-30728a972392
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +14,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from typing import Callable, TypeVar, cast
 
 
 _FUNCTIONAL_DOC_TEMPLATE = """Functional version of {module_name}
@@ -33,3 +38,10 @@ def functional_wrapper(module_name: str):
     decorator.__modname = module_name
 
     return decorator
+
+
+C = TypeVar("C", bound=Callable)
+
+
+def proxy(f: C) -> C:
+    return cast(C, lambda self, *x, **y: super(self.__class__, self).__call__(*x, **y))

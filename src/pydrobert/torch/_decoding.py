@@ -14,7 +14,7 @@
 
 import math
 
-from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING, Union
+from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING, Union, overload
 
 import torch
 
@@ -25,7 +25,7 @@ from ._lm import (
 )
 from ._compat import script, trunc_divide, jit_isinstance, SpoofPackedSequence
 from ._string import _lens_from_eos
-from ._wrappers import functional_wrapper
+from ._wrappers import functional_wrapper, proxy
 
 
 @script
@@ -325,6 +325,12 @@ class BeamSearch(torch.nn.Module):
             y_prev_lens = y_prev_lens.gather(1, src)
         return y_prev, log_probs_prev, y_prev_lens
 
+    @overload
+    def forward(
+        self, y_prev: torch.Tensor, prev: Dict[str, torch.Tensor] = dict()
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        ...
+
     def forward(
         self, y_prev: torch.Tensor, _prev: Optional[Dict[str, torch.Tensor]] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -471,6 +477,8 @@ class BeamSearch(torch.nn.Module):
         )
 
         return y_prev, y_prev_lens, log_probs_prev
+
+    __call__ = proxy(forward)
 
 
 @functional_wrapper("CTCGreedySearch")
@@ -1001,6 +1009,15 @@ class CTCPrefixSearch(torch.nn.Module):
         if self.lm is not None and hasattr(self.lm, "reset_parameters"):
             self.lm.reset_parameters()
 
+    @overload
+    def forward(
+        self,
+        logits: torch.Tensor,
+        lens: Optional[torch.Tensor] = None,
+        prev: Dict[str, torch.Tensor] = dict(),
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        ...
+
     def forward(
         self,
         logits: torch.Tensor,
@@ -1125,6 +1142,8 @@ class CTCPrefixSearch(torch.nn.Module):
             )
         # now we zero out the probabilities of duplicate paths which could've arisen
         return y_prev, y_prev_lens, probs_prev
+
+    __call__ = proxy(forward)
 
 
 @script
@@ -1326,82 +1345,79 @@ class RandomWalk(torch.nn.Module):
         """
         return log_probs_prev, log_probs_t
 
-    if TYPE_CHECKING:
+    @overload
+    def forward(
+        self, y_prev: torch.Tensor, prev: Dict[str, torch.Tensor] = dict()
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        ...
 
-        def forward(
-            self, y_prev: torch.Tensor, prev: Dict[str, torch.Tensor] = dict()
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            pass
+    def forward(
+        self, y: torch.Tensor, _prev: Optional[Dict[str, torch.Tensor]] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if _prev is None:
+            prev = dict()
+        else:
+            prev = _prev
+        if y.dim() != 2:
+            raise RuntimeError("y_prev must be 2 dimensional")
 
-    else:
+        device = y.device
+        S_prev, N = y.size(0), y.size(1)
+        prev = self.lm.update_input(prev, y)
 
-        def forward(
-            self, y: torch.Tensor, _prev: Optional[Dict[str, torch.Tensor]] = None
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            if _prev is None:
-                prev = dict()
-            else:
-                prev = _prev
-            if y.dim() != 2:
-                raise RuntimeError("y_prev must be 2 dimensional")
+        if self.eos is not None and S_prev:
+            y_lens = (
+                -((y == self.eos).cumsum(0).clamp(max=1).sum(0) - 1).clamp_min_(0)
+                + S_prev
+            )
+            eos_mask = (y == self.eos).any(0)
+        else:
+            y_lens = torch.full((N,), S_prev, dtype=torch.long, device=device)
+            eos_mask = torch.zeros(N, device=device, dtype=torch.bool)
+        log_probs = torch.zeros(N, device=device)
 
-            device = y.device
-            S_prev, N = y.size(0), y.size(1)
-            prev = self.lm.update_input(prev, y)
+        if self.max_iters is None:
+            max_iters = 1024 * 1024 * 1024 * 1024
+        else:
+            max_iters = self.max_iters
+        for t in range(S_prev, max_iters + S_prev):
+            if eos_mask.all():
+                break
+            t = torch.tensor(t, device=device)
 
-            if self.eos is not None and S_prev:
-                y_lens = (
-                    -((y == self.eos).cumsum(0).clamp(max=1).sum(0) - 1).clamp_min_(0)
-                    + S_prev
+            # determine extension probabilities
+            log_probs_t, prev = self.lm.calc_idx_log_probs(y[:t], prev, t)
+
+            # update probabilities if the subclass so desires
+            log_probs, log_probs_t = self.update_log_probs_for_step(
+                log_probs, log_probs_t, y[:t], y_lens, eos_mask
+            )
+
+            if self.eos is not None:
+                # if a path has finished, we allocate the entire probability mass to
+                # the eos token
+                log_probs_t = log_probs_t.masked_fill(
+                    eos_mask.unsqueeze(1), -float("inf")
                 )
-                eos_mask = (y == self.eos).any(0)
+                eos_mask_ = eos_mask.unsqueeze(1).repeat(1, self.lm.vocab_size)
+                eos_mask_[..., : self.eos] = False
+                eos_mask_[..., self.eos + 1 :] = False
+                log_probs_t = log_probs_t.masked_fill(eos_mask_, 0.0)
+
+            y, log_probs = random_walk_advance(log_probs_t, log_probs, y, y_lens)
+
+            if self.eos is not None:
+                # if the thing prior to this was not an eos, then either this isn't
+                # an eos or its the first eos. Both add to lens. This is why we
+                # accumulate using the previous eos mask
+                y_lens += ~eos_mask
+                eos_mask = y.gather(0, y_lens.unsqueeze(0) - 1).squeeze(0) == self.eos
             else:
-                y_lens = torch.full((N,), S_prev, dtype=torch.long, device=device)
-                eos_mask = torch.zeros(N, device=device, dtype=torch.bool)
-            log_probs = torch.zeros(N, device=device)
+                y_lens += 1
 
-            if self.max_iters is None:
-                max_iters = 1024 * 1024 * 1024 * 1024
-            else:
-                max_iters = self.max_iters
-            for t in range(S_prev, max_iters + S_prev):
-                if eos_mask.all():
-                    break
-                t = torch.tensor(t, device=device)
+        return y, y_lens, log_probs
 
-                # determine extension probabilities
-                log_probs_t, prev = self.lm.calc_idx_log_probs(y[:t], prev, t)
-
-                # update probabilities if the subclass so desires
-                log_probs, log_probs_t = self.update_log_probs_for_step(
-                    log_probs, log_probs_t, y[:t], y_lens, eos_mask
-                )
-
-                if self.eos is not None:
-                    # if a path has finished, we allocate the entire probability mass to
-                    # the eos token
-                    log_probs_t = log_probs_t.masked_fill(
-                        eos_mask.unsqueeze(1), -float("inf")
-                    )
-                    eos_mask_ = eos_mask.unsqueeze(1).repeat(1, self.lm.vocab_size)
-                    eos_mask_[..., : self.eos] = False
-                    eos_mask_[..., self.eos + 1 :] = False
-                    log_probs_t = log_probs_t.masked_fill(eos_mask_, 0.0)
-
-                y, log_probs = random_walk_advance(log_probs_t, log_probs, y, y_lens)
-
-                if self.eos is not None:
-                    # if the thing prior to this was not an eos, then either this isn't
-                    # an eos or its the first eos. Both add to lens. This is why we
-                    # accumulate using the previous eos mask
-                    y_lens += ~eos_mask
-                    eos_mask = (
-                        y.gather(0, y_lens.unsqueeze(0) - 1).squeeze(0) == self.eos
-                    )
-                else:
-                    y_lens += 1
-
-            return y, y_lens, log_probs
+    __call__ = proxy(forward)
 
 
 @script
@@ -1474,6 +1490,16 @@ def _sequence_log_probs_ps(
     if uidxs is not None:
         logits = logits[uidxs]
     return logits
+
+
+@overload
+def sequence_log_probs(
+    logits: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
+    hyp: torch.Tensor,
+    dim: int = 0,
+    eos: Optional[int] = None,
+) -> torch.Tensor:
+    ...
 
 
 @functional_wrapper("SequentialLogProbabilities")
@@ -1560,5 +1586,15 @@ class SequenceLogProbabilities(torch.nn.Module):
             s += f", eos={self.eos}"
         return s
 
+    @overload
+    def forward(
+        self,
+        logits: Union[torch.Tensor, torch.nn.utils.rnn.PackedSequence],
+        hyp: torch.Tensor,
+    ) -> torch.Tensor:
+        ...
+
     def forward(self, logits: Any, hyp: torch.Tensor) -> torch.Tensor:
         return sequence_log_probs(logits, hyp, self.dim, self.eos)
+
+    __call__ = proxy(forward)

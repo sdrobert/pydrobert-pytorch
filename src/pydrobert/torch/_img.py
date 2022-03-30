@@ -23,7 +23,7 @@
 
 import math
 
-from typing import Any, Optional, Tuple, TYPE_CHECKING, Union
+from typing import Any, Optional, Tuple, TYPE_CHECKING, Union, overload
 
 try:
     from typing import Literal
@@ -33,7 +33,7 @@ except ImportError:
 import torch
 
 from ._compat import meshgrid, script, linalg_solve
-from ._wrappers import functional_wrapper
+from ._wrappers import functional_wrapper, proxy
 
 
 @script
@@ -232,6 +232,8 @@ class PolyharmonicSpline(torch.nn.Module):
             self.full_matrix,
         )
 
+    __call__ = proxy(forward)
+
 
 @script
 def _deterimine_pinned_points(k: int, sizes: torch.Tensor) -> torch.Tensor:
@@ -368,8 +370,19 @@ class Warp1DGrid(torch.nn.Module):
         )
 
 
-@script
+@overload
+def dense_image_warp(
+    image: torch.Tensor,
+    flow: torch.Tensor,
+    indexing: str = "hw",
+    mode: Literal["bilinear", "nearest"] = "bilinear",
+    padding_mode: Literal["border", "zeros", "reflection"] = "border",
+) -> torch.Tensor:
+    ...
+
+
 @functional_wrapper("DenseImageWarp")
+@script
 def dense_image_warp(
     image: torch.Tensor,
     flow: torch.Tensor,
@@ -497,6 +510,8 @@ class DenseImageWarp(torch.nn.Module):
         return dense_image_warp(
             image, flow, self.indexing, self.mode, self.padding_mode
         )
+
+    __call__ = proxy(forward)
 
 
 # N.B. We do this ugly thing so that a trace can be aware of the returned type
@@ -637,6 +652,23 @@ def _sparse_image_warp_noflow(
     )
 
     return warped
+
+
+@overload
+def sparse_image_warp(
+    image: torch.Tensor,
+    source_points: torch.Tensor,
+    dest_points: torch.Tensor,
+    indexing: Literal["hw", "wh"] = "hw",
+    field_interpolation_order: int = 2,
+    field_regularization_weight: float = 0.0,
+    field_full_matrix: bool = True,
+    pinned_boundary_points: int = 0,
+    dense_interpolation_mode: Literal["bilinear", "nearest"] = "bilinear",
+    dense_padding_mode: Literal["border", "zero", "reflection"] = "border",
+    include_flow: bool = True,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    ...
 
 
 @functional_wrapper("SparseImageWarp")
@@ -817,41 +849,51 @@ class SparseImageWarp(torch.nn.Module):
     def extra_repr(self) -> str:
         return ", ".join(f"{x}={getattr(self, x)}" for x in self.__constants__)
 
-    if TYPE_CHECKING:
+    @overload
+    def forward(
+        self,
+        image: torch.Tensor,
+        source_points: torch.Tensor,
+        dest_points: torch.Tensor,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        pass
 
-        def forward(
-            self,
-            image: torch.Tensor,
-            source_points: torch.Tensor,
-            dest_points: torch.Tensor,
-        ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-            pass
+    def forward(
+        self,
+        image: torch.Tensor,
+        source_points: torch.Tensor,
+        dest_points: torch.Tensor,
+    ) -> Any:
+        return sparse_image_warp(
+            image,
+            source_points,
+            dest_points,
+            self.indexing,
+            self.field_interpolation_order,
+            self.field_regularization_weight,
+            self.field_full_matrix,
+            self.pinned_boundary_points,
+            self.dense_interpolation_mode,
+            self.dense_padding_mode,
+            self.include_flow,
+        )
 
-    else:
-
-        def forward(
-            self,
-            image: torch.Tensor,
-            source_points: torch.Tensor,
-            dest_points: torch.Tensor,
-        ) -> Any:
-            return sparse_image_warp(
-                image,
-                source_points,
-                dest_points,
-                self.indexing,
-                self.field_interpolation_order,
-                self.field_regularization_weight,
-                self.field_full_matrix,
-                self.pinned_boundary_points,
-                self.dense_interpolation_mode,
-                self.dense_padding_mode,
-                self.include_flow,
-            )
+    __call__ = proxy(forward)
 
 
-@script
+@overload
+def pad_variable(
+    x: torch.Tensor,
+    lens: torch.Tensor,
+    pad: torch.Tensor,
+    mode: Literal["constant", "reflect", "replicate"] = "constant",
+    value: float = 0.0,
+) -> torch.Tensor:
+    ...
+
+
 @functional_wrapper("PadVariable")
+@script
 def pad_variable(
     x: torch.Tensor,
     lens: torch.Tensor,
@@ -1054,6 +1096,8 @@ class PadVariable(torch.nn.Module):
     ) -> torch.Tensor:
         return pad_variable(x, lens, pad, self.mode, self.value)
 
+    __call__ = proxy(forward)
+
 
 @functional_wrapper("RandomShift")
 @script
@@ -1194,6 +1238,8 @@ class RandomShift(torch.nn.Module):
         return random_shift(
             in_, in_lens, self.prop, self.mode, self.value, self.training
         )
+
+    __call__ = proxy(forward)
 
 
 @script
@@ -1695,3 +1741,5 @@ class SpecAugment(torch.nn.Module):
             return feats
         params = self.draw_parameters(feats, lengths)
         return self.apply_parameters(feats, params, lengths)
+
+    __call__ = proxy(forward)

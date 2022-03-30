@@ -19,6 +19,7 @@ from typing import Optional
 import torch
 
 from ._compat import broadcast_shapes, script, unflatten
+from ._wrappers import proxy
 
 
 class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
@@ -281,6 +282,8 @@ class DotProductSoftAttention(GlobalSoftAttention):
     def extra_repr(self) -> str:
         return super().extra_repr() + f", scale_factor={self.scale_factor}"
 
+    __call__ = proxy(GlobalSoftAttention.forward)
+
 
 class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
     r"""Dot product soft attention with a learned matrix in between
@@ -337,6 +340,8 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
         return (query * Wkey).sum(-1)
 
     reset_parameters = torch.jit.unused(torch.nn.Linear.reset_parameters)
+
+    __call__ = proxy(GlobalSoftAttention.forward)
 
 
 @script
@@ -431,6 +436,8 @@ class ConcatSoftAttention(GlobalSoftAttention):
 
     def extra_repr(self) -> str:
         return super().extra_repr() + f", hidden_size={self.v.size(0)}"
+
+    __call__ = proxy(GlobalSoftAttention.forward)
 
 
 class MultiHeadedAttention(GlobalSoftAttention):
@@ -654,3 +661,5 @@ class MultiHeadedAttention(GlobalSoftAttention):
             self.value_size, self.out_size, self.num_heads
         )
         return s
+
+    __call__ = proxy(GlobalSoftAttention.forward)

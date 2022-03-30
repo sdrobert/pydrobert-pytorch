@@ -14,11 +14,12 @@
 
 import abc
 
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple, Union, overload
 
 import torch
 
 from ._compat import script
+from ._wrappers import proxy
 
 
 class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
@@ -197,6 +198,15 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
             log_probs_idx, prev = self.calc_idx_log_probs(hist, prev, idx)
             log_probs.append(log_probs_idx)
         return torch.stack(log_probs, 0)
+
+    @overload
+    def forward(
+        self,
+        hist: torch.Tensor,
+        prev: Dict[str, torch.Tensor] = dict(),
+        idx: Optional[Union[int, torch.Tensor]] = None,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
+        ...
 
     def forward(
         self,
@@ -866,3 +876,4 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             pointers = pointers.to(pointer_type)
         return logs, ids, pointers
 
+    __call__ = proxy(SequentialLanguageModel.forward)

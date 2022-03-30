@@ -15,7 +15,7 @@
 import abc
 import warnings
 
-from typing import Optional
+from typing import Optional, overload
 
 try:
     from typing import Literal
@@ -26,7 +26,7 @@ import torch
 
 from . import config
 from ._compat import script
-from ._wrappers import functional_wrapper
+from ._wrappers import functional_wrapper, proxy
 
 
 @script
@@ -915,6 +915,8 @@ class EditDistance(_StringMatching):
             self.warn,
         )
 
+    __call__ = proxy(forward)
+
 
 class PrefixEditDistances(_StringMatching):
 
@@ -1000,6 +1002,8 @@ class PrefixEditDistances(_StringMatching):
             self.warn,
         )
 
+    __call__ = proxy(forward)
+
 
 class ErrorRate(_StringMatching):
     __constants__ = [
@@ -1079,6 +1083,8 @@ class ErrorRate(_StringMatching):
             self.warn,
         )
 
+    __call__ = proxy(forward)
+
 
 class PrefixErrorRates(_StringMatching):
     __constants__ = [
@@ -1157,6 +1163,8 @@ class PrefixErrorRates(_StringMatching):
             self.exclude_last,
             self.warn,
         )
+
+    __call__ = proxy(forward)
 
 
 class OptimalCompletion(_StringMatching):
@@ -1271,6 +1279,27 @@ class OptimalCompletion(_StringMatching):
             self.exclude_last,
             self.warn,
         )
+
+    __call__ = proxy(forward)
+
+
+@overload
+def hard_optimal_completion_distillation_loss(
+    logits: torch.Tensor,
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    batch_first: bool = False,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    weight: Optional[torch.Tensor] = None,
+    reduction: Literal["mean", "sum", "none"] = "mean",
+    ignore_index: int = -2,
+    warn: bool = True,
+) -> torch.Tensor:
+    ...
 
 
 @functional_wrapper("HardOptimalCompletionDistillationLoss")
@@ -1458,6 +1487,27 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
             self.ignore_index,
             warn,
         )
+
+    __call__ = proxy(forward)
+
+
+@overload
+def minimum_error_rate_loss(
+    log_probs: torch.Tensor,
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    sub_avg: bool = True,
+    batch_first: bool = False,
+    norm: bool = True,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    reduction: Literal["mean", "sum", "none"] = "mean",
+    warn: bool = True,
+) -> torch.Tensor:
+    ...
 
 
 @functional_wrapper("MinimumErrorRateLoss")
@@ -1702,3 +1752,5 @@ class MinimumErrorRateLoss(torch.nn.Module):
             self.reduction,
             warn,
         )
+
+    __call__ = proxy(forward)
