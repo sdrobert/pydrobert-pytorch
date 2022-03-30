@@ -396,8 +396,8 @@ def test_polyharmonic_interpolation_linear(device):
 @pytest.mark.parametrize("order", [1, 2, 3])
 def test_polyharmonic_interpolation_equal_on_knots(order, device):
     N, T, in_, out = 10, 11, 12, 13
-    x = torch.rand(N, T, in_, device=device) * 2
-    y = torch.rand(N, T, out, device=device) * 10.0 + 10
+    x = torch.rand(N, T, in_, device=device)
+    y = torch.rand(N, T, out, device=device)
     act = PolyharmonicSpline(order)(x, y, x)
     # the high tolerance seems a numerical stability issue caused by polynomials in
     # the RBF

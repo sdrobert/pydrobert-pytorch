@@ -23,7 +23,7 @@
 
 import math
 
-from typing import Any, Optional, Tuple, TYPE_CHECKING, Union, overload
+from typing import Any, Optional, Tuple, Union, overload
 
 try:
     from typing import Literal

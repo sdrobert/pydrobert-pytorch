@@ -22,17 +22,17 @@ environment:
 
 stack: python %PYTHON%
 
-# branches:
-#   except:
-#     - /docs/
+branches:
+  except:
+    - /docs/
 
-# for:
-#   -
-#     matrix:
-#       only:
-#         - PYTHON: "3.7"
-#         - PYTHON: "3.8"
-#     skip_non_tags: true
+for:
+  -
+    matrix:
+      only:
+        - PYTHON: "3.7"
+        - PYTHON: "3.8"
+    skip_non_tags: true
 
 build: off
 
