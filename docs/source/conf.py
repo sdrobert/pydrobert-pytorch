@@ -62,9 +62,8 @@ autodoc_inherit_docstrings = False
 napoleon_preprocess_types = True
 # napoleon_use_param = True
 typehints_document_rtype = False
+# typehints_defaults = "comma"  # when this works consistently, uncomment!
 napoleon_use_rtype = False
-
-highlight_language = "none"
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
@@ -95,10 +94,11 @@ else:
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ["_static"]
 
+highlight_language = "none"
+
 master_doc = "index"
 
 # this is a hack until param issue #197 is resolved
-# param.parameterized.docstring_signature = False
 ipython_colours = {
     (param.ipython.red % " ").split()[0],
     (param.ipython.green % " ").split()[0],
