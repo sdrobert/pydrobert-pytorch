@@ -6,6 +6,7 @@
    :caption: Contents:
 
    advanced_attention
+   cli
    lm
    modules
    references

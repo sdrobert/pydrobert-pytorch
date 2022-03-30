@@ -64,6 +64,8 @@ napoleon_preprocess_types = True
 typehints_document_rtype = False
 napoleon_use_rtype = False
 
+highlight_language = "none"
+
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
 
@@ -92,8 +94,6 @@ else:
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ["_static"]
-
-highlight_language = "default"
 
 master_doc = "index"
 
