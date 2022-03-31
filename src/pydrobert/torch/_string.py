@@ -15,13 +15,18 @@
 import abc
 import warnings
 
-from typing import Optional
+from typing import Optional, overload
+
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
 
 import torch
 
 from . import config
 from ._compat import script
-from ._wrappers import functional_wrapper
+from ._wrappers import functional_wrapper, proxy
 
 
 @script
@@ -703,50 +708,55 @@ def _string_matching(
     return er
 
 
-_SM_ARGS = """\
-`ref` is a long tensor of shape ``(max_ref_steps, batch_size)`` such that the
-``n``-th reference (gold-standard) token sequence is stored in ``ref[:, n]``. `hyp`
-is a long tensor of shape ``(max_hyp_steps, batch_size)`` containing the hypothesis
-(machine-generated) sequences."""
-
 _SM_PARAM_DICT = {
+    "ref": """\
+ref : torch.Tensor
+        A long tensor of shape ``(R, N)`` where ``R`` is the reference sequence
+        dimension and ``N`` is the batch dimension. Stores the reference (gold-standard)
+        sequences.
+    """,
+    "hyp": """\
+hyp : torch.Tensor
+        A long tensor of shape ``(H, N)`` where ``H`` is the hypothesis sequence
+        dimension. Stores the hypothesis (machine-generated) sequences.
+    """,
     "eos": """\
-    eos : int or None, optional
+eos
         A special token in `ref` and `hyp` whose first occurrence in each batch
         indicates the end of a transcript. This allows for variable-length transcripts
         in the batch.
     """,
     "include_eos": """\
-    include_eos : bool, optional
+include_eos
         Whether to include the first instance of `eos` found in both `ref` and `hyp` as
         valid tokens to be computed as part of the rate. This is useful when gauging
         if a model is learning to emit the `eos` properly, but is not usually included
         in an evaluation. Only the first `eos` per transcript is included.
     """,
     "norm": """\
-    norm : bool, optional
+norm
         If :obj:`True`, will normalize the distance by the number of tokens in the
-        reference sequence (making the returned value a divergence)
+        reference sequence (making the returned value a divergence).
     """,
     "batch_first": """\
-    batch_first : bool, optional
+batch_first
         If :obj:`True`, the first two dimensions of `ref`, `hyp`, and the return value
         are transposed from those above.
     """,
     "ins_cost": """\
-    ins_cost : float, optional
-        The cost of an adding an extra token to a sequence in `ref`
+ins_cost
+        The cost of an adding an extra token to a sequence in `ref`.
     """,
     "del_cost": """\
-    del_cost : float, optional
-        The cost of removing a token from a sequence in `ref`
+del_cost
+        The cost of removing a token from a sequence in `ref`.
     """,
     "sub_cost": """\
-    sub_cost : float, optional
-        The cost of swapping a token from `ref` with one from `hyp`
+sub_cost
+        The cost of swapping a token from `ref` with one from `hyp`.
     """,
     "warn": """\
-    warn : bool, optional
+warn : bool, optional
         Whether to display warnings on irregularities. Currently, this can happen in
         three ways:
 
@@ -756,18 +766,38 @@ _SM_PARAM_DICT = {
         2. If :obj:`True` and `norm` is :obj:`True`, will warn when a reference
            transcription has zero length
         3. If `eos` is set and `include_eos` is :obj:`True`, will warn when a transcript
-           does not include an `eos` symbol
+           does not include an `eos` symbol.
     """,
     "padding": """\
-    padding : int, optional
+padding
         The value to right-pad unequal-length sequences with. Defauls to
         :obj:`pydrobert.torch.config.INDEX_PAD_VALUE`.
     """,
     "exclude_last": """\
-    exclude_last : bool, optional
+exclude_last
         If true, will exclude the final prefix, consisting of the entire transcript,
-        from the return value. It will be of shape ``(max_hyp_steps, batch_size,
-        max_unique_next)``
+        from the return value. It will be of shape ``(H, N, U)``
+    """,
+    "reduction": """\
+reduction
+        Specifies the reduction to be applied to the output. ``'none'``: no
+        reduction will be applied. ``'sum'``: the output will be summed. ``'mean'``:
+        the output will be averaged.
+    """,
+    "ignore_index": """\
+ignore_index
+        Specify a target value that is ignored and does not contribute to the input
+        gradient. Should not be set to `eos` when `include_eos` is :obj:`True`.
+    """,
+    "weight": """\
+weight
+        A tensor of shape ``(V,)`` specifying the rescaling weight to assign to each
+        class. If unset, no rescaling is performed.
+    """,
+    "sub_avg": """\
+sub_avg
+        Whether to subtract the average error rate from each pathwise error
+        rate.
     """,
 }
 
@@ -843,23 +873,25 @@ class EditDistance(_StringMatching):
 
     __doc__ = f"""Compute an edit distance over a batch of references and hypotheses
 
-    An `Edit Distance <https://en.wikipedia.org/wiki/Edit_distance>`__ quantifies
-    how dissimilar two token sequences are as the total cost of transforming a
-    reference sequence into a hypothesis sequence. There are three operations that can
-    be performed, each with an associated cost: adding an extra token to the reference,
+    An `Edit Distance <https://en.wikipedia.org/wiki/Edit_distance>`__ quantifies how
+    dissimilar two token sequences are as the total cost of transforming a reference
+    sequence into a hypothesis sequence. There are three operations that can be
+    performed, each with an associated cost: adding an extra token to the reference,
     removing a token from the reference, or swapping a token in the reference with a
     token in the hypothesis.
-
-    When instantiated, this module has the signature::
-
-        ed = edit_distance(ref, hyp)
-
-    {_SM_ARGS}  The return value `ed` is a tensor of shape ``(batch_size,)`` storing the
-    associated edit distances.
 
     Parameters
     ----------
     {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+
+    Call Parameters
+    ---------------
+    {"".join(_SM_PARAM_DICT[c] for c in ('ref', 'hyp'))}
+
+    Returns
+    -------
+    ed : torch.Tensor
+        A tensor of shape ``(N,)`` of the edit distances.
 
     Notes
     -----
@@ -882,6 +914,8 @@ class EditDistance(_StringMatching):
             self.sub_cost,
             self.warn,
         )
+
+    __call__ = proxy(forward)
 
 
 class PrefixEditDistances(_StringMatching):
@@ -925,13 +959,19 @@ class PrefixEditDistances(_StringMatching):
 
     __doc__ = f"""Compute the edit distance between ref and each prefix of hyp
 
-    When instantiated, this module has the signature::
+    Parameters
+    ----------
+    {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
 
-        prefix_eds = prefix_edit_distances(ref, hyp)
-    
-    {_SM_ARGS} The return value `prefix_eds` is of shape ``(max_hyp_steps + 1,
-    batch_size)`` and contains the edit distances for each prefix of each hypothesis,
-    starting from the empty prefix.
+    Call Parameters
+    ---------------
+    {"".join(_SM_PARAM_DICT[c] for c in ('ref', 'hyp'))}
+
+    Returns
+    -------
+    prefix_eds : torch.Tensor
+        A tensor of shape ``(H + 1, N)`` of the edit distances for each prefix of each
+        hypothesis, starting from the empty prefix.
 
     Parameters
     ----------
@@ -961,6 +1001,8 @@ class PrefixEditDistances(_StringMatching):
             self.exclude_last,
             self.warn,
         )
+
+    __call__ = proxy(forward)
 
 
 class ErrorRate(_StringMatching):
@@ -1001,30 +1043,30 @@ class ErrorRate(_StringMatching):
     on the `Levenshtein distance <https://en.wikipedia.org/wiki/Levenshtein_distance>`__
     for more information.
 
-    When instantiated, this module has the signature::
-
-        er = error_rate(ref, hyp)
-
-    {_SM_ARGS} The return value `er` is a tensor of shape ``(batch_size,)`` storing the
-    associated error rates. `er` will not have a gradient, and is thus not directly
-    suited to being a loss function.
-
     Parameters
     ----------
     {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
 
+    Call Parameters
+    ---------------
+    {"".join(_SM_PARAM_DICT[c] for c in ('ref', 'hyp'))}
+
+    Returns
+    -------
+    ed : torch.Tensor
+        A tensor of shape ``(N,)`` of the error rates.
+
     Warnings
     --------
-    Up to and including `v0.3.0`, :func:`error_rate` computed a normalized
-    `Edit distance <https://en.wikipedia.org/wiki/Edit_distance>`__ instead of an error
-    rate. The latter can be considered the total weighted cost of insertions, deletions,
-    and substitutions (as per `ins_cost`, `del_cost`, and `sub_cost`), whereas the
-    former is the sum of the number of mistakes. The old behaviour of returning the cost
-    is now in :func:`edit_distance` and :class:`EditDistance` (though `norm` is
-    :obj:`False` by default). For speech recognition evaluation, this module or
-    :func:`error_rate` is the one to use. However, if you are using the default costs,
-    ``ins_cost == del_cost == sub_cost == 1``, there should be no numerical difference
-    between the two.
+    Up to and including `v0.3.0`, :func:`error_rate` computed a normalized `Edit
+    distance <https://en.wikipedia.org/wiki/Edit_distance>`__ instead of an error rate.
+    The latter can be considered the total weighted cost of insertions, deletions, and
+    substitutions (as per `ins_cost`, `del_cost`, and `sub_cost`), whereas the former is
+    the sum of the number of mistakes. The old behaviour of returning the cost is now in
+    :func:`edit_distance` and :class:`EditDistance` (though `norm` is :obj:`False` by
+    default). For speech recognition evaluation, this module or :func:`error_rate` is
+    the one to use. However, if you are using the default costs, ``ins_cost == del_cost
+    == sub_cost == 1``, there should be no numerical difference between the two.
     """
 
     def forward(self, ref: torch.Tensor, hyp: torch.Tensor) -> torch.Tensor:
@@ -1040,6 +1082,8 @@ class ErrorRate(_StringMatching):
             self.sub_cost,
             self.warn,
         )
+
+    __call__ = proxy(forward)
 
 
 class PrefixErrorRates(_StringMatching):
@@ -1082,17 +1126,19 @@ class PrefixErrorRates(_StringMatching):
 
     __doc__ = f"""Compute the error rate between ref and each prefix of hyp
 
-    When instantiated, this module has the signature::
-
-        prefix_ers = prefix_error_rates(ref, hyp)
-    
-    {_SM_ARGS} The return value `prefix_ers` is of shape ``(max_hyp_steps + 1,
-    batch_size)`` and contains the error rates for each prefix of each hypothesis,
-    starting from the empty prefix.
-
     Parameters
     ----------
     {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+
+    Call Parameters
+    ---------------
+    {"".join(_SM_PARAM_DICT[c] for c in ('ref', 'hyp'))}
+
+    Returns
+    -------
+    prefix_ers : torch.Tensor
+        A tensor of shape ``(H + 1, N)`` containing the error rates for each prefix of
+        each hypothesis, starting from the empty prefix.
 
     Warnings
     --------
@@ -1117,6 +1163,8 @@ class PrefixErrorRates(_StringMatching):
             self.exclude_last,
             self.warn,
         )
+
+    __call__ = proxy(forward)
 
 
 class OptimalCompletion(_StringMatching):
@@ -1155,19 +1203,21 @@ class OptimalCompletion(_StringMatching):
 
     __doc__ = f"""Return a mask of next tokens of a minimum edit distance prefix
     
-    When instantiated, this module has the signature::
-
-        optimals = optimal_completion(ref, hyp)
-    
-    {_SM_ARGS} The return value `optimals` is a long tensor of shape ``(max_hyp_steps +
-    1, batch_size, max_unique_next)``, where ``max_unique_next <= max_ref_steps``, of
-    the unique tokens that could be added to the hypothesis prefix ``hyp[:prefix_len,
-    batch]`` such that some remaining suffix concatenated to the prefix would result in
-    a minimal edit distance. See below for an example.
-
     Parameters
     ----------
     {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+
+    Call Parameters
+    ---------------
+    {"".join(_SM_PARAM_DICT[c] for c in ('ref', 'hyp'))}
+
+    Returns
+    -------
+    optimals : torch.Tensor
+        A long tensor of shape ``(H + 1, N, U)`` where ``U <= R`` of the unique tokens
+        that could be added to each prefix of the hypothesis such that some remaining
+        suffix concatenated to the prefix would result in a minimal edit distance. See
+        below for an example.
 
     Examples
     --------
@@ -1229,6 +1279,27 @@ class OptimalCompletion(_StringMatching):
             self.exclude_last,
             self.warn,
         )
+
+    __call__ = proxy(forward)
+
+
+@overload
+def hard_optimal_completion_distillation_loss(
+    logits: torch.Tensor,
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    batch_first: bool = False,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    weight: Optional[torch.Tensor] = None,
+    reduction: Literal["mean", "sum", "none"] = "mean",
+    ignore_index: int = -2,
+    warn: bool = True,
+) -> torch.Tensor:
+    ...
 
 
 @functional_wrapper("HardOptimalCompletionDistillationLoss")
@@ -1298,7 +1369,18 @@ def hard_optimal_completion_distillation_loss(
 
 
 class HardOptimalCompletionDistillationLoss(torch.nn.Module):
-    r"""A categorical loss function over optimal next tokens
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "batch_first",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "reduction",
+        "ignore_index",
+    ]
+
+    __doc__ = f"""A categorical loss function over optimal next tokens
 
     Optimal Completion Distillation (OCD) [sabour2018]_ tries to minimize the train/test
     discrepancy in transcriptions by allowing seq2seq models to generate whatever
@@ -1311,51 +1393,35 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
 
     .. math::
 
-        loss(logits_t) = \frac{-\log Pr(s_t|logits_t)}{|S_t|}
+        loss(logits_h) = \\frac{{-\\log Pr(s_h|logits_t)}}{{|S_h|}}
 
-    Where :math:`s_t \in S_t` are tokens from the set of optimal next tokens given
-    :math:`hyp_{\leq t}` and `ref`. The loss is decoupled from an exact prefix of `ref`,
-    meaning that `hyp` can be longer or shorter than `ref`.
-
-    When called, this loss function has the signature::
-
-        loss(logits, ref, hyp)
-
-    `hyp` is a long tensor of shape ``(max_hyp_steps, batch_size)`` if `batch_first` is
-    :obj:`False`, otherwise ``(batch_size, max_hyp_steps)`` that provides the hypothesis
-    transcriptions. Likewise, `ref` of shape ``(max_ref_steps, batch_size)`` or
-    ``(batch_size, max_ref_steps)`` providing reference transcriptions. `logits` is a
-    3-dimensional tensor of shape ``(max_hyp_steps, batch_size, num_classes)`` if
-    `batch_first` is :obj:`False`, ``(batch_size, max_hyp_steps, num_classes)``
-    otherwise. A softmax over the step dimension defines the per-step distribution over
-    class labels.
+    Where :math:`s_h \\in S_h` are tokens from the set of optimal next tokens given
+    :math:`hyp_{{\\leq h}}` and `ref`. The loss is decoupled from an exact prefix of
+    `ref`, meaning that `hyp` can be longer or shorter than `ref`.
 
     Parameters
     ----------
-    eos : int or None, optional
-        A special token in `ref` and `hyp` whose first occurrence in each
-        batch indicates the end of a transcript
-    include_eos : bool, optional
-        Whether to include the first instance of `eos` found in both `ref` and
-        `hyp` as valid tokens to be computed as part of the distance. `eos`
-        must be a valid class index if `include_eos` is :obj:`True`
-    batch_first : bool, optional
-        Whether the batch dimension comes first, or the step dimension
-    ins_cost : float, optional
-        The cost of an adding a superfluous token to a transcript in `hyp`
-    del_cost : float, optional
-        The cost of missing a token from `ref`
-    sub_cost : float, optional
-        The cost of swapping a token from `ref` with one from `hyp`
-    weight : torch.Tensor or None, optional
-        A float tensor of manual rescaling weight given to each class
-    reduction : {'mean', 'none', 'sum'}, optional
-        Specifies the reduction to be applied to the output. 'none': no
-        reduction will be applied. 'sum': the output will be summed. 'mean':
-        the output will be averaged.
-    ignore_index : int, optional
-        Specify a target value that is ignored and does not contribute to the input
-        gradient. Should not be set to `eos` when `include_eos` is :obj:`True`.
+    {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+    
+    Call Parameters
+    ---------------
+    logits : torch.Tensor
+        A tensor of shape ``(H, N, V)`` where ``H`` is the hypothesis sequence
+        dimension, ``N`` is the batch dimension, and ``V`` is the vocabulary size.
+        Stores the unnormalized log-probabilities over the next token of each prefix
+        (except the last) within `hyp`.
+    ref : torch.Tensor
+        A long tensor of shape ``(R, N)`` where ``R`` is the reference sequence
+        dimension. Stores the reference (gold-standard) sequences.
+    hyp : torch.Tensor
+        A long tensor of shape ``(H, N)``. Stores the hypothesis (machine-generated)
+        sequences.
+    
+    Returns
+    -------
+    loss : torch.Tensor
+        The loss. If `reduction` is ``'sum'`` or ``'mean'``, it is a scalar value.
+        Otherwise of shape ``(H, N)``.
 
     See Also
     --------
@@ -1366,17 +1432,6 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         model producing `logits` is auto-regressive. Also provides an example
         of sampling non-auto-regressive models
     """
-
-    __constants__ = [
-        "eos",
-        "include_eos",
-        "batch_first",
-        "ins_cost",
-        "del_cost",
-        "sub_cost",
-        "reduction",
-        "ignore_index",
-    ]
 
     eos: Optional[int]
     include_eos: bool
@@ -1396,7 +1451,7 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         del_cost: float = 1.0,
         sub_cost: float = 1.0,
         weight: Optional[torch.Tensor] = None,
-        reduction: str = "mean",
+        reduction: Literal["mean", "sum", "none"] = "mean",
         ignore_index: int = -100,
     ):
         super().__init__()
@@ -1432,6 +1487,27 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
             self.ignore_index,
             warn,
         )
+
+    __call__ = proxy(forward)
+
+
+@overload
+def minimum_error_rate_loss(
+    log_probs: torch.Tensor,
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    sub_avg: bool = True,
+    batch_first: bool = False,
+    norm: bool = True,
+    ins_cost: float = 1.0,
+    del_cost: float = 1.0,
+    sub_cost: float = 1.0,
+    reduction: Literal["mean", "sum", "none"] = "mean",
+    warn: bool = True,
+) -> torch.Tensor:
+    ...
 
 
 @functional_wrapper("MinimumErrorRateLoss")
@@ -1510,92 +1586,75 @@ def minimum_error_rate_loss(
 
 
 class MinimumErrorRateLoss(torch.nn.Module):
-    r"""Error rate expectation normalized over some number of transcripts
 
-    Proposed in [prabhavalkar2018]_ though similar ideas had been explored
-    previously. Given a subset of all possible token sequences and their
-    associated probability mass over that population, this loss calculates the
-    probability mass normalized over the subset, then calculates the
-    expected error rate over that normalized distribution. That is, given some
-    sequences :math:`s \in S \subseteq P`, the loss for a given reference
-    transcription :math:`s^*` is
+    __constants__ = [
+        "eos",
+        "include_eos",
+        "sub_avg",
+        "batch_first",
+        "norm",
+        "ins_cost",
+        "del_cost",
+        "sub_cost",
+        "reduction",
+    ]
 
-    .. math::
+    __doc__ = f"""Error rate expectation normalized over some number of transcripts
 
-        \mathcal{L}(s, s^*) = \frac{Pr(s) ER(s, s^*)}{\sum_{s'} Pr(s')}
-
-    This is an exact expectation over :math:`S` but not over :math:`P`. The
-    larger the mass covered by :math:`S`, the closer the expectation is to the
-    population - especially so for an n-best list (though it would be biased).
-
-    This loss function has the following signature::
-
-        loss(log_probs, ref, hyp, warn=True)
-
-    `log_probs` is a tensor of shape ``(batch_size, samples)`` providing the log joint
-    probabilities of every path. `hyp` is a long tensor of shape ``(max_hyp_steps,
-    batch_size, samples)`` if `batch_first` is :obj:`False` otherwise ``(batch_size,
-    samples, max_hyp_steps)`` that provides the hypothesis transcriptions. `ref` is a 2-
-    or 3-dimensional tensor. If 2D, it is of shape ``(max_ref_steps, batch_size)`` (or
-    ``(batch_size, max_ref_steps)``). Alternatively, `ref` can be of shape
-    ``(max_ref_steps, batch_size, samples)`` or ``(batch_size, samples,
-    max_ref_steps)``.
-
-    If `ref` is 2D, the loss is calculated as
+    Proposed in [prabhavalkar2018]_ though similar ideas had been explored previously.
+    Given a subset of all possible token sequences and their associated probability mass
+    over that population, this loss calculates the probability mass normalized over the
+    subset, then calculates the expected error rate over that normalized distribution.
+    That is, given some sequences :math:`s \\in S \\subseteq P`, the loss for a given
+    reference transcription :math:`s^*` is
 
     .. math::
 
-        loss_{MER} = SoftMax(log\_probs)[ER(hyp_i, ref) - \mu_i]
+        \mathcal{{L}}(s, s^*) = \\frac{{Pr(s) ER(s, s^*)}}{{\\sum_{{s'}} Pr(s')}}
 
-    where :math:`\mu_i` is the average error rate along paths in the batch element
-    :math:`i`. :math:`mu_i` can be removed by setting `sub_avg` to :obj:`False`. Note
-    that each hypothesis is compared against the same reference as long as the batch
-    element remains the same
-
-    If `ref` is 3D, the loss is calculated as
-
-    .. math::
-
-        loss_{MER} = SoftMax(log\_probs)[ER(hyp_i, ref_i) - \mu_i]
-
-    In this version, each hypothesis is compared against a unique reference
+    This is an exact expectation over :math:`S` but not over :math:`P`. The larger the
+    mass covered by :math:`S`, the closer the expectation is to the population -
+    especially so for an n-best list (though it would be biased).
 
     Parameters
     ----------
-    eos : int, optional
-        A special token in `ref` and `hyp` whose first occurrence in each
-        batch indicates the end of a transcript
-    include_eos : bool, optional
-        Whether to include the first instance of `eos` found in both `ref` and
-        `hyp` as valid tokens to be computed as part of the distance.
-    sub_avg : bool, optional
-        Whether to subtract the average error rate from each pathwise error
-        rate
-    batch_first : bool, optional
-        Whether batch/path dimensions come first, or the step dimension
-    norm : bool, optional
-        If :obj:`False`, will use edit distances instead of error rates
-    ins_cost : float, optional
-        The cost of an adding a superfluous token to a transcript in `hyp`
-    del_cost : float, optional
-        The cost of missing a token from `ref`
-    sub_cost : float, optional
-        The cost of swapping a token from `ref` with one from `hyp`
-    reduction : {'mean', 'none', 'sum'}, optional
-        Specifies the reduction to be applied to the output. 'none': no
-        reduction will be applied. 'sum': the output will be summed. 'mean':
-        the output will be averaged.
+    {"".join(_SM_PARAM_DICT[c] for c in __constants__)}
+    
+    Call Parameters
+    ---------------
+    log_probs : torch.Tensor
+        A tensor of shape ``(N, M)`` where ``N`` is the batch size and ``M`` is the
+        number of samples providing the log joint probabilities of every sample path.
+    ref : torch.Tensor
+        A tensor of either of shape ``(R, N)`` or ``(R, N, M)`` where ``R`` is the
+        maximum reference length containing the reference (gold-standard)
+        transcriptions. Whether `ref` is 2D or 3D changes how the loss is calculated.
+    hyp : torch.Tensor
+        A long tensor of shape ``(H, N, M)`` where ``H`` is the maximum hypothesis size
+        containing the hypothesis (machine-generated) transcriptions.
+    {_SM_PARAM_DICT["warn"]}
 
-    Attributes
-    ----------
-    eos, ignore_index : int
-    include_eos, sub_avg, batch_first, norm : bool
-    ins_cost, del_cost, sub_cost : float
-    reduction : {'mean', 'none', 'sum'}
+    Returns
+    -------
+    loss : torch.Tensor
+        The loss. If `reduction` is ``'sum'`` or ``'mean'``, it is a scalar value.
+        Otherwise of shape ``(N,M)``. If `ref` is 2D, the loss for sample ``m`` of
+        batch element ``n`` is
+
+        .. math::
+
+            loss_{{n, m}} = SoftMax(log\\_probs)[ER(hyp_{{n, m}}, ref_n) - \\mu_n]
+        
+        where where :math:`\\mu_n` is the average error rate for the ``M`` hypotheses
+        in batch element ``n``. :math:`\\mu_n` is dropped if `sub_avg` is :obj:`True`.
+        If `ref` is 3D, each hypothesis is compared against a unique reference:
+
+        .. math::
+
+            loss_{{n, m}} = SoftMax(log\\_probs)[ER(hyp_{{n, m}}, ref_{{n,m}}) - \\mu_n]
 
     Notes
     -----
-
     A previous version of this module incorporated a Maximum Likelihood Estimate (MLE)
     into the loss as in [prabhavalkar2018]_, which required `logits` instead of
     `log_probs`. This was overly complicated, given the user can easily incorporate the
@@ -1604,7 +1663,6 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
     Examples
     --------
-
     Assume here that `logits` is the output of some neural network, and that `hyp` has
     somehow been produced from that (e.g. a beam search or random walk). We combine this
     loss function with a cross-entropy/MLE term to sort-of recreate [prabhavalkar2018]_.
@@ -1640,18 +1698,6 @@ class MinimumErrorRateLoss(torch.nn.Module):
         For converting token log probs (or logits) to sequence log probs
     """
 
-    __constants__ = [
-        "eos",
-        "include_eos",
-        "sub_avg",
-        "batch_first",
-        "norm",
-        "ins_cost",
-        "del_cost",
-        "sub_cost",
-        "reduction",
-    ]
-
     eos: Optional[int]
     include_eos: bool
     sub_avg: bool
@@ -1671,7 +1717,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
         ins_cost: float = 1.0,
         del_cost: float = 1.0,
         sub_cost: float = 1.0,
-        reduction: str = "mean",
+        reduction: Literal["mean", "none", "sum"] = "mean",
     ):
         super().__init__()
         self.eos = eos
@@ -1706,3 +1752,5 @@ class MinimumErrorRateLoss(torch.nn.Module):
             self.reduction,
             warn,
         )
+
+    __call__ = proxy(forward)

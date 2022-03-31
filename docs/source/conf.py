@@ -20,12 +20,10 @@ param.parameterized.docstring_describe_params = False
 sys.path.insert(0, os.path.abspath("../../src"))
 
 
-autodoc_mock_imports = ["numpy", "torch", "pydrobert.torch._compat"]
-
 # -- Project information -----------------------------------------------------
 
 project = "pydrobert-pytorch"
-copyright = "2021, Sean Robertson"
+copyright = "2022, Sean Robertson"
 author = "Sean Robertson"
 
 language = "en"
@@ -36,15 +34,36 @@ language = "en"
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    "myst_parser",
     "sphinx.ext.autodoc",
-    "sphinx.ext.napoleon",
     "sphinx.ext.autosectionlabel",
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
-    "myst_parser",
+    "sphinx.ext.napoleon",
+    "sphinx_autodoc_typehints",
 ]
 
-naploeon_numpy_docstring = True
+napoleon_numpy_docstring = True
+napoleon_google_docstring = False
+napoleon_include_init_with_doc = True
+napoleon_custom_sections = {
+    ("Call Parameters", "params_style"),
+    ("Variables", "params_style"),
+}
+autodoc_mock_imports = ["numpy", "torch"]
+# autodoc_member_order = "bysource"
+# autodoc_type_aliases = napoleon_type_aliases = {
+#     "pydrobert.torch._mc.MonteCarloEstimator": "pydrobert.torch.estimators.MonteCarloEstimator",
+#     "pydrobert.torch._straight_through.Density": "pydrobert.torch.distributions.Density",
+# }
+autodoc_typehints = "none"
+autodoc_inherit_docstrings = False
+# autodoc_preserve_defaults = True
+napoleon_preprocess_types = True
+# napoleon_use_param = True
+typehints_document_rtype = False
+# typehints_defaults = "comma"  # when this works consistently, uncomment!
+napoleon_use_rtype = False
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
@@ -64,23 +83,22 @@ intersphinx_mapping = {
 
 # -- Options for HTML output -------------------------------------------------
 
-on_rtd = os.environ.get("READTHEDOCS") == "True"
-if on_rtd:
-    html_theme = "default"
-else:
-    html_theme = "sphinx_rtd_theme"
+# on_rtd = os.environ.get("READTHEDOCS") == "True"
+# if on_rtd:
+#     html_theme = "default"
+# else:
+html_theme = "sphinx_rtd_theme"
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ["_static"]
 
-highlight_language = "default"
+highlight_language = "none"
 
 master_doc = "index"
 
 # this is a hack until param issue #197 is resolved
-# param.parameterized.docstring_signature = False
 ipython_colours = {
     (param.ipython.red % " ").split()[0],
     (param.ipython.green % " ").split()[0],
@@ -90,7 +108,7 @@ ipython_colours = {
 }
 
 
-def my_handler(app, what, name, obj, options, lines):
+def docstring_handler(app, what, name, obj, options, lines):
     if "Params" in name.split(".")[-1]:
         pdict = obj.param.objects(instance=False)
         del pdict["name"]
@@ -116,5 +134,12 @@ def my_handler(app, what, name, obj, options, lines):
         options["undoc-members"] = False
 
 
+# def preprocess_signature(app, obj, bound_method):
+#     import inspect
+
+#     print(obj, inspect.signature(obj))
+
+
 def setup(app):
-    app.connect("autodoc-process-docstring", my_handler)
+    # app.connect("autodoc-before-process-signature", preprocess_signature)
+    app.connect("autodoc-process-docstring", docstring_handler)

@@ -2,6 +2,9 @@
 
 ## HEAD
 
+- Docstrings updated to hopefully be clearer. Use "Call Parameters" and
+  "Returns" sections for pytorch modules.
+- readthedocs updated.
 - Fixed up formatting of CLI help documentation.
 - Data sets can now initialize some of their parameters with the values in
   their associated param containers. For example, `sos` and `eos` are now

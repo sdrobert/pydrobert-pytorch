@@ -23,12 +23,17 @@
 
 import math
 
-from typing import Any, Optional, Tuple, TYPE_CHECKING, Union
+from typing import Any, Optional, Tuple, Union, overload
+
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
 
 import torch
 
 from ._compat import meshgrid, script, linalg_solve
-from ._wrappers import functional_wrapper
+from ._wrappers import functional_wrapper, proxy
 
 
 @script
@@ -157,34 +162,38 @@ class PolyharmonicSpline(torch.nn.Module):
     <https://en.wikipedia.org/wiki/Polyharmonic_spline>`__. For technical details,
     consult the TF documentation.
 
-    The call signature of this module, once instantiated, is::
-
-        query_values = polyharmonic_spline(
-            train_points, train_values, query_points, query_values
-        )
-    
-    `train_points` is tensor of shape ``(N, T, I)`` representing the training
-    points/knots for ``N`` different functions. ``N`` is the batch dimension, ``T`` is
-    the number of training points, and ``I`` is the size of the vector input to ``f``.
-    `train_values` is a float tensor of shape ``(N, T, O)`` of ``f`` evaluated on
-    `train_points`. ``O`` is the size of the output vector of ``f``. `query_points` is
-    a tensor of shape ``(N, Q, I)`` representing the points you wish to have
-    estimates for. ``Q`` is the number of such points. `query_values` is a tensor of
-    shape ``(N, Q, O)`` consisting of the values estimated by the spline
-
     Parameters
     ----------
-    order : int
+    order
         Order of the spline (> 0). 1 = linear. 2 = thin plate spline.
-    regularization_weight : float, optional
+    regularization_weight
         Weight placed on the regularization term. See TF for more info.
-    full_matrix : bool, optional
+    full_matrix
         Whether to solve linear equations via a full concatenated matrix or a block
         decomposition. Setting to :obj:`True` better matches TF and appears to slightly
         improve numerical accuracy at the cost of twice the run time and more memory
         usage.
+    
+    Call Parameters
+    ---------------
+    train_points : torch.Tensor
+        A tensor of shape ``(N, T, I)`` representing the training points/knots for ``N``
+        different functions. ``N`` is the batch dimension, ``T`` is the number of
+        training points, and ``I`` is the size of the vector input to ``f``.
+    train_values : torch.Tensor
+        A tensor of shape ``(N, T, O)`` of ``f`` evaluated on `train_points`. ``O`` is
+        the size of the output vector of ``f``.
+    query_points : torch.Tensor
+        A tensor of shape ``(N, Q, I)`` representing the points you wish to have
+        estimates for.
+    
+    Returns
+    -------
+    query_values : torch.Tensor
+        A tensor of shape ``(N, Q, O)`` consisting of the values estimated for
+        `query_points`.
 
-    Throws
+    Raises
     ------
     RuntimeError
         This module can return a :class`RuntimeError` when no unique spline can be
@@ -222,6 +231,8 @@ class PolyharmonicSpline(torch.nn.Module):
             self.regularization_weight,
             self.full_matrix,
         )
+
+    __call__ = proxy(forward)
 
 
 @script
@@ -289,30 +300,35 @@ def warp_1d_grid(
 class Warp1DGrid(torch.nn.Module):
     """Interpolate grid values for a dimension of a grid_sample
 
-    This module determines a grid along a single dimension of a signal,
-    image, volume, whatever. 
-
-    When instantiated, this method has the signature::
-
-        grid = warp_1d_grid(src, flow, lengths)
-    
-    `src` is a tensor of shape ``(N,)`` containing source points. `flow` is
-    a tensor of shape ``(N,)`` containing corresponding flow fields for `src`.
-    `lengths` is a long tensor of shape ``(N,)`` specifying the number of
-    valid indices along the dimension in question. The return value is a tensor
-    `grid` of shape ``(N, max_length)`` which provides coodinates for one
-    dimension of the grid passed to :func:`torch.nn.functional.grid_sample`.
-    See the example below.
+    This module determines a grid along a single dimension of a signal, image, volume,
+    whatever. 
 
     Parameters
     ----------
-    max_length : int or `None`, optional
+    max_length
         A maximum length to which the grid will be padded. If unspecified, it will be
         taken to be ``lengths.max().ceil()``. If `grid` is being plugged in to
         :func:`grid_sample`, ensure `max_length` matches the size of the dimension of
         the image being warped.
-    interpolation_order : int, optional
+    interpolation_order
         The degree of the spline used ot interpolate the grid.
+    
+    Call Parameters
+    ---------------
+    src : torch.Tensor
+        A tensor of shape ``(N,)`` containing the source points.
+    flow : torch.Tensor
+        A tensor of shape ``(N,)`` contianing the corresponding flow fields for `src`.
+    lengths : torch.Tensor
+        A tensor of shape ``(N,)`` specifying the number of valid indices along the
+        dimension in question.
+    
+    Returns
+    -------
+    grid : torch.Tensor
+        A tensor of shape ``(N, max_length)`` which provides coodinates for one
+        dimension of the grid passed to :func:`torch.nn.functional.grid_sample`. See the
+        example below.
 
     Notes
     -----
@@ -352,6 +368,17 @@ class Warp1DGrid(torch.nn.Module):
         return warp_1d_grid(
             src, flow, lengths, self.max_length, self.interpolation_order
         )
+
+
+@overload
+def dense_image_warp(
+    image: torch.Tensor,
+    flow: torch.Tensor,
+    indexing: str = "hw",
+    mode: Literal["bilinear", "nearest"] = "bilinear",
+    padding_mode: Literal["border", "zeros", "reflection"] = "border",
+) -> torch.Tensor:
+    ...
 
 
 @functional_wrapper("DenseImageWarp")
@@ -406,45 +433,49 @@ def dense_image_warp(
 class DenseImageWarp(torch.nn.Module):
     """Warp an input image with per-pixel flow vectors
 
-    Once initialized, this module is called with the signature::
-
-        warped = dense_image_warp(image, flow)
-
-    `image` is a float tensor of shape ``(N, C, H, W)``, where ``N`` is the batch
-    dimension, ``C`` is the channel dimension, ``H`` is the height dimension, and ``W``
-    is the width dimension. `flow` is a float tensor of shape ``(N, H, W, 2)``.
-    It returns a new image `warped` of shape ``(N, C, H, W)`` such that
-
-    ::
-        warped[n, c, h, w] = image[n, c, h - flow[n, h, w, 0], w - flow[n, h, w, 1]]
-
-    If the reference indices ``h - ...`` and ``w - ...`` are not integers, the value is
-    interpolated from the neighboring pixel values.
-
     This reproduces the functionality of Tensorflow's `dense_image_warp
     <https://www.tensorflow.org/addons/api_docs/python/tfa/image/dense_image_warp>`__,
     except `image` is in ``NCHW`` order instead of ``NHWC`` order. It wraps
-    `torch.nn.functional.grid_sample`.
-
-    Warning
-    -------
-    `flow` is not an optical flow. Please consult the TF documentation for more details.
+    :func:`torch.nn.functional.grid_sample`.
 
     Parameters
     ----------
-    indexing : {'hw', 'wh'}, optional
+    indexing
         If `indexing` is ``"hw"``, ``flow[..., 0] = h``, the height index, and
         ``flow[..., 1] = w`` is the width index. If ``"wh"``, ``flow[..., 0] = w``
         and ``flow[..., 1] = h``. The default in TF is ``"hw"``, whereas torch's
         `grid_sample` is ``"wh"``
-    mode : {'bilinear', 'nearest'}, optional
+    mode
         The method of interpolation. Either use bilinear interpolation or the nearest
         pixel value. The TF default is ``"bilinear"``
-    padding_mode : {"border", "zeros", "reflection"}
+    padding_mode
         Controls how points outside of the image boundaries are interpreted.
-        ``"border"``: copy points at around the border of the image. ``"zero"``:
-        use zero-valued pixels. ``"reflection"``: reflect pixels into the image starting
+        ``"border"``: copy points at around the border of the image. ``"zero"``: use
+        zero-valued pixels. ``"reflection"``: reflect pixels into the image starting
         from the boundaries.
+    
+    Call Parameters
+    ---------------
+    image : torch.Tensor
+        A tensor of shape ``(N, C, H, W)`` where ``N`` is the batch dimension, ``C`` is
+        the channel dimension, ``H`` is the height dimension, and ``W`` is the width
+        dimension.
+    flow : torch.Tensor
+        A ftensor of shape ``(N, H, W, 2)``.
+    
+    Returns
+    -------
+    warped : torch.Tensor
+        A warped `image` of shape ``(N, C, H, W)`` such that::
+
+            warped[n, c, h, w] = image[n, c, h - flow[n, h, w, 0], w - flow[n, h, w, 1]]
+        
+        If the reference indices ``h - ...`` and ``w - ...`` are not integers, the value
+        is interpolated from the neighboring pixel values.
+
+    Warning
+    -------
+    `flow` is not an optical flow. Please consult the TF documentation for more details.
     """
 
     __constants__ = ["indexing", "mode", "padding_mode"]
@@ -455,9 +486,9 @@ class DenseImageWarp(torch.nn.Module):
 
     def __init__(
         self,
-        indexing: str = "hw",
-        mode: str = "bilinear",
-        padding_mode: str = "border",
+        indexing: Literal["hw", "wh"] = "hw",
+        mode: Literal["bilinear", "nearest"] = "bilinear",
+        padding_mode: Literal["border", "zeros", "reflection"] = "border",
     ):
         super().__init__()
         if indexing not in {"hw", "wh"}:
@@ -479,6 +510,8 @@ class DenseImageWarp(torch.nn.Module):
         return dense_image_warp(
             image, flow, self.indexing, self.mode, self.padding_mode
         )
+
+    __call__ = proxy(forward)
 
 
 # N.B. We do this ugly thing so that a trace can be aware of the returned type
@@ -621,84 +654,67 @@ def _sparse_image_warp_noflow(
     return warped
 
 
-if TYPE_CHECKING:
-
-    @functional_wrapper("SparseImageWarp")
-    def sparse_image_warp(
-        image: torch.Tensor,
-        source_points: torch.Tensor,
-        dest_points: torch.Tensor,
-        indexing: str = "hw",
-        field_interpolation_order: int = 2,
-        field_regularization_weight: float = 0.0,
-        field_full_matrix: bool = True,
-        pinned_boundary_points: int = 0,
-        dense_interpolation_mode: str = "bilinear",
-        dense_padding_mode: str = "border",
-        include_flow: bool = True,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        pass
+@overload
+def sparse_image_warp(
+    image: torch.Tensor,
+    source_points: torch.Tensor,
+    dest_points: torch.Tensor,
+    indexing: Literal["hw", "wh"] = "hw",
+    field_interpolation_order: int = 2,
+    field_regularization_weight: float = 0.0,
+    field_full_matrix: bool = True,
+    pinned_boundary_points: int = 0,
+    dense_interpolation_mode: Literal["bilinear", "nearest"] = "bilinear",
+    dense_padding_mode: Literal["border", "zero", "reflection"] = "border",
+    include_flow: bool = True,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    ...
 
 
-else:
-
-    def sparse_image_warp(
-        image: torch.Tensor,
-        source_points: torch.Tensor,
-        dest_points: torch.Tensor,
-        indexing: str = "hw",
-        field_interpolation_order: int = 2,
-        field_regularization_weight: float = 0.0,
-        field_full_matrix: bool = True,
-        pinned_boundary_points: int = 0,
-        dense_interpolation_mode: str = "bilinear",
-        dense_padding_mode: str = "border",
-        include_flow: bool = True,
-    ) -> Any:
-        if include_flow:
-            return _sparse_image_warp_flow(
-                image,
-                source_points,
-                dest_points,
-                indexing,
-                field_interpolation_order,
-                field_regularization_weight,
-                field_full_matrix,
-                pinned_boundary_points,
-                dense_interpolation_mode,
-                dense_padding_mode,
-            )
-        else:
-            return _sparse_image_warp_noflow(
-                image,
-                source_points,
-                dest_points,
-                indexing,
-                field_interpolation_order,
-                field_regularization_weight,
-                field_full_matrix,
-                pinned_boundary_points,
-                dense_interpolation_mode,
-                dense_padding_mode,
-            )
+@functional_wrapper("SparseImageWarp")
+def sparse_image_warp(
+    image: torch.Tensor,
+    source_points: torch.Tensor,
+    dest_points: torch.Tensor,
+    indexing: str = "hw",
+    field_interpolation_order: int = 2,
+    field_regularization_weight: float = 0.0,
+    field_full_matrix: bool = True,
+    pinned_boundary_points: int = 0,
+    dense_interpolation_mode: str = "bilinear",
+    dense_padding_mode: str = "border",
+    include_flow: bool = True,
+) -> Any:
+    if include_flow:
+        return _sparse_image_warp_flow(
+            image,
+            source_points,
+            dest_points,
+            indexing,
+            field_interpolation_order,
+            field_regularization_weight,
+            field_full_matrix,
+            pinned_boundary_points,
+            dense_interpolation_mode,
+            dense_padding_mode,
+        )
+    else:
+        return _sparse_image_warp_noflow(
+            image,
+            source_points,
+            dest_points,
+            indexing,
+            field_interpolation_order,
+            field_regularization_weight,
+            field_full_matrix,
+            pinned_boundary_points,
+            dense_interpolation_mode,
+            dense_padding_mode,
+        )
 
 
 class SparseImageWarp(torch.nn.Module):
     r"""Warp an image by specifying mappings between few control points
-
-    This module, when instantiated, has the signature::
-
-        warped[, flow] = sparse_image_warp(image, source_points, dest_points)
-
-    `image` is a source image of shape `(N, C, H, W)``, where ``N`` is the batch
-    dimension, ``C`` the channel dimension, ``H`` the image height, and ``W`` the image
-    width. `source_points` and `dest_points` are tensors of shape ``(N, M, 2)``, where
-    ``M`` is the number of control points. `warped` is a float tensor of shape ``(N, C,
-    H, W)`` containing the warped images. The point ``source_points[n, m, :]`` in
-    `image` will be mapped to ``dest_points[n, m, :]`` in `warped`. If `include_flow` is
-    :obj:`True`, `flow`, a float tensor of shape ``(N, H, W, 2)``. ``flow[n, h, w, :]``
-    is the flow for coordinates ``h, w`` in whatever order was specified by `indexing`.
-    See :class:`DenseImageWarp` for more details about `flow`.
 
     This module mirrors the behaviour of Tensorflow's `sparse_image_warp
     <https://www.tensorflow.org/addons/api_docs/python/tfa/image/sparse_image_warp>`__,
@@ -707,46 +723,65 @@ class SparseImageWarp(torch.nn.Module):
 
     Parameters
     ----------
-    indexing : {'hw', 'wh'}, optional
-        If `indexing` is ``"hw"``, ``source_points[n, m, 0]`` and
-        ``dest_points[n, m, 0]`` index the height dimension in `image` and `warped`,
-        respectively, and ``source_points[n, m, 1]`` and ``dest_points[n, m, 1]`` the
-        width dimension. If `indexing` is ``"wh"``, the width dimension is the 0-index
-        and height the 1.
-    field_interpolation_order : int, optional
+    indexing
+        If `indexing` is ``"hw"``, ``source_points[n, m, 0]`` and ``dest_points[n, m,
+        0]`` index the height dimension in `image` and `warped`, respectively, and
+        ``source_points[n, m, 1]`` and ``dest_points[n, m, 1]`` the width dimension. If
+        `indexing` is ``"wh"``, the width dimension is the 0-index and height the 1.
+    field_interpolation_order
         The order of the polyharmonic spline used to interpolate the rest of the points
         from the control. See :func:`polyharmonic_spline` for more info.
-    field_regularization_weight : int, optional
+    field_regularization_weight
         The regularization weight of the polyharmonic spline used to interpolate the
         rest of the points from the control. See :func:`polyharmonic_spline` for more
         info.
-    field_full_matrix : bool, optional
+    field_full_matrix
         Determines the method of calculating the polyharmonic spline used to interpolate
         the rest of the points from the control. See :func:`polyharmonic_spline` for
         more info.
-    pinned_boundary_points : int, optional
+    pinned_boundary_points
         Dictates whether and how many points along the boundary of `image` are mapped
         identically to points in `warped`. This keeps the boundary of the `image` from
         being pulled into the interior of `warped`. When :obj:`0`, no points are added.
-        When :obj:`1`, four points are added, one in each corner of the image. When
-        ``k > 2``, one point in each corner of the image is added, then ``k - 1``
+        When :obj:`1`, four points are added, one in each corner of the image. When ``k
+        > 2``, one point in each corner of the image is added, then ``k - 1``
         equidistant points along each of the four edges, totaling ``4 * k`` points.
-    dense_interpolation_mode : {'bilinear', 'nearest'}, optional
+    dense_interpolation_mode
         The method with which partial indices in the derived mapping are interpolated.
         See :func:`dense_image_warp` for more info.
-    dense_padding_mode : {'border', 'zero', 'reflection'}, optional
+    dense_padding_mode
         What to do when points in the derived mapping fall outside of the boundaries.
         See :func:`dense_image_warp` for more info.
-    include_flow : bool, optional
+    include_flow
         If :obj:`True`, include the flow field `flow` interpolated from the control
         points in the return value.
+    
+    Call Parameters
+    ---------------
+    image : torch.Tensor
+        A source image of shape ``(N, C, H, W)`` where ``N`` is the batch dimension,
+        ``C`` the channel dimension, ``H`` the image height, and ``W`` the image width.
+    source_points, dest_points : torch.Tensor
+        Tensors of shape ``(N, M, 2)``, where ``M`` is the number of control points. 
+    
+    Returns
+    -------
+    warped : torch.Tensor or tuple of torch.Tensor
+        If `include_flow` is :obj:`False`, `warped` is a warped `image` of shape ``(N,
+        C, H, W)``. The point ``source_points[n, m, :]`` in `image` will be mapped to
+        ``dest_points[n, m, :]`` in `warped`. If `include_flow` is :obj:`True`, `warped`
+        is a pair of tensors ``warped_, flow`` where `warped_` has the same definition
+        as `warped` when `include_flow` is :obj:`True` and `flow` is a tensor of shape
+        ``(N, H, W, 2)``. ``flow[n, h, w, :]`` is the flow for coordinates ``h, w`` in
+        whatever order was specified by `indexing`. See :class:`DenseImageWarp` for more
+        details about `flow`.
     
     Warnings
     --------
     When this module is scripted, its return type will be :class:`typing.Any`. This
-    reflects the fact that either `warn` is returned on its own (a tensor) or both
-    `warn` and `flow` (a tuple). Use :func:`torch.jit.isinstance` for type refinement in
-    subsequent scripting. Tracing will infer the correct type.
+    reflects the fact that either `warped` is returned on its own (a tensor) or both
+    `warped_` and `flow` (a tuple). Use :func:`torch.jit.isinstance` for type refinement
+    in subsequent scripting. Tracing will infer the correct type.
     """
 
     __constants__ = [
@@ -770,13 +805,13 @@ class SparseImageWarp(torch.nn.Module):
 
     def __init__(
         self,
-        indexing: str = "hw",
+        indexing: Literal["hw", "wh"] = "hw",
         field_interpolation_order: int = 2,
         field_regularization_weight: float = 0.0,
         field_full_matrix: bool = True,
         pinned_boundary_points: int = 0,
-        dense_interpolation_mode: str = "bilinear",
-        dense_padding_mode: str = "border",
+        dense_interpolation_mode: Literal["bilinear", "nearest"] = "bilinear",
+        dense_padding_mode: Literal["border", "zero", "reflection"] = "border",
         include_flow: bool = True,
     ):
         super().__init__()
@@ -814,37 +849,47 @@ class SparseImageWarp(torch.nn.Module):
     def extra_repr(self) -> str:
         return ", ".join(f"{x}={getattr(self, x)}" for x in self.__constants__)
 
-    if TYPE_CHECKING:
+    @overload
+    def forward(
+        self,
+        image: torch.Tensor,
+        source_points: torch.Tensor,
+        dest_points: torch.Tensor,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        pass
 
-        def forward(
-            self,
-            image: torch.Tensor,
-            source_points: torch.Tensor,
-            dest_points: torch.Tensor,
-        ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-            pass
+    def forward(
+        self,
+        image: torch.Tensor,
+        source_points: torch.Tensor,
+        dest_points: torch.Tensor,
+    ) -> Any:
+        return sparse_image_warp(
+            image,
+            source_points,
+            dest_points,
+            self.indexing,
+            self.field_interpolation_order,
+            self.field_regularization_weight,
+            self.field_full_matrix,
+            self.pinned_boundary_points,
+            self.dense_interpolation_mode,
+            self.dense_padding_mode,
+            self.include_flow,
+        )
 
-    else:
+    __call__ = proxy(forward)
 
-        def forward(
-            self,
-            image: torch.Tensor,
-            source_points: torch.Tensor,
-            dest_points: torch.Tensor,
-        ) -> Any:
-            return sparse_image_warp(
-                image,
-                source_points,
-                dest_points,
-                self.indexing,
-                self.field_interpolation_order,
-                self.field_regularization_weight,
-                self.field_full_matrix,
-                self.pinned_boundary_points,
-                self.dense_interpolation_mode,
-                self.dense_padding_mode,
-                self.include_flow,
-            )
+
+@overload
+def pad_variable(
+    x: torch.Tensor,
+    lens: torch.Tensor,
+    pad: torch.Tensor,
+    mode: Literal["constant", "reflect", "replicate"] = "constant",
+    value: float = 0.0,
+) -> torch.Tensor:
+    ...
 
 
 @functional_wrapper("PadVariable")
@@ -947,28 +992,11 @@ class PadVariable(torch.nn.Module):
     """Pad variable-length input by a variable amount on each side
 
     This module attempts to replicate the behaviour of :func:`torch.nn.functional.pad`
-    on a tensor containing variable sequence lengths with variable amounts of
-    padding.
-
-    When instantiated, this module has the signature::
-
-        padded = pad_variable(x, lens, pad)
-
-    `x` is a tensor of shape ``(N, T, *)`` where ``N`` is the batch index and ``T`` is
-    the sequence index. `lens` is a long tensor of shape ``(N,)`` specifying the
-    sequence lengths: only the values in the range ``x[n, :lens[n]]`` are considered
-    part of the sequence of batch element ``n``. `pad` is a tensor of shape ``(2, N)``
-    specifying how many elements at the start (``pad[0]``) and end (``pad[1]``) of each
-    sequence. The return tensor `padded` will have shape ``(N, T', *)`` such that, for a
-    given batch index ``n``::
-
-        padded[n, :pad[0, n]] = left padding
-        padded[n, pad[0,n]:pad[0,n] + lens[n]] = x[n, :lens[n]]
-        padded[n, pad[0,n] + lens[n]:pad[0,n] + lens[n] + pad[1, n]] = right padding
+    on a tensor containing variable sequence lengths with variable amounts of padding.
 
     Parameters
     ----------
-    mode : {'constant', 'reflect', 'replicate'}, optional
+    mode
         How to pad the sequences. :obj:`'constant'`: fill the padding region with the
         value specified by `value`. :obj:`'reflect'`: padded values are reflections
         around the endpoints. For example, the first right-padded value of the ``n``-th
@@ -976,8 +1004,30 @@ class PadVariable(torch.nn.Module):
         so on. :obj:`replicate`: padding duplicates the endpoints of each sequence.
         For example, the left-padded values of the ``n``-th sequence would all be
         ``x[n, 0]``; the right-padded values would be ``x[n, lens[n] - 1]``.
-    value : scalar, optional
+    value
         The value to pad with when ``mode == 'constant'``.
+    
+    Call Parameters
+    ---------------
+    x : torch.Tensor
+        A tensor of shape ``(N, T, *)`` where ``N`` is the batch index and ``T`` is
+        the sequence index.
+    lens : torch.Tensor
+        A long tensor of shape ``(N,)`` specifying the sequence lengths. Only the values
+        in the range ``x[n, :lens[n]]`` are considered part of the sequence of batch
+        element ``n``.
+    pad : torch.Tensor
+        A long tensor of shape ``(2, N)`` specifying how many elements at the start
+        (``pad[0]``) and end (``pad[1]``) of each sequence.
+    
+    Returns
+    -------
+    padded : torch.Tensor
+        A tensor of shape ``(N, *', *)`` such that, for a given batch index ``n``::
+
+            padded[n, :pad[0, n]] = left padding
+            padded[n, pad[0,n]:pad[0,n] + lens[n]] = x[n, :lens[n]]
+            padded[n, pad[0,n] + lens[n]:pad[0,n] + lens[n] + pad[1, n]] = right padding
 
     Raises
     ------
@@ -1021,7 +1071,11 @@ class PadVariable(torch.nn.Module):
     mode: str
     value: float
 
-    def __init__(self, mode: str = "constant", value: float = 0.0):
+    def __init__(
+        self,
+        mode: Literal["constant", "reflect", "replicate"] = "constant",
+        value: float = 0.0,
+    ):
         super().__init__()
         if mode not in {"constant", "reflect", "replicate"}:
             raise ValueError(
@@ -1041,6 +1095,8 @@ class PadVariable(torch.nn.Module):
         self, x: torch.Tensor, lens: torch.Tensor, pad: torch.Tensor
     ) -> torch.Tensor:
         return pad_variable(x, lens, pad, self.mode, self.value)
+
+    __call__ = proxy(forward)
 
 
 @functional_wrapper("RandomShift")
@@ -1078,16 +1134,7 @@ class RandomShift(torch.nn.Module):
     variable-length sequence dimension (e.g. speech recognition). It pads each input
     sequence with some number of elements at its beginning and end. The number of
     elements is randomly chosen but bounded above by some proportion of the input length
-    specified by the user. Its call signature is
-
-        out, out_lens = layer(in_, in_lens)
-
-    Where: `in_` is a tensor of shape ``(N, T, *)`` where ``N`` is the batch dimension
-    and ``T`` is the sequence dimension; `in_lens` is a long tensor of shape ``(N,)``;
-    `out` is a tensor of the same type as `in_` of shape ``(N, T', *)``; and `out_lens`
-    is of shape ``(N,)``. The ``n``-th input sequence is stored in the range
-    ``in_[n, :in_lens[n]]``. The padded ``n``-th sequence is stored in the range
-    ``out[n, :out_lens[n]]``. Values outside of these ranges are undefined.
+    specified by the user.
 
     The amount of padding is dictated by the parameter `prop` this layer is initialized
     with. A proportion is a non-negative float dictating the maximum ratio of the
@@ -1098,17 +1145,30 @@ class RandomShift(torch.nn.Module):
     between ``10`` and ``18`` inclusive since each side of the sequence could be padded
     with ``0-4`` elements (``0.5 * 10 = 5`` is an exclusive bound).
 
-    Padding is only applied if this layer is in training mode. If testing,
-    ``out, out_lens = in_, in_lens``.
-
     Parameters
     ----------
-    prop : float or tuple
-    mode : {'reflect', 'constant', 'replicate'}, optional
+    prop
+    mode
         The method with which to pad the input sequence.
-    value : float, optional
+    value
         The constant with which to pad the sequence if `mode` is set to
         :obj:`'constant'`.
+    
+    Call Parameters
+    ---------------
+    in_ : torch.Tensor
+        A tensor of shape ``(N, T, *)`` where ``N`` is the batch dimension and ``T`` is
+        the sequence dimension; `in_lens` is a long tensor of shape ``(N,)``.
+    in_lens : torch.Tensor
+        A tensor of shape ``(N,)`` containing the lengths of the sequences in `in_`.
+        For batch element ``n``, only the values ``in_[n, in_lens[n]]`` are valid.
+    
+    Returns
+    -------
+    out : torch.Tensor
+        A tensor of the same type as ``in_`` of shape ``(N, T', *)``.
+    out_lens : torch.Tensor
+        A tensor of shape ``(N,)`` containing the lengths of the sequences in `out`.
 
     Raises
     ------
@@ -1116,6 +1176,11 @@ class RandomShift(torch.nn.Module):
         On initialization if `mode` is :obj:`'reflect'` and a value in `prop` exceeds
         ``1.0``. Reflection currently requires the amount of padding does not exceed
         the original sequence length.
+    
+    Notes
+    -----
+    Padding is only applied if this layer is in training mode. If testing, ``out,
+    out_lens = in_, in_lens``.
 
     See Also
     --------
@@ -1133,7 +1198,7 @@ class RandomShift(torch.nn.Module):
     def __init__(
         self,
         prop: Union[float, Tuple[float, float]],
-        mode: str = "reflect",
+        mode: Literal["reflect", "constant", "replicate"] = "reflect",
         value: float = 0.0,
     ):
         super().__init__()
@@ -1173,6 +1238,8 @@ class RandomShift(torch.nn.Module):
         return random_shift(
             in_, in_lens, self.prop, self.mode, self.value, self.training
         )
+
+    __call__ = proxy(forward)
 
 
 @script
@@ -1409,67 +1476,41 @@ class SpecAugment(torch.nn.Module):
     for training data augmentation of time-frequency features such as Mel-scaled
     triangular filter bank coefficients.
 
-    An instance `spec_augment` of `SpecAugment` is called as
-
-        new_feats = spec_augment(feats[, lengths])
-
-    `feats` is a float tensor of shape ``(N, T, F)`` where ``N`` is the batch dimension,
-    ``T`` is the time (frames) dimension, and ``F`` is the frequency (coefficients per
-    frame) dimension. `lengths` is an optional long tensor of shape ``(N,)`` specifying
-    the actual number of frames before right-padding per batch element. That is,
-    for batch index ``n``, only ``feats[n, :lengths[n]]`` are valid. `new_feats` is
-    of the same size as `feats` with some or all of the following operations performed
-    in order independently per batch index:
-
-    1. Choose a random frame along the time dimension. Warp `feats` such that ``feats[n,
-       0]`` and feats[n, lengths[n] - 1]`` are fixed, but that random frame gets mapped
-       to a random new location a few frames to the left or right.
-    2. Do the same for the frequency dimension.
-    3. Mask out (zero) one or more random-width ranges of frames in a random location
-       along the time dimension.
-    4. Do the same for the frequency dimension.
-
-    The original SpecAugment implementation only performs steps 1, 3, and 4; step 2 is a
-    trivial extension.
-
     Default parameter values are from [park2020]_.
-
-    The `spec_augment` instance must be in training mode in order to apply any
-    transformations; `spec_augment` always returns `feats` as-is in evaluation mode.
 
     Parameters
     ----------
-    max_time_warp : float, optional
+    max_time_warp
         A non-negative float specifying the maximum number of frames the chosen
         random frame can be shifted left or right by in step 1. Setting to :obj:`0`
         disables step 1.
-    max_freq_warp : float, optional
+    max_freq_warp
         A non-negative float specifying the maximum number of coefficients the chosen
         random frequency coefficient index will be shifted up or down by in step 2.
         Setting to :obj:`0` disables step 2.
-    max_time_mask : int, optional
+    max_time_mask
         A non-negative integer specifying an absolute upper bound on the number of
         sequential frames in time that can be masked out by a single mask. The minimum
         of this upper bound and that from `max_time_mask_proportion` specifies the
         actual maximum. Setting this, `max_time_mask_proportion`, `num_time_mask`,
         or `num_time_mask_proportion` to :obj:`0` disables step 3.
-    max_freq_mask : int, optional
+    max_freq_mask
         A non-negative integer specifying the maximum number of sequential coefficients
         in frequency that can be masked out by a single mask. Setting this or
         `num_freq_mask` to :obj:`0` disables step 4.
-    max_time_mask_proportion : float, optional
+    max_time_mask_proportion
         A value in the range :math:`[0, 1]` specifying a relative upper bound on the
         number of squential frames in time that can be masked out by a single mask. For
         batch element ``n``, the upper bound is ``int(max_time_mask_poportion *
         length[n])``. The minimum of this upper bound and that from `max_time_mask`
         specifies the actual maximum. Setting this, `max_time_mask`, `num_time_mask`,
         or `num_time_mask_proportion` to :obj:`0` disables step 4.
-    num_time_mask : int, optional
+    num_time_mask
         A non-negative integer specifying an absolute upper bound number of random masks
         in time per batch element to create. Setting this, `num_time_mask_proportion`,
         `max_time_mask`, or `max_time_mask_proportion` to :obj:`0` disables step 3.
         Drawn i.i.d. and may overlap.
-    num_time_mask_proportion : float, optional
+    num_time_mask_proportion
         A value in the range :math:`[0, 1]` specifying a relative upper bound on the
         number of time masks per element in the batch to create. For batch element
         ``n``, the upper bound is ``int(num_time_mask_proportion * length[n])``. The
@@ -1477,17 +1518,47 @@ class SpecAugment(torch.nn.Module):
         actual maximum. Setting this, `num_time_mask`, `max_time_mask`, or
         `max_time_mask_proportion` to :obj:`0` disables step 3. Drawn i.i.d. and may
         overlap.
-    num_freq_mask : int, optional
+    num_freq_mask
         The total number of random masks in frequency per batch element to create.
         Setting this or `max_freq_mask` to :obj:`0` disables step 4. Drawn i.i.d. and
         may overlap.
-    interpolation_order : int, optional
+    interpolation_order
         Controls order of interpolation of warping. 1 = linear (default for
         [park2020]_). 2 = thin plate (default for [park2019]_). Higher orders are
         possible at increased computational cost.
+    
+    Call Parameters
+    ---------------
+    feats : torch.Tensor
+        A tensor of shape ``(N, T, F)`` where ``N`` is the batch dimension, ``T`` is the
+        time (frames) dimension, and ``F`` is the frequency (coefficients per frame)
+        dimension. The original feature tensor.
+    lengths : torch.Tensor or None, optional
+        A long tensor of shape ``(N,)`` specifying the actual number of frames before
+        right-padding per batch element. That is, for batch index ``n``, only ``feats[n,
+        :lengths[n]]`` are valid.
+    
+    Returns
+    -------
+    new_feats : torch.Tensor
+        The warped `feats` of shape ``(N, T, F)`` with some or all of the following
+        operations performed in order independently per batch index:
+
+        1. Choose a random frame along the time dimension. Warp `feats` such that
+           ``feats[n, 0]`` and ``feats[n, lengths[n] - 1]`` are fixed, but that random
+           frame gets mapped to a random new location a few frames to the left or right.
+        2. Do the same for the frequency dimension.
+        3. Mask out (zero) one or more random-width ranges of frames in a random
+           location along the time dimension.
+        4. Do the same for the frequency dimension.
+
+        The original SpecAugment implementation only performs steps 1, 3, and 4; step 2
+        is a trivial extension.
 
     Notes
     -----
+    SpecAugment is only applied in training mode; in eval mode, ``new_feats == feats``.
+
     There are a few differences between this implementation of warping and those you
     might find online or described in the source paper [park2019]_. These require some
     knowledge of what's happening under the hood and are unlikely to change the way you
@@ -1576,9 +1647,9 @@ class SpecAugment(torch.nn.Module):
 
         Parameters
         ----------
-        feats : torch.Tensor
+        feats
             Time-frequency features of shape ``(N, T, F)``.
-        lengths : torch.Tensor or None, optional
+        lengths
             Long tensor of shape ``(N,)`` containing the number of frames before
             padding.
 
@@ -1639,11 +1710,11 @@ class SpecAugment(torch.nn.Module):
 
         Parameters
         ----------
-        feats : torch.Tensor
+        feats
             Time-frequency features of shape ``(N, T, F)``.
-        params : sequence of torch.Tensor
+        params
             All parameter tensors returned by :func:`draw_parameters`.
-        lengths : torch.Tensor, optional
+        lengths
             Tensor of shape ``(N,)`` containing the number of frames before padding.
 
         Returns
@@ -1670,3 +1741,5 @@ class SpecAugment(torch.nn.Module):
             return feats
         params = self.draw_parameters(feats, lengths)
         return self.apply_parameters(feats, params, lengths)
+
+    __call__ = proxy(forward)

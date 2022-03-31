@@ -41,9 +41,7 @@ class SpectDataParams(param.Parameterized):
 class SpectDataSet(torch.utils.data.Dataset):
     """Accesses spectrographic filter data stored in a data directory
 
-    :class:`SpectDataSet` assumes that `data_dir` is structured as
-
-    ::
+    :class:`SpectDataSet` assumes that `data_dir` is structured as::
 
         data_dir/
             feat/
@@ -63,58 +61,53 @@ class SpectDataSet(torch.utils.data.Dataset):
                 ...
             ]
 
-    The ``feat`` dir stores filter bank data in the form of a
-    :class:`torch.Tensor` of size ``(T, F)``, where ``T`` is the time dimension
-    and ``F`` is the filter/log-frequency dimension. ``feat`` is the only
-    required directory.
+    The ``feat`` dir stores filter bank data in the form of a :class:`torch.Tensor` of
+    size ``(T, F)``, where ``T`` is the time dimension and ``F`` is the
+    filter/log-frequency dimension. ``feat`` is the only required directory.
 
-    ``ali`` stores long tensor of size ``(T,)``, indicating the
-    pdf-id of the most likely target. ``ali`` is suitable for discriminative
-    training of DNNs in hybrid DNN-HMM recognition, or any frame-wise loss.
-    ``ali/`` is optional.
+    ``ali`` stores long tensor of size ``(T,)``, indicating the pdf-id of the most
+    likely target. ``ali`` is suitable for discriminative training of DNNs in hybrid
+    DNN-HMM recognition, or any frame-wise loss. ``ali/`` is optional.
 
-    ``ref`` stores long tensor of size indicating reference
-    transcriptions. The tensors can have either shape ``(R, 3)`` or ``(R,)``,
-    depending on whether frame start/end times were included along with the
-    tokens. Letting ``r`` be such a tensor of size ``(R, 3)``, ``r[..., 0]`` is
-    the sequence of token ids for the utterance and ``r[..., 1:]`` are the
-    0-indexed frames they start (inclusive) and end (exclusive) at,
-    respectively. Negative values can be used when the start and end frames are
-    unknown. If ``r`` is of shape ``(R,)``, ``r`` is only the sequence of token
-    ids. Only one version of ``r`` (with or without frame start/end times)
-    should be used across the entire folder. ``ref/`` is suitable for
-    end-to-end training. ``ref/`` is optional.
+    ``ref`` stores long tensor of size indicating reference transcriptions. The tensors
+    can have either shape ``(R, 3)`` or ``(R,)``, depending on whether frame start/end
+    times were included along with the tokens. Letting ``r`` be such a tensor of size
+    ``(R, 3)``, ``r[..., 0]`` is the sequence of token ids for the utterance and
+    ``r[..., 1:]`` are the 0-indexed frames they start (inclusive) and end (exclusive)
+    at, respectively. Negative values can be used when the start and end frames are
+    unknown. If ``r`` is of shape ``(R,)``, ``r`` is only the sequence of token ids.
+    Only one version of ``r`` (with or without frame start/end times) should be used
+    across the entire folder. ``ref/`` is suitable for end-to-end training. ``ref/`` is
+    optional.
 
     Parameters
     ----------
-    data_dir : str
+    data_dir
         A path to feature directory
-    file_prefix : str, optional
+    file_prefix
         The prefix that indicates that the file counts toward the data set
-    file_suffix : str, optional
+    file_suffix
         The suffix that indicates that the file counts toward the data set
-    warn_on_missing : bool, optional
+    warn_on_missing
         If ``ali/`` or ``ref/`` exist, there's a mismatch between the
         utterances in the directories, and `warn_on_missing` is :obj:`True`, a
         warning will be issued (via ``warnings``) regarding each such mismatch
-    subset_ids : set, optional
+    subset_ids
         If set, only utterances with ids listed in this set will count towards
         the data set. The rest will be ignored
-    sos : int or None, optional
+    sos
         Specify the start-of-sequence token, if any. If unset, uses whatever is in
         `params`. Specifying `sos` this way is deprecated; it should be done via
         `params`.
-    eos : int or None, optional
+    eos
         `eos` is a special token used to delimit the end of a reference or hypothesis
         sequence. If unset, uses whatever is in `params`. Specifying `eos` this way is
         deprecated; it should be done via `params`.
-    feat_subdir : str, optional
-    ali_subdir : str, optional
-    ref_subdir : str, optional
-        Change the names of the subdirectories under which feats, alignments,
-        and references are stored. If `ali_subdir` or `ref_subdir` is
-        :obj:`None`, they will not be searched for
-    params : SpectDataParams or None, Optional
+    feat_subdir, ali_subdir, ref_subdir
+        Change the names of the subdirectories under which feats, alignments, and
+        references are stored. If `ali_subdir` or `ref_subdir` is :obj:`None`, they will
+        not be searched for
+    params
         Populates the parameters of this class with the instance. If unset, a new
         `SpectDataParams` instance is initialized.
         
@@ -349,16 +342,16 @@ class SpectDataSet(torch.utils.data.Dataset):
 
         Parameters
         ----------
-        utt : str or int
+        utt
             The name of the utterance to write. If an integer is specified,
             `utt` is assumed to index an utterance id specified in
             ``self.utt_ids``
-        pdf : torch.Tensor
-            The tensor to write. It will be converted to a CPU
-            float tensor using the command ``pdf.cpu().float()``
-        pdfs_dir : str or None, optional
-            The directory pdfs are written to. If :obj:`None`, it will be set
-            to ``self.data_dir + '/pdfs'``
+        pdf
+            The tensor to write. It will be converted to a CPU float tensor using the
+            command ``pdf.cpu().float()``
+        pdfs_dir
+            The directory pdfs are written to. If :obj:`None`, it will be set to
+            ``self.data_dir + '/pdfs'``
         """
         if isinstance(utt, int):
             utt = self.utt_ids[utt]
@@ -391,16 +384,16 @@ class SpectDataSet(torch.utils.data.Dataset):
 
         Parameters
         ----------
-        utt : str or int
+        utt
             The name of the utterance to write. If an integer is specified,
             `utt` is assumed to index an utterance id specified in
             ``self.utt_ids``
-        hyp : torch.Tensor
+        hyp
             The tensor to write. Either of shape ``(R,)`` or ``(R, 3)``. It will be
             converted to a long tensor using the command ``hyp.cpu().long()``
-        hyp_dir : str or None, optional
-            The directory pdfs are written to. If :obj:`None`, it will be set
-            to ``self.data_dir + '/hyp'``
+        hyp_dir
+            The directory pdfs are written to. If :obj:`None`, it will be set to
+            ``self.data_dir + '/hyp'``
         """
         if isinstance(utt, int):
             utt = self.utt_ids[utt]
@@ -441,11 +434,9 @@ def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
     3. All features have two dimensions
     4. All features have the same size second dimension
     5. If alignments are present
-
        1. All alignments are long tensor instances
        2. All alignments have one dimension
        3. Features and alignments have the same size first axes for a given utterance id
-
     6. If reference sequences are present
 
        1. All references are long tensor instances
@@ -469,9 +460,9 @@ def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
        tensors.
     3. A reference token with only a start or end bound (but not both) will have the
        existing one removed.
-    5. A reference token with an exclusive boundary exceeding the number of features by
-       one will be decreased by one. This is only possible if the exclusive end
-       remains above the inclusive start.
+    4. A reference token with an exclusive boundary exceeding the number of features by
+       one will be decreased by one. This is only possible if the exclusive end remains
+       above the inclusive start.
     """
     num_filts = None
     ref_is_2d = None
@@ -633,18 +624,18 @@ def extract_window(
 
     Parameters
     ----------
-    feat : torch.Tensor
+    feat
         Of shape ``(T, F)``, where ``T`` is the time/frame axis, and ``F``
         is the frequency axis
-    frame_idx : int
+    frame_idx
         The "center frame" ``0 <= frame_idx < T``
-    left : int
+    left
         The number of frames in the window to the left (before) the center
         frame. Any frames below zero are edge-padded
-    right : int
+    right
         The number of frames in the window to the right (after) the center
         frame. Any frames above ``T`` are edge-padded
-    reverse : bool, optional
+    reverse
         If :obj:`True`, flip the window along the time/frame axis
 
     Returns
@@ -741,32 +732,23 @@ class ContextWindowDataSet(SpectDataSet):
 
     Parameters
     ----------
-    data_dir : str
-    left : int or None, optional
+    data_dir
+    left
         The number of frames to the left of the center frame to be extracted in the
         window. If unset, uses whatever is in ``params.context_left``. Specifying
         `left` by argument is deprecated; use ``params.context_left``.
-    right : int or None, optional
+    right
         The number of frames to the right of the center frame to be extracted in the
         window. If unset, uses whatever is in ``params.context_right``. Specifying
         `right` by argument is deprecated; use ``params.context_right``.
-    file_prefix : str, optional
-    file_suffix : str, optional
-    warn_on_missing : bool, optional
-    feat_subdir, ali_subdir : str, optional
-    reverse : bool or None, optional
+    file_prefix
+    file_suffix
+    warn_on_missing
+    feat_subdir, ali_subdir
+    reverse
         If :obj:`True`, context windows will be reversed along the time dimension. If
         unset, uses whatever is in ``params.reverse``. Specifying `reverse` by argument
         is deprecated; use ``params.reverse``.
-
-    Attributes
-    ----------
-    data_dir, feat_subdir, ali_subdir, file_suffix : str
-    left, right : int
-    has_ali, reverse : bool
-    utt_ids : tuple
-    ref_subdir, eos : :obj:`None`
-    has_ref : :obj:`False`
 
     Yields
     ------

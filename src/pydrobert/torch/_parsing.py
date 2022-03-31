@@ -51,11 +51,11 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
 
     Parameters
     ----------
-    file_ : str or file
-        Either the path or a file pointer to the file
-    token2id : dict, optional
-        A dictionary whose keys are token strings and values are ids. If set,
-        tokens will be replaced with ids on read
+    file_
+        Either the path or a file pointer to the file.
+    token2id
+        A dictionary whose keys are token strings and values are ids. If set, tokens
+        will be replaced with ids on read
 
     Returns
     -------
@@ -239,6 +239,18 @@ def read_trn_iter(
 
     Identical to :func:`read_trn`, but yields individual transcript entries rather than
     a full list. Ideal for large transcript files.
+
+    Parameters
+    ----------
+    trn
+    warn
+    processes
+    chunk_size
+
+    Yields
+    ------
+    utt_id : str
+    transcript : list of str
     """
     # implementation note: there's a lot of weirdness here. I'm trying to
     # match sclite's behaviour. A few things
@@ -290,9 +302,9 @@ def read_trn(
 
     Parameters
     ----------
-    trn : file or str
-        The transcript input file. Will open if `trn` is a path
-    warn : bool, optional
+    trn
+        The transcript input file. Will open if `trn` is a path.
+    warn
         The "trn" format uses curly braces and forward slashes to indicate
         transcript alterations. This is largely for scoring purposes, such as
         swapping between filled pauses, not for training. If `warn` is
@@ -301,18 +313,21 @@ def read_trn(
         `transcripts` as elements of ``([[alt_1_word_1, alt_1_word_2, ...],
         [alt_2_word_1, alt_2_word_2, ...], ...], -1, -1)`` so that
         :func:`transcript_to_token` will not attempt to process alterations as
-        token start and end times
-    processes : int, optional
+        token start and end times.
+    processes
         The number of processes used to parse the lines of the trn file. If
         ``0``, will be performed on the main thread. Otherwise, the file will
-        be read on the main thread and parsed using `processes` many processes
-    chunk_size : int, optional
+        be read on the main thread and parsed using `processes` many processes.
+    chunk_size
         The number of lines to be processed by a worker process at a time.
         Applicable when ``processes > 0``
 
     Returns
     -------
     transcripts : list
+        A list of pairs ``utt_id, transcript`` where `utt_id` is a string identifying
+        the utterance and `transcript` is a list of tokens in the utterance's
+        transcript.
 
     Notes
     -----
@@ -331,12 +346,12 @@ def write_trn(
     transcript``) could be tokens or tuples of ``x, start, end`` (providing the
     start and end times of tokens, respectively). However, ``start`` and
     ``end`` are ignored when writing "trn" files. ``x`` could be the token or a
-    list of alternates, as described in :func:`read_trn`
+    list of alternates, as described in :func:`read_trn`.
 
     Parameters
     ----------
-    transcripts : iterable
-    trn : file or str
+    transcripts
+    trn
     """
     if isinstance(trn, str):
         with open(trn, "w") as trn:
@@ -403,15 +418,18 @@ def read_ctm(
     Returns
     -------
     transcripts : list
+        Each element is a tuple of ``utt_id, transcript``. `utt_id` is a string
+        identifying the utterance. `transcript` is a list of triples ``token, start,
+        end``, `token` being the token (a string), `start` being a float of the start
+        time of the token (in seconds), and `end` being the end time of the token.
 
     Notes
     -----
-    "ctm", like "trn", has "support" for alternate transcriptions. It is, as of
-    sclite version 2.10, very buggy. For example, it cannot handle multiple
-    alternates in the same utterance. Plus, tools like `Kaldi
-    <http://kaldi-asr.org/>`__ use the Unix command that the sclite
-    documentation recommends to sort a ctm, ``sort +0 -1 +1 -2 +2nb -3``, which
-    does not maintain proper ordering for alternate delimiters. Thus,
+    "ctm", like "trn", has "support" for alternate transcriptions. It is, as of sclite
+    version 2.10, very buggy. For example, it cannot handle multiple alternates in the
+    same utterance. Plus, tools like `Kaldi <http://kaldi-asr.org/>`__ use the Unix
+    command that the sclite documentation recommends to sort a ctm, ``sort +0 -1 +1 -2
+    +2nb -3``, which does not maintain proper ordering for alternate delimiters. Thus,
     :func:`read_ctm` will error if it comes across those delimiters
     """
     if isinstance(ctm, str):
@@ -458,20 +476,19 @@ def write_ctm(
     """From a list of transcripts, write to a NIST "ctm" file
 
     This is the inverse operation of :func:`read_ctm`. For each element of
-    ``transcript`` within the ``utt_id, transcript`` pairs of elements in
-    `transcripts`, ``token, start, end``, ``start`` and ``end`` must be
-    non-negative
+    ``transcript`` within the ``utt_id, transcript`` pairs of elements in `transcripts`,
+    ``token, start, end``, ``start`` and ``end`` must be non-negative
 
     Parameters
     ----------
-    transcripts : sequence
-    ctm : file or str
-    utt2wc : dict or str, optional
-        "ctm" files identify utterances by waveform file name and channel. If
-        specified as a dict, `utt2wc` consists of utterance IDs as keys, and
-        wavefile name and channels as values ``wfn, chan`` (e.g.
-        ``'940328', 'A'``). If `utt2wc` is a string, each utterance IDs will
-        be mapped to ``wfn`` and `utt2wc` as the channel
+    transcripts
+    ctm
+    utt2wc
+        "ctm" files identify utterances by waveform file name and channel. If specified
+        as a dict, `utt2wc` consists of utterance IDs as keys, and wavefile name and
+        channels as values ``wfn, chan`` (e.g. ``'940328', 'A'``). If `utt2wc` is a
+        string, each utterance IDs will be mapped to ``wfn`` and `utt2wc` as the
+        channel.
     """
     if isinstance(ctm, str):
         with open(ctm, "w") as ctm:
@@ -526,18 +543,17 @@ def transcript_to_token(
 
     Parameters
     ----------
-    transcript : sequence
-    token2id : dict, optional
-    frame_shift_ms : float or None, optional
-    unk : str or int, optional
-        If not :obj:`None`, specifies the out-of-vocabulary token. If `unk`
-        exists in `token2id`, the ``token2id[unk]`` will be used as the
-        out-of-vocabulary identifier. If ``token2id[unk]`` does not exist,
-        `unk` will be assumed to be the identifier already. If `token2id`
-        is :obj:`None`, `unk` has no effect.
-    skip_frame_times : bool, optional
-        If :obj:`True`, `tok` will be of shape ``(R,)`` and contain only
-        the token ids. Suitable for :class:`BitextDataSet`
+    transcript
+    token2id
+    frame_shift_ms
+    unk
+        The out-of-vocabulary token, if specified. If `unk` exists in `token2id`, the
+        ``token2id[unk]`` will be used as the out-of-vocabulary identifier. If
+        ``token2id[unk]`` does not exist, `unk` will be assumed to be the identifier
+        already. If `token2id` is :obj:`None`, `unk` has no effect.
+    skip_frame_times
+        If :obj:`True`, `tok` will be of shape ``(R,)`` and contain only the token ids.
+        Suitable for :class:`BitextDataSet`.
 
     Returns
     -------
@@ -556,9 +572,8 @@ def transcript_to_token(
 
     Converting to frame indices from start and end times follows an overly-simplistic
     equation. Letting :math:`(s_s, e_s)` be the start and end times in seconds,
-    :math:`(s_f, e_f)` be the corresponding start and end frames, :math:`\Delta` be
-    the frame shift in milliseconds, and :math:`I[\cdot]` be the indicator function.
-    Then
+    :math:`(s_f, e_f)` be the corresponding start and end frames, :math:`\Delta` be the
+    frame shift in milliseconds, and :math:`I[\cdot]` be the indicator function. Then
 
     .. math::
 
@@ -573,7 +588,7 @@ def transcript_to_token(
     :math:`\Delta` milliseconds apart, they will usually be overlapping. Because of this
     overlap, the coefficients of frames :math:`s_f - 1` and :math:`e_f` may be in part
     dependent on the audio samples within the segment. Second, ignoring frame length,
-    :frac:`e_f = ceil(1000e_s/\Delta)` would be more appropriate for an exclusive upper
+    :math:`e_f = ceil(1000e_s/\Delta)` would be more appropriate for an exclusive upper
     bound. However, :mod:`pydrobert.speech.compute` (and other, mainstream feature
     computation packages), the total number of frames in the utterance is calculated as
     :math:`T_f = ceil(1000T_s/\Delta)`, where :math:`T_s` is the length of the utterance
@@ -581,8 +596,8 @@ def transcript_to_token(
     neccessary criterion for a valid :class:`SpectDataSet` (see
     :func:`validate_spec_data_set`).
 
-    Accounting for both of these assumptions would involve computing the support of
-    each existing frame in seconds and intersecting that with the provided interval in
+    Accounting for both of these assumptions would involve computing the support of each
+    existing frame in seconds and intersecting that with the provided interval in
     seconds. As such, the derived frame bounds should not be used for an official
     evaluation. This function should suffice for most training objectives, however.
     """
@@ -632,15 +647,15 @@ def token_to_transcript(
 
     Parameters
     ----------
-    tok : torch.Tensor
+    tok
         A long tensor either of shape ``(R, 3)`` with segmentation info or ``(R, 1)`` or
         ``(R,)`` without
-    id2token : dict, optional
-    frame_shift_ms : float, optional
+    id2token
+    frame_shift_ms
 
     Returns
     -------
-    token : list
+    transcript : list
 
     Warnings
     --------

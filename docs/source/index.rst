@@ -6,9 +6,10 @@
    :caption: Contents:
 
    advanced_attention
+   cli
    lm
-   references
    modules
+   references
 
 Indices and tables
 ==================

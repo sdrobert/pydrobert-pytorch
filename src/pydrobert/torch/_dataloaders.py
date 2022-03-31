@@ -33,21 +33,23 @@ class EpochRandomSampler(torch.utils.data.Sampler):
 
     Parameters
     ----------
-    data_source : torch.utils.data.Dataset
+    data_source
         The total number of samples
-    init_epoch : int, optional
+    init_epoch
         The initial epoch
-    base_seed : int, optional
-        Determines the starting seed of the sampler. Sampling is seeded with
-        ``base_seed + epoch``. If unset, a seed is randomly generated from
-        the default generator
+    base_seed
+        Determines the starting seed of the sampler. Sampling is seeded with ``base_seed
+        + epoch``. If unset, a seed is randomly generated from the default generator
 
     Attributes
     ----------
-    base_seed : int
     epoch : int
-        The current epoch. Responsible for seeding the upcoming samples
-    data_source : torch.utils.data.Dataset
+        The current epoch. Responsible for seeding the upcoming samples.
+    
+    Yields
+    ------
+    sample_idx : int
+        The current sample index of the current epoch.
 
     Examples
     --------
@@ -146,7 +148,6 @@ class SpectDataLoaderParams(SpectDataParams, DataLoaderParams):
     --------
     pydrobert.torch.data.SpectTrainingDataLoader
     pydrobert.torch.data.SpectEvaluationDataLoader
-        Where to use these parameters.
     """
 
 
@@ -183,7 +184,7 @@ def spect_seq_to_batch(
 
     Parameters
     ----------
-    seq : sequence
+    seq
 
     Returns
     -------
@@ -224,46 +225,46 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
 
     Parameters
     ----------
-    data_dir : str
-    params : SpectDataLoaderParams or DataLoaderParams
+    data_dir
+    params
         Either provides all the parameters necessary to instantiate this loader (a
         :class:`SpectDataLoaderParams`) or just those related to or just those related
         to the loader (a :class:`DataLoaderParams`). If the latter, `data_params` must
         be specified.
-    file_prefix : str, optional
-    file_suffix : str, optional
-    warn_on_missing : bool, optional
-    feat_subdir : str, optional
-    ali_subdir : str, optional
-    ref_subdir : str, optional
-    init_epoch : int, optional
+    file_prefix
+    file_suffix
+    warn_on_missing
+    feat_subdir
+    ali_subdir
+    ref_subdir
+    init_epoch
         Where training should resume from.
-    batch_first : bool, optional
-    data_params : SpectDataParams or :obj:`None`, optional
+    batch_first
+    data_params
         If specified, provides the parameters necessary to instantiate the underlying
         :class:`SpectDataSet`. Parameters in `data_params` will pre-empt any found in
         `params`.
-    seed : int or :obj:`None`, optional
+    seed
         The seed used to shuffle data. If unset, will be set randomly.
-    kwargs : keyword arguments, optional
+    **kwargs
         Additional :class:`torch.utils.data.DataLoader` arguments
 
     Yields
     ------
     feats : torch.Tensor
         A tensor of shape ``(N, T*, F)`` (or ``(T*, N, F)`` if `batch_first` is
-        :obj:`False`), where ``N`` is ``params.batch_size``, ``T*`` is the
-        maximum number of frames in an utterance in the batch, and ``F`` is the
-        number of filters per frame
+        :obj:`False`), where ``N`` is ``params.batch_size``, ``T*`` is the maximum
+        number of frames in an utterance in the batch, and ``F`` is the number of
+        filters per frame
     alis : torch.Tensor or None
         A long tensor size ``(N, T*)`` (or ``(T*, N)`` if `batch_first` is :obj:`False`)
         if an ``ali/`` dir exists, otherwise :obj:`None`
     refs : torch.Tensor or None
         A long tensor size ``(N, R*[, 3])`` (or ``(R*, N[, 3])`` if `batch_first` is
-        :obj:`False`), where ``R*`` is the maximum number of reference tokens
-        in the batch. The 3rd dimension will only exist if data were saved with
-        frame start/end indices. If the ``refs/`` directory does not exist,
-        `refs` and `ref_sizes` are :obj:`None`.
+        :obj:`False`), where ``R*`` is the maximum number of reference tokens in the
+        batch. The 3rd dimension will only exist if data were saved with frame start/end
+        indices. If the ``refs/`` directory does not exist, `refs` and `ref_sizes` are
+        :obj:`None`.
     feat_sizes : torch.Tensor
         A long tensor of shape ``(N,)`` specifying the lengths of utterances in the
         batch
@@ -279,7 +280,6 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
 
     Notes
     -----
-
     The first axis of each of `feats`, `alis`, `refs`, `feat_sizes`, and
     `ref_sizes` is ordered by utterances of descending frame lengths. Shorter
     utterances in `feats` are zero-padded to the right, `alis` is padded with
@@ -429,23 +429,22 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
 
     Parameters
     ----------
-    data_dir : str
-    params : DataLoaderParams
+    data_dir
+    params
         Either provides all the parameters necessary to instantiate this loader (a
         :class:`SpectDataLoaderParams`) or just those related to or just those related
         to the loader (a :class:`DataLoaderParams`). If the latter, `data_params` must
         be specified.
-    file_prefix : str, optional
-    file_suffix : str, optional
-    warn_on_missing : bool, optional
-    feat_subdir, ali_subdir, ref_subdir : str, optional
-    batch_first : bool, optional
-    data_params : SpectDataParams or :obj:`None`, optional
-    data_params : SpectDataParams or :obj:`None`, optional
+    file_prefix
+    file_suffix
+    warn_on_missing
+    feat_subdir, ali_subdir, ref_subdir
+    batch_first
+    data_params
         If specified, provides the parameters necessary to instantiate the underlying
         :class:`SpectDataSet`. Parameters in `data_params` will pre-empt any found in
         `params`.
-    kwargs : keyword arguments, optional
+    **kwargs
         Additional :class:`torch.utils.data.DataLoader` arguments
 
     Yields
@@ -620,51 +619,48 @@ def context_window_seq_to_batch(
     r"""Convert a sequence of context window elements to a batch
 
     Assume `seq` is a finite length sequence of pairs of ``window, ali``, where
-    ``window`` is of size ``(T, C, F)``, where ``T`` is some number of windows
-    (which can vary across elements in the sequence), ``C`` is the window size,
-    and ``F`` is some number filters, and ``ali`` is of size ``(T,)``. This
-    method batches all the elements of the sequence into a pair of ``windows,
-    alis``, where `windows` and `alis` will have shapes ``(N, C, F)`` and
-    ``(N,)`` resp., where :math:`N = \sum T` is the total number of context
-    windows over the utterances.
+    ``window`` is of size ``(T, C, F)``, where ``T`` is some number of windows (which
+    can vary across elements in the sequence), ``C`` is the window size, and ``F`` is
+    some number filters, and ``ali`` is of size ``(T,)``. This method batches all the
+    elements of the sequence into a pair of ``windows, alis``, where `windows` and
+    `alis` will have shapes ``(N, C, F)`` and ``(N,)`` resp., where :math:`N = \sum T`
+    is the total number of context windows over the utterances.
 
     If ``ali`` is :obj:`None` in any element, `alis` will also be :obj:`None`
 
     Parameters
     ----------
-    seq : sequence
+    seq
 
     Returns
     -------
-    windows : list
-    alis : list
+    windows : torch.Tensor
+    alis : torch.Tensor or None
     """
     windows = []
-    batch_ali = []
+    alis = []
     for window, ali in seq:
         windows.append(window)
         if ali is None:
             # assume every remaining ali will be none
-            batch_ali = None
+            alis = None
         else:
-            batch_ali.append(ali)
+            alis.append(ali)
     windows = torch.cat(windows)
-    if batch_ali is not None:
-        batch_ali = torch.cat(batch_ali)
-    return windows, batch_ali
+    if alis is not None:
+        alis = torch.cat(alis)
+    return windows, alis
 
 
 class ContextWindowDataLoaderParams(ContextWindowDataParams, DataLoaderParams):
     """Parameters for a ContextWindow*DataLoader
 
-    This implements the :class:`pydrobert.param.optuna.TunableParameterized`
-    interface
+    This implements the :class:`pydrobert.param.optuna.TunableParameterized` interface.
 
     See Also
     --------
     pydrobert.torch.data.ContextWindowTrainingDataLoader
     pydrobert.torch.data.ContextWindowEvaluationDataLoader
-        Where to use these parameters.
     """
 
     @classmethod
@@ -689,25 +685,25 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
 
     Parameters
     ----------
-    data_dir : str
-    params : ContextWindowDataLoaderParams or DataLoaderParams
+    data_dir
+    params
         Either provides all the parameters necessary to instantiate this loader (a
         :class:`ContextWindowDataLoaderParams`) or just those related to the loader
         (a :class:`DataLoaderParams`). If the latter, `data_params` must be specified.
-    file_prefix : str, optional
-    file_suffix : str, optional
-    warn_on_missing : bool, optional
-    feat_subdir, ali_subdir : str, optional
-    init_epoch : int, optional
+    file_prefix
+    file_suffix
+    warn_on_missing
+    feat_subdir, ali_subdir
+    init_epoch
         Where training should resume from
-    data_params : ContextWindowDataParams or :obj:`None`, optional
+    data_params
         If specified, provides the parameters necessary to instantiate the underlying
         :class:`ContextWindowDataSet`. Parameters in `data_params` will pre-empt any
         found in `params`.
-    seed : int or :obj:`None`, optional
+    seed
         The seed used to shuffle data. If :obj:`None`, `params` is checked for
         a `seed` parameter or, if none is found, one will be generated randomly
-    kwargs : keyword arguments, optional
+    **kwargs
         Additional :class:`torch.utils.data.DataLoader` arguments
 
     Attributes
@@ -823,20 +819,20 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
 
     Parameters
     ----------
-    data_dir : str
-    params : ContextWindowDataLoaderParams or DataLoaderParams
+    data_dir
+    params
         Either provides all the parameters necessary to instantiate this loader (a
         :class:`ContextWindowDataLoaderParams`) or just those related to the loader
         (a :class:`DataLoaderParams`). If the latter, `data_params` must be specified.
-    file_prefix : str, optional
-    file_suffix : str, optional
-    warn_on_missing : bool, optional
-    feat_subdir, ali_subdir : str, optional
-    data_params : ContextWindowDataParams or :obj:`None`, optional
+    file_prefix
+    file_suffix
+    warn_on_missing
+    feat_subdir, ali_subdir
+    data_params
         If specified, provides the parameters necessary to instantiate the underlying
         :class:`ContextWindowDataSet`. Parameters in `data_params` will pre-empt any
         found in `params`.
-    kwargs : keyword arguments, optional
+    **kwargs
         Additional :class:`torch.utils.data.DataLoader` arguments
 
     Yields

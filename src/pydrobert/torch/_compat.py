@@ -30,7 +30,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Iterable, List, Optional, Tuple, Union, NamedTuple, Set
+from typing import (
+    Any,
+    Iterable,
+    List,
+    Optional,
+    Tuple,
+    Union,
+    NamedTuple,
+    Set,
+)
 
 import torch
 
@@ -49,7 +58,13 @@ __all__ = [
     "script",
     "SpoofPackedSequence",
     "trunc_divide",
+    "TypeAlias",
 ]
+
+try:
+    from typing import TypeAlias
+except ImportError:
+    from typing_extensions import TypeAlias
 
 
 def check_methods(C, *methods):
@@ -76,17 +91,6 @@ class SpoofPackedSequence(NamedTuple):
     batch_sizes: torch.Tensor
     sorted_indices: Optional[torch.Tensor]
     unsorted_indices: Optional[torch.Tensor]
-
-
-if config.USE_JIT:
-    script = torch.jit.script
-else:
-    try:
-        script = torch.jit.script_if_tracing
-    except AttributeError:
-
-        def script(obj, *args, **kwargs):
-            return obj
 
 
 try:
@@ -177,8 +181,31 @@ except ModuleNotFoundError:
 
     _v = TorchVersion(internal_version)
 
+try:
+    _v < "1.8.0"
+except TypeError:
+    # This occurs in autodoc when torch is being mocked.
+    _v = ""
+
+if config.USE_JIT:
+    script = torch.jit.script
+else:
+    try:
+        script = torch.jit.script_if_tracing
+    except AttributeError:
+
+        def script(obj, *args, **kwargs):
+            return obj
+
+
 if _v < "1.8.0":
     from torch.distributions.gumbel import euler_constant
+
+    if config.USE_JIT:
+        script = torch.jit.script
+    else:
+
+        script = lambda x: x
 
     @script
     def pad_sequence(
@@ -254,6 +281,11 @@ if _v < "1.8.0":
 else:
     from torch.distributions.utils import euler_constant
     from torch.distributions.constraints import one_hot
+
+    if config.USE_JIT:
+        script = torch.jit.script
+    else:
+        script = torch.jit.script_if_tracing
 
     pad_sequence = torch.nn.utils.rnn.pad_sequence
     linalg_solve = torch.linalg.solve

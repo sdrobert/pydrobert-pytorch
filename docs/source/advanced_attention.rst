@@ -2,7 +2,7 @@ Advanced Attention and Transformer Networks
 ===========================================
 
 This document is a supplement for advanced usage of
-:class:`pydrobert.torch.layers.GlobalSoftAttention`, such as for Transformer
+:class:`pydrobert.torch.modules.GlobalSoftAttention`, such as for Transformer
 Networks [vaswani2017]_. It picks up where the class' summary left off.
 
 `query` is an (n - 1)-dimensional tensor for ``n > 1``. `key` is an
@@ -25,23 +25,22 @@ We'll illustrate with an example. Here, we've designed a barebones version of a
 transformer network. There are lots of extra bits in a full transformer network
 -- check [vaswani2017]_. Here we focus on the single-headed attention mechanism
 (though a multi-headed version would be trivial to implement with
-:class:`pydrobert.torch.layers.MultiHeadedAttention`). You can probably skip
+:class:`pydrobert.torch.modules.MultiHeadedAttention`). You can probably skip
 the explanation in the middle if all you want to make is a transformer network
 -- these settings should work.
 
 First the requisite imports:
 
 >>> import torch
->>> from pydrobert.torch.layers import *
+>>> from pydrobert.torch.modules import *
 
 The encoder is going to take in transcripts `inp` of shape ``(T, num_batch)``,
 which have been right-padded along dimension 0. It will output both its
-encoding in the shape ``(T, num_batch, model_size)`` and a mask of shape
-``(T, 1, num_batch)`` that will be used by the decoder to only consider the
-region of the encoding that was unpadded. By not specifying `dim` when
-initializing :class:`pydrobert.torch.layers.DotProductSoftAttention`, the
-attention dimension is implicitly set to 0, which turns out to be our
-sequence dimension.
+encoding in the shape ``(T, num_batch, model_size)`` and a mask of shape ``(T,
+1, num_batch)`` that will be used by the decoder to only consider the region of
+the encoding that was unpadded. By not specifying `dim` when initializing
+:class:`pydrobert.torch.modules.DotProductSoftAttention`, the attention
+dimension is implicitly set to 0, which turns out to be our sequence dimension.
 
 >>> class Encoder(torch.nn.Module):
 >>>     def __init__(self, model_size, num_classes, padding_idx=-1):
@@ -82,8 +81,8 @@ Cartesian Product has been produced between the sequence dimensions of both
 `query` and `key`.
 
 We've unsqueezed `mask` to have shape ``(T, 1, num_batch)``. `mask` is
-responsible for ensuring only non-padded values of `key` are considered.
-It broadcasts with :math:`e` as:
+responsible for ensuring only non-padded values of `key` are considered. It
+broadcasts with :math:`e` as:
 
 .. code-block:: none
 
@@ -111,8 +110,8 @@ The 0-th dimension of `value` corresponds to its sequence dimension, which is
 lined up with the `key` sequence dimension, which is the one to be attended to.
 Had `value` been shaped as ``(1, T, num_batch)``, its sequence value would line
 up with that of `query`, :math:`a_{k=0} * value` would be constant along the
-attention dimension, and the weighted combination of terms would just
-yield the original `value` tensor.
+attention dimension, and the weighted combination of terms would just yield the
+original `value` tensor.
 
 Now on to the decoder
 

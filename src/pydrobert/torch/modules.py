@@ -12,7 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pytorch modules"""
+"""Custom PyTorch modules
+
+Notes
+-----
+To document :class:`torch.nn.Module` subclasses, we add a special heading called "Call
+Parameters" to the docstring which, along with "Returns", specify the signature of the
+module's :func:`__call__` method. The header "Parameters" refers to what values the
+module are initialized with. The general usage pattern is:
+
+>>> module = Module(*params)
+>>> returns = module(*call_params)
+"""
 
 __all__ = [
     "BeamSearch",

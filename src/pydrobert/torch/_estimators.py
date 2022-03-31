@@ -18,21 +18,9 @@ from typing import Callable
 
 import torch
 
+from ._compat import TypeAlias
 
-FunctionOnSample = Callable[[torch.Tensor], torch.Tensor]
-"""Type for functions of samples used in estimators
-
-This type is intended for use in estimators subclassing :class:`Estimator`.
-
-A `FunctionOnSample` is a callable which accepts a :class:`torch.Tensor` and returns a
-:class:`torch.Tensor`. The input is of shape ``(N,) + batch_size + event_size``, where
-``N`` is some number of samples and ``batch_size`` and ``event_size`` are determined by
-the proposal distribution. The return value is a tensor which broadcasts with ``(N,) +
-batch_size``, usually of that shape, storing the values of the function evaluated on
-each sample.
-
-`FunctionOnSample` can be a :class:`torch.nn.Module`.
-"""
+FunctionOnSample: TypeAlias = Callable[[torch.Tensor], torch.Tensor]
 
 
 class Estimator(metaclass=abc.ABCMeta):
@@ -69,13 +57,16 @@ class Estimator(metaclass=abc.ABCMeta):
 
     Parameters
     ----------
-    proposal : torch.distributions.Distribution
+    proposal
         The distribution over which the expectation is taken. This is usually but not
         always :math:`P` (see :class:`ImportanceSamplingEstimator` for a
         counterexample).
-    func : FunctionOnSample
-        The function :math:`f`.
-    is_log : bool, optional
+    func
+        The function :math:`f`. A callable (such as a :class:`pydrobert.torch.Module`)
+        which accepts a sample tensor as input of shape ``(num_samples,) +
+        proposal.batch_shape + proposal.event_shape`` and returns a tensor of shape
+        ``(num_samples,) + proposal.batch_shape``.
+    is_log
         If :obj:`True`, `func` defines :math:`\log f` instead of :math:`f`. Unless
         otherwise specified, `is_log` being true is semantically identical to redefining
         `func` as::
@@ -86,6 +77,11 @@ class Estimator(metaclass=abc.ABCMeta):
         and setting `is_log` to :obj:`False`. Practically, `is_log` may improve the
         numerical stability of certain estimators.
     
+    Returns
+    -------
+    v : torch.Tensor
+        An estimate of :math:`v`. Of shape ``proposal.batch_shape``.
+    
     Notes
     -----
     An estimator is not a :class:`torch.nn.Module` and is not in general safe to be
@@ -93,13 +89,13 @@ class Estimator(metaclass=abc.ABCMeta):
     output 
     """
 
-    proposal: torch.distributions.Distribution
+    proposal: torch.distributions.distribution.Distribution
     func: FunctionOnSample
     is_log: bool
 
     def __init__(
         self,
-        proposal: torch.distributions.Distribution,
+        proposal: torch.distributions.distribution.Distribution,
         func: FunctionOnSample,
         is_log: bool = False,
     ):

@@ -19,17 +19,17 @@ from typing import Optional
 import torch
 
 from ._compat import broadcast_shapes, script, unflatten
+from ._wrappers import proxy
 
 
 class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
     r"""Parent class for soft attention mechanisms on an entire input sequence
 
-    Global soft attention mechansims [bahdanau2015]_ are a way of getting rid
-    of one variable-length sequence dimension ``T`` in an input `key` using a
-    weighted sum of a tensor `value` that is informed by some other tensor,
-    `query`. The weights are dictated by the function ``score(query, key)``.
-    Usually, this is in the context of encoder-decoder architectures, which is
-    explained here.
+    Global soft attention mechansims [bahdanau2015]_ are a way of getting rid of one
+    variable-length sequence dimension ``T`` in an input `key` using a weighted sum of a
+    tensor `value` that is informed by some other tensor, `query`. The weights are
+    dictated by the function :func:`score`. Usually, this is in the context of
+    encoder-decoder architectures, which is explained here.
 
     Assume `query` is a tensor of shape ``(batch_size, query_size)`` representing a
     single hidden state of a decoder RNN. Assume `key` is a tensor of shape ``(T,
@@ -60,11 +60,7 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
 
         e = score(query, key)
 
-    ``score()`` is implemented by subclasses of :class:`GlobalSoftAttention`
-
-    The signature when calling an instance this module is::
-
-        attention(query, key, value[, mask])
+    :func:`score` is implemented by subclasses of :class:`GlobalSoftAttention`.
 
     Parameters
     ----------
@@ -74,10 +70,31 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
         The length of the last dimension of the `key` argument
     dim : int, optional
         The sequence dimension of the `key` argument
+    
+    Call Parameters
+    ---------------
+    query : torch.Tensor
+        A tensor of shape ``(A*, query_size)`` representing the queries. ``(A*)`` must
+        broadcast with ``(B*, C*)`` from `key`, `value`, and `mask`.
+    key : torch.Tensor
+        A tensor of shape ``(B*, T, C*, key_size)`` representing the keys. ``(B*, C*)``
+        must broadcast with ``(A*)`` from `query`.
+    value : torch.Tensor
+        A tensor of shape ``(B*, T, C*, D*)`` representing the values. ``(B*, C*)``
+        must broadcast with ``(A*)`` from `query`.
+    mask : torch.Tensor or None, optional
+        An optional boolean tensor of shape ``(B*, T, C*)`` which indicates which values
+        of the key should be kept (:obj:`False` means zero-out). If unset, assumed to
+        be entirely :obj:`True`.
+    
+    Returns
+    -------
+    out : torch.Tensor
+        The output tensor of shape ``(E*, D*)``, where ``(E*)`` is the result of
+        broadcasting ``(A*)`` with ``(B*, C*)``.
 
     Examples
     --------
-
     A simple auto-regressive decoder using soft attention on encoder outputs
     with "concat"-style attention
 
@@ -110,7 +127,7 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
     :ref:`Advanced Attention and Transformer Networks`
         :class:`GlobalSoftAttention` is compatible with a variety of inputs.
         This tutorial gives a toy transformer network to illustrate
-        broadcasting semantics
+        broadcasting semantics.
     """
 
     __constants__ = ["query_size", "key_size", "dim"]
@@ -129,21 +146,26 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
     def score(self, query: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
         """Calculate the score function over the entire input
 
-        This is implemented by subclasses of :class:`GlobalSoftAttention`
+        This is implemented by subclasses of :class:`GlobalSoftAttention`. Computes::
 
-        ``query.unsqueeze(self.dim)[..., 0]`` broadcasts with ``value[...,
-        0]``. The final dimension of `query` is of length ``self.query_size``
-        and the final dimension of `key` should be of length ``self.key_size``
+            e = score(query, key)
+        
+        from the class description.
 
         Parameters
         ----------
-        query : torch.Tensor
-        key : torch.Tensor
+        query
+            A tensor of shape ``(A*, query_size)`` representing the queries. ``(A*)``
+            must broadcast with ``(B*, C*)`` from `key`.
+        key
+            A tensor of shape ``(B*, T, C*, key_size)`` representing the keys. ``(B*,
+            C*)`` must broadcast with ``(A*)`` from `query`.
 
         Returns
         -------
-        e : torch.Tensor
-            Of the same shape as the above broadcasted tensor
+        torch.Tensor
+            A tensor of scores of shape ``(E*, T, F*)``, where ``(E*)`` is the
+            result of broadcasting ``(A*)`` with ``(B*, C*)``.
         """
         raise NotImplementedError()
 
@@ -155,13 +177,7 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
         value: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ):
-        """Check if input is properly formatted, RuntimeError otherwise
-
-        See Also
-        --------
-        :ref:`Advanced Attention and Transformer Networks`
-            For full broadcasting rules
-        """
+        """Check if input is properly formatted, RuntimeError otherwise"""
         key_dim = key.dim()
         if query.dim() != key_dim - 1:
             raise RuntimeError("query must have one fewer dimension than key")
@@ -222,13 +238,28 @@ class DotProductSoftAttention(GlobalSoftAttention):
 
     Parameters
     ----------
-    size : int
-        Both the query and key size
-    dim : int, optional
-    scale_factor : float, optional
-        A floating point to multiply the each :math:`e` with. Usually
-        1, but if set to :math:`1 / size`, you'll get the scaled dot-product
-        attention of [vaswani2017]_
+    size
+        The size of the final dimension of both `query` and `key`.
+    dim
+    scale_factor
+        A floating point to multiply the each :math:`e` with. Usually :obj:`1`, but if
+        set to :math:`1 / size`, you'll get the scaled dot-product attention of
+        [vaswani2017]_.
+    
+    Call Parameters
+    ---------------
+    query : torch.Tensor
+        A tensor of shape ``(A*, size)`` representing the queries. ``(A*)`` must
+        broadcast with ``(B*, C*)`` from `key`, `value`, and `mask`.
+    key : torch.Tensor
+        A tensor of shape ``(B*, T, C*, size)`` representing the keys. ``(B*, C*)``
+        must broadcast with ``(A*)`` from `query`.
+    value : torch.Tensor
+    mask : torch.Tensor or None, optional
+    
+    Returns
+    -------
+    out : torch.Tensor
 
     See Also
     --------
@@ -251,6 +282,8 @@ class DotProductSoftAttention(GlobalSoftAttention):
     def extra_repr(self) -> str:
         return super().extra_repr() + f", scale_factor={self.scale_factor}"
 
+    __call__ = proxy(GlobalSoftAttention.forward)
+
 
 class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
     r"""Dot product soft attention with a learned matrix in between
@@ -267,11 +300,22 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
 
     Parameters
     ----------
-    query_size : int
-    key_size : int
-    dim : int, optional
-    bias : bool, optional
+    query_size
+    key_size
+    dim
+    bias
         Whether to add a bias term ``b``: :math:`W key + b`
+    
+    Call Parameters
+    ---------------
+    query : torch.Tensor
+    key : torch.Tensor
+    value : torch.Tensor
+    mask : torch.Tensor or None, optional
+    
+    Returns
+    -------
+    out : torch.Tensor
 
     See Also
     --------
@@ -296,6 +340,8 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
         return (query * Wkey).sum(-1)
 
     reset_parameters = torch.jit.unused(torch.nn.Linear.reset_parameters)
+
+    __call__ = proxy(GlobalSoftAttention.forward)
 
 
 @script
@@ -334,12 +380,23 @@ class ConcatSoftAttention(GlobalSoftAttention):
 
     Parameters
     ----------
-    query_size : int
-    key_size : int
-    dim : int, optional
-    bias : bool, optional
+    query_size
+    key_size
+    dim
+    bias
         Whether to add bias term ``b`` :math:`W [query, key] + b`
-    hidden_size : int, optional
+    hidden_size
+        
+    Call Parameters
+    ---------------
+    query : torch.Tensor
+    key : torch.Tensor
+    value : torch.Tensor
+    mask : torch.Tensor or None, optional
+    
+    Returns
+    -------
+    out : torch.Tensor
 
     See Also
     --------
@@ -379,6 +436,8 @@ class ConcatSoftAttention(GlobalSoftAttention):
 
     def extra_repr(self) -> str:
         return super().extra_repr() + f", hidden_size={self.v.size(0)}"
+
+    __call__ = proxy(GlobalSoftAttention.forward)
 
 
 class MultiHeadedAttention(GlobalSoftAttention):
@@ -428,45 +487,52 @@ class MultiHeadedAttention(GlobalSoftAttention):
 
     Parameters
     ----------
-    query_size : int
+    query_size
         The size of the last dimension of the `query` being passed to this module (not
         the size of a head's query).
-    key_size : int
+    key_size
         The size of the last dimension of the `key` being passed to this module (not the
         size of a head's key).
-    value_size : int
+    value_size
         The size of the last dimension of the `value` being passed to this module (not
         the size of a head's value).
-    num_heads : int
+    num_heads
         The number of heads to spawn.
-    single_head_attention : GlobalSoftAttention
+    single_head_attention
         An instance of a subclass of :class:`GlobalSoftAttention` responsible for
         processing a head. `single_head_attention` attention will be used to derive the
         sequence dimension (``dim``) of `key` via ``single_head_attention.dim``, the
         size of a head's query ``d_k`` via ``single_head_attention.query_size``, and the
         size of a head's key via ``single_head_attention.key_size``
-    out_size : int, optional
+    out_size
         The size of the last dimension of `out`. If unset, the default is to match
         `value_size`
-    d_v : int, optional
+    d_v
         The size of the last dimension of a head's value. If unset, will default to
         ``max(1, value_size // num_heads)``
-    bias_WQ : bool, optional
+    bias_WQ
         Whether to add a bias term to :math:`W^Q`
-    bias_WK : bool, optional
+    bias_WK
         Whether to add a bias term to :math:`W^K`
-    bias_WV : bool, optional
+    bias_WV
         Whether to add a bias term to :math:`W^V`
-    bias_WC : bool, optional
+    bias_WC
         Whether to add a bias term to :math:`W^C`
 
-    Attributes
-    ----------
-    query_size, key_size, value_size, out_size, num_heads, dim : int
-    d_q, d_k, d_v : int
-    single_head_attention : GlobalSoftAttention
-    WQ, WK, WV, WC : torch.nn.Linear
-        Matrices :math:`W^Q`, :math:`W^K`, :math:`W^V`, and :math:`W^C`
+    Call Parameters
+    ---------------
+    query : torch.Tensor
+    key : torch.Tensor
+    value : torch.Tensor
+        A tensor of shape ``(B*, T, C*, D*, value_size)`` representing the values.
+        ``(B*, C*)`` must broadcast with ``(A*)`` from `query`.
+    mask : torch.Tensor or None, optional
+    
+    Returns
+    -------
+    out : torch.Tensor
+        The output tensor of shape ``(E*, D*, value_size)``, where ``(E*)``
+        is the result of broadcasting ``(A*)`` with ``(B*, C*)``.
     """
 
     __constants__ = [
@@ -595,3 +661,5 @@ class MultiHeadedAttention(GlobalSoftAttention):
             self.value_size, self.out_size, self.num_heads
         )
         return s
+
+    __call__ = proxy(GlobalSoftAttention.forward)
