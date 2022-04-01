@@ -35,12 +35,43 @@ def test_binomial_coefficient(device, jit_type, tmax):
     for length in range(tmax):
         for count in range(tmax):
             if count > length:
-                exp = 0
+                N_exp = 0
             else:
-                exp = math.factorial(length) // (
+                N_exp = math.factorial(length) // (
                     math.factorial(count) * math.factorial(length - count)
                 )
-            assert binom[length, count] == exp, (length, count)
+            assert binom[length, count] == N_exp, (length, count)
+
+
+def test_enumerate_binary_sequences_with_cardinality(device, jit_type):
+    tmax = 10
+    T = torch.arange(tmax - 1, -1, -1, device=device)
+    eb = eb_ = functional.enumerate_binary_sequences_with_cardinality
+    if jit_type == "script":
+        eb = eb_ = torch.jit.script(eb)
+    elif jit_type == "trace":
+        eb = torch.jit.trace(eb, (torch.tensor(1), torch.tensor(1)))
+    batched, binom = eb(T.unsqueeze(-1), T)
+    for length in range(tmax):
+        for count in range(tmax):
+            nonbatched = eb_(length, count).to(device)
+            if count > length:
+                N_exp = M_exp = 0
+            else:
+                if count == 0:
+                    M_exp, N_exp = 0, 1
+                else:
+                    M_exp = math.factorial(length - 1) // (
+                        math.factorial(count - 1) * math.factorial(length - count)
+                    )
+                    N_exp = M_exp * length // count
+            assert nonbatched.shape == (N_exp, length)
+            assert (nonbatched.sum(1) == count).all()
+            assert (nonbatched.sum(0) == M_exp).all()
+            assert binom[tmax - length - 1, tmax - count - 1] == N_exp
+            batched_elem = batched[tmax - length - 1, tmax - count - 1, :N_exp, :length]
+            assert batched_elem.shape == nonbatched.shape
+            assert (batched_elem == nonbatched).all()
 
 
 def test_simple_random_sampling_without_replacement(device, jit_type):

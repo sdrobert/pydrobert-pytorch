@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Union
+from typing import Any, Optional, Tuple, Union, overload
 
 import torch
 
@@ -176,6 +176,109 @@ def binomial_coefficient(length: torch.Tensor, count: torch.Tensor) -> torch.Ten
         binom = trunc_divide(x[length], x[count] * x[length_m_count])
         binom.masked_fill_(length_m_count == -1, 0)
     return binom
+
+
+@script
+def _enumerate_binary_sequences(
+    length: int, count: int, device: torch.device
+) -> torch.Tensor:
+    if length < 0 or count < 0:
+        raise RuntimeError(
+            f"length ({length}) and count ({count}) must be non-negative"
+        )
+    if count > length:
+        return torch.empty((0, length), device=device)
+    support = torch.zeros((length, int(2 ** length)), device=device)
+    for t in range(length):
+        support.view(length, int(2 ** t), 2, -1)[length - t - 1, :, 1] = 1
+    return support.T
+
+
+@overload
+def enumerate_binary_sequences_with_cardinality(length: int, count: int) -> torch.Tensor:
+    ...
+
+
+@overload
+def enumerate_binary_sequences_with_cardinality(
+    length: torch.Tensor, count: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    ...
+
+
+@script
+def _enumerate_binary_with_cardinality_int(length: int, count: int) -> torch.Tensor:
+    support = _enumerate_binary_sequences(length, count, torch.device("cpu"))
+    support = support[support.sum(1) == count]  # (2 ** length, length)
+    return support
+
+
+@script
+def _enumerate_binary_with_cardinality_tensor(
+    length: torch.Tensor, count: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    device = length.device
+    length_, count_ = int(length.max().item()), int(count.max().item())
+    length, count = torch.broadcast_tensors(length, count)
+    binom = binomial_coefficient(length, count)
+    binom_ = int(binom.max().item())
+    # _enumerate_binary_sequences outputs sequences with b_t = 1 only after all
+    # sequences with b_t = 0. We therefore capture all the combos for a given length
+    # by limiting ourselves to the indices up to 2 ** length.
+    N = int(2 ** length_)
+    support = _enumerate_binary_sequences(length_, count_, device)
+    support = torch.cat([support, torch.empty_like(support)])
+    range_ = torch.arange(2 * N, device=device).expand(binom.shape + (2 * N,))
+    pad = (range_ >= N) & (range_ < N + (binom_ - binom).unsqueeze(-1))
+    keep = (range_ < (2 ** length).unsqueeze(-1)) & (
+        support.sum(-1).expand(binom.shape + (2 * N,)) == count.unsqueeze(-1)
+    )
+    support = support.expand(binom.shape + (-1, -1))[pad | keep]
+    support = support.view(binom.shape + (binom_, length_))
+    return support, binom
+
+
+def enumerate_binary_sequences_with_cardinality(length: Any, count: Any) -> Any:
+    r"""Enumerate the configurations of binary sequences with fixed sum
+    
+    Parameters
+    ----------
+    length
+        The number of elements in the binary sequence. Either a tensor or an int. Must
+        be the same type as `count`. If a tensor, must broadcast with `count`.
+    count
+        The number of elements with value 1. Either a tensor or an int. Must be the same
+        type as `length`. If a tensor, must broadcast with `length`.
+    
+    Returns
+    -------
+    support : torch.Tensor or tuple of torch.Tensor
+        If `length` and `count` are both integers, `support` is a tensor of shape
+        ``(N, length)`` where :math:`N = \binom{length}{count}` is the number of unique
+        binary sequence configurations of length `length` such that for any ``n``,
+        ``support[n].sum() == count``.
+
+        If `length` and `count` are both long tensors, `support` is a tuple of tensors
+        ``support_, binom`` where `support_` is of shape ``(B*, N_, length_)`` and
+        `binom` is of shape ``(B*)``. ``B*`` refers to the broadcasted shape of `length`
+        and `count`, ``N_`` is the maximum value in `binom`, and ``length_`` is the
+        maximum value in ``length_``. For multi-index ``b``, ``support[b]`` stores the
+        unique binary sequence configurations for ``length[b]`` and ``count[b]``.
+        ``binom[b]`` stores the number of unique configurations for ``length[b]`` and
+        ``count[b]``, which is always :math:`\binom{length[b]}{count[b]}`. Sequences
+        are right-padded to the maximum length and count: for index ``b``, only values
+        in ``support[b, :binom[b], :length[b]]`` are valid.
+    
+    Warnings
+    --------
+    The size of the returned support grows exponentially with `length`.
+    """
+    if isinstance(length, torch.Tensor) and isinstance(count, torch.Tensor):
+        return _enumerate_binary_with_cardinality_tensor(length, count)
+    elif isinstance(length, int) and isinstance(count, int):
+        return _enumerate_binary_with_cardinality_int(length, count)
+    else:
+        raise RuntimeError("length and count must both be tensors or ints")
 
 
 class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFamily):
