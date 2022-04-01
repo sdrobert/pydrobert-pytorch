@@ -5,6 +5,9 @@ References
    plans by using sequential (item by item) selection techniques and digital
    computers," vol. 57, no. 298, pp. 387-402, Jun. 1962, doi:
    10.1080/01621459.1962.10480667.
+.. [howard1972] S. Howard, "Discussion on Professor Cox's paper," Journal of
+   the Royal Statistical Society, vol. 34, no. 2, pp. 210-211, Jan. 1972, doi:
+   10.1111/j.2517-6161.1972.tb00900.x.
 .. [williams1992] R. J. Williams, "Simple statistical gradient-following
    algorithms for connectionist reinforcement learning," Machine Learning,
    vol. 8, no. 3, pp. 229-256, May 1992.

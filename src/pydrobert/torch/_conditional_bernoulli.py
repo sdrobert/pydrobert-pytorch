@@ -147,6 +147,11 @@ def binomial_coefficient(length: torch.Tensor, count: torch.Tensor) -> torch.Ten
     will be avoided by ensuring `length` does not exceed :obj:`66`. The binomial
     coefficient is at its highest when ``count = length // 2`` and at its lowest when
     ``count == length`` or ``count == 0``.
+
+    Notes
+    -----
+    When the maximum `length` exceeds :obj:`20`, the implementation uses the recursion
+    defined in [howard1972]_.
     """
     device = length.device
     if ((count < 0) | (length < 0)).any():
@@ -167,7 +172,7 @@ def binomial_coefficient(length: torch.Tensor, count: torch.Tensor) -> torch.Ten
         count = count.clamp_max(length_)
         x = torch.arange(length_ + 2, device=device)
         x[0] = 1
-        x = x.cumprod_(0)
+        x = x.cumprod(0)
         binom = trunc_divide(x[length], x[count] * x[length_m_count])
         binom.masked_fill_(length_m_count == -1, 0)
     return binom
