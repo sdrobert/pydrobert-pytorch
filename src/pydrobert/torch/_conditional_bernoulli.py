@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from multiprocessing.sharedctypes import Value
 from typing import Any, Optional, Tuple, Union, overload
 
 import torch
@@ -331,8 +332,20 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
         out_size: Optional[int] = None,
         validate_args=None,
     ):
-        given_count = torch.as_tensor(given_count)
-        total_count = torch.as_tensor(total_count)
+        device = None
+        if isinstance(given_count, torch.Tensor):
+            device = given_count.device
+            if (
+                isinstance(total_count, torch.Tensor)
+                and given_count.device != total_count.device
+            ):
+                raise ValueError(
+                    "given_count and total_count must be on the same device"
+                )
+        elif isinstance(total_count, torch.Tensor):
+            device = total_count.device
+        given_count = torch.as_tensor(given_count, device=device)
+        total_count = torch.as_tensor(total_count, device=device)
         total_count_max = int(total_count.max().item())
         if out_size is None:
             out_size = total_count_max
