@@ -195,7 +195,9 @@ def _enumerate_binary_sequences(
 
 
 @overload
-def enumerate_binary_sequences_with_cardinality(length: int, count: int) -> torch.Tensor:
+def enumerate_binary_sequences_with_cardinality(
+    length: int, count: int
+) -> torch.Tensor:
     ...
 
 
@@ -308,7 +310,12 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
     out_size
         The length of the binary vectors. If it exceeds some value of `total_count`,
         that sample will be right-padded with zeros. Must be no less than
-        ``total_count.max()``. If unset, defaults to that value.        
+        ``total_count.max()``. If unset, defaults to that value.
+    
+    Notes
+    -----
+    The support can only be enumerated if all elements of `total_count` are equal;
+    likewise for `given_count`.
     """
 
     arg_constraints = {
@@ -350,6 +357,30 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
         return BinaryCardinalityConstraint(
             self.total_count, self.given_count, self.event_shape[0]
         )
+
+    @property
+    def has_enumerate_support(self) -> bool:
+        return (
+            (self.total_count == self.total_count.flatten()[0]).all()
+            & (self.given_count == self.given_count.flatten()[0]).all()
+        ).item()
+
+    def enumerate_support(self, expand=True) -> torch.Tensor:
+        if not self.has_enumerate_support:
+            raise NotImplementedError(
+                "total_count must all be equal and given_count must all be equal to "
+                "enumerate support"
+            )
+        total = self.total_count.flatten()[0].item()
+        given = self.given_count.flatten()[0].item()
+        support = enumerate_binary_sequences_with_cardinality(total, given)
+        out_size = self.event_shape[0]
+        if out_size != total:
+            support = torch.nn.functional.pad(support, (0, out_size - total))
+        support = support.view((-1,) + (1,) * len(self.batch_shape) + (out_size,))
+        if expand:
+            support = support.expand((-1,) + self.batch_shape + (out_size,))
+        return support
 
     @lazy_property
     def log_partition(self) -> torch.Tensor:

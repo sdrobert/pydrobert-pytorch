@@ -121,3 +121,27 @@ def test_simple_random_sampling_without_replacement(device, jit_type):
     lp_act = srswor.log_prob(b)
     assert torch.allclose(lp_exp, lp_act)
 
+
+def test_simple_random_sampling_without_replacement_enumerate_support(device):
+    tmax = 5
+    given_count = 2
+    total_count = torch.arange(1, tmax + 1, device=device).clamp_min_(given_count)
+    dist = distributions.SimpleRandomSamplingWithoutReplacement(
+        given_count, total_count
+    )
+    assert not dist.has_enumerate_support
+    total_count.fill_(tmax)
+    dist = distributions.SimpleRandomSamplingWithoutReplacement(
+        given_count, total_count, tmax + 1
+    )
+    assert dist.has_enumerate_support
+    support = dist.enumerate_support(True)
+    M_exp = math.factorial(tmax - 1) // (
+        math.factorial(given_count - 1) * math.factorial(tmax - given_count)
+    )
+    N_exp = M_exp * tmax // given_count
+    assert support.shape == (N_exp, tmax, tmax + 1)
+    assert (support[..., -1] == 0).all()
+    support = support[..., :-1]
+    assert (support.sum(-1) == given_count).all()
+    assert (support.sum(0) == M_exp).all()
