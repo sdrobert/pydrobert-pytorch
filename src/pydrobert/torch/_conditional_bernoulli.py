@@ -19,7 +19,7 @@ import torch
 from torch.distributions import constraints
 from torch.distributions.utils import lazy_property
 
-from ._compat import script
+from ._compat import script, trunc_divide
 
 
 @script
@@ -106,6 +106,71 @@ class BinaryCardinalityConstraint(constraints.Constraint):
         value_sum = value.sum(-1)
         matches_count = value_sum == self.given_count.expand_as(value_sum)
         return is_bool & isnt_gte_tc & matches_count
+
+
+@script
+def binomial_coefficient(length: torch.Tensor, count: torch.Tensor) -> torch.Tensor:
+    r"""Compute the binomial coefficients (length choose count)
+    
+    The binomial coefficient "`length` choose `count`" is calculated as
+
+    .. math::
+
+        \binom{length}{count} = \frac{length!}{length!(length - count)!} \\
+        x! = \begin{cases}
+            \prod_{x'=1}^x x' & x > 0 \\
+            1 & x = 0 \\
+            0 & x < 0
+        \end{cases}
+
+    Parameters
+    ----------
+    length
+        A long tensor of the upper terms in the coefficient. Must broadcast with
+        `count`.
+    count
+        A long tensor of the lower terms in the coefficient. Must broadcast with
+        `length`.
+    
+    Returns
+    -------
+    binom : torch.Tensor
+        A long tensor of the broadcasted shape of `length` and `count`. The value
+        at multi-index ``n``, ``binom[n]``, stores the binomial coefficient
+        ``length[n]`` choose ``count[n]``, assuming `length` and `count` have already
+        been broadcast together.
+    
+    Warnings
+    --------
+    As the values in `binom` can get very large, this function is susceptible to
+    overflow. For example, :math:`\binom{67}{33}` exceeds the long's maximum. Overflow
+    will be avoided by ensuring `length` does not exceed :obj:`66`. The binomial
+    coefficient is at its highest when ``count = length // 2`` and at its lowest when
+    ``count == length`` or ``count == 0``.
+    """
+    device = length.device
+    if ((count < 0) | (length < 0)).any():
+        raise RuntimeError("length and count must be non-negative")
+    length_ = int(length.max().item())
+    if length_ > 20:
+        count_ = int(count.max().item())
+        binom = torch.empty((count_ + 1, length_ + 1), device=device, dtype=torch.long)
+        binom[..., 0] = 0
+        binom[0] = 1
+        for c in range(1, count_ + 1):
+            binom[c, 1:] = binom[c - 1, :-1].cumsum(0)
+        binom = binom.flatten()[length + count * (length_ + 1)]
+    else:
+        # the factorials are guaranteed to lie within long precision; this algorithm
+        # saves some time
+        length_m_count = (length - count).clamp_min_(-1)
+        count = count.clamp_max(length_)
+        x = torch.arange(length_ + 2, device=device)
+        x[0] = 1
+        x = x.cumprod_(0)
+        binom = trunc_divide(x[length], x[count] * x[length_m_count])
+        binom.masked_fill_(length_m_count == -1, 0)
+    return binom
 
 
 class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFamily):

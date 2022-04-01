@@ -14,7 +14,10 @@
 
 """Pytorch functions"""
 
-from ._conditional_bernoulli import simple_random_sampling_without_replacement
+from ._conditional_bernoulli import (
+    binomial_coefficient,
+    simple_random_sampling_without_replacement,
+)
 from ._decoding import (
     beam_search_advance,
     ctc_greedy_search,
@@ -47,6 +50,7 @@ from ._string import (
 
 __all__ = [
     "beam_search_advance",
+    "binomial_coefficient",
     "ctc_greedy_search",
     "ctc_prefix_search_advance",
     "dense_image_warp",

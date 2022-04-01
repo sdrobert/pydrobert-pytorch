@@ -15,9 +15,32 @@
 import math
 
 import torch
+import pytest
 
 import pydrobert.torch.distributions as distributions
 import pydrobert.torch.functional as functional
+
+
+@pytest.mark.parametrize("tmax", [20, 66])
+def test_binomial_coefficient(device, jit_type, tmax):
+    T = torch.arange(tmax, device=device)
+    binomial_coefficient = functional.binomial_coefficient
+    if jit_type == "script":
+        binomial_coefficient = torch.jit.script(binomial_coefficient)
+    elif jit_type == "trace":
+        binomial_coefficient = torch.jit.trace(
+            binomial_coefficient, (torch.tensor(0), torch.tensor(0)),
+        )
+    binom = binomial_coefficient(T.unsqueeze(1), T)
+    for length in range(tmax):
+        for count in range(tmax):
+            if count > length:
+                exp = 0
+            else:
+                exp = math.factorial(length) // (
+                    math.factorial(count) * math.factorial(length - count)
+                )
+            assert binom[length, count] == exp, (length, count)
 
 
 def test_simple_random_sampling_without_replacement(device, jit_type):
