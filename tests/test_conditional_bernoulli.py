@@ -15,9 +15,63 @@
 import math
 
 import torch
+import pytest
 
 import pydrobert.torch.distributions as distributions
 import pydrobert.torch.functional as functional
+
+
+@pytest.mark.parametrize("tmax", [20, 66])
+def test_binomial_coefficient(device, jit_type, tmax):
+    T = torch.arange(tmax, device=device)
+    binomial_coefficient = functional.binomial_coefficient
+    if jit_type == "script":
+        binomial_coefficient = torch.jit.script(binomial_coefficient)
+    elif jit_type == "trace":
+        binomial_coefficient = torch.jit.trace(
+            binomial_coefficient, (torch.tensor(0), torch.tensor(0)),
+        )
+    binom = binomial_coefficient(T.unsqueeze(1), T)
+    for length in range(tmax):
+        for count in range(tmax):
+            if count > length:
+                N_exp = 0
+            else:
+                N_exp = math.factorial(length) // (
+                    math.factorial(count) * math.factorial(length - count)
+                )
+            assert binom[length, count] == N_exp, (length, count)
+
+
+def test_enumerate_binary_sequences_with_cardinality(device, jit_type):
+    tmax = 10
+    T = torch.arange(tmax - 1, -1, -1, device=device)
+    eb = eb_ = functional.enumerate_binary_sequences_with_cardinality
+    if jit_type == "script":
+        eb = eb_ = torch.jit.script(eb)
+    elif jit_type == "trace":
+        eb = torch.jit.trace(eb, (torch.tensor(1), torch.tensor(1)))
+    batched, binom = eb(T.unsqueeze(-1), T)
+    for length in range(tmax):
+        for count in range(tmax):
+            nonbatched = eb_(length, count).to(device)
+            if count > length:
+                N_exp = M_exp = 0
+            else:
+                if count == 0:
+                    M_exp, N_exp = 0, 1
+                else:
+                    M_exp = math.factorial(length - 1) // (
+                        math.factorial(count - 1) * math.factorial(length - count)
+                    )
+                    N_exp = M_exp * length // count
+            assert nonbatched.shape == (N_exp, length)
+            assert (nonbatched.sum(1) == count).all()
+            assert (nonbatched.sum(0) == M_exp).all()
+            assert binom[tmax - length - 1, tmax - count - 1] == N_exp
+            batched_elem = batched[tmax - length - 1, tmax - count - 1, :N_exp, :length]
+            assert batched_elem.shape == nonbatched.shape
+            assert (batched_elem == nonbatched).all()
 
 
 def test_simple_random_sampling_without_replacement(device, jit_type):
@@ -67,3 +121,27 @@ def test_simple_random_sampling_without_replacement(device, jit_type):
     lp_act = srswor.log_prob(b)
     assert torch.allclose(lp_exp, lp_act)
 
+
+def test_simple_random_sampling_without_replacement_enumerate_support(device):
+    tmax = 5
+    given_count = 2
+    total_count = torch.arange(1, tmax + 1, device=device).clamp_min_(given_count)
+    dist = distributions.SimpleRandomSamplingWithoutReplacement(
+        given_count, total_count
+    )
+    assert not dist.has_enumerate_support
+    total_count.fill_(tmax)
+    dist = distributions.SimpleRandomSamplingWithoutReplacement(
+        given_count, total_count, tmax + 1
+    )
+    assert dist.has_enumerate_support
+    support = dist.enumerate_support(True)
+    M_exp = math.factorial(tmax - 1) // (
+        math.factorial(given_count - 1) * math.factorial(tmax - given_count)
+    )
+    N_exp = M_exp * tmax // given_count
+    assert support.shape == (N_exp, tmax, tmax + 1)
+    assert (support[..., -1] == 0).all()
+    support = support[..., :-1]
+    assert (support.sum(-1) == given_count).all()
+    assert (support.sum(0) == M_exp).all()

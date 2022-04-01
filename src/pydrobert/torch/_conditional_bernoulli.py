@@ -12,14 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Union
+from multiprocessing.sharedctypes import Value
+from typing import Any, Optional, Tuple, Union, overload
 
 import torch
 
 from torch.distributions import constraints
 from torch.distributions.utils import lazy_property
 
-from ._compat import script
+from ._compat import script, trunc_divide
 
 
 @script
@@ -108,6 +109,181 @@ class BinaryCardinalityConstraint(constraints.Constraint):
         return is_bool & isnt_gte_tc & matches_count
 
 
+@script
+def binomial_coefficient(length: torch.Tensor, count: torch.Tensor) -> torch.Tensor:
+    r"""Compute the binomial coefficients (length choose count)
+    
+    The binomial coefficient "`length` choose `count`" is calculated as
+
+    .. math::
+
+        \binom{length}{count} = \frac{length!}{length!(length - count)!} \\
+        x! = \begin{cases}
+            \prod_{x'=1}^x x' & x > 0 \\
+            1 & x = 0 \\
+            0 & x < 0
+        \end{cases}
+
+    Parameters
+    ----------
+    length
+        A long tensor of the upper terms in the coefficient. Must broadcast with
+        `count`.
+    count
+        A long tensor of the lower terms in the coefficient. Must broadcast with
+        `length`.
+    
+    Returns
+    -------
+    binom : torch.Tensor
+        A long tensor of the broadcasted shape of `length` and `count`. The value
+        at multi-index ``n``, ``binom[n]``, stores the binomial coefficient
+        ``length[n]`` choose ``count[n]``, assuming `length` and `count` have already
+        been broadcast together.
+    
+    Warnings
+    --------
+    As the values in `binom` can get very large, this function is susceptible to
+    overflow. For example, :math:`\binom{67}{33}` exceeds the long's maximum. Overflow
+    will be avoided by ensuring `length` does not exceed :obj:`66`. The binomial
+    coefficient is at its highest when ``count = length // 2`` and at its lowest when
+    ``count == length`` or ``count == 0``.
+
+    Notes
+    -----
+    When the maximum `length` exceeds :obj:`20`, the implementation uses the recursion
+    defined in [howard1972]_.
+    """
+    device = length.device
+    if ((count < 0) | (length < 0)).any():
+        raise RuntimeError("length and count must be non-negative")
+    length_ = int(length.max().item())
+    if length_ > 20:
+        count_ = int(count.max().item())
+        binom = torch.empty((count_ + 1, length_ + 1), device=device, dtype=torch.long)
+        binom[..., 0] = 0
+        binom[0] = 1
+        for c in range(1, count_ + 1):
+            binom[c, 1:] = binom[c - 1, :-1].cumsum(0)
+        binom = binom.flatten()[length + count * (length_ + 1)]
+    else:
+        # the factorials are guaranteed to lie within long precision; this algorithm
+        # saves some time
+        length_m_count = (length - count).clamp_min_(-1)
+        count = count.clamp_max(length_)
+        x = torch.arange(length_ + 2, device=device)
+        x[0] = 1
+        x = x.cumprod(0)
+        binom = trunc_divide(x[length], x[count] * x[length_m_count])
+        binom.masked_fill_(length_m_count == -1, 0)
+    return binom
+
+
+@script
+def _enumerate_binary_sequences(
+    length: int, count: int, device: torch.device
+) -> torch.Tensor:
+    if length < 0 or count < 0:
+        raise RuntimeError(
+            f"length ({length}) and count ({count}) must be non-negative"
+        )
+    if count > length:
+        return torch.empty((0, length), device=device)
+    support = torch.zeros((length, int(2 ** length)), device=device)
+    for t in range(length):
+        support.view(length, int(2 ** t), 2, -1)[length - t - 1, :, 1] = 1
+    return support.T
+
+
+@overload
+def enumerate_binary_sequences_with_cardinality(
+    length: int, count: int
+) -> torch.Tensor:
+    ...
+
+
+@overload
+def enumerate_binary_sequences_with_cardinality(
+    length: torch.Tensor, count: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    ...
+
+
+@script
+def _enumerate_binary_with_cardinality_int(length: int, count: int) -> torch.Tensor:
+    support = _enumerate_binary_sequences(length, count, torch.device("cpu"))
+    support = support[support.sum(1) == count]  # (2 ** length, length)
+    return support
+
+
+@script
+def _enumerate_binary_with_cardinality_tensor(
+    length: torch.Tensor, count: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    device = length.device
+    length_, count_ = int(length.max().item()), int(count.max().item())
+    length, count = torch.broadcast_tensors(length, count)
+    binom = binomial_coefficient(length, count)
+    binom_ = int(binom.max().item())
+    # _enumerate_binary_sequences outputs sequences with b_t = 1 only after all
+    # sequences with b_t = 0. We therefore capture all the combos for a given length
+    # by limiting ourselves to the indices up to 2 ** length.
+    N = int(2 ** length_)
+    support = _enumerate_binary_sequences(length_, count_, device)
+    support = torch.cat([support, torch.empty_like(support)])
+    range_ = torch.arange(2 * N, device=device).expand(binom.shape + (2 * N,))
+    pad = (range_ >= N) & (range_ < N + (binom_ - binom).unsqueeze(-1))
+    keep = (range_ < (2 ** length).unsqueeze(-1)) & (
+        support.sum(-1).expand(binom.shape + (2 * N,)) == count.unsqueeze(-1)
+    )
+    support = support.expand(binom.shape + (-1, -1))[pad | keep]
+    support = support.view(binom.shape + (binom_, length_))
+    return support, binom
+
+
+def enumerate_binary_sequences_with_cardinality(length: Any, count: Any) -> Any:
+    r"""Enumerate the configurations of binary sequences with fixed sum
+    
+    Parameters
+    ----------
+    length
+        The number of elements in the binary sequence. Either a tensor or an int. Must
+        be the same type as `count`. If a tensor, must broadcast with `count`.
+    count
+        The number of elements with value 1. Either a tensor or an int. Must be the same
+        type as `length`. If a tensor, must broadcast with `length`.
+    
+    Returns
+    -------
+    support : torch.Tensor or tuple of torch.Tensor
+        If `length` and `count` are both integers, `support` is a tensor of shape
+        ``(N, length)`` where :math:`N = \binom{length}{count}` is the number of unique
+        binary sequence configurations of length `length` such that for any ``n``,
+        ``support[n].sum() == count``.
+
+        If `length` and `count` are both long tensors, `support` is a tuple of tensors
+        ``support_, binom`` where `support_` is of shape ``(B*, N_, length_)`` and
+        `binom` is of shape ``(B*)``. ``B*`` refers to the broadcasted shape of `length`
+        and `count`, ``N_`` is the maximum value in `binom`, and ``length_`` is the
+        maximum value in ``length_``. For multi-index ``b``, ``support[b]`` stores the
+        unique binary sequence configurations for ``length[b]`` and ``count[b]``.
+        ``binom[b]`` stores the number of unique configurations for ``length[b]`` and
+        ``count[b]``, which is always :math:`\binom{length[b]}{count[b]}`. Sequences
+        are right-padded to the maximum length and count: for index ``b``, only values
+        in ``support[b, :binom[b], :length[b]]`` are valid.
+    
+    Warnings
+    --------
+    The size of the returned support grows exponentially with `length`.
+    """
+    if isinstance(length, torch.Tensor) and isinstance(count, torch.Tensor):
+        return _enumerate_binary_with_cardinality_tensor(length, count)
+    elif isinstance(length, int) and isinstance(count, int):
+        return _enumerate_binary_with_cardinality_int(length, count)
+    else:
+        raise RuntimeError("length and count must both be tensors or ints")
+
+
 class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFamily):
     r"""Draw binary vectors with uniform probability but fixed cardinality
     
@@ -135,7 +311,12 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
     out_size
         The length of the binary vectors. If it exceeds some value of `total_count`,
         that sample will be right-padded with zeros. Must be no less than
-        ``total_count.max()``. If unset, defaults to that value.        
+        ``total_count.max()``. If unset, defaults to that value.
+    
+    Notes
+    -----
+    The support can only be enumerated if all elements of `total_count` are equal;
+    likewise for `given_count`.
     """
 
     arg_constraints = {
@@ -151,8 +332,20 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
         out_size: Optional[int] = None,
         validate_args=None,
     ):
-        given_count = torch.as_tensor(given_count)
-        total_count = torch.as_tensor(total_count)
+        device = None
+        if isinstance(given_count, torch.Tensor):
+            device = given_count.device
+            if (
+                isinstance(total_count, torch.Tensor)
+                and given_count.device != total_count.device
+            ):
+                raise ValueError(
+                    "given_count and total_count must be on the same device"
+                )
+        elif isinstance(total_count, torch.Tensor):
+            device = total_count.device
+        given_count = torch.as_tensor(given_count, device=device)
+        total_count = torch.as_tensor(total_count, device=device)
         total_count_max = int(total_count.max().item())
         if out_size is None:
             out_size = total_count_max
@@ -177,6 +370,30 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
         return BinaryCardinalityConstraint(
             self.total_count, self.given_count, self.event_shape[0]
         )
+
+    @property
+    def has_enumerate_support(self) -> bool:
+        return (
+            (self.total_count == self.total_count.flatten()[0]).all()
+            & (self.given_count == self.given_count.flatten()[0]).all()
+        ).item()
+
+    def enumerate_support(self, expand=True) -> torch.Tensor:
+        if not self.has_enumerate_support:
+            raise NotImplementedError(
+                "total_count must all be equal and given_count must all be equal to "
+                "enumerate support"
+            )
+        total = self.total_count.flatten()[0].item()
+        given = self.given_count.flatten()[0].item()
+        support = enumerate_binary_sequences_with_cardinality(total, given)
+        out_size = self.event_shape[0]
+        if out_size != total:
+            support = torch.nn.functional.pad(support, (0, out_size - total))
+        support = support.view((-1,) + (1,) * len(self.batch_shape) + (out_size,))
+        if expand:
+            support = support.expand((-1,) + self.batch_shape + (out_size,))
+        return support
 
     @lazy_property
     def log_partition(self) -> torch.Tensor:
