@@ -16,6 +16,7 @@
 
 from ._conditional_bernoulli import (
     binomial_coefficient,
+    enumerate_binary_sequences,
     enumerate_binary_sequences_with_cardinality,
     simple_random_sampling_without_replacement,
 )
@@ -56,6 +57,7 @@ __all__ = [
     "ctc_prefix_search_advance",
     "dense_image_warp",
     "edit_distance",
+    "enumerate_binary_sequences",
     "enumerate_binary_sequences_with_cardinality",
     "error_rate",
     "hard_optimal_completion_distillation_loss",

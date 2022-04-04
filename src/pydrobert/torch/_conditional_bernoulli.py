@@ -180,13 +180,51 @@ def binomial_coefficient(length: torch.Tensor, count: torch.Tensor) -> torch.Ten
 
 
 @script
-def _enumerate_binary_sequences(length: int, device: torch.device) -> torch.Tensor:
+def enumerate_binary_sequences(
+    length: int, device: torch.device = torch.device("cpu")
+) -> torch.Tensor:
+    """Enumerate all binary sequences of a fixed length
+    
+    Parameters
+    ----------
+    length 
+        The non-negative length of the binary sequences.
+    device
+        What device to return the tensor on.
+    
+    Returns
+    -------
+    support : torch.Tensor
+        A tensor of shape ``(2 ** length, length)`` of all possible binary sequences of
+        length `length`. The sequences are ordered such that all configurations where
+        ``support[s, t] == 1.0`` must follow those where ``support[s', t] == 0.0`` (i.e.
+        it implies ``s' < s``). Therefore all binary sequences of length ``length - x``
+        are contained in ``support[2 ** (length - x), :length - x]``.
+    
+    Examples
+    --------
+    >>> support = enumerate_binary_sequences(3)
+    >>> print(support)
+    tensor([[0., 0., 0.],
+        [1., 0., 0.],
+        [0., 1., 0.],
+        [1., 1., 0.],
+        [0., 0., 1.],
+        [1., 0., 1.],
+        [0., 1., 1.],
+        [1., 1., 1.]])
+    >>> print(support[:4, :2])
+    tensor([[0., 0.],
+        [1., 0.],
+        [0., 1.],
+        [1., 1.]])
+    """
     if length < 0:
-        raise RuntimeError(f"length ust be non-negative, got {length}")
+        raise RuntimeError(f"length must be non-negative, got {length}")
     support = torch.zeros((length, int(2 ** length)), device=device)
     for t in range(length):
         support.view(length, int(2 ** t), 2, -1)[length - t - 1, :, 1] = 1
-    return support.T
+    return support.T.contiguous()
 
 
 @overload
@@ -207,7 +245,7 @@ def enumerate_binary_sequences_with_cardinality(
 def _enumerate_binary_sequences_with_cardinality_int(
     length: int, count: int
 ) -> torch.Tensor:
-    support = _enumerate_binary_sequences(length, torch.device("cpu"))
+    support = enumerate_binary_sequences(length)
     support = support[support.sum(1) == count]
     return support
 
@@ -225,7 +263,7 @@ def _enumerate_binary_sequences_with_cardinality_tensor(
     # sequences with b_t = 0. We therefore capture all the combos for a given length
     # by limiting ourselves to the indices up to 2 ** length.
     N = int(2 ** length_)
-    support = _enumerate_binary_sequences(length_, device)
+    support = enumerate_binary_sequences(length_, device)
     support = torch.cat([support, torch.empty_like(support)])
     range_ = torch.arange(2 * N, device=device).expand(binom.shape + (2 * N,))
     pad = (range_ >= N) & (range_ < N + (binom_ - binom).unsqueeze(-1))

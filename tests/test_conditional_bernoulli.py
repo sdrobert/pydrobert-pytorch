@@ -43,6 +43,21 @@ def test_binomial_coefficient(device, jit_type, tmax):
             assert binom[length, count] == N_exp, (length, count)
 
 
+def test_enumerate_binary_sequences(device, jit_type):
+    tmax = 10
+    enumerate_binary_sequences = functional.enumerate_binary_sequences
+    if jit_type == "script":
+        enumerate_binary_sequences = torch.jit.script(enumerate_binary_sequences)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for enumerate_binary_sequences")
+    support = enumerate_binary_sequences(tmax, device)
+    assert support.shape == (2 ** tmax, tmax)
+    assert (support.sum(0) == 2 ** (tmax - 1)).all()
+    half = tmax // 2
+    assert (support[: 2 ** half, half:] == 0).all()
+    assert (support[: 2 ** half, :half].sum(0) == 2 ** (half - 1)).all()
+
+
 def test_enumerate_binary_sequences_with_cardinality(device, jit_type):
     tmax = 10
     T = torch.arange(tmax - 1, -1, -1, device=device)
