@@ -180,15 +180,9 @@ def binomial_coefficient(length: torch.Tensor, count: torch.Tensor) -> torch.Ten
 
 
 @script
-def _enumerate_binary_sequences(
-    length: int, count: int, device: torch.device
-) -> torch.Tensor:
-    if length < 0 or count < 0:
-        raise RuntimeError(
-            f"length ({length}) and count ({count}) must be non-negative"
-        )
-    if count > length:
-        return torch.empty((0, length), device=device)
+def _enumerate_binary_sequences(length: int, device: torch.device) -> torch.Tensor:
+    if length < 0:
+        raise RuntimeError(f"length ust be non-negative, got {length}")
     support = torch.zeros((length, int(2 ** length)), device=device)
     for t in range(length):
         support.view(length, int(2 ** t), 2, -1)[length - t - 1, :, 1] = 1
@@ -210,18 +204,20 @@ def enumerate_binary_sequences_with_cardinality(
 
 
 @script
-def _enumerate_binary_with_cardinality_int(length: int, count: int) -> torch.Tensor:
-    support = _enumerate_binary_sequences(length, count, torch.device("cpu"))
-    support = support[support.sum(1) == count]  # (2 ** length, length)
+def _enumerate_binary_sequences_with_cardinality_int(
+    length: int, count: int
+) -> torch.Tensor:
+    support = _enumerate_binary_sequences(length, torch.device("cpu"))
+    support = support[support.sum(1) == count]
     return support
 
 
 @script
-def _enumerate_binary_with_cardinality_tensor(
+def _enumerate_binary_sequences_with_cardinality_tensor(
     length: torch.Tensor, count: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     device = length.device
-    length_, count_ = int(length.max().item()), int(count.max().item())
+    length_ = int(length.max().item())
     length, count = torch.broadcast_tensors(length, count)
     binom = binomial_coefficient(length, count)
     binom_ = int(binom.max().item())
@@ -229,7 +225,7 @@ def _enumerate_binary_with_cardinality_tensor(
     # sequences with b_t = 0. We therefore capture all the combos for a given length
     # by limiting ourselves to the indices up to 2 ** length.
     N = int(2 ** length_)
-    support = _enumerate_binary_sequences(length_, count_, device)
+    support = _enumerate_binary_sequences(length_, device)
     support = torch.cat([support, torch.empty_like(support)])
     range_ = torch.arange(2 * N, device=device).expand(binom.shape + (2 * N,))
     pad = (range_ >= N) & (range_ < N + (binom_ - binom).unsqueeze(-1))
@@ -277,9 +273,9 @@ def enumerate_binary_sequences_with_cardinality(length: Any, count: Any) -> Any:
     The size of the returned support grows exponentially with `length`.
     """
     if isinstance(length, torch.Tensor) and isinstance(count, torch.Tensor):
-        return _enumerate_binary_with_cardinality_tensor(length, count)
+        return _enumerate_binary_sequences_with_cardinality_tensor(length, count)
     elif isinstance(length, int) and isinstance(count, int):
-        return _enumerate_binary_with_cardinality_int(length, count)
+        return _enumerate_binary_sequences_with_cardinality_int(length, count)
     else:
         raise RuntimeError("length and count must both be tensors or ints")
 
