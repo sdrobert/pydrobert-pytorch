@@ -14,7 +14,7 @@
 
 """Pytorch functions"""
 
-from ._conditional_bernoulli import (
+from ._combinatorics import (
     binomial_coefficient,
     enumerate_binary_sequences,
     enumerate_binary_sequences_with_cardinality,

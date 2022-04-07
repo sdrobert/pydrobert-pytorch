@@ -19,7 +19,7 @@ Warnings
 Distributions cannot be JIT scripted or traced.
 """
 
-from ._conditional_bernoulli import (
+from ._combinatorics import (
     BinaryCardinalityConstraint,
     SimpleRandomSamplingWithoutReplacement,
 )
