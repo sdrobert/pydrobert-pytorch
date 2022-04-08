@@ -16,6 +16,7 @@
 
 from ._combinatorics import (
     binomial_coefficient,
+    enumerate_vocab_sequences,
     enumerate_binary_sequences,
     enumerate_binary_sequences_with_cardinality,
     simple_random_sampling_without_replacement,
@@ -57,6 +58,7 @@ __all__ = [
     "ctc_prefix_search_advance",
     "dense_image_warp",
     "edit_distance",
+    "enumerate_vocab_sequences",
     "enumerate_binary_sequences",
     "enumerate_binary_sequences_with_cardinality",
     "error_rate",

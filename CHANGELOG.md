@@ -2,7 +2,8 @@
 
 ## HEAD
 
-- Added `binomial_coefficient` and
+- Added `binomial_coefficient`, `enumerate_binary_sequences`,
+  `enumerate_vocab_sequences`, and
   `enumerate_binary_sequences_with_cardinality`.
 - Docstrings updated to hopefully be clearer. Use "Call Parameters" and
   "Returns" sections for pytorch modules.

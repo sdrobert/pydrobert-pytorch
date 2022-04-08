@@ -58,6 +58,26 @@ def test_enumerate_binary_sequences(device, jit_type):
     assert (support[: 2 ** half, :half].sum(0) == 2 ** (half - 1)).all()
 
 
+def test_enumerate_vocab_sequences(device, jit_type):
+    tmax, vmax = 5, 4
+    enumerate_vocab_sequences = functional.enumerate_vocab_sequences
+    if jit_type == "script":
+        enumerate_vocab_sequences = torch.jit.script(enumerate_vocab_sequences)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for enumerate_vocab_sequences")
+    support = enumerate_vocab_sequences(tmax, vmax, device=device)
+    assert support.shape == (vmax ** tmax, tmax)
+    support_ = torch.unique(support, sorted=True, dim=0)
+    assert support.shape == support_.shape
+    nrange_exp = torch.arange(vmax, device=device)
+    nrange_act, counts = support.flatten().unique(sorted=True, return_counts=True)
+    assert counts.sum() == support.numel()
+    assert (nrange_exp == nrange_act).all()
+    assert (counts == support.numel() // vmax).all()
+    for t in range(tmax):
+        assert (support[: vmax ** t, t:] == 0).all()
+
+
 def test_enumerate_binary_sequences_with_cardinality(device, jit_type):
     tmax = 10
     T = torch.arange(tmax - 1, -1, -1, device=device)
