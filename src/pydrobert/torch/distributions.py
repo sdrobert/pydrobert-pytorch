@@ -23,6 +23,7 @@ from ._combinatorics import (
     BinaryCardinalityConstraint,
     SimpleRandomSamplingWithoutReplacement,
 )
+from ._decoding import SequentialLanguageModelDistribution, TokenSequenceConstraint
 from ._straight_through import (
     ConditionalStraightThrough,
     Density,
@@ -37,7 +38,9 @@ __all__ = [
     "Density",
     "GumbelOneHotCategorical",
     "LogisticBernoulli",
+    "SequentialLanguageModelDistribution",
     "SimpleRandomSamplingWithoutReplacement",
     "StraightThrough",
+    "TokenSequenceConstraint",
 ]
 

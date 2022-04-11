@@ -14,15 +14,17 @@
 
 import math
 
-from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING, Union, overload
+from typing import Any, Dict, Optional, Tuple, Union, overload
 
 import torch
+import torch.distributions.constraints as constraints
 
 from ._lm import (
     ExtractableSequentialLanguageModel,
     MixableSequentialLanguageModel,
     SequentialLanguageModel,
 )
+from ._combinatorics import enumerate_vocab_sequences
 from ._compat import script, trunc_divide, jit_isinstance, SpoofPackedSequence
 from ._string import _lens_from_eos
 from ._wrappers import functional_wrapper, proxy
@@ -1598,3 +1600,286 @@ class SequenceLogProbabilities(torch.nn.Module):
         return sequence_log_probs(logits, hyp, self.dim, self.eos)
 
     __call__ = proxy(forward)
+
+
+class TokenSequenceConstraint(constraints.Constraint):
+    """Distribution constraint for token sequences
+
+    A token sequence is a vector which can have integer values ranging between ``[0,
+    vocab_size - 1]``. If `eos` is included, any value beyond the first `eos` in each
+    sequence is ignored.
+    """
+
+    vocab_size: int
+    eos: Optional[int]
+    is_discrete = True
+    event_dim = 1
+
+    def __init__(self, vocab_size: int, eos: Optional[int] = None) -> None:
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.eos = eos
+
+    def check(self, value: torch.Tensor):
+        with torch.no_grad():
+            if self.eos is not None:
+                eos_mask = (value == self.eos).long().cumsum(-1) != 0
+                value = value.masked_fill(eos_mask, self.eos)
+        return ((value % 1 == 0) & (value >= 0) & (value < self.vocab_size)).all(-1)
+
+
+class SequentialLanguageModelDistribution(
+    torch.distributions.distribution.Distribution
+):
+    """A SequentialLanguageModel as a Distribution
+
+    This class wraps a :class:`pydrobert.torch.modules.RandomWalk` instance, itself
+    wrapping a :class:`pydrobert.torch.modules.SequentialLanguageModel`, treating it
+    as a :class:`torch.distributions.distribution.Distribution`. It relies on the walk
+    to sample.
+
+    Among other things, the resulting distribution can be passed as an argument to
+    an :class:`pydrobert.torch.estimators.Estimator`.
+
+    Parameters
+    ----------
+    random_walk
+        The :class:`RandomWalk` instance with language model ``random_walk.lm``.
+    batch_shape
+        The batch shape to use when calling the underlying language model or the walk.
+        If empty, the number of samples being drawn (or passed to :func:`log_prob`) is
+        treated as the batch size. See the below note for more information.
+    initial_state
+        If specified, any calls to the underlying language model or the walk will be
+        passed this value.
+    device
+        On what device to initialize and return values from. If unset, the device will
+        be inferred on calls to :func:`enumerate_support` or :func:`sample`. The
+        inferred device will be the device of the first parameter in ``random_walk.lm``
+        if available; the device of the first tensor in `initial_state` if available;
+        and the CPU as a fallback.
+    cache_samples
+        If :obj:`True`, calls to :func:`sample` or :func:`log_prob` will save the last
+        samples and their log probabilities. This can avoid expensive recomputations if,
+        for example, the log probability of a sample is always queried after it is
+        sampled:
+
+        >>> sample = dist.sample()
+        >>> log_prob = dist.log_prob(sample)
+
+        The cache is stored until a new sample takes its place or it is manually
+        cleared with :func:`clear_cache`. See the below warning for complications with
+        the cache.
+    validate_args
+
+    Warnings
+    --------
+    This wrapper does not handle any changes to the distribution which may occur for
+    subclasses of :class:`RandomWalk` with non-default implementations of
+    :func:`pydrobert.torch.modules.RandomWalk.update_log_probs_for_step`.
+    :func:`log_prob` will in general reflect the default, unadjusted log probabilities.
+    The situation is complicated if `cache_samples` is enabled: if :func:`sample` is
+    called when enabled, the adjusted log probabilities are cached, but if
+    :func:`log_prob` is called prior to caching, the unadjusted log probabilities are
+    cached.
+
+    In short, do not use custom :class:`RandomWalk` instances with this class unless
+    you know what you're doing.
+
+    Notes
+    -----
+    We expect most :class:`SequentialLanguageModel` instances to be able to handle an
+    arbitrary number of sequences at once. In this case, `batch_shape` should be left
+    empty (its default). In this case the samples will be flattened into a single batch
+    dimension before being passed to the underlying language model. For example:
+
+    >>> dist = SequentialLanguageModelDistribution(walk)
+    >>> sample = dist.sample()  # a single sequence. Of shape (sequence_length,)
+    >>> sample = dist.sample([M])  # M sequences. Of shape (M, sequence_length)
+
+    However, some language models will require sampling or computing the log
+    probabilities of a fixed number of samples at a time, particularly when there's some
+    implicit conditioning on some other batched input passed via `initial_state`. For
+    example, an acoustic model for ASR will condition its sequences on some batched
+    audio or feature input. An NMT system will condition its target sequence output
+    on batched source sequence input. In this case, `batch_shape` can be set to a
+    1-dimensional shape containing the number of batch elements, like so:
+
+    >>> dist = SequentialLanguageModelDistribution(walk, [N], initial_state)
+    >>> sample = dist.sample()  # N sequences, 1 per batch elem. (N, sequence_length)
+    >>> sample = dist.sample([M])  # M * N sequences, M /batch elem. (N, M, seq_length)
+    
+    To accomplish this, the walk/lm will be queried ``M`` times sequentially with batch
+    size ``N``, the results stacked (and padded, if necessary).
+
+    Since the `batch_shape` method performs sequential sampling along ``M``, it will
+    tend to be slower than sampling ``M * N`` samples via the other method. However,
+    sequential sampling will also tend to have a smaller memory footprint.
+    """
+
+    random_walk: RandomWalk
+    arg_constraints = dict()
+    initial_state: Optional[Dict[str, torch.Tensor]]
+    device: Optional[torch.device]
+    _samples_cache: Optional[torch.Tensor]
+    _log_probs_cache: Optional[torch.Tensor]
+
+    def __init__(
+        self,
+        random_walk: RandomWalk,
+        batch_shape: torch.Size = torch.Size([]),
+        initial_state: Optional[Dict[str, torch.Tensor]] = None,
+        device: Optional[torch.device] = None,
+        cache_samples: bool = False,
+        validate_args: Optional[bool] = None,
+    ):
+        self.random_walk = random_walk
+        self.initial_state = initial_state
+        self.cache_samples = cache_samples
+        self.device = device
+        self._samples_cache = None
+        self._log_probs_cache = None
+        event_shape = torch.Size(
+            [1 if random_walk.max_iters is None else random_walk.max_iters]
+        )
+        super().__init__(batch_shape, event_shape, validate_args)
+        if self._validate_args:
+            if len(self.batch_shape) > 1:
+                raise ValueError(
+                    f"batch_shape must be 0- or 1-dim, got {len(self.batch_shape)}"
+                )
+            if not isinstance(random_walk, RandomWalk):
+                raise ValueError("random_walk is not a RandomWalk instance")
+            if initial_state is not None and not all(
+                isinstance(x, str) and isinstance(y, torch.Tensor)
+                for (x, y) in initial_state.items()
+            ):
+                raise ValueError("initial_state is not a dictionary of str:Tensor")
+            if not isinstance(device, torch.device):
+                raise ValueError("device is not a torch.device")
+
+    @constraints.dependent_property
+    def support(self):
+        return TokenSequenceConstraint(
+            self.random_walk.lm.vocab_size, self.random_walk.eos
+        )
+
+    def _infer_device(self) -> torch.device:
+        device = self.device
+        if device is None:
+            try:
+                device = next(iter(self.random_walk.lm.parameters())).device
+            except StopIteration:
+                pass
+        if device is None:
+            try:
+                device = next(iter(self.initial_state.values())).device
+            except StopIteration:
+                pass
+        if device is None:
+            device = torch.device("cpu")
+
+    def sample(self, sample_shape: torch.Size = torch.Size([])) -> torch.Tensor:
+        device = self._infer_device()
+        shape = list(self._extended_shape(sample_shape))
+        num_samples = 1
+        for d in sample_shape:
+            num_samples *= d
+        if num_samples == 0:
+            return torch.empty(shape, device=device)
+        args = tuple() if self.initial_state is None else (self.initial_state,)
+        if len(self.batch_shape):
+            y_prev = torch.empty(
+                (0,) + self.batch_shape, device=device, dtype=torch.long
+            )
+            samples, log_probs = [], []
+            for _ in range(num_samples):
+                sample, _, log_prob = self.random_walk(y_prev, *args)
+                samples.append(sample)
+                log_probs.append(log_prob)
+            log_probs = torch.stack(log_probs)
+            if self.random_walk.eos is None:
+                # all samples should have the same length as a final dimension
+                samples = torch.stack([s.T for s in samples])
+            else:
+                # samples might not have the same length.
+                samples = torch.nn.utils.rnn.pad_sequence(
+                    samples, padding_value=self.random_walk.eos
+                )
+                samples = samples.flatten(1).T
+        else:
+            y_prev = torch.empty((0, num_samples), device=device, dtype=torch.long)
+            samples, _, log_probs = self.random_walk(y_prev, *args)
+            samples = samples.T
+        shape[-1] = samples.size(-1)
+        samples = samples.reshape(shape)
+        if self.cache_samples:
+            self._samples_cache = samples
+            self._log_probs_cache = log_probs.view(shape[:-1])
+        return samples
+
+    @property
+    def has_enumerate_support(self) -> bool:
+        return self.random_walk.max_iters is not None
+
+    def enumerate_support(self, expand=True) -> torch.Tensor:
+        device = self._infer_device()
+        if not self.has_enumerate_support:
+            raise NotImplementedError(
+                "random_walk.max_iters must be set in order to enumerate support"
+            )
+        support = enumerate_vocab_sequences(
+            self.event_shape[0], self.random_walk.lm.vocab_size, device
+        )
+        if self.random_walk.eos is not None:
+            eos_mask = (support == self.random_walk.eos).long().cumsum(-1) != 0
+            support.masked_fill_(eos_mask, self.random_walk.eos)
+            support = torch.unique(support, dim=0)
+        if len(self.batch_shape):
+            support = support.view(
+                (-1,) + (1,) * len(self.batch_shape) + self.event_shape
+            )
+            if expand:
+                support = support.expand((-1,) + self.batch_shape + self.event_shape)
+        return support
+
+    def clear_cache(self):
+        """Manually clear the sample cache"""
+        self._samples_cache = self._log_probs_cache = None
+
+    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
+        if self._validate_args:
+            self._validate_sample(value)
+        num_samples = value.numel() // value.size(-1)
+        shape = value.shape[:-1]
+        if num_samples == 0:
+            return torch.empty(shape, device=value.device)
+        if (
+            self.cache_samples
+            and self._samples_cache is not None
+            and (self._samples_cache.shape == value.shape)
+            and (self._samples_cache == value).all()
+        ):
+            assert self._log_probs_cache is not None
+            return self._log_probs_cache
+        if self.cache_samples:
+            self._samples_cache = value
+        args = tuple() if self.initial_state is None else (self.initial_state,)
+        if len(self.batch_shape):
+            log_probs = []
+            value = value.view(num_samples, -1, value.size(-1)).transpose(1, 2)
+            for hist in value:
+                log_probs.append(
+                    self.random_walk.lm(hist[:-1].unflatten(1, self.batch_shape), *args)
+                )
+            log_probs = torch.stack(log_probs)
+        else:
+            hist = value.T
+            log_probs = self.random_walk.lm(hist[:-1], *args)
+            log_probs = log_probs.transpose(0, 1)
+        sequence_log_probs = SequenceLogProbabilities(1, self.random_walk.eos)
+        log_probs = sequence_log_probs(log_probs, value)
+        log_probs = log_probs.view(shape)
+        if self.cache_samples:
+            self._log_probs_cache = log_probs
+        return log_probs

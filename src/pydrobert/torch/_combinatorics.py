@@ -409,6 +409,7 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
         The length of the binary vectors. If it exceeds some value of `total_count`,
         that sample will be right-padded with zeros. Must be no less than
         ``total_count.max()``. If unset, defaults to that value.
+    validate_args
     
     Notes
     -----
@@ -427,7 +428,7 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
         given_count: Union[int, torch.Tensor],
         total_count: Union[int, torch.Tensor],
         out_size: Optional[int] = None,
-        validate_args=None,
+        validate_args : Optional[bool] = None,
     ):
         device = None
         if isinstance(given_count, torch.Tensor):
@@ -463,7 +464,7 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
                 )
 
     @constraints.dependent_property
-    def support(self) -> torch.Tensor:
+    def support(self):
         return BinaryCardinalityConstraint(
             self.total_count, self.given_count, self.event_shape[0]
         )
