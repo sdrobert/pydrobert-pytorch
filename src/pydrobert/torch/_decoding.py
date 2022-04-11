@@ -1755,7 +1755,7 @@ class SequentialLanguageModelDistribution(
                 for (x, y) in initial_state.items()
             ):
                 raise ValueError("initial_state is not a dictionary of str:Tensor")
-            if not isinstance(device, torch.device):
+            if device is not None and not isinstance(device, torch.device):
                 raise ValueError("device is not a torch.device")
 
     @constraints.dependent_property
