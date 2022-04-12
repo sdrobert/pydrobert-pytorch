@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional, Tuple, Union, overload
 
 import torch
 import torch.distributions.constraints as constraints
+from torch.distributions.utils import lazy_property
 
 from ._lm import (
     ExtractableSequentialLanguageModel,
@@ -25,7 +26,13 @@ from ._lm import (
     SequentialLanguageModel,
 )
 from ._combinatorics import enumerate_vocab_sequences
-from ._compat import script, trunc_divide, jit_isinstance, SpoofPackedSequence
+from ._compat import (
+    script,
+    trunc_divide,
+    jit_isinstance,
+    SpoofPackedSequence,
+    broadcast_shapes,
+)
 from ._string import _lens_from_eos
 from ._wrappers import functional_wrapper, proxy
 
@@ -1409,9 +1416,9 @@ class RandomWalk(torch.nn.Module):
             y, log_probs = random_walk_advance(log_probs_t, log_probs, y, y_lens)
 
             if self.eos is not None:
-                # if the thing prior to this was not an eos, then either this isn't
-                # an eos or its the first eos. Both add to lens. This is why we
-                # accumulate using the previous eos mask
+                # if the thing prior to this was not an eos, then either this isn't an
+                # eos or it's the first eos. Both add to lens. This is why we accumulate
+                # using the previous eos mask
                 y_lens += ~eos_mask
                 eos_mask = y.gather(0, y_lens.unsqueeze(0) - 1).squeeze(0) == self.eos
             else:
@@ -1602,30 +1609,56 @@ class SequenceLogProbabilities(torch.nn.Module):
     __call__ = proxy(forward)
 
 
+@script
+def _eos_fill(value: torch.Tensor, eos: Optional[int]) -> torch.Tensor:
+    if eos is None:
+        return value
+    eos_mask = (value == eos).cumsum(-1) != 0
+    return value.masked_fill(eos_mask, eos)
+
+
 class TokenSequenceConstraint(constraints.Constraint):
     """Distribution constraint for token sequences
 
     A token sequence is a vector which can have integer values ranging between ``[0,
-    vocab_size - 1]``. If `eos` is included, any value beyond the first `eos` in each
-    sequence is ignored.
+    vocab_size - 1]``. A token sequence must be completed, which requires at least one
+    of the two following conditions to be met:
+
+    - The sequence dimension matches `max_iters`.
+    - The sequence dimension is greater than 0, less than `max_iters` if set, and
+      each sequence contains at least one `eos`.
+    
+    If `eos` is included, any value beyond the first `eos` in each sequence is ignored.
     """
 
     vocab_size: int
     eos: Optional[int]
+    max_iters: Union[int, float]
     is_discrete = True
     event_dim = 1
 
-    def __init__(self, vocab_size: int, eos: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        vocab_size: int,
+        eos: Optional[int] = None,
+        max_iters: Optional[int] = None,
+    ) -> None:
+        if eos is None and max_iters is None:
+            raise ValueError("At least one of max_iters or eos must be non-none")
         super().__init__()
         self.vocab_size = vocab_size
         self.eos = eos
+        self.max_iters = max_iters if max_iters is not None else float("inf")
 
     def check(self, value: torch.Tensor):
-        with torch.no_grad():
-            if self.eos is not None:
-                eos_mask = (value == self.eos).long().cumsum(-1) != 0
-                value = value.masked_fill(eos_mask, self.eos)
-        return ((value % 1 == 0) & (value >= 0) & (value < self.vocab_size)).all(-1)
+        completed = value.size(-1) == self.max_iters
+        if self.eos is not None:
+            value = _eos_fill(value, self.eos)
+            completed = (value == self.eos).any(-1) & (
+                value.size(-1) <= self.max_iters
+            ) | completed
+        in_vocab = ((value % 1 == 0) & (value >= 0) & (value < self.vocab_size)).all(-1)
+        return in_vocab & completed
 
 
 class SequentialLanguageModelDistribution(
@@ -1720,6 +1753,7 @@ class SequentialLanguageModelDistribution(
     random_walk: RandomWalk
     arg_constraints = dict()
     initial_state: Optional[Dict[str, torch.Tensor]]
+    _conditional_prefix: Optional[torch.Tensor]
     device: Optional[torch.device]
     _samples_cache: Optional[torch.Tensor]
     _log_probs_cache: Optional[torch.Tensor]
@@ -1727,27 +1761,48 @@ class SequentialLanguageModelDistribution(
     def __init__(
         self,
         random_walk: RandomWalk,
-        batch_shape: torch.Size = torch.Size([]),
+        conditional_prefix: Optional[torch.Tensor] = None,
+        batch_size: Optional[int] = None,
         initial_state: Optional[Dict[str, torch.Tensor]] = None,
         device: Optional[torch.device] = None,
         cache_samples: bool = False,
         validate_args: Optional[bool] = None,
     ):
+        if conditional_prefix is not None and batch_size is not None:
+            raise ValueError(
+                "Only one of conditional_prefix or batch_size may be non-None"
+            )
         self.random_walk = random_walk
         self.initial_state = initial_state
         self.cache_samples = cache_samples
         self.device = device
         self._samples_cache = None
         self._log_probs_cache = None
+        batch_shape = torch.Size([]) if batch_size is None else torch.Size([batch_size])
+        if conditional_prefix is not None:
+            batch_shape = conditional_prefix.shape[:-1]
+            conditional_prefix = _eos_fill(conditional_prefix, random_walk.eos)
+        self._conditional_prefix = conditional_prefix
         event_shape = torch.Size(
-            [1 if random_walk.max_iters is None else random_walk.max_iters]
+            [1 if random_walk.eos is not None else random_walk.max_iters]
         )
         super().__init__(batch_shape, event_shape, validate_args)
         if self._validate_args:
-            if len(self.batch_shape) > 1:
-                raise ValueError(
-                    f"batch_shape must be 0- or 1-dim, got {len(self.batch_shape)}"
-                )
+            if conditional_prefix is not None:
+                if conditional_prefix.dim() != 2:
+                    raise ValueError(
+                        "conditional_prefix must be 2-dimensional, got "
+                        f"{conditional_prefix.dim()}"
+                    )
+                if (
+                    random_walk.eos is not None
+                    and (conditional_prefix == random_walk.eos).any()
+                ):
+                    raise ValueError(
+                        "At least one of the sequences in conditional_prefix contains "
+                        f"the end-of-sequence token, {random_walk.eos}. The "
+                        "distribution is ill-defined"
+                    )
             if not isinstance(random_walk, RandomWalk):
                 raise ValueError("random_walk is not a RandomWalk instance")
             if initial_state is not None and not all(
@@ -1758,13 +1813,44 @@ class SequentialLanguageModelDistribution(
             if device is not None and not isinstance(device, torch.device):
                 raise ValueError("device is not a torch.device")
 
+    @lazy_property
+    def conditional_prefix(self) -> Optional[torch.Tensor]:
+        if self._conditional_prefix is not None:
+            return self._conditional_prefix
+        elif len(self.batch_shape) > 0:
+            return torch.empty(
+                self.batch_shape + (0,), dtype=torch.long, device=self._infer_device()
+            )
+        return None
+
+    def _validate_sample(self, value: torch.Tensor):
+        # event dimension can be dynamically-sized. That's checked in the support check
+        exp_shape = tuple(self.batch_shape + self.event_shape)
+        act_shape = tuple(value.shape)
+        try:
+            broadcast_shapes(exp_shape, act_shape)
+        except RuntimeError:
+            raise ValueError(
+                f"value of shape {act_shape} cannot broadcast with "
+                f"batch_shape+event_shape {exp_shape}"
+            )
+        ok = self.support.check(value)
+        if not ok.all():
+            raise ValueError(
+                f"value of shape {act_shape} has values outside of the support: {ok}"
+            )
+
     @constraints.dependent_property
     def support(self):
         return TokenSequenceConstraint(
-            self.random_walk.lm.vocab_size, self.random_walk.eos
+            self.random_walk.lm.vocab_size,
+            self.random_walk.eos,
+            self.random_walk.max_iters,
         )
 
     def _infer_device(self) -> torch.device:
+        if self._conditional_prefix is not None:
+            return self._conditional_prefix.device
         device = self.device
         if device is None:
             try:
@@ -1778,9 +1864,9 @@ class SequentialLanguageModelDistribution(
                 pass
         if device is None:
             device = torch.device("cpu")
+        return device
 
     def sample(self, sample_shape: torch.Size = torch.Size([])) -> torch.Tensor:
-        device = self._infer_device()
         shape = list(self._extended_shape(sample_shape))
         num_samples = 1
         for d in sample_shape:
@@ -1788,14 +1874,13 @@ class SequentialLanguageModelDistribution(
         if num_samples == 0:
             return torch.empty(shape, device=device)
         args = tuple() if self.initial_state is None else (self.initial_state,)
-        if len(self.batch_shape):
-            y_prev = torch.empty(
-                (0,) + self.batch_shape, device=device, dtype=torch.long
-            )
+        if self.conditional_prefix is not None:
+            y_prev = self.conditional_prefix.T
+            S_prev = y_prev.size(0)
             samples, log_probs = [], []
             for _ in range(num_samples):
                 sample, _, log_prob = self.random_walk(y_prev, *args)
-                samples.append(sample)
+                samples.append(sample[S_prev:])
                 log_probs.append(log_prob)
             log_probs = torch.stack(log_probs)
             if self.random_walk.eos is None:
@@ -1808,6 +1893,7 @@ class SequentialLanguageModelDistribution(
                 )
                 samples = samples.flatten(1).T
         else:
+            device = self._infer_device()
             y_prev = torch.empty((0, num_samples), device=device, dtype=torch.long)
             samples, _, log_probs = self.random_walk(y_prev, *args)
             samples = samples.T
@@ -1829,18 +1915,17 @@ class SequentialLanguageModelDistribution(
                 "random_walk.max_iters must be set in order to enumerate support"
             )
         support = enumerate_vocab_sequences(
-            self.event_shape[0], self.random_walk.lm.vocab_size, device
+            self.random_walk.max_iters, self.random_walk.lm.vocab_size, device
         )
         if self.random_walk.eos is not None:
-            eos_mask = (support == self.random_walk.eos).long().cumsum(-1) != 0
-            support.masked_fill_(eos_mask, self.random_walk.eos)
+            support = _eos_fill(support, self.random_walk.eos)
             support = torch.unique(support, dim=0)
         if len(self.batch_shape):
             support = support.view(
-                (-1,) + (1,) * len(self.batch_shape) + self.event_shape
+                (-1,) + (1,) * len(self.batch_shape) + support.shape[-1:]
             )
             if expand:
-                support = support.expand((-1,) + self.batch_shape + self.event_shape)
+                support = support.expand((-1,) + self.batch_shape + support.shape[-1:])
         return support
 
     def clear_cache(self):
@@ -1850,7 +1935,8 @@ class SequentialLanguageModelDistribution(
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
         if self._validate_args:
             self._validate_sample(value)
-        num_samples = value.numel() // value.size(-1)
+        batch_size = self.batch_shape[0] if len(self.batch_shape) else 1
+        num_samples = value.numel() // (batch_size * value.size(-1))
         shape = value.shape[:-1]
         if num_samples == 0:
             return torch.empty(shape, device=value.device)
@@ -1865,13 +1951,14 @@ class SequentialLanguageModelDistribution(
         if self.cache_samples:
             self._samples_cache = value
         args = tuple() if self.initial_state is None else (self.initial_state,)
-        if len(self.batch_shape):
+        if self.conditional_prefix is not None:
             log_probs = []
-            value = value.view(num_samples, -1, value.size(-1)).transpose(1, 2)
+            value = value.flatten(end_dim=-3).transpose(1, 2)
+            prefix = self.conditional_prefix.T
+            S_prev = prefix.size(0)
             for hist in value:
-                log_probs.append(
-                    self.random_walk.lm(hist[:-1].unflatten(1, self.batch_shape), *args)
-                )
+                hist = torch.cat([prefix, hist[:-1]])
+                log_probs.append(self.random_walk.lm(hist, *args)[S_prev:])
             log_probs = torch.stack(log_probs)
         else:
             hist = value.T

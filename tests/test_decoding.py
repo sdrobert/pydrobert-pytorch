@@ -80,7 +80,15 @@ class RNNLM(MixableSequentialLanguageModel):
             return prev
         N = hist.size(1)
         zeros = self.ff.weight.new_zeros((N, self.hidden_size))
-        return {"hidden": zeros, "cell": zeros}
+        prev = {"hidden": zeros, "cell": zeros}
+        if hist.size(0) > 0:
+            hist = torch.cat(
+                [hist.new_full((1, hist.size(1)), self.vocab_size), hist], 0
+            )
+            x = self.embed(hist[:-1])
+            h_n, c_n = self.lstm(x)[1]
+            prev = {"hidden": h_n.squeeze(0), "cell": c_n.squeeze(0)}
+        return prev
 
     @torch.jit.export
     def calc_full_log_probs(
@@ -915,16 +923,22 @@ def test_sequence_log_probs(device, dim, jit_type):
 
 
 @pytest.mark.parametrize("eos", [None, 0], ids=["w/o eos", "w/ eos"])
-@pytest.mark.parametrize("prefix", [None, True], ids=["w/o prefix", "w/ prefix"])
+@pytest.mark.parametrize("prefix", [False, True], ids=["w/o prefix", "w/ prefix"])
 def test_sequential_language_model_distribution(device, eos, prefix):
-    T, V, M = 4, 5, 3
+    T, V, M, N = 4, 5, 3, 1
     lm = RNNLM(V).to(device)
     random_walk = RandomWalk(lm, eos, T)
     if prefix:
-        prefix = torch.empty((1, 0), device=device, dtype=torch.long)
+        prefix = torch.randint(V, (N, 1), device=device)
+        if eos is not None:
+            prefix.masked_fill_(prefix == eos, (eos + 1) % V)
+        print(lm(prefix, None, 1)[0])
+    else:
+        prefix = None
+        N = 1
 
     dist = SequentialLanguageModelDistribution(
-        random_walk, prefix, cache_samples=True, validate_args=True
+        random_walk, prefix, cache_samples=True, validate_args=True,
     )
 
     assert dist.has_enumerate_support
@@ -935,12 +949,10 @@ def test_sequential_language_model_distribution(device, eos, prefix):
         total = 0
         for eos_pos in range(T + 1):
             total += (V - 1) ** eos_pos
-    assert support.shape == (total,) + (1,) * len(dist.batch_shape) + (T,)
+    assert support.shape == (total,) + dist.batch_shape + (T,)
     support_lprobs = dist.log_prob(support)
-    assert torch.isclose(
-        support_lprobs.flatten().logsumexp(0),
-        torch.tensor(0.0, device=device),
-        atol=1e-5,
+    assert torch.allclose(
+        support_lprobs.logsumexp(0), torch.tensor(0.0, device=device), atol=1e-5,
     )
 
     sample = dist.sample([M])
@@ -949,16 +961,15 @@ def test_sequential_language_model_distribution(device, eos, prefix):
         assert sample.shape[-1] == T
     else:
         assert sample.shape[-1] <= T
+        sample = torch.nn.functional.pad(sample, (0, T - sample.shape[-1]), value=eos)
     match = (sample.unsqueeze(1) == support.unsqueeze(0)).all(-1)
     assert match.any(1).all()
-    exp_lprobs = support_lprobs.unsqueeze(0).expand(match.shape)[match]
-    assert exp_lprobs.shape == (M,)
+    exp_lprobs = (support_lprobs.unsqueeze(0).expand(match.shape) * match).sum(1)
     act_lprobs = dist.log_prob(sample)
     assert act_lprobs.shape == sample.shape[:-1]
-    act_lprobs = act_lprobs.flatten()
     assert torch.allclose(exp_lprobs, act_lprobs)
     dist.clear_cache()
-    act_lprobs = dist.log_prob(sample).flatten()
+    act_lprobs = dist.log_prob(sample)
     assert torch.allclose(exp_lprobs, act_lprobs)
 
     sample = torch.randint(0, V, (M,) + dist.batch_shape + (T,), device=device)
@@ -975,5 +986,5 @@ def test_sequential_language_model_distribution(device, eos, prefix):
         dist.log_prob(sample)  # invalid entry comes before any eos
 
     sample = dist.sample()
-    assert 0 < sample.numel() <= T
+    assert 0 < sample.numel() <= T * N
 
