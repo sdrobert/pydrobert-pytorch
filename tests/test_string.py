@@ -23,8 +23,33 @@ from pydrobert.torch.modules import (
     OptimalCompletion,
     PrefixEditDistances,
     PrefixErrorRates,
+    FillAfterEndOfSequence,
 )
 from pydrobert.torch.functional import edit_distance, error_rate
+
+
+def test_fill_right_of_eos(device, jit_type):
+    T, N, V = 15, 12, 10
+    assert T >= N
+    tokens = torch.randint(V - 1, (T, N), device=device)
+    tokens.flatten()[:: N + 1] = V - 1
+    logits = torch.randn((T, N, V), device=device)
+    fill_after_eos = FillAfterEndOfSequence(V - 1)
+    if jit_type == "script":
+        fill_after_eos = torch.jit.script(fill_after_eos)
+    tokens_2 = fill_after_eos(tokens)
+    if jit_type == "trace":
+        fill_after_eos = torch.jit.trace(
+            fill_after_eos, (torch.empty(1), torch.empty(1))
+        )
+    logits_2 = fill_after_eos(tokens.unsqueeze(2), logits)
+    for n in range(N):
+        tokens_n = tokens[: n + 1, n]
+        logits_n = logits[: n + 1, n]
+        assert (tokens_n == tokens_2[: n + 1, n]).all(), n
+        assert (tokens_2[n:, n] == V - 1).all(), n
+        assert (logits_2[: n + 1, n] == logits_n).all(), n
+        assert (logits_2[n + 1 :, n] == V - 1).all(), n
 
 
 @pytest.mark.parametrize("exclude_last", [True, False])

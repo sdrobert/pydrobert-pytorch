@@ -41,6 +41,7 @@ from ._rl import time_distributed_return
 from ._string import (
     edit_distance,
     error_rate,
+    fill_after_eos,
     hard_optimal_completion_distillation_loss,
     minimum_error_rate_loss,
     optimal_completion,
@@ -58,6 +59,7 @@ __all__ = [
     "edit_distance",
     "enumerate_binary_sequences_with_cardinality",
     "error_rate",
+    "fill_after_eos",
     "hard_optimal_completion_distillation_loss",
     "minimum_error_rate_loss",
     "optimal_completion",
