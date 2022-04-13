@@ -1318,6 +1318,12 @@ class RandomWalk(torch.nn.Module):
     distribution. This is in contrast with :class:`BeamSearch` in which increasing
     `batch_size` in the unconditioned case merely repeats the same search `batch_size`
     times.
+
+    See Also
+    --------
+    pydrobert.torch.distributions.SequentialLanguageModelDistribution
+        A wrapper around a :class:`RandomWalk` instance which allows it to be treated as
+        a distribution.
     """
 
     __constants__ = ["eos", "max_iters"]
