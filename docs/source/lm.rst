@@ -245,8 +245,8 @@ decoding is as follows:
     # decoding
     search = BeamSearch(lm, beam_width, eos)
     with torch.no_grad():
-        y, y_lens, log_probs = search(batch_size=batch_size)
-    print('top path:', y[:y_lens[0, 0], 0, 0], 'log_prob', log_probs[0, 0])
+        y, y_lens, log_probs = search()
+    print('top path:', y[:, 0], 'log_prob', log_probs[0])
 
 The training code is similar to that we had before, except now we handle
 sequences of different lengths with an end-of-sequence (`eos`) type and a
