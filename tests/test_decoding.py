@@ -81,15 +81,7 @@ class RNNLM(MixableSequentialLanguageModel):
             return prev
         N = hist.size(1)
         zeros = self.ff.weight.new_zeros((N, self.hidden_size))
-        prev = {"hidden": zeros, "cell": zeros}
-        if hist.size(0) > 0:
-            hist = torch.cat(
-                [hist.new_full((1, hist.size(1)), self.vocab_size), hist], 0
-            )
-            x = self.embed(hist[:-1])
-            h_n, c_n = self.lstm(x)[1]
-            prev = {"hidden": h_n.squeeze(0), "cell": c_n.squeeze(0)}
-        return prev
+        return {"hidden": zeros, "cell": zeros}
 
     @torch.jit.export
     def calc_full_log_probs(
@@ -892,23 +884,16 @@ def test_sequence_log_probs(device, dim, jit_type):
     assert torch.allclose(log_probs_1, log_probs_2)
 
 
-@pytest.mark.parametrize("eos", [None, 0], ids=["w/o eos", "w/ eos"])
-@pytest.mark.parametrize("prefix", [False, True], ids=["w/o prefix", "w/ prefix"])
-def test_sequential_language_model_distribution(device, eos, prefix):
-    T, V, M, N = 4, 5, 3, 1
-    lm = RNNLM(V).to(device)
-    random_walk = RandomWalk(lm, eos, T)
-    if prefix:
-        prefix = torch.randint(V, (N, 1), device=device)
-        if eos is not None:
-            prefix.masked_fill_(prefix == eos, (eos + 1) % V)
-        print(lm(prefix, None, 1)[0])
-    else:
-        prefix = None
-        N = 1
+@pytest.mark.parametrize("eos", [None, 0], ids=["w/o eos", "eos=0"])
+@pytest.mark.parametrize("batch_size", [None, 4], ids=["w/o batch", "batch=4"])
+def test_sequential_language_model_distribution(device, eos, batch_size):
+    T, V, M = 4, 5, 3
+    N = 1 if batch_size is None else batch_size
+    lm = RNNLM(V)
+    random_walk = RandomWalk(lm, eos, T).to(device)
 
     dist = SequentialLanguageModelDistribution(
-        random_walk, prefix, cache_samples=True, validate_args=True,
+        random_walk, batch_size, cache_samples=True, validate_args=True,
     )
 
     assert dist.has_enumerate_support
