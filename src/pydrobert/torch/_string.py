@@ -39,7 +39,8 @@ def fill_after_eos(
 ) -> torch.Tensor:
     out = tokens if value is None else value
     fill_ = float(eos) if fill is None else fill
-    fill_mask = (tokens == eos).long().cumsum(dim).cumsum(dim) > 1
+    # the clamp reduces the chances of overflow.
+    fill_mask = (tokens == eos).long().cumsum(dim).clamp_max(1).cumsum(dim) > 1
     return out.masked_fill(fill_mask, fill_)
 
 
