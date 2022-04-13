@@ -1088,6 +1088,7 @@ class CTCPrefixSearch(torch.nn.Module):
                 lm_log_probs_t, in_next = self.lm.calc_idx_log_probs(
                     y_prev.flatten(1), prev, y_prev_lens.flatten()
                 )
+                lm_log_probs_t = lm_log_probs_t.log_softmax(-1)
                 lm_probs_t = (self.beta * lm_log_probs_t).exp().view(N, prev_width, V)
                 # note we're no longer in log space, so it's a product
                 ext_probs_t = lm_probs_t * nonext_probs_t.unsqueeze(1)
