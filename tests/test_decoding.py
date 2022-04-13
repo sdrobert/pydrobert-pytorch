@@ -31,6 +31,7 @@ from pydrobert.torch.modules import (
 from pydrobert.torch.functional import (
     beam_search_advance,
     ctc_prefix_search_advance,
+    fill_after_eos,
 )
 
 
@@ -259,62 +260,43 @@ def test_beam_search_advance_greedy(device):
     assert torch.all(y == greedy_paths)
 
 
-def test_beam_search_batch(device, jit_type):
+@pytest.mark.parametrize("finish_all_paths", ["all", "first"])
+def test_beam_search_batch(device, jit_type, finish_all_paths):
     T, N, V, K = 64, 16, 128, 8
     assert K <= V and N * K <= V
-    lm = RNNLM(V)
+    lm = RNNLM(V).to(device)
+    initial_state = {
+        "hidden": torch.randn((N, lm.hidden_size), device=device),
+        "cell": torch.randn((N, lm.hidden_size), device=device),
+    }
     if jit_type == "script":
         lm = torch.jit.script(lm)
     elif jit_type == "trace":
         pytest.xfail("trace unsupported for BeamSearch")
-    search = BeamSearch(lm, K, eos=0, max_iters=T).to(device)
+    search = BeamSearch(
+        lm, K, eos=0, max_iters=T, pad_value=-1, finish_all_paths=finish_all_paths,
+    )
     if jit_type == "script":
         search = torch.jit.script(search)
-    y_prev = torch.arange(N, device=device)
 
-    exps = []
-    for y_prev_n in y_prev:
-        y_prev_n = y_prev_n.view(1, 1)
-        y_n_exp, y_lens_n_exp, log_probs_n_exp = search(y_prev_n)
-        y_n_exp = y_n_exp.squeeze(1)  # (T_n, K_n)
-        y_lens_n_exp = y_lens_n_exp.squeeze(0)  # (K_n,)
-        log_probs_n_exp = log_probs_n_exp.squeeze(0)  # (K_n,)
-        valid_prefix_mask_n_exp = log_probs_n_exp > -float("inf")
-        if not valid_prefix_mask_n_exp.all():
-            assert y_lens_n_exp[0] == 1
-        exps.append((y_n_exp, y_lens_n_exp, log_probs_n_exp))
+    y_exp, y_lens_exp, log_probs_exp = search(initial_state, N)
+    y_exp = fill_after_eos(y_exp, 0, fill=-1)
+    assert y_exp.device == y_lens_exp.device == log_probs_exp.device == device
+    assert y_exp.shape[1:] == y_lens_exp.shape == log_probs_exp.shape == (N, K)
+    assert not torch.allclose(log_probs_exp, log_probs_exp[:1])
 
-    y_act, y_lens_act, log_probs_act = search(y_prev.unsqueeze(0))
-    for (
-        (y_n_exp, y_lens_n_exp, log_probs_n_exp),
-        y_n_act,
-        y_lens_n_act,
-        log_probs_n_act,
-    ) in zip(exps, y_act.transpose(0, 1), y_lens_act, log_probs_act):
-        assert y_n_exp.shape[1:] == y_n_act.shape[1:]
-        assert y_n_exp.size(0) <= y_n_act.size(0)
-        assert y_lens_n_exp.shape == y_lens_n_act.shape
-        assert log_probs_n_exp.shape == log_probs_n_act.shape
-        valid_prefix_mask_n_exp = log_probs_n_exp > -float("inf")
-        valid_prefix_mask_n_act = log_probs_n_act > -float("inf")
-        assert (valid_prefix_mask_n_exp == valid_prefix_mask_n_act).all()
-        if not valid_prefix_mask_n_exp.all():
-            assert valid_prefix_mask_n_exp.sum() == 1  # only one valid path: empty one
-            y_n_exp, y_n_act = y_n_exp[:, :1], y_n_act[:, :1]
-            y_lens_n_exp, y_lens_n_act = y_lens_n_exp[:1], y_lens_n_act[:1]
-            log_probs_n_exp, log_probs_n_act = log_probs_n_exp[:1], log_probs_n_act[:1]
-        assert (y_lens_n_exp == y_lens_n_act).all()
-        assert torch.allclose(log_probs_n_exp, log_probs_n_act)
-        rem = y_n_act.size(0) - y_n_exp.size(0)
-        if rem > 0:
-            y_n_exp = torch.cat([y_n_exp, y_n_exp.new_empty((rem, y_n_exp.size(1)))], 0)
-            assert y_n_exp.shape == y_n_act.shape
-        len_mask = (
-            torch.arange(y_n_exp.size(0), device=device).unsqueeze(1) >= y_lens_n_exp
-        )
-        y_n_exp = y_n_exp.masked_fill_(len_mask, -1)
-        y_n_act = y_n_act.masked_fill_(len_mask, -1)
-        assert (y_n_exp == y_n_act).all()
+    for n in range(N):
+        y_exp_n, y_lens_exp_n = y_exp[:, n], y_lens_exp[n]
+        log_probs_exp_n = log_probs_exp[n]
+        initial_state_n = dict((k, v[n : n + 1]) for (k, v) in initial_state.items())
+        y_act_n, y_lens_act_n, log_probs_act_n = search(initial_state_n)
+        assert y_act_n.shape[1:] == y_lens_act_n.shape == log_probs_act_n.shape == (K,)
+        assert (y_lens_exp_n == y_lens_act_n).all(), n
+        assert torch.allclose(log_probs_exp_n, log_probs_act_n), n
+        y_act_n = fill_after_eos(y_act_n, 0, fill=-1)
+        y_exp_n, y_act_n = y_exp_n[y_exp_n != -1], y_act_n[y_act_n != -1]
+        assert y_exp_n.numel() == y_act_n.numel(), n
+        assert (y_exp_n == y_act_n).all(), n
 
 
 @pytest.mark.parametrize(
@@ -760,14 +742,12 @@ def test_random_walk(device):
     ).sum()
 
     random_walk = RandomWalk(lm, max_iters=T)
-    sample, lens, exp_lprobs = random_walk(
-        torch.empty(0, 1, device=device, dtype=torch.long)
-    )
-    assert sample.shape == (T, 1)
-    assert (lens == T).all()
-    lm_sample = lm(sample[:-1])
+    sample, lens, exp_lprobs = random_walk()
+    assert sample.shape == (T,)
+    assert lens == T
+    lm_sample = lm(sample[:-1].unsqueeze(1)).log_softmax(-1)
     assert lm_sample.shape == (T, 1, V)
-    act_lprobs = lm_sample.gather(2, sample.unsqueeze(2)).sum()
+    act_lprobs = lm_sample.gather(2, sample.view(T, 1, 1)).sum()
     assert torch.isclose(exp_lprobs / T, act_lprobs / T, atol=1e-2)
     act_expectation = sample.float().mean()
     assert torch.allclose(exp_expectation, act_expectation, atol=1e-2)
@@ -780,13 +760,16 @@ def test_random_walk_batch(device, jit_type):
         def calc_idx_log_probs(
             self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
         ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+            if idx == 0:
+                hist = prev["init"]
             next_ = (hist[idx - 1] + 1) % self.vocab_size
             return (
                 torch.nn.functional.one_hot(next_, self.vocab_size).float().log() - 1,
                 prev,
             )
 
-    N, V, S_prev = 128, 16, 10
+    N, V = 128, 16
+    assert V > 1
     lm = SpinningLM(V)
     if jit_type == "script":
         lm = torch.jit.script(lm)
@@ -795,39 +778,26 @@ def test_random_walk_batch(device, jit_type):
     walk = RandomWalk(lm, eos=V - 1).to(device)
     if jit_type == "script":
         walk = torch.jit.script(walk)
-    y_prev = torch.randint(0, V, (S_prev, N), device=device)
-    y_prev[0, 0] = V - 1
+    y_prev = torch.randint(0, V, (1, N), device=device)
+    y_prev[0, 0] = V - 2  # cycles to V - 1 (eos) immediately
 
-    exps = []
-    for y_prev_n in y_prev.T:
-        y_prev_n = y_prev_n.unsqueeze(1)
-        y_n_exp, y_lens_n_exp, log_probs_n_exp = walk(y_prev_n)
-        y_n_exp = y_n_exp.squeeze(1)
-        y_lens_n_exp = y_lens_n_exp.squeeze()
-        log_probs_n_exp = log_probs_n_exp.squeeze()
-        exps.append((y_n_exp, y_lens_n_exp, log_probs_n_exp))
+    y_exp, y_lens_exp, log_probs_exp = walk({"init": y_prev}, N)
+    assert y_exp.shape[1:] == y_lens_exp.shape == log_probs_exp.shape == (N,)
+    assert y_lens_exp[0] == 1
+    assert (log_probs_exp == 0).all()
 
-    y_act, y_lens_act, log_probs_act = walk(y_prev)
-    assert y_lens_act[0] == 1
-    for (
-        (y_n_exp, y_lens_n_exp, log_probs_n_exp),
-        y_n_act,
-        y_lens_n_act,
-        log_probs_n_act,
-    ) in zip(exps, y_act.T, y_lens_act, log_probs_act):
-        assert y_n_exp.size(0) <= y_n_act.size(0)
-        assert y_lens_n_exp.shape == y_lens_n_act.shape
-        assert log_probs_n_exp.shape == log_probs_n_act.shape
-        assert (y_lens_n_exp == y_lens_n_act).all()
-        assert torch.allclose(log_probs_n_exp, log_probs_n_act)
-        rem = y_n_act.size(0) - y_n_exp.size(0)
-        if rem > 0:
-            y_n_exp = torch.cat([y_n_exp, y_n_exp.new_empty(rem)])
-            assert y_n_exp.shape == y_n_act.shape
-        len_mask = torch.arange(y_n_exp.size(0), device=device) >= y_lens_n_exp
-        y_n_exp = y_n_exp.masked_fill_(len_mask, -1)
-        y_n_act = y_n_act.masked_fill_(len_mask, -1)
-        assert (y_n_exp == y_n_act).all()
+    for n in range(N):
+        y_exp_n, y_lens_exp_n = y_exp[:, n], y_lens_exp[n]
+        y_lens_exp_n = y_lens_exp_n.item()
+        assert (y_exp_n[y_lens_exp_n - 1 :] == V - 1).all()
+        y_exp_n = y_exp_n[:y_lens_exp_n]
+        y_prev_n = y_prev[:, n : n + 1]
+        y_act_n, y_lens_act_n, log_probs_act_n = walk({"init": y_prev_n})
+        assert y_lens_act_n.shape == log_probs_act_n.shape == tuple()
+        assert y_lens_act_n == y_lens_exp_n
+        assert log_probs_act_n == 0
+        assert y_act_n.shape == (y_lens_exp_n,)
+        assert (y_act_n == y_exp_n).all()
 
 
 @pytest.mark.parametrize("dim", [0, 2, -1, None])

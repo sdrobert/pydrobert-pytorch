@@ -35,6 +35,7 @@ __all__ = [
     "EditDistance",
     "ErrorRate",
     "ExtractableSequentialLanguageModel",
+    "FillAfterEndOfSequence",
     "GeneralizedDotProductSoftAttention",
     "GlobalSoftAttention",
     "GumbelOneHotCategoricalRebarControlVariate",
@@ -96,6 +97,7 @@ from ._rl import TimeDistributedReturn
 from ._string import (
     EditDistance,
     ErrorRate,
+    FillAfterEndOfSequence,
     HardOptimalCompletionDistillationLoss,
     MinimumErrorRateLoss,
     OptimalCompletion,
