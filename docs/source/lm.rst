@@ -179,10 +179,15 @@ There is a new function called :func:`update_input` as well. This is called in
 the forward pass of the LM before any calls to :func:`calc_idx_log_probs` and
 is used to initialize the value of `prev`. The function takes the role of the
 ``prev = [...]`` statement in the previous implementation by initializing the
-hidden and cell states with all zeros. If `prev` already has contents, we
-assume :func:`update_input` has already been called once and the states
-initilialized. :func:`update_input` was also available in
-:class:`SequentialLanguageModel` interface, we just didn't use it.
+hidden and cell states with all zeros. The argument `hist` is some prefix of
+the token sequence being passed to the language model. Usually and here as
+well, the sole purpose of passing `hist` is to determine the batch dimension
+``N``. If `prev` already has contents, we assume :func:`update_input` has
+already been called once and the states initilialized. This satisfies the
+requirement of :func:`update_input` that it be robust to repeated calls, i.e.
+``update_input(prev, hist) == update_input(update_input(prev, y), hist)``.
+:func:`update_input` was also available in :class:`SequentialLanguageModel`
+interface, we just didn't use it.
 
 The only addition unique to the :class:`ExtractableSequentialLanguageModel`
 interface, therefore, is the method :func:`extract_by_src`.
@@ -194,8 +199,8 @@ along the batch dimension of tensors in `prev` to produce `updated`. If a
 tensor in `prev`, `prev_x`, has shape ``(*, N, *)``, then the corresponding
 tensor in `updated`, `updated_x`, should be of shape ``(*, N', *)`` and have
 values ``updated_x[..., src[n], ...] = prev_x[..., n, ...]``. This can normally
-be accomplished with the function :func:`torch.Tensor.index_select`, as can
-be seen above. For :class:`RNNLM`, we perform an index select along the batch
+be accomplished with the function :func:`torch.Tensor.index_select`, as can be
+seen above. For :class:`RNNLM`, we perform an index select along the batch
 dimension (``0``) for both the hidden and cell states, returning an updated
 dictionary.
 
@@ -206,8 +211,8 @@ probabilities. The dimension ``N`` is actually a flattened combination of
 current_beam_width``. :func:`extract_by_src` allows the search to select the
 states of the paths that survived. The takeaway from an implementation
 perspective is that the batch size of any tensors in the methods of
-:class:`RNNLM` are not guaranteed to match those of the tensors the module
-was passed as arguments (`batch_size` above).
+:class:`RNNLM` are not guaranteed to match those of the tensors the module was
+passed as arguments (`batch_size` above).
 
 With the updates to the model code complete, the updated code for training and
 decoding is as follows:
@@ -240,7 +245,7 @@ decoding is as follows:
     # decoding
     search = BeamSearch(lm, beam_width, eos)
     with torch.no_grad():
-        y, y_lens, log_probs = search(torch.empty((0, batch_size), dtype=torch.long))
+        y, y_lens, log_probs = search(batch_size=batch_size)
     print('top path:', y[:y_lens[0, 0], 0, 0], 'log_prob', log_probs[0, 0])
 
 The training code is similar to that we had before, except now we handle
@@ -395,9 +400,9 @@ implementation:
             self.ff = torch.nn.Linear(hidden_size, vocab_size)
         
         def update_input(self, prev, hist):
-            if isinstance(prev, dict):
-                return prev
-            in_ = prev  # (T, N, in_size)
+            if "in" not in prev:
+                return prev  # already initialized
+            in_ = prev["in"]  # (T, N, in_size)
             N = hist.size(1)
             assert N == in_.size(1)
             encoding = self.encoder(in_)[0]  # (T, N, hidden_size)
@@ -456,7 +461,7 @@ implementation:
     for epoch in range(epochs):
         optim.zero_grad()
         hist = text[:-1].clamp(min=0)
-        logits = lm(hist, prev=in_)
+        logits = lm(hist, {"in": in_})
         loss = ce_loss(logits.flatten(0, 1), text.flatten())
         loss.backward()
         optim.step()
@@ -464,11 +469,11 @@ implementation:
     # decoding
     search = BeamSearch(lm, beam_width, eos)
     with torch.no_grad():
-        y, y_lens, log_probs = search(torch.empty((0, batch_size), dtype=torch.long), prev=in_)
+        y, y_lens, log_probs = search({"in": in_}, batch_size)
     for n in range(batch_size):
         print(f'top path {n}:', y[:y_lens[n, 0], n, 0], 'log_prob', log_probs[n, 0])
 
-Here we take advantage of the keyword argument `prev` in both the call to the
+Here we take advantage of passing the initial state in both the call to the
 `lm` and `search` instances to pass the initial input tensor `in_` to the LM.
 On the first call to :func:`update_input`, the input tensor is fed into the
 encoder network and the output, `encoding`, is passed alongside the decoder

@@ -29,6 +29,109 @@ from ._compat import script
 from ._wrappers import functional_wrapper, proxy
 
 
+@functional_wrapper("FillAfterEndOfSequence")
+def fill_after_eos(
+    tokens: torch.Tensor,
+    eos: int,
+    dim: int = 0,
+    fill: Optional[float] = None,
+    value: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    out = tokens if value is None else value
+    fill_ = float(eos) if fill is None else fill
+    # the clamp reduces the chances of overflow.
+    fill_mask = (tokens == eos).long().cumsum(dim).clamp_max(1).cumsum(dim) > 1
+    return out.masked_fill(fill_mask, fill_)
+
+
+class FillAfterEndOfSequence(torch.nn.Module):
+    """Fill after the first end-of-sequence token with a value
+    
+    Many Natural Language Processing tasks involve variable-length sequences ending with
+    special "end-of-sequence" (`eos`) tokens. This module finds the first instance of
+    `eos` and pads everything after that along the `dim` dimension with the value of
+    `fill`.
+
+    Parameters
+    ----------
+    eos
+        The id of the end-of-sequence token.
+    dim
+        The sequence dimension of `tokens`.
+    fill
+        The value to fill with. If unset, set to `eos`.
+    
+    Call Parameters
+    ---------------
+    tokens : torch.Tensor
+        The token sequences. Of arbitrary shape, but must have dimension `dim`.
+    value : torch.Tensor or None, optional
+        `value` may be optionally specified as a tensor other than `tokens` to fill. It
+        must broadcast with `tokens` if specified. Otherwise `value` will be assumed to
+        be `tokens`.
+    
+    Returns
+    -------
+    out : torch.Tensor
+        A tensor matching `tokens` (or `values` broadcasted with `tokens`, if `values`
+        was specified) except beyond the first instance of `eos` in `tokens`, after
+        which is `fill`.
+    
+    Examples
+    --------
+    >>> T = 10
+    >>> tokens = torch.arange(T)
+    >>> tokens
+    tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+    >>> fill_after_eos = FillAfterEndOfSequence(eos=T // 2, fill=-1)
+    >>> out = fill_after_eos(tokens)
+    >>> out
+    tensor([ 0,  1,  2,  3,  4,  5, -1, -1, -1, -1])
+    >>> logits = torch.eye(T)
+    tensor([[1., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 1., 0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 1., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 1., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 1., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 1., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 1., 0., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 1., 0., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0., 1., 0.],
+        [0., 0., 0., 0., 0., 0., 0., 0., 0., 1.]])
+    >>> out = fill_after_eos(tokens.unsqueeze(1), logits)
+    >>> out
+    tensor([[ 1.,  0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.],
+        [ 0.,  1.,  0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.],
+        [ 0.,  0.,  1.,  0.,  0.,  0.,  0.,  0.,  0.,  0.],
+        [ 0.,  0.,  0.,  1.,  0.,  0.,  0.,  0.,  0.,  0.],
+        [ 0.,  0.,  0.,  0.,  1.,  0.,  0.,  0.,  0.,  0.],
+        [ 0.,  0.,  0.,  0.,  0.,  1.,  0.,  0.,  0.,  0.],
+        [-1., -1., -1., -1., -1., -1., -1., -1., -1., -1.],
+        [-1., -1., -1., -1., -1., -1., -1., -1., -1., -1.],
+        [-1., -1., -1., -1., -1., -1., -1., -1., -1., -1.],
+        [-1., -1., -1., -1., -1., -1., -1., -1., -1., -1.]])
+    """
+
+    __constants__ = ["eos", "dim", "fill"]
+
+    dim: int
+    eos: int
+    fill: float
+
+    def __init__(self, eos: int, dim: int = 0, fill: Optional[float] = None) -> None:
+        super().__init__()
+        self.eos = eos
+        self.dim = dim
+        self.fill = float(eos) if fill is None else fill
+
+    def forward(
+        self, tokens: torch.Tensor, value: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        return fill_after_eos(tokens, self.eos, self.dim, self.fill, value)
+
+    __call__ = proxy(forward)
+
+
 @script
 def _lens_from_eos(tok: torch.Tensor, eos: int, dim: int) -> torch.Tensor:
     # length to first eos (exclusive)

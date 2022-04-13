@@ -35,6 +35,7 @@ from ._compat import (
 )
 from ._string import _lens_from_eos
 from ._wrappers import functional_wrapper, proxy
+from . import config
 
 
 @script
@@ -172,9 +173,9 @@ class BeamSearch(torch.nn.Module):
     ----------
     lm
         The language model responsible for producing distributions over the next token
-        type
+        type.
     width
-        The beam width
+        The beam width.
     eos
         The end of sequence type. If set, must be in-vocabulary (according to
         ``lm.vocab_size``). Either `eos` or `max_iters` must be set.
@@ -185,27 +186,38 @@ class BeamSearch(torch.nn.Module):
         Applicable only when `eos` is set. If :obj:`True`, waits for all paths in all
         batches' beams to emit an `eos` symbol before stopping. If :obj:`False`, only
         the highest probability path need end with an `eos` before stopping.
+    pad_value
+        The value to pad frozen paths with. See the below note for more information.
     
     Call Parameters
     ---------------
-    y_prev : torch.Tensor
-        A long tensor of shape ``(S*, N[, old_width])``. In most cases, `y_prev` should
-        be an empty tensor of shape ``(0, N[, 1])``, though it can be used start the
-        search with different prefixes.
-    prev : Dict[str, torch.Tensor], optional
-        Whatever state info must be initially passed to the `lm`.
+    initial_state : dict, optional
+        Whatever state info must be initially passed to the `lm` before any sequences
+        are generated.
+    batch_size : int or None, optional
+        Specifies the batch size ``(N*,)``. If set, ``(N*,) == (batch_size,)`` and
+        a beam search will be run separately over each of the batch elements. If
+        unset, ``(N*,) == (,)`` and a single search will be performed. See the below
+        note for more information.
     
     Returns
     -------
     y : torch.Tensor
-        A long tensor of shape ``(S, N, width)`` where ``S >= S*`` containing the
-        `width` paths per batch element.
+        A long tensor of shape ``(S, N*, width)`` containing the `width` paths.
     y_lens: torch.Tensor
-        A long tensor of shape ``(N, width)`` of the lengths of the corresponding paths
-        including the first instance of `eos`, if it exists. For batch element ``n`` and
-        path ``k``, only the tokens in ``y[:y_lens[n, k], n, k]`` are valid.
+        A long tensor of shape ``(N*, width)`` of the lengths of the corresponding paths
+        including the first instance of `eos`, if it exists. Only the tokens in
+        ``y[:y_lens[..., k], ..., k]`` are valid.
     y_log_probs : torch.Tensor
-        A tensor of shape ``(N, width)`` containing the log probabilities of the paths.
+        A tensor of shape ``(N*, width)`` containing the log probabilities of the paths.
+    
+    Variables
+    ---------
+    device_buffer : torch.Tensor
+        An empty tensor which determines the device of return values. The device is
+        inferred on initialization from ``lm.parameters()``, if possible. The device can
+        be forced by using the module's :func:`to` method, which also shifts the
+        parameters of `lm` to the device.
 
     Warnings
     --------
@@ -215,23 +227,46 @@ class BeamSearch(torch.nn.Module):
     cannot be distinguished from a zero-probability path (``log 0 = -inf``), care must
     be taken by the user to avoid confusing them.
 
-    As soon as a batch element reaches its completion condition the search is frozen for
-    that batch element, even if the search continues for other batch elements. This is
-    in order to produce consistent results across batch sizes.
-
     Notes
     -----
-    While the core operations of beam search - extending existing paths and pruning the
-    low scoring ones - are generally constant, the details will vary between
-    implementations. This no-frills implementation is best considered a starting point.
+    When `batch_size` is unset, a single search starting with a single empty prefix is
+    run and its results reported. This is appropriate for language models which do not
+    condition on any batched input in `initial_state`. Since the search is
+    deterministic, running the search multiple times on the same empty prefix (as if
+    batched) would duplicate results. In this setting, the return values (`y`, `y_lens`,
+    and `y_log_probs`) have no batch dimension.
+
+    `batch_size` is appropriate when the search is being conditioned on some batched
+    input viz. `initial_state`, such as images or audio features. In these cases,
+    `batch_size` should match the batch dimension of the batched input. `batch_size`
+    empty prefixes will be initialized and passed to the `lm`. The return values will
+    have a corresponding batch dimensions.
+    
+    The introduction of batching via `batch_size` raises the question of what to do when
+    one or more batch elements have finished the search while others continue. In order
+    to return consistent results regardless of the number of elements in the batch, we
+    freeze the results of completed batch elements while the remainder continue. If
+    batch element ``n`` is completed by step ``t``, ``y_lens[n]`` and ``y_log_probs[n]``
+    will be kept the same regardless of whether the remaining batch elements require a
+    step ``t + 1``. Because ``y`` needs to grow while the remaining batch elements are
+    unfinished, completed sequences will be right-padded with the value `pad_value`.
+    Such sequences may or may not have ended with an `eos` (if set) prior to padding,
+    depending on the value of `finish_all_paths`.
     """
 
-    __constants__ = ["width", "eos", "max_iters", "finish_all_paths"]
+    __constants__ = [
+        "width",
+        "eos",
+        "max_iters",
+        "finish_all_paths",
+        "pad_value",
+    ]
 
-    width: int
     eos: Optional[int]
-    max_iters: Optional[int]
     finish_all_paths: bool
+    max_iters: Optional[int]
+    width: int
+    pad_value: int
 
     def __init__(
         self,
@@ -240,6 +275,7 @@ class BeamSearch(torch.nn.Module):
         eos: Optional[int] = None,
         max_iters: Optional[int] = None,
         finish_all_paths: bool = False,
+        pad_value: int = config.INDEX_PAD_VALUE,
     ):
         super().__init__()
         if width < 1:
@@ -260,6 +296,16 @@ class BeamSearch(torch.nn.Module):
         self.eos = eos
         self.max_iters = max_iters
         self.finish_all_paths = finish_all_paths
+        self.pad_value = pad_value
+        device = None
+        if device is None:
+            try:
+                device = next(iter(lm.parameters())).device
+            except StopIteration:
+                pass
+            if device is None:
+                device = torch.device("cpu")
+        self.register_buffer("device_buffer", torch.empty(0, device=device))
 
     def reset_parameters(self) -> None:
         if hasattr(self.lm, "reset_parameters"):
@@ -301,9 +347,8 @@ class BeamSearch(torch.nn.Module):
 
         Returns
         -------
-        tuple of torch.Tensor
-            A tuple `(log_probs_prev_new, log_probs_t_new)`. The modified versions of
-            the associated arguments.
+        log_probs_prev_new, log_probs_t_new : torch.Tensor
+            The modified versions of the associated arguments.
 
         Notes
         -----
@@ -336,74 +381,34 @@ class BeamSearch(torch.nn.Module):
 
     @overload
     def forward(
-        self, y_prev: torch.Tensor, prev: Dict[str, torch.Tensor] = dict()
+        self,
+        initial_state: Dict[str, torch.Tensor] = dict(),
+        batch_size: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         ...
 
     def forward(
-        self, y_prev: torch.Tensor, _prev: Optional[Dict[str, torch.Tensor]] = None
+        self,
+        initial_state_: Optional[Dict[str, torch.Tensor]] = None,
+        batch_size: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if _prev is None:
-            prev = dict()
-        else:
-            prev = _prev
-        if y_prev.dim() == 2:
-            prev_width = 1
-        elif y_prev.dim() == 3:
-            if not y_prev.size(0):
-                raise RuntimeError(
-                    "Cannot start with empty prefix when y_prev is 3 dimensional"
-                )
-            prev_width = y_prev.size(2)
-            if prev_width < 1:
-                raise RuntimeError("dim 3 in y_prev must be positive")
-            y_prev = y_prev.flatten(1)
-        else:
-            raise RuntimeError("y_prev must be 2 or 3 dimensional")
-
-        device = y_prev.device
-        S_prev, N = y_prev.size(0), y_prev.size(1) // prev_width
-        prev = self.lm.update_input(prev, y_prev)
-        y_prev = y_prev.view(S_prev, N, prev_width)
-
-        if self.eos is not None and S_prev:
-            y_prev_lens = (
-                -((y_prev == self.eos).cumsum(0).clamp(max=1).sum(0) - 1).clamp(min=0)
-                + S_prev
-            )
-
-            len_eq_mask = y_prev_lens.unsqueeze(1) == y_prev_lens.unsqueeze(2)  # NKK
-            tok_ge_len_mask = (
-                torch.arange(S_prev, device=device).view(S_prev, 1, 1) >= y_prev_lens
-            )  # SNK
-            eq_mask = (
-                y_prev.unsqueeze(2) == y_prev.unsqueeze(3)
-            ) | tok_ge_len_mask.unsqueeze(
-                3
-            )  # SNKK
-            eq_mask = (
-                eq_mask.all(0)
-                & len_eq_mask
-                & ~torch.eye(prev_width, dtype=torch.bool, device=device)
-            )  # NKK
-            if eq_mask.any():
-                raise RuntimeError(
-                    "y_prev was equivalent for the following (batch_idx, path_idx) "
-                    f"paths: {torch.nonzero(eq_mask)}"
-                )
-        else:
-            y_prev_lens = torch.full(
-                (N, prev_width), S_prev, dtype=torch.long, device=device
-            )
+        initial_state = dict() if initial_state_ is None else initial_state_
+        device = self.device_buffer.device
+        N = 1 if batch_size is None else batch_size
+        prev_width = 1
+        y_prev = torch.empty((0, N), dtype=torch.long, device=device)
+        prev = self.lm.update_input(initial_state, y_prev)
+        y_prev = y_prev.unsqueeze(2)
         log_probs_prev = torch.full(
             (N, prev_width), -math.log(prev_width), device=device
         )
+        y_prev_lens = torch.zeros((N, prev_width), dtype=torch.long, device=device)
 
         if self.max_iters is None:
             max_iters = 1024 * 1024 * 1024 * 1024
         else:
             max_iters = self.max_iters
-        for t in range(S_prev, max_iters + S_prev):
+        for t in range(max_iters):
             t = torch.tensor(t, device=device)
 
             if self.eos is not None and t:
@@ -427,15 +432,18 @@ class BeamSearch(torch.nn.Module):
                 )
                 done_mask = eos_mask[..., :1]
 
+            y_prev_ = y_prev.clamp(0, self.lm.vocab_size)
+
             # determine extension probabilities
             log_probs_t, in_next = self.lm.calc_idx_log_probs(
-                y_prev.flatten(1), prev, t
+                y_prev_.flatten(1), prev, t
             )
             log_probs_t = log_probs_t.reshape(N, prev_width, self.lm.vocab_size)
+            log_probs_t = log_probs_t.log_softmax(-1)
 
             # update probabilities if the subclass so desires
             log_probs_prev, log_probs_t = self.update_log_probs_for_step(
-                log_probs_prev, log_probs_t, y_prev, y_prev_lens, eos_mask
+                log_probs_prev, log_probs_t, y_prev_, y_prev_lens, eos_mask
             )
 
             if self.eos is not None:
@@ -451,7 +459,7 @@ class BeamSearch(torch.nn.Module):
 
             # extend + prune
             (y_next, y_next_lens, log_probs_next, next_src) = beam_search_advance(
-                log_probs_t, self.width, log_probs_prev, y_prev, y_prev_lens
+                log_probs_t, self.width, log_probs_prev, y_prev_, y_prev_lens
             )
 
             if self.eos is not None:
@@ -473,6 +481,7 @@ class BeamSearch(torch.nn.Module):
                     y_prev, log_probs_prev, y_prev_lens
                 )
                 y_next[:-1] = torch.where(done_mask.unsqueeze(0), y_prev, y_next[:-1])
+                y_next[-1:].masked_fill_(done_mask, self.pad_value)
                 log_probs_next = torch.where(done_mask, log_probs_prev, log_probs_next)
                 y_next_lens = torch.where(done_mask, y_prev_lens, y_next_lens)
 
@@ -484,6 +493,11 @@ class BeamSearch(torch.nn.Module):
         y_prev, log_probs_prev, y_prev_lens = self._to_width(
             y_prev, log_probs_prev, y_prev_lens
         )
+
+        if batch_size is None:
+            y_prev = y_prev.squeeze(1)
+            y_prev_lens = y_prev_lens.squeeze(0)
+            log_probs_prev = log_probs_prev.squeeze(0)
 
         return y_prev, y_prev_lens, log_probs_prev
 
@@ -955,8 +969,9 @@ class CTCPrefixSearch(torch.nn.Module):
         An optional tensor of shape ``(N,)`` s.t., for a given batch index ``n``, only
         the values in the slice ``logits[:lens[n], n]`` are valid. If unset then all
         sequences are assumed to be of length ``T``.
-    prev : Dict[str, torch.Tensor] or None, optional
-        Whatever state info must be initially passed to the `lm`, if specified.
+    initial_state : Dict[str, torch.Tensor] or None, optional
+        Whatever state info must be passed to the `lm` prior to generating sequences, if
+        specified.
     
     Returns
     -------
@@ -1023,7 +1038,7 @@ class CTCPrefixSearch(torch.nn.Module):
         self,
         logits: torch.Tensor,
         lens: Optional[torch.Tensor] = None,
-        prev: Dict[str, torch.Tensor] = dict(),
+        initial_state: Dict[str, torch.Tensor] = dict(),
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         ...
 
@@ -1082,6 +1097,7 @@ class CTCPrefixSearch(torch.nn.Module):
                 lm_log_probs_t, in_next = self.lm.calc_idx_log_probs(
                     y_prev.flatten(1), prev, y_prev_lens.flatten()
                 )
+                lm_log_probs_t = lm_log_probs_t.log_softmax(-1)
                 lm_probs_t = (self.beta * lm_log_probs_t).exp().view(N, prev_width, V)
                 # note we're no longer in log space, so it's a product
                 ext_probs_t = lm_probs_t * nonext_probs_t.unsqueeze(1)
@@ -1249,7 +1265,7 @@ class RandomWalk(torch.nn.Module):
     ----------
     lm
         The language model responsible for producing distributions over the next token
-        type
+        type.
     eos
         The end of sequence type. If set, must be in-vocabulary (according to
         ``lm.vocab_size``). Either `eos` or `max_iters` must be set.
@@ -1259,24 +1275,50 @@ class RandomWalk(torch.nn.Module):
     
     Call Parameters
     ---------------
-    y_prev : torch.Tensor
-        A long tensor of shape ``(S*, N)`` containing the prefixes prior to the start of
-        the search. `y_prev` may be an empty tensor of shape ``(0, N)`` indicating that
-        each sequence in the batch should be completely generated by the walk. A
-        non-empty tensor `y_prev` can be used to prime the generation process.
-    prev : Dict[str, torch.Tensor], optional
-        Whatever state info must be initially passed to the `lm`.
+    initial_state : dict, optional
+        Whatever state info must be initially passed to the `lm` before any sequences
+        are generated.
+    batch_size : int or None, optional
+        Specifies the batch size ``(N*,)``. If set, ``(N*,) == (batch_size,)`` and a
+        walk will be performed for each batch element independently. If unset, ``(N*,)
+        == (,)`` and a single walk will be performed. See the below note for more
+        information.
     
     Returns
     -------
     y : torch.Tensor
-        A long tensor of shape ``(S, N)`` containing the paths.
+        A long tensor of shape ``(S, N*)`` containing the paths.
     y_lens : torch.Tensor
-        A long tensor of shape ``(N,)`` of the lengths of the corresponding paths
+        A long tensor of shape ``(N*,)`` of the lengths of the corresponding paths
         including the first instance of `eos`, if it exists. For batch element ``n``,
         only the tokens in ``y[:y_lens[n], n]`` are valid.
     y_log_probs : torch.Tensor
-        A tensor of shape ``(N,)`` containing the log probabilities of the paths.
+        A tensor of shape ``(N*,)`` containing the log probabilities of the paths.
+    
+    Variables
+    ---------
+    device_buffer : torch.Tensor
+        An empty tensor which determines the device of return values. The device is
+        inferred on initialization from ``lm.parameters()``, if possible. The device can
+        be forced by using the module's :func:`to` method, which also shifts the
+        parameters of `lm` to the device.
+    
+    Notes
+    -----
+    The interface for :class:`RandomWalk` is similar to that of :class:`BeamSearch`.
+    When `batch_size` is unset, a single empty prefix is initialized, a single draw/walk
+    is performed, and the return values (`y`, `y_lens`, and `y_log_probs`) have no batch
+    dimension. When `batch_size` is set, `batch_size` empty prefixes are initialized,
+    `batch_size` draws/walks are performed, and the return values have a batch dimension
+    of `batch_size`.
+
+    Setting `batch_size` remains useful when the language model conditions on some
+    batched input through `initial_state`; each walk will be assigned some different
+    batch element. Because the results of the walk are random, `batch_size` can also be
+    used in the unconditioned case to draw `batch_size` elements from the same
+    distribution. This is in contrast with :class:`BeamSearch` in which increasing
+    `batch_size` in the unconditioned case merely repeats the same search `batch_size`
+    times.
     """
 
     __constants__ = ["eos", "max_iters"]
@@ -1305,6 +1347,15 @@ class RandomWalk(torch.nn.Module):
         self.lm = lm
         self.eos = eos
         self.max_iters = max_iters
+        device = None
+        if device is None:
+            try:
+                device = next(iter(lm.parameters())).device
+            except StopIteration:
+                pass
+            if device is None:
+                device = torch.device("cpu")
+        self.register_buffer("device_buffer", torch.empty(0, device=device))
 
     def reset_parameters(self) -> None:
         if hasattr(self.lm, "reset_parameters"):
@@ -1356,46 +1407,37 @@ class RandomWalk(torch.nn.Module):
 
     @overload
     def forward(
-        self, y_prev: torch.Tensor, prev: Dict[str, torch.Tensor] = dict()
+        self,
+        initial_state: Dict[str, torch.Tensor] = dict(),
+        batch_size: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         ...
 
     def forward(
-        self, y: torch.Tensor, _prev: Optional[Dict[str, torch.Tensor]] = None
+        self,
+        prev_: Optional[Dict[str, torch.Tensor]] = None,
+        batch_size: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if _prev is None:
-            prev = dict()
-        else:
-            prev = _prev
-        if y.dim() != 2:
-            raise RuntimeError("y_prev must be 2 dimensional")
+        prev = dict() if prev_ is None else prev_
+        device = self.device_buffer.device
+        N = 1 if batch_size is None else batch_size
+        max_iters = int(1024 ** 3) if self.max_iters is None else self.max_iters
 
-        device = y.device
-        S_prev, N = y.size(0), y.size(1)
+        y = torch.empty((0, N), device=device, dtype=torch.long)
         prev = self.lm.update_input(prev, y)
 
-        if self.eos is not None and S_prev:
-            y_lens = (
-                -((y == self.eos).cumsum(0).clamp(max=1).sum(0) - 1).clamp_min_(0)
-                + S_prev
-            )
-            eos_mask = (y == self.eos).any(0)
-        else:
-            y_lens = torch.full((N,), S_prev, dtype=torch.long, device=device)
-            eos_mask = torch.zeros(N, device=device, dtype=torch.bool)
+        y_lens = torch.zeros(N, dtype=torch.long, device=device)
+        eos_mask = torch.zeros(N, device=device, dtype=torch.bool)
         log_probs = torch.zeros(N, device=device)
 
-        if self.max_iters is None:
-            max_iters = 1024 * 1024 * 1024 * 1024
-        else:
-            max_iters = self.max_iters
-        for t in range(S_prev, max_iters + S_prev):
+        for t in range(max_iters):
             if eos_mask.all():
                 break
             t = torch.tensor(t, device=device)
 
             # determine extension probabilities
             log_probs_t, prev = self.lm.calc_idx_log_probs(y[:t], prev, t)
+            log_probs_t = log_probs_t.log_softmax(-1)
 
             # update probabilities if the subclass so desires
             log_probs, log_probs_t = self.update_log_probs_for_step(
@@ -1423,6 +1465,11 @@ class RandomWalk(torch.nn.Module):
                 eos_mask = y.gather(0, y_lens.unsqueeze(0) - 1).squeeze(0) == self.eos
             else:
                 y_lens += 1
+
+        if batch_size is None:
+            y = y.squeeze(1)
+            y_lens = y_lens.squeeze(0)
+            log_probs = log_probs.squeeze(0)
 
         return y, y_lens, log_probs
 

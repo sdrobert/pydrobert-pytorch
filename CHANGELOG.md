@@ -2,6 +2,7 @@
 
 ## HEAD
 
+- Added  `FillAfterEndOfSequence`.
 - Added `binomial_coefficient`, `enumerate_binary_sequences`,
   `enumerate_vocab_sequences`, and
   `enumerate_binary_sequences_with_cardinality`.
