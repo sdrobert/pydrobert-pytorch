@@ -1790,7 +1790,7 @@ class SequentialLanguageModelDistribution(
 
     random_walk: RandomWalk
     arg_constraints = dict()
-    initial_state: Optional[Dict[str, torch.Tensor]]
+    initial_state: Dict[str, torch.Tensor]
     _samples_cache: Optional[torch.Tensor]
     _log_probs_cache: Optional[torch.Tensor]
 
@@ -1803,7 +1803,7 @@ class SequentialLanguageModelDistribution(
         validate_args: Optional[bool] = None,
     ):
         self.random_walk = random_walk
-        self.initial_state = initial_state
+        self.initial_state = dict() if initial_state is None else initial_state
         self.cache_samples = cache_samples
         self._samples_cache = None
         self._log_probs_cache = None
@@ -1817,9 +1817,9 @@ class SequentialLanguageModelDistribution(
                 raise ValueError("batch_size must be positive")
             if not isinstance(random_walk, RandomWalk):
                 raise ValueError("random_walk is not a RandomWalk instance")
-            if initial_state is not None and not all(
+            if not all(
                 isinstance(x, str) and isinstance(y, torch.Tensor)
-                for (x, y) in initial_state.items()
+                for (x, y) in self.initial_state.items()
             ):
                 raise ValueError("initial_state is not a dictionary of str:Tensor")
 
@@ -1933,16 +1933,17 @@ class SequentialLanguageModelDistribution(
             return self._log_probs_cache
         if self.cache_samples:
             self._samples_cache = value
-        args = tuple() if self.initial_state is None else (self.initial_state.copy(),)
         if len(self.batch_shape):
             log_probs = []
             value = value.flatten(end_dim=-3).transpose(1, 2)
             for hist in value:
-                log_probs.append(self.random_walk.lm(hist[:-1], *args))
+                log_probs.append(
+                    self.random_walk.lm(hist[:-1], self.initial_state.copy())
+                )
             log_probs = torch.stack(log_probs)
         else:
             hist = value.T
-            log_probs = self.random_walk.lm(hist[:-1], *args)
+            log_probs = self.random_walk.lm(hist[:-1], self.initial_state.copy())
             log_probs = log_probs.transpose(0, 1)
         sequence_log_probs = SequenceLogProbabilities(1, self.random_walk.eos)
         log_probs = sequence_log_probs(log_probs, value)
