@@ -1859,7 +1859,9 @@ class SequentialLanguageModelDistribution(
             batch_size = self.batch_shape[0]
             samples, log_probs = [], []
             for _ in range(num_samples):
-                sample, _, log_prob = self.random_walk(self.initial_state, batch_size)
+                sample, _, log_prob = self.random_walk(
+                    self.initial_state.copy(), batch_size
+                )
                 samples.append(sample)
                 log_probs.append(log_prob)
             log_probs = torch.stack(log_probs)
@@ -1873,7 +1875,9 @@ class SequentialLanguageModelDistribution(
                 )
                 samples = samples.flatten(1).T
         else:
-            samples, _, log_probs = self.random_walk(self.initial_state, num_samples)
+            samples, _, log_probs = self.random_walk(
+                self.initial_state.copy(), num_samples
+            )
             samples = samples.T
         shape[-1] = samples.size(-1)
         samples = samples.reshape(shape)
@@ -1929,7 +1933,7 @@ class SequentialLanguageModelDistribution(
             return self._log_probs_cache
         if self.cache_samples:
             self._samples_cache = value
-        args = tuple() if self.initial_state is None else (self.initial_state,)
+        args = tuple() if self.initial_state is None else (self.initial_state.copy(),)
         if len(self.batch_shape):
             log_probs = []
             value = value.flatten(end_dim=-3).transpose(1, 2)
