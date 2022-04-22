@@ -93,12 +93,20 @@ class BinaryCardinalityConstraint(constraints.Constraint):
     event_dim = 1
 
     def __init__(
-        self, total_count: torch.Tensor, given_count: torch.Tensor, tmax: int
+        self,
+        given_count: torch.Tensor,
+        tmax: int,
+        total_count: Optional[torch.Tensor] = None,
     ) -> None:
         self.given_count = given_count
-        self.total_count_mask = total_count.unsqueeze(-1) <= torch.arange(
-            tmax, device=total_count.device
-        )
+        if total_count is None:
+            self.total_count_mask = torch.zeros(
+                1, dtype=torch.bool, device=given_count.device
+            )
+        else:
+            self.total_count_mask = total_count.unsqueeze(-1) <= torch.arange(
+                tmax, device=total_count.device
+            )
         super().__init__()
 
     def check(self, value: torch.Tensor) -> torch.Tensor:
@@ -428,7 +436,7 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
         given_count: Union[int, torch.Tensor],
         total_count: Union[int, torch.Tensor],
         out_size: Optional[int] = None,
-        validate_args : Optional[bool] = None,
+        validate_args: Optional[bool] = None,
     ):
         device = None
         if isinstance(given_count, torch.Tensor):
@@ -466,7 +474,7 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
     @constraints.dependent_property
     def support(self):
         return BinaryCardinalityConstraint(
-            self.total_count, self.given_count, self.event_shape[0]
+            self.given_count, self.event_shape[0], self.total_count
         )
 
     @property

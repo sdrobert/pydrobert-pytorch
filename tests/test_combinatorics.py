@@ -136,12 +136,12 @@ def test_simple_random_sampling_without_replacement(device, jit_type):
         b = srswor_(tmax.expand(mmax, nmax), lmax.expand(mmax, nmax))
     else:
         b = srswor.sample([mmax])
-    assert ((b == 0.0) | (b == 1.0)).all()
+    assert ((b == 0) | (b == 1)).all()
     assert (b.sum(-1) == lmax).all()
     tmax_mask = tmax.unsqueeze(1) > torch.arange(tmax_max, device=device)
     b = b * tmax_mask
     assert (b.sum(-1) == lmax).all()
-    assert torch.allclose(b.mean(0), srswor.mean, atol=1e-2)
+    assert torch.allclose(b.float().mean(0), srswor.mean, atol=1e-2)
 
     lp_exp = []
     for n in range(nmax):

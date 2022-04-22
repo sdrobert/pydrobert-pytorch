@@ -1938,15 +1938,15 @@ class SequentialLanguageModelDistribution(
             value = value.flatten(end_dim=-3).transpose(1, 2)
             for hist in value:
                 log_probs.append(
-                    self.random_walk.lm(hist[:-1], self.initial_state.copy())
+                    self.random_walk.lm(hist[:-1].long(), self.initial_state.copy())
                 )
             log_probs = torch.stack(log_probs)
         else:
             hist = value.T
-            log_probs = self.random_walk.lm(hist[:-1], self.initial_state.copy())
+            log_probs = self.random_walk.lm(hist[:-1].long(), self.initial_state.copy())
             log_probs = log_probs.transpose(0, 1)
         sequence_log_probs = SequenceLogProbabilities(1, self.random_walk.eos)
-        log_probs = sequence_log_probs(log_probs, value)
+        log_probs = sequence_log_probs(log_probs, value.long())
         log_probs = log_probs.view(shape)
         if self.cache_samples:
             self._log_probs_cache = log_probs
