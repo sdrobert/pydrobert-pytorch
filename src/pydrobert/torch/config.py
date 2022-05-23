@@ -21,7 +21,7 @@ changed, the changes will propagate to any submodules.
 import os
 import math
 
-__all__ = ["INDEX_PAD_VALUE", "USE_JIT", "EPS_NINF", "EPS_0"]
+__all__ = ["INDEX_PAD_VALUE", "USE_JIT", "EPS_NINF", "EPS_INF", "EPS_0"]
 
 
 INDEX_PAD_VALUE = -100
@@ -56,5 +56,12 @@ EPS_0 = math.log1p(-2 * 1.1920928955078125e-07)
 """A large enough value in log space that exponentiating it is very close to 1
 
 This number is sometimes used in place of 0 in log-space values to avoid masking.
-Increasing it will decrease the accuracy of computations, but may avoid NaNs.
+Decreasing it will decrease the accuracy of computations, but may avoid NaNs.
+"""
+
+EPS_INF = math.log(3.4028234663852886e38) / 2
+"""A large enough value in log space that exponentiating it is near infinity
+
+This number is sometimes used in place of infinity in log-space values to avoid masking.
+Decreasing it will decrease the accuracy of computations, but may avoid NaNs.
 """

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 import torch
 
 from ._estimators import Estimator, FunctionOnSample
@@ -40,10 +39,6 @@ class EnumerateEstimator(Estimator):
         (``proposal.has_enumerate_support == True``).
     func
     is_log
-    return_log
-        If :obj:`True`, the log of the expectation is returned instead of the
-        expectation. Results may be more numerically stable if ``return_log == is_log``.
-        If unset, `return_log` defaults to the value of `is_log`.
     
     Returns
     -------
@@ -62,7 +57,6 @@ class EnumerateEstimator(Estimator):
         proposal: torch.distributions.distribution.Distribution,
         func: FunctionOnSample,
         is_log: bool = False,
-        return_log: Optional[bool] = None,
     ) -> None:
         if not proposal.has_enumerate_support:
             raise ValueError(
@@ -70,7 +64,6 @@ class EnumerateEstimator(Estimator):
                 "(proposal.has_enumerate_support == True)"
             )
         super().__init__(proposal, func, is_log)
-        self.return_log = self.is_log if return_log is None else return_log
 
     def __call__(self) -> torch.Tensor:
         b = self.proposal.enumerate_support()
@@ -78,9 +71,7 @@ class EnumerateEstimator(Estimator):
         fb = self.func(b)
         if self.is_log:
             v = fb + log_pb
-            v = v.logsumexp(0) if self.return_log else v.exp().sum(0)
-        elif self.return_log:
-            v = (fb.log() + log_pb).logsumexp(0)
+            v = v.logsumexp(0)
         else:
             v = (fb * log_pb.exp()).sum(0)
         return v

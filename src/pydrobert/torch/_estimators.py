@@ -67,15 +67,9 @@ class Estimator(metaclass=abc.ABCMeta):
         proposal.batch_shape + proposal.event_shape`` and returns a tensor of shape
         ``(num_samples,) + proposal.batch_shape``.
     is_log
-        If :obj:`True`, `func` defines :math:`\log f` instead of :math:`f`. Unless
-        otherwise specified, `is_log` being true is semantically identical to redefining
-        `func` as::
-
-            def new_func(b):
-                return func(b).exp()
-        
-        and setting `is_log` to :obj:`False`. Practically, `is_log` may improve the
-        numerical stability of certain estimators.
+        If :obj:`True`, the estimator operates in log space. `func` defines :math:`\log
+        f` instead of :math:`f` and the return value `v` represents an estimate of
+        :math:`\log v`. Estimators will often be more numerically stable in log space.
     
     Returns
     -------

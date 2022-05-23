@@ -50,6 +50,12 @@ class MonteCarloEstimator(Estimator, metaclass=abc.ABCMeta):
     mc_samples
         The number of samples to draw from `proposal`, :math:`N`.
     is_log
+        If :obj:`True`, operate in log space. `func` defines :math:`\log f` instead of
+        :math:`f` and the return value `v` represents an estimate of :math:`\log v`. The
+        estimate of :math:`\log v` is simply the log of the MC estimate of :math:`v`,
+        which is a biased estimate. The estimate can be proven to be a lower bound
+        of :math:`\log v` via Jensen's inequality. To recover an unbiased estimate
+        of :math:`v`, one may exponentiate the return value.
 
     Returns
     -------
@@ -138,17 +144,26 @@ class DirectEstimator(MonteCarloEstimator):
         b = self.proposal.sample([self.mc_samples])
         fb = self.func(b)
         if self.is_log:
-            fb = fb.exp()
+            fb_lmax = fb.detach().max(0, keepdim=True)[0]
+            fb_lmax = fb_lmax.clamp_(config.EPS_NINF, config.EPS_INF)
+            fb = (fb - fb_lmax).exp()
         if self.cv is not None:
             c = self.cv_mean
             cvb = self.cv(b)
             if self.is_log:
-                c, cvb = c.exp(), cvb.exp()
+                c = (c.unsqueeze(0) - fb_lmax).exp()
+                cvb = (cvb - fb_lmax).exp()
             fb = fb - cvb + c
         log_pb = self.proposal.log_prob(b)
-        dlog_pb = fb.detach() * log_pb
-        v = fb + dlog_pb - dlog_pb.detach()
-        return v.mean(0)
+        deriv = (fb.detach() * log_pb).mean(0)
+        fb = fb.mean(0)
+        if self.is_log:
+            fb = fb.clamp_min(math.exp(config.EPS_NINF))
+            deriv = deriv / fb.detach()
+            v = fb.log() + deriv - deriv.detach() + fb_lmax
+        else:
+            v = fb + deriv - deriv.detach()
+        return v
 
 
 class ReparameterizationEstimator(MonteCarloEstimator):
@@ -208,9 +223,7 @@ class ReparameterizationEstimator(MonteCarloEstimator):
     def __call__(self) -> torch.Tensor:
         z = self.proposal.rsample([self.mc_samples])
         fz = self.func(z)
-        if self.is_log:
-            fz = fz.exp()
-        return fz.mean(0)
+        return fz.logsumexp(0) - math.log(fz.size(0)) if self.is_log else fz.mean(0)
 
 
 class StraightThroughEstimator(MonteCarloEstimator):
@@ -262,24 +275,24 @@ class StraightThroughEstimator(MonteCarloEstimator):
     v : torch.Tensor
     """
 
+    proposal: StraightThrough
+
     def __init__(
         self,
-        proposal: torch.distributions.Distribution,
+        proposal: StraightThrough,
         func: FunctionOnSample,
         mc_samples: int,
         is_log: bool = False,
     ) -> None:
         if not isinstance(proposal, StraightThrough):
-            raise ValueError("proposal must implement StraightThrough")
+            raise ValueError("proposal must be StraightThrough")
         super().__init__(proposal, func, mc_samples, is_log)
 
     def __call__(self) -> torch.Tensor:
         z = self.proposal.rsample([self.mc_samples])
         b = self.proposal.threshold(z, True)
         fb = self.func(b)
-        if self.is_log:
-            fb = fb.exp()
-        return fb.mean(0)
+        return fb.logsumexp(0) - math.log(fb.size(0)) if self.is_log else fb.mean(0)
 
 
 class ImportanceSamplingEstimator(MonteCarloEstimator):
@@ -308,29 +321,23 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
         \nabla v \approx \frac{1}{N} \sum_{n=1}^N \frac{1}{Q\left(b^{(n)}\right)}
             \nabla P\left(b^{(n)}\right)f\left(b^{(n)}\right).
     
-    Note that the gradient with respect to parameters of :math:`Q` will be defined but
-    set to zero.
-    
     If `self_normalized` is set to :obj:`True`, :math:`v` is instead estimated as:
 
     .. math::
 
-        v \approx \frac{1}{N} \sum_{n=1}^N \omega_n f\left(b^{(n)}\right) \\
+        v \approx \sum_{n=1}^N \omega_n f\left(b^{(n)}\right) \\
         \omega_n = \frac{w_n}{\sum_{n'=1}^N w_{n'}}
 
-    with gradients defined for :math:`Q(b)` using the log trick from REINFORCE
-    [williams1992]_:
-    
+
+    with gradients defined as
+
     .. math::
 
-        \nabla v \approx \frac{1}{N} \sum_{n=1}^N
-            \nabla \omega_n f\left(b^{(n)}\right) \log Q(b).
-        
-    
-    In this case the gradient of :math:`Q` can be nonzero. The self-normalized estimate
-    is biased but with decreasing bias (assuming the proposal dominates) as :math:`N \to
-    \infty`. This property holds even if :math:`P` is not a probability density (i.e.
-    :math:`\sum_b P(b) \neq 1`).
+        \nabla v \approx \nabla \sum_{n=1}^N \omega_n f\left(b^{(n)}.
+
+    The self-normalized estimate is biased but with decreasing bias (assuming the
+    proposal dominates) as :math:`N \to \infty`. This property holds even if :math:`P`
+    is not a probability density (i.e. :math:`\sum_b P(b) \neq 1`).
 
     Parameters
     ----------
@@ -344,14 +351,17 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
     self_normalize
         Whether to use the self-normalized estimator.
     is_log
-        If :obj:`True`, `func` and `c` are :math:`\log f` and :math:`\log c`
-        respectively. Their return values will be exponentiated inside the call to
-        :func:`estimate`. There will be little difference from pre-exponentiating the
-        return values inside the respective functions/tensors.
     
     Returns
     -------
     v : torch.Tensor
+
+    Notes
+    -----
+    The gradient with respect to the proposal's parameters is always set to :math:`0`.
+    This is an unbiased estimate for :math:`v` and its unnormalized IS estimator. It is
+    a biased estimate of the gradient of the self-normalized estimate, but only because
+    the self-normalized estimate is biased itself.
     """
 
     density: Density
@@ -372,24 +382,19 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
 
     def __call__(self) -> torch.Tensor:
         b = self.proposal.sample([self.mc_samples])
-        lqb = self.proposal.log_prob(b)
         lpb = self.density.log_prob(b)
+        lqb = self.proposal.log_prob(b)
+        lqb = lqb.detach() + 0 * lqb.sum()
         fb = self.func(b)
         if self.self_normalize:
-            llr = lpb - lqb
-            llr = llr.log_softmax(0) + math.log(self.mc_samples)
+            llr = (lpb - lqb).log_softmax(0)
         else:
-            llr = lpb - lqb.detach()
+            llr = lpb - lqb - math.log(self.mc_samples)
         if self.is_log:
-            v = (fb.clamp_min(config.EPS_NINF) + llr).exp()
+            v = (fb + llr).logsumexp(0)
         else:
-            v = fb * llr.exp()
-        if self.self_normalize:
-            dlqb = v.detach() * lqb
-        else:
-            dlqb = 0 * lqb  # ensure we get a zero gradient
-        v = v + dlqb - dlqb.detach()
-        return v.mean(0)
+            v = (fb * llr.exp()).sum(0)
+        return v
 
 
 class RelaxEstimator(MonteCarloEstimator):
@@ -446,7 +451,7 @@ class RelaxEstimator(MonteCarloEstimator):
 
     Parameters
     ----------
-    proposal
+    proposal : ConditionalStraightThrough
         The distribution over which the expectation is taken, :math:`P`. Must implement
         :class:`pydrobert.torch.distributions.ConditionalStraightThrough`.
     func
@@ -462,10 +467,6 @@ class RelaxEstimator(MonteCarloEstimator):
         not have to be specified unless using the variance-minimizing control variate
         objective. If non-empty, `proposal_params` must be non-empty as well.
     is_log
-        If :obj:`True`, `func` and `c` are :math:`\log f` and :math:`\log c`
-        respectively. Their return values will be exponentiated inside the call to
-        :func:`estimate`. There will be little difference from pre-exponentiating the
-        return values inside the respective functions/tensors.
     
     Returns
     -------
@@ -479,13 +480,14 @@ class RelaxEstimator(MonteCarloEstimator):
     parameters other than `cv_params` are fine.
     """
 
+    proposal: ConditionalStraightThrough
     cv: FunctionOnSample
     proposal_params: Tuple[torch.Tensor, ...]
     cv_params: Tuple[torch.Tensor, ...]
 
     def __init__(
         self,
-        proposal: torch.distributions.Distribution,
+        proposal: ConditionalStraightThrough,
         func: FunctionOnSample,
         mc_samples: int,
         cv: FunctionOnSample,
@@ -515,9 +517,16 @@ class RelaxEstimator(MonteCarloEstimator):
         cvz = self.cv(z)
         cvzcond = self.cv(zcond)
         if self.is_log:
-            fb, cvz, cvzcond = fb.exp(), cvz.exp(), cvzcond.exp()
+            fb_lmax = fb.detach().max(0, keepdim=True)[0]
+            fb_lmax = fb_lmax.clamp_(config.EPS_NINF, config.EPS_INF)
+            fb = (fb - fb_lmax).exp()
+            cvz = (cvz - fb_lmax).exp()
+            cvzcond = (cvzcond - fb_lmax).exp()
+        fb_cvzcond = fb - cvzcond
         if self.cv_params:
-            v_ = ((fb - cvzcond) * log_pb + cvz).mean(0)
+            v_ = (fb_cvzcond * log_pb + cvz).mean(0)
+            if self.is_log:
+                v_ = v_.log() + fb_lmax
             gs_proposal = torch.autograd.grad(
                 v_,
                 self.proposal_params,
@@ -539,9 +548,14 @@ class RelaxEstimator(MonteCarloEstimator):
             for gc, c in zip(gs_cv, self.cv_params):
                 _attach_grad(c, gc.detach())
 
-        fb_cvzcond = fb - cvzcond
-        dlog_pb = fb_cvzcond.detach() * log_pb
-        v = fb_cvzcond + cvz + dlog_pb - dlog_pb.detach()
+        deriv = fb_cvzcond.detach() * log_pb
+        fb = (fb_cvzcond + cvz).mean(0)
+        if self.is_log:
+            fb = fb.clamp_min(math.exp(config.EPS_NINF))
+            deriv = deriv / fb.detach()
+            v = fb.log() + deriv - deriv.detach() + fb_lmax
+        else:
+            v = fb + deriv - deriv.detach()
         return v.mean(0)
 
 
@@ -601,6 +615,7 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
         If `initial_sample` is unspecified, `initial_sample_tries` dictates the
         maximum number of draws from `proposal` allowed in order to find elements in
         the support of `density` before a :class:`RuntimeError` is thrown.
+    is_log
     
     Returns
     -------
@@ -684,7 +699,9 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
             last_sample = self.find_initial_sample()
         else:
             last_sample = self.initial_sample
-        v = 0
+        v = torch.full(
+            (1,), config.EPS_NINF if self.is_log else 0, device=last_sample.device
+        )
         num_kept = self.mc_samples - self.burn_in
         last_ratio = self.density.log_prob(last_sample) - self.proposal.log_prob(
             last_sample
@@ -705,11 +722,14 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
             if n >= self.burn_in:
                 fb = self.func(cur_sample).squeeze(0)
                 if self.is_log:
-                    fb = (fb - math.log(num_kept)).exp()
+                    v = torch.logaddexp(v, fb)
                 else:
-                    fb /= num_kept
-                v += fb
+                    v = v + fb
             last_sample, last_ratio = cur_sample, cur_ratio
+        if self.is_log:
+            v -= math.log(num_kept)
+        else:
+            v /= num_kept
         return v
 
 
