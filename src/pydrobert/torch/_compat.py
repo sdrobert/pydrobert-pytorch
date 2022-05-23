@@ -324,6 +324,19 @@ else:
         return x[0], x[1]
 
 
+if _v < "1.6.0":
+
+    def logaddexp(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        max_, min_ = torch.max(a, b), torch.min(a, b)
+        return torch.where(
+            torch.isfinite(max_), (min_ - max_).exp().log1p() + max_, max_
+        )
+
+
+else:
+    logaddexp = torch.logaddexp
+
+
 @script
 def unflatten(x: torch.Tensor, dim: int, shape: List[int]) -> torch.Tensor:
     ndim = x.dim()

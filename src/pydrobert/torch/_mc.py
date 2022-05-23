@@ -21,6 +21,7 @@ import torch
 from . import config
 from .distributions import Density, StraightThrough, ConditionalStraightThrough
 from ._estimators import Estimator, FunctionOnSample
+from ._compat import logaddexp
 
 
 class MonteCarloEstimator(Estimator, metaclass=abc.ABCMeta):
@@ -722,7 +723,7 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
             if n >= self.burn_in:
                 fb = self.func(cur_sample).squeeze(0)
                 if self.is_log:
-                    v = torch.logaddexp(v, fb)
+                    v = logaddexp(v, fb)
                 else:
                     v = v + fb
             last_sample, last_ratio = cur_sample, cur_ratio
