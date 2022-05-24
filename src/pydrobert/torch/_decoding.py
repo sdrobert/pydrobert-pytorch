@@ -499,8 +499,8 @@ class BeamSearch(torch.nn.Module):
     __call__ = proxy(forward)
 
 
-@functional_wrapper("CTCGreedySearch")
 @script
+@functional_wrapper("CTCGreedySearch")
 def ctc_greedy_search(
     logits: torch.Tensor,
     in_lens: Optional[torch.Tensor] = None,

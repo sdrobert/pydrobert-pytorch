@@ -259,8 +259,8 @@ def _deterimine_pinned_points(k: int, sizes: torch.Tensor) -> torch.Tensor:
     return torch.cat([bottom_edge, left_edge, top_edge, right_edge], 1)  # (N, 4k, 2)
 
 
-@functional_wrapper("Warp1DGrid")
 @script
+@functional_wrapper("Warp1DGrid")
 def warp_1d_grid(
     src: torch.Tensor,
     flow: torch.Tensor,
@@ -381,8 +381,8 @@ def dense_image_warp(
     ...
 
 
-@functional_wrapper("DenseImageWarp")
 @script
+@functional_wrapper("DenseImageWarp")
 def dense_image_warp(
     image: torch.Tensor,
     flow: torch.Tensor,
@@ -892,8 +892,8 @@ def pad_variable(
     ...
 
 
-@functional_wrapper("PadVariable")
 @script
+@functional_wrapper("PadVariable")
 def pad_variable(
     x: torch.Tensor,
     lens: torch.Tensor,
@@ -1099,8 +1099,8 @@ class PadVariable(torch.nn.Module):
     __call__ = proxy(forward)
 
 
-@functional_wrapper("RandomShift")
 @script
+@functional_wrapper("RandomShift")
 def random_shift(
     in_: torch.Tensor,
     in_lens: torch.Tensor,
@@ -1277,8 +1277,8 @@ SpecAugmentParams = Tuple[
 ]
 
 
-@functional_wrapper("SpecAugment.draw_parameters")
 @script
+@functional_wrapper("SpecAugment.draw_parameters")
 def spec_augment_draw_parameters(
     feats: torch.Tensor,
     max_time_warp: float,
@@ -1363,8 +1363,8 @@ def spec_augment_draw_parameters(
     return w_0, w, v_0, v, t_0, t, f_0, f
 
 
-@functional_wrapper("SpecAugment.apply_parameters")
 @script
+@functional_wrapper("SpecAugment.apply_parameters")
 def spec_augment_apply_parameters(
     feats: torch.Tensor,
     params: SpecAugmentParams,
@@ -1435,8 +1435,8 @@ def spec_augment_apply_parameters(
     return new_feats
 
 
-@functional_wrapper("SpecAugment")
 @script
+@functional_wrapper("SpecAugment")
 def spec_augment(
     feats: torch.Tensor,
     max_time_warp: float,
