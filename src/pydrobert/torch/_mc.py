@@ -646,7 +646,7 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
     ) -> None:
         super().__init__(proposal, func, mc_samples, is_log)
         if burn_in < 0 or burn_in >= mc_samples:
-            raise ValueError(f"burn_in must be between [0, mc_samples={mc_samples}")
+            raise ValueError(f"burn_in must be between [0, mc_samples={mc_samples})")
         if initial_sample is not None:
             sample_shape = self.proposal.batch_shape + self.proposal.event_shape
             if initial_sample.shape == sample_shape:
@@ -700,9 +700,7 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
             last_sample = self.find_initial_sample()
         else:
             last_sample = self.initial_sample
-        v = torch.full(
-            (1,), config.EPS_NINF if self.is_log else 0, device=last_sample.device
-        )
+        v = None
         num_kept = self.mc_samples - self.burn_in
         last_ratio = self.density.log_prob(last_sample) - self.proposal.log_prob(
             last_sample
@@ -722,7 +720,9 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
             cur_sample = torch.where(accept, cur_sample, last_sample)
             if n >= self.burn_in:
                 fb = self.func(cur_sample).squeeze(0)
-                if self.is_log:
+                if n == self.burn_in:
+                    v = fb
+                elif self.is_log:
                     v = logaddexp(v, fb)
                 else:
                     v = v + fb
