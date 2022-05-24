@@ -178,9 +178,6 @@ class BeamSearch(torch.nn.Module):
     eos
         The end of sequence type. If set, must be in-vocabulary (according to
         ``lm.vocab_size``). Either `eos` or `max_iters` must be set.
-    max_iters
-        The maximum number of tokens to generate in the paths before returning. Either
-        `eos` or `max_iters` must be set.
     finish_all_paths
         Applicable only when `eos` is set. If :obj:`True`, waits for all paths in all
         batches' beams to emit an `eos` symbol before stopping. If :obj:`False`, only
@@ -198,6 +195,9 @@ class BeamSearch(torch.nn.Module):
         a beam search will be run separately over each of the batch elements. If
         unset, ``(N*,) == (,)`` and a single search will be performed. See the below
         note for more information.
+    max_iters
+        The maximum number of tokens to generate in the paths before returning. Either
+        `eos` or `max_iters` must be set.
     
     Returns
     -------
@@ -256,14 +256,12 @@ class BeamSearch(torch.nn.Module):
     __constants__ = [
         "width",
         "eos",
-        "max_iters",
         "finish_all_paths",
         "pad_value",
     ]
 
     eos: Optional[int]
     finish_all_paths: bool
-    max_iters: Optional[int]
     width: int
     pad_value: int
 
@@ -272,7 +270,6 @@ class BeamSearch(torch.nn.Module):
         lm: ExtractableSequentialLanguageModel,
         width: int,
         eos: Optional[int] = None,
-        max_iters: Optional[int] = None,
         finish_all_paths: bool = False,
         pad_value: int = config.INDEX_PAD_VALUE,
     ):
@@ -286,14 +283,9 @@ class BeamSearch(torch.nn.Module):
                     f"{lm.vocab_size - 1}], got {eos}"
                 )
             eos = (eos + lm.vocab_size) % lm.vocab_size
-        if max_iters is not None and max_iters < 0:
-            raise ValueError("max_iters must be non-negative")
-        if eos is None and max_iters is None:
-            raise ValueError("at least one of eos or max_iters must be set")
         self.lm = lm
         self.width = width
         self.eos = eos
-        self.max_iters = max_iters
         self.finish_all_paths = finish_all_paths
         self.pad_value = pad_value
         device = None
@@ -383,6 +375,7 @@ class BeamSearch(torch.nn.Module):
         self,
         initial_state: Dict[str, torch.Tensor] = dict(),
         batch_size: Optional[int] = None,
+        max_iters: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         ...
 
@@ -390,6 +383,7 @@ class BeamSearch(torch.nn.Module):
         self,
         initial_state_: Optional[Dict[str, torch.Tensor]] = None,
         batch_size: Optional[int] = None,
+        max_iters: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         initial_state = dict() if initial_state_ is None else initial_state_
         device = self.device_buffer.device
@@ -402,11 +396,13 @@ class BeamSearch(torch.nn.Module):
             (N, prev_width), -math.log(prev_width), device=device
         )
         y_prev_lens = torch.zeros((N, prev_width), dtype=torch.long, device=device)
+        if max_iters is None:
+            if self.eos is None:
+                raise RuntimeError("max_iters must be set when eos is unset")
+            max_iters = 1073741824  # practically infinite
+        elif max_iters < 0:
+            raise RuntimeError(f"max_iters must be non-negative, got {max_iters}")
 
-        if self.max_iters is None:
-            max_iters = 1024 * 1024 * 1024 * 1024
-        else:
-            max_iters = self.max_iters
         for t in range(max_iters):
             t = torch.tensor(t, device=device)
 
@@ -1268,9 +1264,6 @@ class RandomWalk(torch.nn.Module):
     eos
         The end of sequence type. If set, must be in-vocabulary (according to
         ``lm.vocab_size``). Either `eos` or `max_iters` must be set.
-    max_iters
-        The maximum number of tokens to generate in the paths before returning. Either
-        `eos` or `max_iters` must be set.
     
     Call Parameters
     ---------------
@@ -1282,6 +1275,9 @@ class RandomWalk(torch.nn.Module):
         walk will be performed for each batch element independently. If unset, ``(N*,)
         == (,)`` and a single walk will be performed. See the below note for more
         information.
+    max_iters : int or None, optional
+        Specifies the maximum number of steps to take in the walk. Either `eos` or
+        `max_iters` must be set.
     
     Returns
     -------
@@ -1326,17 +1322,11 @@ class RandomWalk(torch.nn.Module):
         a distribution.
     """
 
-    __constants__ = ["eos", "max_iters"]
+    __constants__ = ["eos"]
 
     eos: Optional[int]
-    max_iters: Optional[int]
 
-    def __init__(
-        self,
-        lm: SequentialLanguageModel,
-        eos: Optional[int] = None,
-        max_iters: Optional[int] = None,
-    ):
+    def __init__(self, lm: SequentialLanguageModel, eos: Optional[int] = None):
         super().__init__()
         if eos is not None:
             if eos < -lm.vocab_size or eos > lm.vocab_size - 1:
@@ -1345,13 +1335,8 @@ class RandomWalk(torch.nn.Module):
                     f"{lm.vocab_size - 1}], got {eos}"
                 )
             eos = (eos + lm.vocab_size) % lm.vocab_size
-        if max_iters is not None and max_iters < 0:
-            raise ValueError("max_iters must be non-negative")
-        if eos is None and max_iters is None:
-            raise ValueError("at least one of eos or max_iters must be set")
         self.lm = lm
         self.eos = eos
-        self.max_iters = max_iters
         device = None
         if device is None:
             try:
@@ -1415,6 +1400,7 @@ class RandomWalk(torch.nn.Module):
         self,
         initial_state: Dict[str, torch.Tensor] = dict(),
         batch_size: Optional[int] = None,
+        max_iters: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         ...
 
@@ -1422,11 +1408,17 @@ class RandomWalk(torch.nn.Module):
         self,
         prev_: Optional[Dict[str, torch.Tensor]] = None,
         batch_size: Optional[int] = None,
+        max_iters: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         prev = dict() if prev_ is None else prev_
         device = self.device_buffer.device
         N = 1 if batch_size is None else batch_size
-        max_iters = int(1024 ** 3) if self.max_iters is None else self.max_iters
+        if max_iters is None:
+            if self.eos is None:
+                raise RuntimeError("max_iters must be set when eos is unset")
+            max_iters = 1073741824  # practically infinite
+        elif max_iters < 0:
+            raise RuntimeError(f"max_iters must be non-negative, got {max_iters}")
 
         y = torch.empty((0, N), device=device, dtype=torch.long)
         prev = self.lm.update_input(prev, y)
@@ -1729,6 +1721,9 @@ class SequentialLanguageModelDistribution(
     initial_state
         If specified, any calls to the underlying language model or the walk will be
         passed this value.
+    max_iters
+        Specifies the maximum number of steps to take in the walk. Either
+        ``random_walk.lm.eos`` or `max_iters` must be set.
     cache_samples
         If :obj:`True`, calls to :func:`sample` or :func:`log_prob` will save the last
         samples and their log probabilities. This can avoid expensive recomputations if,
@@ -1741,6 +1736,7 @@ class SequentialLanguageModelDistribution(
         The cache is stored until a new sample takes its place or it is manually
         cleared with :func:`clear_cache`. See the below warning for complications with
         the cache.
+
     validate_args
 
     Warnings
@@ -1793,12 +1789,14 @@ class SequentialLanguageModelDistribution(
     initial_state: Dict[str, torch.Tensor]
     _samples_cache: Optional[torch.Tensor]
     _log_probs_cache: Optional[torch.Tensor]
+    max_iters: Optional[int]
 
     def __init__(
         self,
         random_walk: RandomWalk,
         batch_size: Optional[int] = None,
         initial_state: Optional[Dict[str, torch.Tensor]] = None,
+        max_iters: Optional[int] = None,
         cache_samples: bool = False,
         validate_args: Optional[bool] = None,
     ):
@@ -1807,12 +1805,13 @@ class SequentialLanguageModelDistribution(
         self.cache_samples = cache_samples
         self._samples_cache = None
         self._log_probs_cache = None
+        self.max_iters = max_iters
         batch_shape = torch.Size([]) if batch_size is None else torch.Size([batch_size])
-        event_shape = torch.Size(
-            [1 if random_walk.eos is not None else random_walk.max_iters]
-        )
+        event_shape = torch.Size([1 if random_walk.eos is not None else max_iters])
         super().__init__(batch_shape, event_shape, validate_args)
         if self._validate_args:
+            if max_iters is not None and max_iters < 0:
+                raise ValueError("max_iters must be non-negative")
             if batch_size is not None and batch_size < 1:
                 raise ValueError("batch_size must be positive")
             if not isinstance(random_walk, RandomWalk):
@@ -1843,9 +1842,7 @@ class SequentialLanguageModelDistribution(
     @constraints.dependent_property
     def support(self):
         return TokenSequenceConstraint(
-            self.random_walk.lm.vocab_size,
-            self.random_walk.eos,
-            self.random_walk.max_iters,
+            self.random_walk.lm.vocab_size, self.random_walk.eos, self.max_iters,
         )
 
     def sample(self, sample_shape: torch.Size = torch.Size([])) -> torch.Tensor:
@@ -1860,7 +1857,7 @@ class SequentialLanguageModelDistribution(
             samples, log_probs = [], []
             for _ in range(num_samples):
                 sample, _, log_prob = self.random_walk(
-                    self.initial_state.copy(), batch_size
+                    self.initial_state.copy(), batch_size, self.max_iters
                 )
                 samples.append(sample)
                 log_probs.append(log_prob)
@@ -1876,7 +1873,7 @@ class SequentialLanguageModelDistribution(
                 samples = samples.flatten(1).T
         else:
             samples, _, log_probs = self.random_walk(
-                self.initial_state.copy(), num_samples
+                self.initial_state.copy(), num_samples, self.max_iters
             )
             samples = samples.T
         shape[-1] = samples.size(-1)
@@ -1888,7 +1885,7 @@ class SequentialLanguageModelDistribution(
 
     @property
     def has_enumerate_support(self) -> bool:
-        return self.random_walk.max_iters is not None
+        return self.max_iters is not None
 
     def enumerate_support(self, expand=True) -> torch.Tensor:
         if not self.has_enumerate_support:
@@ -1896,7 +1893,7 @@ class SequentialLanguageModelDistribution(
                 "random_walk.max_iters must be set in order to enumerate support"
             )
         support = enumerate_vocab_sequences(
-            self.random_walk.max_iters,
+            self.max_iters,
             self.random_walk.lm.vocab_size,
             self.random_walk.device_buffer.device,
         )

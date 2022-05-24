@@ -274,13 +274,11 @@ def test_beam_search_batch(device, jit_type, finish_all_paths):
         lm = torch.jit.script(lm)
     elif jit_type == "trace":
         pytest.xfail("trace unsupported for BeamSearch")
-    search = BeamSearch(
-        lm, K, eos=0, max_iters=T, pad_value=-1, finish_all_paths=finish_all_paths,
-    )
+    search = BeamSearch(lm, K, eos=0, pad_value=-1, finish_all_paths=finish_all_paths,)
     if jit_type == "script":
         search = torch.jit.script(search)
 
-    y_exp, y_lens_exp, log_probs_exp = search(initial_state, N)
+    y_exp, y_lens_exp, log_probs_exp = search(initial_state, N, T)
     y_exp = fill_after_eos(y_exp, 0, fill=-1)
     assert y_exp.device == y_lens_exp.device == log_probs_exp.device == device
     assert y_exp.shape[1:] == y_lens_exp.shape == log_probs_exp.shape == (N, K)
@@ -290,7 +288,7 @@ def test_beam_search_batch(device, jit_type, finish_all_paths):
         y_exp_n, y_lens_exp_n = y_exp[:, n], y_lens_exp[n]
         log_probs_exp_n = log_probs_exp[n]
         initial_state_n = dict((k, v[n : n + 1]) for (k, v) in initial_state.items())
-        y_act_n, y_lens_act_n, log_probs_act_n = search(initial_state_n)
+        y_act_n, y_lens_act_n, log_probs_act_n = search(initial_state_n, max_iters=T)
         assert y_act_n.shape[1:] == y_lens_act_n.shape == log_probs_act_n.shape == (K,)
         assert (y_lens_exp_n == y_lens_act_n).all(), n
         assert torch.allclose(log_probs_exp_n, log_probs_act_n), n
@@ -742,8 +740,8 @@ def test_random_walk(device):
         stationary[0] * torch.arange(V, device=device, dtype=stationary.dtype)
     ).sum()
 
-    random_walk = RandomWalk(lm, max_iters=T)
-    sample, lens, exp_lprobs = random_walk()
+    random_walk = RandomWalk(lm)
+    sample, lens, exp_lprobs = random_walk(max_iters=T)
     assert sample.shape == (T,)
     assert lens == T
     lm_sample = lm(sample[:-1].unsqueeze(1)).log_softmax(-1)
@@ -890,10 +888,10 @@ def test_sequential_language_model_distribution(device, eos, batch_size):
     T, V, M = 4, 5, 3
     N = 1 if batch_size is None else batch_size
     lm = RNNLM(V)
-    random_walk = RandomWalk(lm, eos, T).to(device)
+    random_walk = RandomWalk(lm, eos).to(device)
 
     dist = SequentialLanguageModelDistribution(
-        random_walk, batch_size, cache_samples=True, validate_args=True,
+        random_walk, batch_size, max_iters=T, cache_samples=True, validate_args=True,
     )
 
     assert dist.has_enumerate_support
