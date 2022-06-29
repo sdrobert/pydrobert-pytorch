@@ -65,7 +65,7 @@ class EpochRandomSampler(torch.utils.data.sampler.Sampler):
     --------
 
     >>> sampler = EpochRandomSampler(
-    ...     torch.data.utils.TensorDataset(torch.arange(100)))
+    ...     torch.utils.data.TensorDataset(torch.arange(100)))
     >>> samples_ep0 = tuple(sampler)  # random
     >>> samples_ep1 = tuple(sampler)  # random, probably not same as first
     >>> assert tuple(sampler.get_samples_for_epoch(0)) == samples_ep0
@@ -126,6 +126,22 @@ class BucketBatchSampler(torch.utils.data.sampler.Sampler):
         A list of indices from `sampler` all belonging to the same bucket. The batch is
         yielded as soon as it is full (or the epoch has ended with `drop_incomplete` set
         to :obj:`False`).
+    
+    Examples
+    --------
+
+    >>> N = 14
+    >>> dataset = torch.utils.data.TensorDataset(torch.rand(N))
+    >>> ssampler = torch.utils.data.SequentialSampler(dataset)
+    >>> idx2bucket = dict((n, int(n % 3 == 0)) for n in range(N))
+    >>> bucket2size = {0: 2, 1: 2}
+    >>> bsampler = BucketBatchSampler(ssampler, idx2bucket, bucket2size, True)
+    >>> print(list(bsampler))
+    [[1, 2], [0, 3], [4, 5], [7, 8], [6, 9], [10, 11]]
+    >>> bsampler = BucketBatchSampler(ssampler, idx2bucket, bucket2size, False)
+    >>> print(list(bsampler))
+    [[1, 2], [0, 3], [4, 5], [7, 8], [6, 9], [10, 11], [13], [12]]
+
     """
 
     sampler: torch.utils.data.sampler.Sampler
