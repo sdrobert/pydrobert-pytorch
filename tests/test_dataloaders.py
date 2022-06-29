@@ -47,6 +47,28 @@ def test_epoch_random_sampler():
 
 
 @pytest.mark.cpu
+@pytest.mark.parametrize("drop_incomplete", [True, False])
+def test_bucket_batch_sampler(drop_incomplete):
+    N = 5
+    sampler = torch.utils.data.SequentialSampler([1] * (6 * N + 3))
+    idx2bucket = dict((n, int(n % 2 == 0) + 2 * int(n % 3 == 0)) for n in sampler)
+    bucket2size = {0: 2, 1: 2, 2: 1, 3: 1}
+    sampler = data.BucketBatchSampler(sampler, idx2bucket, bucket2size, drop_incomplete)
+    sampler_ = iter(sampler)
+    for n in range(0, 6 * N, 6):
+        assert next(sampler_) == [n]
+        assert next(sampler_) == [n + 3]
+        assert next(sampler_) == [n + 2, n + 4]
+        assert next(sampler_) == [n + 1, n + 5]
+    assert next(sampler_) == [6 * N]
+    if not drop_incomplete:
+        assert next(sampler_) == [6 * N + 1]
+        assert next(sampler_) == [6 * N + 2]
+    with pytest.raises(StopIteration):
+        next(sampler_)
+
+
+@pytest.mark.cpu
 @pytest.mark.parametrize(
     "feat_sizes",
     [((3, 5, 4), (4, 5, 4), (1, 5, 4)), ((2, 10, 5),) * 10],

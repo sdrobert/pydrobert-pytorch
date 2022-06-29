@@ -12,7 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Iterator, Container, Set, Sequence, Tuple
+from typing import (
+    Dict,
+    List,
+    Optional,
+    Iterator,
+    Container,
+    Set,
+    Sequence,
+    Tuple,
+    Hashable,
+)
 
 import param
 import numpy as np
@@ -28,13 +38,13 @@ from ._datasets import (
 )
 
 
-class EpochRandomSampler(torch.utils.data.Sampler):
+class EpochRandomSampler(torch.utils.data.sampler.Sampler):
     """Return random samples that are the same for a fixed epoch
 
     Parameters
     ----------
     data_source
-        The total number of samples
+        The dataset to draw the sample from.
     init_epoch
         The initial epoch
     base_seed
@@ -68,7 +78,6 @@ class EpochRandomSampler(torch.utils.data.Sampler):
         init_epoch: int = 0,
         base_seed: Optional[int] = None,
     ):
-        super(EpochRandomSampler, self).__init__(data_source)
         self.data_source = data_source
         self.epoch = init_epoch
         if base_seed is None:
@@ -87,10 +96,73 @@ class EpochRandomSampler(torch.utils.data.Sampler):
         rs = np.random.RandomState(self.base_seed + epoch)
         return rs.permutation(list(range(len(self.data_source))))
 
-    def __iter__(self) -> Iterator[np.ndarray]:
+    def __iter__(self) -> Iterator[int]:
         ret = iter(self.get_samples_for_epoch(self.epoch))
         self.epoch += 1
         return ret
+
+
+class BucketBatchSampler(torch.utils.data.sampler.Sampler):
+    """Batch samples into buckets, yielding as soon as the bucket is full
+    
+    Parameters
+    ----------
+    sampler
+        Determines the order in which samples are put into buckets.
+    idx2bucket
+        A map specifying which bucket each sample belongs to. The keys are the indices
+        yielded by `sampler`; the values are the ids of the corresponding buckets.
+    bucket2size
+        A map from the bucket ids (the values in `idx2bucket`) to the corresponding
+        batch size. Values must be positive.
+    drop_incomplete
+        If :obj:`True`, any batches which are incomplete (smaller than the bucket's
+        batch size) at the end of an epoch will be discarded. Otherwise, the incomplete
+        batches will be yielded in the order of their bucket ids' hashes.
+    
+    Yields
+    ------
+    batch : list of int
+        A list of indices from `sampler` all belonging to the same bucket. The batch is
+        yielded as soon as it is full (or the epoch has ended with `drop_incomplete` set
+        to :obj:`False`).
+    """
+
+    sampler: torch.utils.data.sampler.Sampler
+    idx2bucket: Dict[int, Hashable]
+    bucket2size: Dict[Hashable, int]
+    drop_incomplete: bool
+
+    def __init__(
+        self,
+        sampler: torch.utils.data.sampler.Sampler,
+        idx2bucket: Dict[int, Hashable],
+        bucket2size: Dict[Hashable, int],
+        drop_incomplete: bool,
+    ):
+        self.sampler = sampler
+        self.idx2bucket = idx2bucket
+        self.bucket2size = bucket2size
+        self.drop_incomplete = drop_incomplete
+
+    def __len__(self) -> int:
+        return len(self.sampler)
+
+    def __iter__(self) -> Iterator[List[int]]:
+        batches: Dict[Hashable, List[int]] = dict()
+        for idx in self.sampler:
+            hash_ = self.idx2bucket[idx]
+            batch_size = self.bucket2size[hash_]
+            batch = batches.setdefault(hash_, [])
+            batch.append(idx)
+            if batch_size == len(batch):
+                yield batch
+                del batches[hash_]
+            elif batch_size < len(batch):
+                raise RuntimeError(f"batch '{hash_}' has invalid size '{batch_size}'")
+        if not self.drop_incomplete:
+            for _, batch in sorted(batches.items(), key=lambda x: x[0]):
+                yield batch
 
 
 class DataLoaderParams(param.Parameterized):
@@ -350,7 +422,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         batch_first: bool = True,
         data_params: Optional[SpectDataParams] = None,
         seed: Optional[int] = None,
-        **kwargs
+        **kwargs,
     ):
         for bad_kwarg in (
             "batch_size",
@@ -398,7 +470,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             self.data_source,
             batch_sampler=batch_sampler,
             collate_fn=self.collate_fn,
-            **kwargs
+            **kwargs,
         )
 
     def collate_fn(
@@ -571,7 +643,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         ref_subdir: str = "ref",
         batch_first: bool = True,
         data_params: Optional[SpectDataParams] = None,
-        **kwargs
+        **kwargs,
     ):
         for bad_kwarg in (
             "batch_size",
@@ -609,7 +681,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
             batch_size=params.batch_size,
             shuffle=False,
             collate_fn=self.eval_collate_fn,
-            **kwargs
+            **kwargs,
         )
 
 
@@ -755,7 +827,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
         ali_subdir: str = "ali",
         data_params: Optional[ContextWindowDataParams] = None,
         seed: Optional[int] = None,
-        **kwargs
+        **kwargs,
     ):
         for bad_kwarg in (
             "batch_size",
@@ -802,7 +874,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
             self.data_source,
             batch_sampler=batch_sampler,
             collate_fn=context_window_seq_to_batch,
-            **kwargs
+            **kwargs,
         )
 
     @property
@@ -912,7 +984,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
         feat_subdir: str = "feat",
         ali_subdir: str = "ali",
         data_params: Optional[ContextWindowDataParams] = None,
-        **kwargs
+        **kwargs,
     ):
         for bad_kwarg in (
             "batch_size",
@@ -948,5 +1020,6 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
             batch_size=params.batch_size,
             shuffle=False,
             collate_fn=self.eval_collate_fn,
-            **kwargs
+            **kwargs,
         )
+
