@@ -38,6 +38,7 @@ build: off
 
 install:
   - python3 -m pip install -U pip virtualenv setuptools wheel six
+  # FIXME(sdrobert): https://github.com/pmeier/tox-ltt/issues/17
   - python3 -m pip install -U tox tox-ltt "light-the-torch<0.4.0"
 
 test_script:

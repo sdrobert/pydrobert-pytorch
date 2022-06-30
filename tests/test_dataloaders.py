@@ -183,7 +183,7 @@ def test_spect_training_data_loader(
         feat_dtype=feat_dtype,
     )
     if split_params:
-        params = data.DataLoaderParams(batch_size=batch_size)
+        params = data.DynamicLengthDataLoaderParams(batch_size=batch_size)
         data_params = data.SpectDataParams(sos=sos, eos=eos)
     else:
         params = data.SpectDataLoaderParams(batch_size=batch_size, sos=sos, eos=eos)
@@ -315,7 +315,7 @@ def test_spect_evaluation_data_loader(
     os.makedirs(ali_dir)
     batch_size = 5
     if split_params:
-        params = data.DataLoaderParams(batch_size=batch_size)
+        params = data.DynamicLengthDataLoaderParams(batch_size=batch_size)
         data_params = data.SpectDataParams(sos=sos, eos=eos)
     else:
         params = data.SpectDataLoaderParams(batch_size=batch_size, sos=sos, eos=eos)
@@ -531,6 +531,51 @@ def test_window_evaluation_data_loader(temp_dir, populate_torch_dir, split_param
         temp_dir, params, data_params=data_params, num_workers=2
     )
     _compare_data_loader(data_loader)  # order should still not change
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize(
+    "loader_cls",
+    [data.SpectTrainingDataLoader, data.SpectEvaluationDataLoader],
+    ids=["train", "eval"],
+)
+def test_data_loader_length_buckets(temp_dir, populate_torch_dir, loader_cls):
+    NN, N, B = 31, 3, 5
+    exp_feat_sizes = populate_torch_dir(temp_dir, NN, max_width=NN, include_ref=False)[
+        3
+    ]
+    assert len(exp_feat_sizes) == NN
+    exp_feat_sizes = sorted(exp_feat_sizes)
+    params = data.SpectDataLoaderParams(
+        batch_size=N, num_length_buckets=B, drop_last=False
+    )
+    loader = loader_cls(temp_dir, params)
+    act_feat_sizes = [x[3] for x in loader]
+    for i, x in enumerate(act_feat_sizes):
+        assert x.numel() == N or (i >= (NN // N - B) and x.numel() < N)
+        i = exp_feat_sizes.index(x[0].item())
+        b = (B * i) // NN
+        assert b < B
+        ui = NN - 1 if b == (B - 1) else (b + 1) * (NN // B) - 1
+        li = b * (NN // B) - 1
+        upper = exp_feat_sizes[ui]
+        lower = exp_feat_sizes[li] if li > -1 else -1
+        assert ((lower < x) & (x <= upper)).all()
+    act_feat_sizes = torch.cat(act_feat_sizes)
+    assert sorted(act_feat_sizes.tolist()) == exp_feat_sizes
+    params.drop_last = True
+    params.size_batch_by_length = True
+    m = N * exp_feat_sizes[-1]
+    loader = loader_cls(temp_dir, params)
+    act_feat_sizes = [x[3] for x in loader]
+    for x in act_feat_sizes:
+        i = exp_feat_sizes.index(x[0].item())
+        b = (B * i) // NN
+        assert b < B
+        ui = NN - 1 if b == (B - 1) else (b + 1) * (NN // B) - 1
+        upper = exp_feat_sizes[ui]
+        assert upper * x.numel() <= m
+        assert upper * (x.numel() + 1) > m
 
 
 @pytest.mark.cpu

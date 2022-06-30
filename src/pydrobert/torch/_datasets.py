@@ -21,9 +21,16 @@ import torch
 import param
 
 
-class SpectDataParams(param.Parameterized):
-    """Parameters for SpectDataSet"""
+class DataParams(param.Parameterized):
+    """Parameters for pydrobert-torch datasets"""
 
+    subset_ids = param.List(
+        [],
+        class_=str,
+        bounds=None,
+        doc="A list of utterance ids. If non-empty, the data set will be "
+        "restricted to these utterances",
+    )
     sos = param.Integer(
         None,
         doc="A special symbol used to indicate the start of a sequence "
@@ -36,6 +43,10 @@ class SpectDataParams(param.Parameterized):
         "reference and hypothesis transcriptions. If set, `eos` will be "
         "appended to every reference transcription on read",
     )
+
+
+class SpectDataParams(DataParams):
+    """Parameters for SpectDataSet"""
 
 
 class SpectDataSet(torch.utils.data.Dataset):
@@ -93,8 +104,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         utterances in the directories, and `warn_on_missing` is :obj:`True`, a
         warning will be issued (via ``warnings``) regarding each such mismatch
     subset_ids
-        If set, only utterances with ids listed in this set will count towards
-        the data set. The rest will be ignored
+        Deprecated. Use params.subset_ids.
     sos
         Specify the start-of-sequence token, if any. If unset, uses whatever is in
         `params`. Specifying `sos` this way is deprecated; it should be done via
@@ -225,6 +235,15 @@ class SpectDataSet(torch.utils.data.Dataset):
                 x.startswith(file_prefix) and x.endswith(file_suffix)
                 for x in os.listdir(os.path.join(data_dir, ref_subdir))
             )
+        if subset_ids is None:
+            subset_ids = set(params.subset_ids)
+        else:
+            warnings.warn(
+                "passing subset_ids to the dataset directly is deprecated. Set "
+                "params.subset_ids instead.",
+                DeprecationWarning,
+                2,
+            )
         self.utt_ids = tuple(
             sorted(self.find_utt_ids(warn_on_missing, subset_ids=subset_ids))
         )
@@ -238,7 +257,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         return self.get_utterance_tuple(idx)
 
     def find_utt_ids(
-        self, warn_on_missing: bool, subset_ids: Optional[Set[str]] = None
+        self, warn_on_missing: bool, subset_ids: Set[str] = set()
     ) -> Set[str]:
         """Returns a set of all utterance ids from data_dir"""
         neg_fsl = -len(self.file_suffix)
@@ -250,7 +269,7 @@ class SpectDataSet(torch.utils.data.Dataset):
             for x in os.listdir(os.path.join(self.data_dir, self.feat_subdir))
             if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
         )
-        if subset_ids is not None:
+        if subset_ids:
             utt_ids &= subset_ids
         if self.has_ali:
             ali_utt_ids = set(
@@ -258,7 +277,7 @@ class SpectDataSet(torch.utils.data.Dataset):
                 for x in os.listdir(os.path.join(self.data_dir, self.ali_subdir))
                 if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
             )
-            if subset_ids is not None:
+            if subset_ids:
                 ali_utt_ids &= subset_ids
             if warn_on_missing:
                 for utt_id in utt_ids.difference(ali_utt_ids):
@@ -271,7 +290,7 @@ class SpectDataSet(torch.utils.data.Dataset):
                 for x in os.listdir(os.path.join(self.data_dir, self.ref_subdir))
                 if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
             )
-            if subset_ids is not None:
+            if subset_ids:
                 ref_utt_ids &= subset_ids
             if warn_on_missing:
                 for utt_id in utt_ids.difference(ref_utt_ids):
@@ -663,7 +682,7 @@ def extract_window(
     return window
 
 
-class ContextWindowDataParams(SpectDataParams):
+class ContextWindowDataParams(DataParams):
     """Parameters for ContextWindowDataSet
 
     This implements the :class:`pydrobert.param.optuna.TunableParameterized`
@@ -744,11 +763,13 @@ class ContextWindowDataSet(SpectDataSet):
     file_prefix
     file_suffix
     warn_on_missing
+    subset_ids
     feat_subdir, ali_subdir
     reverse
         If :obj:`True`, context windows will be reversed along the time dimension. If
         unset, uses whatever is in ``params.reverse``. Specifying `reverse` by argument
         is deprecated; use ``params.reverse``.
+    params
 
     Yields
     ------

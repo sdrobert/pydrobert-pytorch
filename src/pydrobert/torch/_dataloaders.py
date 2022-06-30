@@ -22,7 +22,9 @@ from typing import (
     Sequence,
     Tuple,
     Hashable,
+    Union,
 )
+import warnings
 
 import param
 import numpy as np
@@ -189,21 +191,10 @@ class DataLoaderParams(param.Parameterized):
     """
 
     batch_size = param.Integer(
-        10,
-        bounds=(1, None),
-        softbounds=(5, 10),
-        doc="Number of elements in a batch, which equals the number of "
-        "utterances in the batch",
+        10, bounds=(1, None), softbounds=(5, 10), doc="Number of elements in a batch.",
     )
     drop_last = param.Boolean(
         False, doc="Whether to drop the last batch if it does reach batch_size"
-    )
-    subset_ids = param.List(
-        [],
-        class_=str,
-        bounds=None,
-        doc="A list of utterance ids. If non-empty, the data set will be "
-        "restricted to these utterances",
     )
 
     @classmethod
@@ -226,7 +217,30 @@ class DataLoaderParams(param.Parameterized):
         return params
 
 
-class SpectDataLoaderParams(SpectDataParams, DataLoaderParams):
+class DynamicLengthDataLoaderParams(DataLoaderParams):
+    """Parameters for a data loader whose elements have dynamic lengths"""
+
+    num_length_buckets = param.Integer(
+        1,
+        bounds=(1, None),
+        doc="If greater than 1, elements will be batched with other elements of "
+        "similar length (along the feature time dimension). Elements will be "
+        "partioned roughly evenly into num_length_buckets. Increasing "
+        "num_length_buckets will usually decrease the total amount of padding "
+        "per batch at the cost of fewer candidates to choose from within batches.",
+    )
+    size_batch_by_length = param.Boolean(
+        False,
+        doc="Only matters when num_length_buckets > 1. If false, all buckets have the "
+        "same batch size of batch_size. If true, buckets with shorter-length "
+        "utterances will contain greater than batch_size elements per batch. Letting "
+        "x be the batch size of a bucket, y be the length of the largest element in "
+        "the bucket, and Y be the length of the largest element in the corpus, x is "
+        "the greatest value such that x * y <= Y * batch_size",
+    )
+
+
+class SpectDataLoaderParams(SpectDataParams, DynamicLengthDataLoaderParams):
     """Parameters for a Spect*DataLoader
 
     This implements the :class:`pydrobert.param.optuna.TunableParameterized`
@@ -308,6 +322,34 @@ def spect_seq_to_batch(
     )
 
 
+def _get_bucket_batch_sampler_params(dataset, num_buckets, batch_size, dynamic):
+    elem_per_bucket = len(dataset) // num_buckets
+    if elem_per_bucket < batch_size:
+        warnings.warn(
+            f"The number of elements per bucket of the dataset ({elem_per_bucket}) "
+            f"is less than batch_size ({batch_size}). Consider decreasing "
+            "num_length_buckets"
+        )
+    len_idx = sorted((x[0].size(0), i) for (i, x) in enumerate(dataset))
+    len_bounds = [len_idx[(n + 1) * elem_per_bucket - 1][0] for n in range(num_buckets)]
+    len_bounds[-1] = len_idx[-1][0]
+    len_bounds_ = sorted(set(len_bounds))
+    if len_bounds_ != len_bounds:
+        warnings.warn(
+            f"Cannot evenly split dataset into {num_buckets} buckets. Decreasing to "
+            f"{len(len_bounds_)}"
+        )
+        len_bounds = len_bounds_
+    num_buckets = len(len_bounds)
+    idx2bucket = dict((i, sum(int(l > b) for b in len_bounds)) for (l, i) in len_idx)
+    if dynamic:
+        m = len_bounds[-1] * batch_size
+        bucket2size = dict((j, m // len_bounds[j]) for j in range(num_buckets))
+    else:
+        bucket2size = dict((j, batch_size) for j in range(num_buckets))
+    return idx2bucket, bucket2size
+
+
 class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     """Serves batches of spectral data over random orders of utterances
 
@@ -317,8 +359,8 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     params
         Either provides all the parameters necessary to instantiate this loader (a
         :class:`SpectDataLoaderParams`) or just those related to or just those related
-        to the loader (a :class:`DataLoaderParams`). If the latter, `data_params` must
-        be specified.
+        to the loader (a :class:`DynamicLengthDataLoaderParams`). If the latter,
+        `data_params` must be specified.
     file_prefix
     file_suffix
     warn_on_missing
@@ -427,7 +469,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     def __init__(
         self,
         data_dir: str,
-        params: DataLoaderParams,
+        params: Union[SpectDataLoaderParams, DynamicLengthDataLoaderParams],
         init_epoch: int = 0,
         file_prefix: str = "",
         file_suffix: str = ".pt",
@@ -459,13 +501,22 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             self.data_params = params
         else:
             self.data_params = data_params
+            if hasattr(params, "subset_ids"):
+                subset_ids = params.subset_ids
+                if subset_ids:
+                    warnings.warn(
+                        "setting subset_ids in data loader parameters is deprecated. "
+                        "Use data_params.subset_ids instead.",
+                        DeprecationWarning,
+                        2,
+                    )
+                    self.data_params.subset_ids = subset_ids
         self.batch_first = batch_first
         self.data_source = SpectDataSet(
             data_dir,
             file_prefix=file_prefix,
             file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
-            subset_ids=set(params.subset_ids) if params.subset_ids else None,
             feat_subdir=feat_subdir,
             ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
@@ -476,12 +527,33 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
                 "'{}' must have either alignments or reference tokens for "
                 "training".format(data_dir)
             )
-        epoch_sampler = EpochRandomSampler(
+        utt_sampler = EpochRandomSampler(
             self.data_source, init_epoch=init_epoch, base_seed=seed
         )
-        batch_sampler = torch.utils.data.BatchSampler(
-            epoch_sampler, params.batch_size, drop_last=params.drop_last
-        )
+        if not isinstance(
+            params, (DynamicLengthDataLoaderParams, SpectDataLoaderParams)
+        ) and isinstance(params, DataLoaderParams):
+            warnings.warn(
+                "Passing a DataLoaderParams instance as params is deprecated. "
+                "Switch to DynamicLengthDataLoaderParams."
+            )
+            num_length_buckets = 1
+        else:
+            num_length_buckets = params.num_length_buckets
+        if num_length_buckets > 1:
+            idx2bucket, bucket2size = _get_bucket_batch_sampler_params(
+                self.data_source,
+                num_length_buckets,
+                params.batch_size,
+                params.size_batch_by_length,
+            )
+            batch_sampler = BucketBatchSampler(
+                utt_sampler, idx2bucket, bucket2size, params.drop_last
+            )
+        else:
+            batch_sampler = torch.utils.data.BatchSampler(
+                utt_sampler, params.batch_size, drop_last=params.drop_last
+            )
         super(SpectTrainingDataLoader, self).__init__(
             self.data_source,
             batch_sampler=batch_sampler,
@@ -521,8 +593,8 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     params
         Either provides all the parameters necessary to instantiate this loader (a
         :class:`SpectDataLoaderParams`) or just those related to or just those related
-        to the loader (a :class:`DataLoaderParams`). If the latter, `data_params` must
-        be specified.
+        to the loader (a :class:`DynamicLengthDataLoaderParams`). If the latter,
+        `data_params` must be specified.
     file_prefix
     file_suffix
     warn_on_missing
@@ -650,7 +722,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     def __init__(
         self,
         data_dir: str,
-        params: DataLoaderParams,
+        params: Union[DynamicLengthDataLoaderParams, SpectDataLoaderParams],
         file_prefix: str = "",
         file_suffix: str = ".pt",
         warn_on_missing: bool = True,
@@ -680,22 +752,55 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
             self.data_params = params
         else:
             self.data_params = data_params
+            if hasattr(params, "subset_ids"):
+                subset_ids = params.subset_ids
+                if subset_ids:
+                    warnings.warn(
+                        "setting subset_ids in data loader parameters is deprecated. "
+                        "Use data_params.subset_ids instead.",
+                        DeprecationWarning,
+                        2,
+                    )
+                    self.data_params.subset_ids = subset_ids
         self.batch_first = batch_first
         self.data_source = self.SEvalDataSet(
             data_dir,
             file_prefix=file_prefix,
             file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
-            subset_ids=set(params.subset_ids) if params.subset_ids else None,
             feat_subdir=feat_subdir,
             ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
             params=self.data_params,
         )
+        utt_sampler = torch.utils.data.SequentialSampler(self.data_source)
+        if not isinstance(
+            params, (DynamicLengthDataLoaderParams, SpectDataLoaderParams)
+        ) and isinstance(params, DataLoaderParams):
+            warnings.warn(
+                "Passing a DataLoaderParams instance as params is deprecated. "
+                "Switch to DynamicLengthDataLoaderParams."
+            )
+            num_length_buckets = 1
+        else:
+            num_length_buckets = params.num_length_buckets
+        if num_length_buckets > 1:
+            idx2bucket, bucket2size = _get_bucket_batch_sampler_params(
+                self.data_source,
+                num_length_buckets,
+                params.batch_size,
+                params.size_batch_by_length,
+            )
+            batch_sampler = BucketBatchSampler(
+                utt_sampler, idx2bucket, bucket2size, params.drop_last
+            )
+        else:
+            batch_sampler = torch.utils.data.BatchSampler(
+                utt_sampler, params.batch_size, drop_last=params.drop_last
+            )
         super(SpectEvaluationDataLoader, self).__init__(
             self.data_source,
-            batch_size=params.batch_size,
-            shuffle=False,
+            batch_sampler=batch_sampler,
             collate_fn=self.eval_collate_fn,
             **kwargs,
         )
@@ -866,12 +971,21 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
             self.data_params = params
         else:
             self.data_params = data_params
+            if hasattr(params, "subset_ids"):
+                subset_ids = params.subset_ids
+                if subset_ids:
+                    warnings.warn(
+                        "setting subset_ids in data loader parameters is deprecated. "
+                        "Use data_params.subset_ids instead.",
+                        DeprecationWarning,
+                        2,
+                    )
+                    self.data_params.subset_ids = subset_ids
         self.data_source = ContextWindowDataSet(
             data_dir,
             file_prefix=file_prefix,
             file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
-            subset_ids=set(params.subset_ids) if params.subset_ids else None,
             feat_subdir=feat_subdir,
             ali_subdir=ali_subdir,
             params=self.data_params,
@@ -880,11 +994,11 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
             raise ValueError(
                 "'{}' must have alignment info for training".format(data_dir)
             )
-        epoch_sampler = EpochRandomSampler(
+        utt_sampler = EpochRandomSampler(
             self.data_source, init_epoch=init_epoch, base_seed=seed
         )
         batch_sampler = torch.utils.data.BatchSampler(
-            epoch_sampler, params.batch_size, drop_last=params.drop_last
+            utt_sampler, params.batch_size, drop_last=params.drop_last
         )
         super(ContextWindowTrainingDataLoader, self).__init__(
             self.data_source,
@@ -1021,12 +1135,21 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
             self.data_params = params
         else:
             self.data_params = data_params
+            if hasattr(params, "subset_ids"):
+                subset_ids = params.subset_ids
+                if subset_ids:
+                    warnings.warn(
+                        "setting subset_ids in data loader parameters is deprecated. "
+                        "Use data_params.subset_ids instead.",
+                        DeprecationWarning,
+                        2,
+                    )
+                    self.data_params.subset_ids = subset_ids
         self.data_source = self.CWEvalDataSet(
             data_dir,
             file_prefix=file_prefix,
             file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
-            subset_ids=set(params.subset_ids) if params.subset_ids else None,
             feat_subdir=feat_subdir,
             ali_subdir=ali_subdir,
             params=self.data_params,

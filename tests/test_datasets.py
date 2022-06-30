@@ -109,10 +109,9 @@ def test_valid_spect_data_set(
             zip(feats, alis, refs), data_set
         )
     )
-    subset_ids = data_set.utt_ids[: num_utts // 2]
-    data_set = data.SpectDataSet(
-        temp_dir, file_prefix=file_prefix, subset_ids=set(subset_ids), params=params
-    )
+    subset_ids = list(data_set.utt_ids[: num_utts // 2])
+    params.subset_ids = subset_ids
+    data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix, params=params)
     assert all(utt_a == utt_b for (utt_a, utt_b) in zip(subset_ids, data_set.utt_ids))
     assert all(
         torch.all(ali_a == ali_b)
