@@ -26,10 +26,11 @@ from typing import (
 )
 import warnings
 
+from collections import Counter
+
 import param
 import numpy as np
 import torch
-
 
 from . import config
 from ._datasets import (
@@ -150,6 +151,7 @@ class BucketBatchSampler(torch.utils.data.sampler.Sampler):
     idx2bucket: Dict[int, Hashable]
     bucket2size: Dict[Hashable, int]
     drop_incomplete: bool
+    _len: Optional[int]
 
     def __init__(
         self,
@@ -162,9 +164,18 @@ class BucketBatchSampler(torch.utils.data.sampler.Sampler):
         self.idx2bucket = idx2bucket
         self.bucket2size = bucket2size
         self.drop_incomplete = drop_incomplete
+        self._len = None
 
     def __len__(self) -> int:
-        return len(self.sampler)
+        if self._len is None:
+            bucket2count = Counter(self.idx2bucket.values())
+            self._len = 0
+            for bucket, size in self.bucket2size.items():
+                count = bucket2count.get(bucket, 0)
+                self._len += count // size
+                if not self.drop_incomplete and count % size:
+                    self._len += 1
+        return self._len
 
     def __iter__(self) -> Iterator[List[int]]:
         batches: Dict[Hashable, List[int]] = dict()

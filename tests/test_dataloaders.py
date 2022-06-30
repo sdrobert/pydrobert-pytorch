@@ -55,17 +55,22 @@ def test_bucket_batch_sampler(drop_incomplete):
     bucket2size = {0: 2, 1: 2, 2: 1, 3: 1}
     sampler = data.BucketBatchSampler(sampler, idx2bucket, bucket2size, drop_incomplete)
     sampler_ = iter(sampler)
+    count = 0
     for n in range(0, 6 * N, 6):
         assert next(sampler_) == [n]
         assert next(sampler_) == [n + 3]
         assert next(sampler_) == [n + 2, n + 4]
         assert next(sampler_) == [n + 1, n + 5]
+        count += 4
     assert next(sampler_) == [6 * N]
+    count += 1
     if not drop_incomplete:
         assert next(sampler_) == [6 * N + 1]
         assert next(sampler_) == [6 * N + 2]
+        count += 2
     with pytest.raises(StopIteration):
         next(sampler_)
+    assert len(sampler) == count
 
 
 @pytest.mark.cpu
@@ -551,6 +556,7 @@ def test_data_loader_length_buckets(temp_dir, populate_torch_dir, loader_cls):
     )
     loader = loader_cls(temp_dir, params)
     act_feat_sizes = [x[3] for x in loader]
+    assert len(act_feat_sizes) == len(loader)
     for i, x in enumerate(act_feat_sizes):
         assert x.numel() == N or (i >= (NN // N - B) and x.numel() < N)
         i = exp_feat_sizes.index(x[0].item())
@@ -568,6 +574,7 @@ def test_data_loader_length_buckets(temp_dir, populate_torch_dir, loader_cls):
     m = N * exp_feat_sizes[-1]
     loader = loader_cls(temp_dir, params)
     act_feat_sizes = [x[3] for x in loader]
+    assert len(act_feat_sizes) == len(loader)
     for x in act_feat_sizes:
         i = exp_feat_sizes.index(x[0].item())
         b = (B * i) // NN
