@@ -145,15 +145,20 @@ class DirectEstimator(MonteCarloEstimator):
         b = self.proposal.sample([self.mc_samples])
         fb = self.func(b)
         if self.is_log:
-            fb_lmax = fb.detach().max(0, keepdim=True)[0]
-            fb_lmax = fb_lmax.clamp_(config.EPS_NINF, config.EPS_INF)
-            fb = (fb - fb_lmax).exp()
+            fb_lmax = fb.max(0, keepdim=True)[0].clamp(
+                torch.finfo(fb.dtype).min / 2, torch.finfo(fb.dtype).max / 2
+            )
+            fb = (fb - fb_lmax).clamp(config.EPS_NINF, config.EPS_INF).exp()
         if self.cv is not None:
             c = self.cv_mean
             cvb = self.cv(b)
             if self.is_log:
-                c = (c.unsqueeze(0) - fb_lmax).exp()
-                cvb = (cvb - fb_lmax).exp()
+                c = (
+                    (c.unsqueeze(0) - fb_lmax)
+                    .clamp(config.EPS_NINF, config.EPS_INF)
+                    .exp()
+                )
+                cvb = (cvb - fb_lmax).clamp(config.EPS_NINF, config.EPS_INF).exp()
             fb = fb - cvb + c
         log_pb = self.proposal.log_prob(b)
         deriv = (fb.detach() * log_pb).mean(0)
@@ -518,11 +523,12 @@ class RelaxEstimator(MonteCarloEstimator):
         cvz = self.cv(z)
         cvzcond = self.cv(zcond)
         if self.is_log:
-            fb_lmax = fb.detach().max(0, keepdim=True)[0]
-            fb_lmax = fb_lmax.clamp_(config.EPS_NINF, config.EPS_INF)
-            fb = (fb - fb_lmax).exp()
-            cvz = (cvz - fb_lmax).exp()
-            cvzcond = (cvzcond - fb_lmax).exp()
+            fb_lmax = fb.max(0, keepdim=True)[0].clamp(
+                torch.finfo(fb.dtype).min / 2, torch.finfo(fb.dtype).max / 2
+            )
+            fb = (fb - fb_lmax).clamp(config.EPS_NINF, config.EPS_INF).exp()
+            cvz = (cvz - fb_lmax).clamp(config.EPS_NINF, config.EPS_INF).exp()
+            cvzcond = (cvzcond - fb_lmax).clamp(config.EPS_NINF, config.EPS_INF).exp()
         fb_cvzcond = fb - cvzcond
         if self.cv_params:
             v_ = (fb_cvzcond * log_pb + cvz).mean(0)
