@@ -20,7 +20,6 @@ import warnings
 from ._datasets import (
     ContextWindowDataParams,
     ContextWindowDataSet,
-    DataParams,
     extract_window,
     SpectDataParams,
     SpectDataSet,
@@ -60,7 +59,6 @@ __all__ = [
     "ContextWindowEvaluationDataLoader",
     "ContextWindowTrainingDataLoader",
     "DataLoaderParams",
-    "DataParams",
     "DynamicLengthDataLoaderParams",
     "EpochRandomSampler",
     "extract_window",

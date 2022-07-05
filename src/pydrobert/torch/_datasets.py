@@ -21,8 +21,8 @@ import torch
 import param
 
 
-class DataParams(param.Parameterized):
-    """Parameters for pydrobert-torch datasets"""
+class SpectDataParams(param.Parameterized):
+    """Parameters for SpectDataSet"""
 
     subset_ids = param.List(
         [],
@@ -43,10 +43,6 @@ class DataParams(param.Parameterized):
         "reference and hypothesis transcriptions. If set, `eos` will be "
         "appended to every reference transcription on read",
     )
-
-
-class SpectDataParams(DataParams):
-    """Parameters for SpectDataSet"""
 
 
 class SpectDataSet(torch.utils.data.Dataset):
@@ -682,7 +678,7 @@ def extract_window(
     return window
 
 
-class ContextWindowDataParams(DataParams):
+class ContextWindowDataParams(SpectDataParams):
     """Parameters for ContextWindowDataSet
 
     This implements the :class:`pydrobert.param.optuna.TunableParameterized`
