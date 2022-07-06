@@ -19,6 +19,8 @@ import math
 from typing import Optional, Sequence
 import warnings
 import itertools
+import tarfile
+import io
 
 from pathlib import Path
 from collections import defaultdict, OrderedDict
@@ -1145,9 +1147,7 @@ def _torch_spect_data_dir_to_wds_parse_args(args):
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("dir", help="The torch data directory")
-    parser.add_argument(
-        "tar_pattern", help="The path or path pattern to store the tar files to."
-    )
+    parser.add_argument("tar_path", help="The path to store files to")
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     parser.add_argument(
@@ -1171,8 +1171,8 @@ def _torch_spect_data_dir_to_wds_parse_args(args):
         "--shard",
         action="store_true",
         default=False,
-        help="Split samples among multiple tar files. 'tar_pattern' should be a "
-        "format string into which the shard number can be inserted.",
+        help="Split samples among multiple tar files. 'tar_path' will be extended with "
+        "a suffix '.x', where x is the shard number.",
     )
     parser.add_argument(
         "--max-samples-per-shard",
@@ -1224,30 +1224,24 @@ def torch_spect_data_dir_to_wds(args: Optional[Sequence[str]] = None) -> None:
     This command converts the data directory into a tar file to be used as a
     WebDataset (https://github.com/webdataset/webdataset), whose contents are files
 
-        <utt1>.feat.pyd
-        [<utt1>.ali.pyd]
-        [<utt1>.ref.pyd]
-        <utt2>.feat.pyd
-        [<utt2>.ali.pyd]
-        [<utt2>.ref.pyd]
+        meta
+        <utt1>.feat.pth
+        [<utt1>.ali.pth]
+        [<utt1>.ref.pth]
+        <utt2>.feat.pth
+        [<utt2>.ali.pth]
+        [<utt2>.ref.pth]
         ...
     
-    holding tensors with the same interpretation as above.
+    holding tensors with the same interpretation as above. The special "meta" file
+    stores 
+
+    This command does not require WebDataset to be installed.
     """
     try:
         options = _torch_spect_data_dir_to_wds_parse_args(args)
     except SystemExit as ex:
         return ex.code
-    try:
-        import webdataset as wds
-    except ImportError:
-        print(
-            "This command needs the package webdataset installed. Try either\n\n"
-            "  pip install webdataset\n"
-            "  conda install -c conda-forge webdataset",
-            file=sys.stderr,
-        )
-        return 1
     if not os.path.isdir(options.dir):
         print(f"'{options.dir}' is not a directory", file=sys.stderr)
         return 1
@@ -1259,21 +1253,54 @@ def torch_spect_data_dir_to_wds(args: Optional[Sequence[str]] = None) -> None:
         ali_subdir=options.ali_subdir,
         ref_subdir=options.ref_subdir,
     )
-    pattern = options.tar_pattern
-    if not options.is_uri and not options.shard:
-        pattern = "file:" + Path(pattern).as_posix()
-    if options.shard:
-        sink = wds.ShardWriter(
-            pattern, options.max_samples_per_shard, options.max_size_per_shard
-        )
+    pattern = Path(options.tar_path)
+    os.makedirs(pattern.parent, exist_ok=True)
+    if pattern.suffix in {".tgz", ".gz"}:
+        compression = "gz"
+    elif pattern.suffix == ".bz2":
+        compression = "bz2"
+    elif pattern.suffix == ".xz":
+        compression = "xz"
     else:
-        sink = wds.TarWriter(pattern)
-    for idx in range(len(data_set)):
+        compression = ""
+    pattern = str(pattern.resolve())
+    NN = len(data_set)
+    if options.shard:
+        max_bytes = options.max_size_per_shard
+        max_count = options.max_samples_per_shard
+        if max_bytes <= 0:
+            raise argparse.ArgumentTypeError("--max-size-per-shard must be positive")
+        if max_count <= 0:
+            raise argparse.ArgumentTypeError("--max-samples-per-shard must be positive")
+        max_num_shards = (NN - 1) // max_count + 1
+        max_shard = max(max_num_shards - 1, 1)
+        pattern += f".{{shard:0{int(math.ceil(math.log(max_shard)))}d}}"
+    else:
+        max_bytes = float("inf")
+        max_count = NN
+    cur_count = cur_bytes = shard = 0
+    cur_tar = tarfile.open(pattern.format(shard=shard), f"w|{compression}")
+    for idx in range(NN):
         feat, ali, ref = data_set[idx]
         utt_id = data_set.utt_ids[idx]
-        entry = {"__key__": utt_id, "feat.pyd": feat}
-        if ali is not None:
-            entry["ali.pyd"] = ali
-        if ref is not None:
-            entry["ref.pyd"] = ref
-        sink.write(entry)
+        if cur_count >= max_count or cur_bytes >= max_bytes:
+            cur_tar.close()
+            shard += 1
+            cur_count = cur_bytes = 0
+            cur_tar = tarfile.open(pattern.format(shard=shard), f"w|{compression}")
+        for name, tensor in (("ali", ali), ("feat", feat), ("ref", ref)):
+            if tensor is None:
+                continue
+            buf = io.BytesIO()
+            torch.save(tensor, buf)
+            buf.read()
+            member = tarfile.TarInfo(f"{utt_id}.{name}.pth")
+            member.size = buf.tell()
+            cur_bytes += member.size
+            member.mode = 0o0444
+            buf.seek(0)
+            cur_tar.addfile(member, buf)
+            del buf
+        cur_count += 1
+    cur_tar.close()
+    return

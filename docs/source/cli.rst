@@ -266,7 +266,7 @@ torch-spect-data-dir-to-wds
                                      [--shard]
                                      [--max-samples-per-shard MAX_SAMPLES_PER_SHARD]
                                      [--max-size-per-shard MAX_SIZE_PER_SHARD]
-                                     dir tar_pattern
+                                     dir tar_path
   
   Convert a SpectDataSet to a WebDataset
       
@@ -299,20 +299,24 @@ torch-spect-data-dir-to-wds
       This command converts the data directory into a tar file to be used as a
       WebDataset (https://github.com/webdataset/webdataset), whose contents are files
   
-          <utt1>.feat.pyd
-          [<utt1>.ali.pyd]
-          [<utt1>.ref.pyd]
-          <utt2>.feat.pyd
-          [<utt2>.ali.pyd]
-          [<utt2>.ref.pyd]
+          meta
+          <utt1>.feat.pth
+          [<utt1>.ali.pth]
+          [<utt1>.ref.pth]
+          <utt2>.feat.pth
+          [<utt2>.ali.pth]
+          [<utt2>.ref.pth]
           ...
       
-      holding tensors with the same interpretation as above.
+      holding tensors with the same interpretation as above. The special "meta" file
+      stores 
+  
+      This command does not require WebDataset to be installed.
       
   
   positional arguments:
     dir                   The torch data directory
-    tar_pattern           The path or path pattern to store the tar files to.
+    tar_path              The path to store files to
   
   optional arguments:
     -h, --help            show this help message and exit
@@ -329,9 +333,9 @@ torch-spect-data-dir-to-wds
                           stored.
     --is-uri              If set, tar_pattern will be treated as a URI rather
                           than a path/
-    --shard               Split samples among multiple tar files. 'tar_pattern'
-                          should be a format string into which the shard number
-                          can be inserted.
+    --shard               Split samples among multiple tar files. 'tar_path'
+                          will be extended with a suffix '.x', where x is the
+                          shard number.
     --max-samples-per-shard MAX_SAMPLES_PER_SHARD
                           If sharding ('--shard' is specified), dictates the
                           number of samples in each file.

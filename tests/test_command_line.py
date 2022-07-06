@@ -507,15 +507,14 @@ def test_torch_spect_data_dir_to_wds(temp_dir, populate_torch_dir):
     NN, N = 100, 10
     torch_dir = os.path.join(temp_dir, "foo")
     tar = os.path.join(temp_dir, "foo.tar")
-    tar_pattern = os.path.join(temp_dir, "foo-%010d.tar")
 
     feats, alis, refs, _, _, utt_ids = populate_torch_dir(torch_dir, NN)
     assert not command_line.torch_spect_data_dir_to_wds([torch_dir, tar])
 
     ds = (
         wds.WebDataset("file:" + tar.replace("\\", "/"))
-        .decode(wds.handle_extension(".pyd", torch.load))
-        .to_tuple("feat.pyd", "ali.pyd", "ref.pyd", "__key__")
+        .decode(wds.handle_extension(".pth", torch.load))
+        .to_tuple("feat.pth", "ali.pth", "ref.pth", "__key__")
     )
 
     for idx, (feat, ali, ref, utt_id) in enumerate(ds):
@@ -526,16 +525,16 @@ def test_torch_spect_data_dir_to_wds(temp_dir, populate_torch_dir):
     assert idx == NN - 1
 
     assert not command_line.torch_spect_data_dir_to_wds(
-        [torch_dir, tar_pattern, "--shard", "--max-samples-per-shard", str(N)]
+        [torch_dir, tar, "--shard", "--max-samples-per-shard", str(N)]
     )
 
-    shards = glob.glob(f"{glob.escape(temp_dir)}/foo-*.tar")
+    shards = glob.glob(f"{glob.escape(temp_dir)}/foo.tar.*")
     assert len(shards) == (NN - 1) // N + 1
     ds = wds.DataPipeline(
         wds.SimpleShardList(sorted("file:" + x for x in shards)),
         wds.tarfile_to_samples(),
-        wds.decode(wds.handle_extension(".pyd", torch.load)),
-        wds.to_tuple("feat.pyd", "ali.pyd", "ref.pyd", "__key__"),
+        wds.decode(wds.handle_extension(".pth", torch.load)),
+        wds.to_tuple("feat.pth", "ali.pth", "ref.pth", "__key__"),
     )
 
     for idx, (feat, ali, ref, utt_id) in enumerate(ds):
