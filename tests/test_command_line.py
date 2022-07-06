@@ -532,7 +532,7 @@ def test_torch_spect_data_dir_to_wds(temp_dir, populate_torch_dir):
     shards = glob.glob(f"{glob.escape(temp_dir)}/foo-*.tar")
     assert len(shards) == (NN - 1) // N + 1
     ds = wds.DataPipeline(
-        wds.SimpleShardList(["file:" + x for x in shards]),
+        wds.SimpleShardList(sorted("file:" + x for x in shards)),
         wds.tarfile_to_samples(),
         wds.decode(wds.handle_extension(".pyd", torch.load)),
         wds.to_tuple("feat.pyd", "ali.pyd", "ref.pyd", "__key__"),
