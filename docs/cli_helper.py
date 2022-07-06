@@ -31,12 +31,13 @@ CLI_RST = os.path.join(DIR, "source", "cli.rst")
 
 buff = "Command-Line Interface\n======================\n\n"
 for cmd_name in (
-    "get-torch-spect-data-dir-info",
-    "trn-to-torch-token-data-dir",
-    "torch-token-data-dir-to-trn",
-    "ctm-to-torch-token-data-dir",
-    "torch-token-data-dir-to-ctm",
     "compute-torch-token-data-dir-error-rates",
+    "ctm-to-torch-token-data-dir",
+    "get-torch-spect-data-dir-info",
+    "torch-spect-data-dir-to-wds",
+    "torch-token-data-dir-to-ctm",
+    "torch-token-data-dir-to-trn",
+    "trn-to-torch-token-data-dir",
 ):
     buff += cmd_name + "\n" + ("-" * len(cmd_name)) + "\n\n::\n\n  "
     sys.argv[0] = cmd_name

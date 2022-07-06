@@ -20,6 +20,7 @@ from typing import Optional, Sequence
 import warnings
 import itertools
 
+from pathlib import Path
 from collections import defaultdict, OrderedDict
 
 import torch
@@ -1136,3 +1137,143 @@ def compute_torch_token_data_dir_error_rates(
                 tot_errs / (len(error_rates) if options.distances else total_ref_tokens)
             )
         )
+
+
+def _torch_spect_data_dir_to_wds_parse_args(args):
+    parser = argparse.ArgumentParser(
+        description=torch_spect_data_dir_to_wds.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("dir", help="The torch data directory")
+    parser.add_argument(
+        "tar_pattern", help="The path or path pattern to store the tar files to."
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    parser.add_argument(
+        "--feat-subdir", default="feat", help="Subdirectory where features are stored."
+    )
+    parser.add_argument(
+        "--ali-subdir", default="ali", help="Subdirectory where alignments are stored."
+    )
+    parser.add_argument(
+        "--ref-subdir",
+        default="ref",
+        help="Subdirectory where reference token sequences are stored.",
+    )
+    parser.add_argument(
+        "--is-uri",
+        action="store_true",
+        default=False,
+        help="If set, tar_pattern will be treated as a URI rather than a path/",
+    )
+    parser.add_argument(
+        "--shard",
+        action="store_true",
+        default=False,
+        help="Split samples among multiple tar files. 'tar_pattern' should be a "
+        "format string into which the shard number can be inserted.",
+    )
+    parser.add_argument(
+        "--max-samples-per-shard",
+        type=int,
+        default=1e5,
+        help="If sharding ('--shard' is specified), dictates the number of samples in "
+        "each file.",
+    )
+    parser.add_argument(
+        "--max-size-per-shard",
+        type=int,
+        default=3e9,
+        help="If sharding ('--shard' is specified), dictates the maximum size in bytes "
+        "of each file.",
+    )
+
+    return parser.parse_args(args)
+
+
+def torch_spect_data_dir_to_wds(args: Optional[Sequence[str]] = None) -> None:
+    """Convert a SpectDataSet to a WebDataset
+    
+    A torch SpectDataSet data dir is of the form
+
+        dir/
+            feat/
+                <file_prefix><utt1><file_suffix>
+                <file_prefix><utt2><file_suffix>
+                ...
+            [ali/
+                <file_prefix><utt1><file_suffix>
+                <file_prefix><utt1><file_suffix>
+                ...
+            ]
+            [ref/
+                <file_prefix><utt1><file_suffix>
+                <file_prefix><utt1><file_suffix>
+                ...
+            ]
+
+    Where "feat/" contains float tensors of shape (N, F), where N is the number of
+    frames (variable) and F is the number of filters (fixed). "ali/" if there, contains
+    long tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids
+    for discriminative training in an DNN-HMM). "ref/", if there, contains long tensors
+    of shape (R, 3) indicating a sequence of reference tokens where element indexed by
+    "[i, 0]" is a token id, "[i, 1]" is the inclusive start frame of the token (or a
+    negative value if unknown), and "[i, 2]" is the exclusive end frame of the token.
+
+    This command converts the data directory into a tar file to be used as a
+    WebDataset (https://github.com/webdataset/webdataset), whose contents are files
+
+        <utt1>.feat.pyd
+        [<utt1>.ali.pyd]
+        [<utt1>.ref.pyd]
+        <utt2>.feat.pyd
+        [<utt2>.ali.pyd]
+        [<utt2>.ref.pyd]
+        ...
+    
+    holding tensors with the same interpretation as above.
+    """
+    try:
+        options = _torch_spect_data_dir_to_wds_parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+    try:
+        import webdataset as wds
+    except ImportError:
+        print(
+            "This command needs the package webdataset installed. Try either\n\n"
+            "  pip install webdataset\n"
+            "  conda install -c conda-forge webdataset",
+            file=sys.stderr,
+        )
+        return 1
+    if not os.path.isdir(options.dir):
+        print(f"'{options.dir}' is not a directory", file=sys.stderr)
+        return 1
+    data_set = data.SpectDataSet(
+        options.dir,
+        file_prefix=options.file_prefix,
+        file_suffix=options.file_suffix,
+        feat_subdir=options.feat_subdir,
+        ali_subdir=options.ali_subdir,
+        ref_subdir=options.ref_subdir,
+    )
+    pattern = options.tar_pattern
+    if not options.is_uri and not options.shard:
+        pattern = "file:" + Path(pattern).as_posix()
+    if options.shard:
+        sink = wds.ShardWriter(
+            pattern, options.max_samples_per_shard, options.max_size_per_shard
+        )
+    else:
+        sink = wds.TarWriter(pattern)
+    for idx in range(len(data_set)):
+        feat, ali, ref = data_set[idx]
+        utt_id = data_set.utt_ids[idx]
+        entry = {"__key__": utt_id, "feat.pyd": feat}
+        if ali is not None:
+            entry["ali.pyd"] = ali
+        if ref is not None:
+            entry["ref.pyd"] = ref
+        sink.write(entry)

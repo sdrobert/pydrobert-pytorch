@@ -1,340 +1,6 @@
 Command-Line Interface
 ======================
 
-get-torch-spect-data-dir-info
------------------------------
-
-::
-
-  usage: get-torch-spect-data-dir-info [-h] [--file-prefix FILE_PREFIX]
-                                       [--file-suffix FILE_SUFFIX]
-                                       [--feat-subdir FEAT_SUBDIR]
-                                       [--ali-subdir ALI_SUBDIR]
-                                       [--ref-subdir REF_SUBDIR]
-                                       [--strict | --fix]
-                                       dir [out_file]
-  
-  Write info about the specified SpectDataSet data dir
-  
-      A torch SpectDataSet data dir is of the form
-  
-          dir/
-              feat/
-                  <file_prefix><utt1><file_suffix>
-                  <file_prefix><utt2><file_suffix>
-                  ...
-              [ali/
-                  <file_prefix><utt1><file_suffix>
-                  <file_prefix><utt1><file_suffix>
-                  ...
-              ]
-              [ref/
-                  <file_prefix><utt1><file_suffix>
-                  <file_prefix><utt1><file_suffix>
-                  ...
-              ]
-  
-      Where "feat/" contains float tensors of shape (N, F), where N is the number of
-      frames (variable) and F is the number of filters (fixed). "ali/" if there, contains
-      long tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids
-      for discriminative training in an DNN-HMM). "ref/", if there, contains long tensors
-      of shape (R, 3) indicating a sequence of reference tokens where element indexed by
-      "[i, 0]" is a token id, "[i, 1]" is the inclusive start frame of the token (or a
-      negative value if unknown), and "[i, 2]" is the exclusive end frame of the token.
-  
-      This command writes the following space-delimited key-value pairs to an
-      output file in sorted order:
-  
-      1. "max_ali_class", the maximum inclusive class id found over "ali/"
-         (if available, -1 if not)
-      2. "max_ref_class", the maximum inclussive class id found over "ref/"
-         (if available, -1 if not)
-      3. "num_utterances", the total number of listed utterances
-      4. "num_filts", F
-      5. "total_frames", the sum of N over the data dir
-      6. "count_<i>", the number of instances of the class "<i>" that appear in "ali/"
-         (if available). If "count_<i>" is a valid key, then so are "count_<0 to i>".
-         "count_<i>" is left-padded with zeros to ensure that the keys remain in the same
-         order in the table as the class indices.  The maximum i will be equal to
-         the value of "max_ali_class"
-  
-      Note that the output can be parsed as a Kaldi (http://kaldi-asr.org/) text table of
-      integers.
-      
-  
-  positional arguments:
-    dir                   The torch data directory
-    out_file              The file to write to. If unspecified, stdout
-  
-  optional arguments:
-    -h, --help            show this help message and exit
-    --file-prefix FILE_PREFIX
-                          The file prefix indicating a torch data file
-    --file-suffix FILE_SUFFIX
-                          The file suffix indicating a torch data file
-    --feat-subdir FEAT_SUBDIR
-                          Subdirectory where features are stored
-    --ali-subdir ALI_SUBDIR
-                          Subdirectory where alignments are stored
-    --ref-subdir REF_SUBDIR
-                          Subdirectory where reference token sequences are
-                          stored
-    --strict              If set, validate the data directory before collecting
-                          info. The process is described in
-                          pydrobert.torch.data.validate_spect_data_set
-    --fix                 If set, validate the data directory before collecting
-                          info, potentially fixing small errors in the
-                          directory. The process is described in
-                          pydrobert.torch.validate_spect_data_set
-
-trn-to-torch-token-data-dir
----------------------------
-
-::
-
-  usage: trn-to-torch-token-data-dir [-h] [--alt-handler {error,first}]
-                                     [--file-prefix FILE_PREFIX]
-                                     [--file-suffix FILE_SUFFIX] [--swap]
-                                     [--unk-symbol UNK_SYMBOL]
-                                     [--num-workers NUM_WORKERS]
-                                     [--chunk-size CHUNK_SIZE]
-                                     [--skip-frame-times | --feat-sizing]
-                                     trn token2id dir
-  
-  Convert a NIST "trn" file to the specified SpectDataSet data dir
-  
-      A "trn" file is the standard transcription file without alignment information used
-      in the sclite (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm)
-      toolkit. It has the format
-  
-          here is a transcription (utterance_a)
-          here is another (utterance_b)
-  
-      This command reads in a "trn" file and writes its contents as token sequences
-      compatible with the "ref/" directory of a SpectDataSet. See the command
-      "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory
-      
-  
-  positional arguments:
-    trn                   The input trn file
-    token2id              A file containing mappings from tokens (e.g. words or
-                          phones) to unique IDs. Each line has the format
-                          "<token> <id>". The flag "--swap" can be used to swap
-                          the expected ordering (i.e. to "<id> <token>")
-    dir                   The directory to store token sequences to. If the
-                          directory does not exist, it will be created
-  
-  optional arguments:
-    -h, --help            show this help message and exit
-    --alt-handler {error,first}
-                          How to handle transcription alternates. If "error",
-                          error if the "trn" file contains alternates. If
-                          "first", always treat the alternate as canon
-    --file-prefix FILE_PREFIX
-                          The file prefix indicating a torch data file
-    --file-suffix FILE_SUFFIX
-                          The file suffix indicating a torch data file
-    --swap                If set, swaps the order of the key and value in
-                          token/id mapping
-    --unk-symbol UNK_SYMBOL
-                          If set, will map out-of-vocabulary tokens to this
-                          symbol
-    --num-workers NUM_WORKERS
-                          The number of workers to spawn to process the data. 0
-                          is serial. Defaults to the CPU count
-    --chunk-size CHUNK_SIZE
-                          The number of lines that a worker will process at
-                          once. Impacts speed and memory consumption.
-    --skip-frame-times    If true, will store token tensors of shape (R,)
-                          instead of (R, 3), foregoing segment start and end
-                          times (which trn does not have).
-    --feat-sizing         If true, will store token tensors of shape (R, 1)
-                          instead of (R, 3), foregoing segment start and end
-                          times (which trn does not have). The extra dimension
-                          will allow data in this directory to be loaded as
-                          features in a SpectDataSet.
-
-torch-token-data-dir-to-trn
----------------------------
-
-::
-
-  usage: torch-token-data-dir-to-trn [-h] [--file-prefix FILE_PREFIX]
-                                     [--file-suffix FILE_SUFFIX] [--swap]
-                                     [--num-workers NUM_WORKERS]
-                                     dir id2token trn
-  
-  Convert a SpectDataSet token data dir to a NIST trn file
-  
-      A "trn" file is the standard transcription file without alignment information used
-      in the sclite (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm)
-      toolkit. It has the format
-  
-          here is a transcription (utterance_a)
-          here is another (utterance_b)
-  
-      This command scans the contents of a directory like "ref/" in a SpectDataSeet and
-      converts each such file into a transcription. Each such transcription is then
-      written to a "trn" file. See the command "get-torch-spect-data-dir-info" for more
-      info about a SpectDataSet directory.
-      
-  
-  positional arguments:
-    dir                   The directory to read token sequences from
-    id2token              A file containing mappings from unique IDs to tokens
-                          (e.g. words or phones). Each line has the format "<id>
-                          <token>". The flag "--swap" can be used to swap the
-                          expected ordering (i.e. to "<token> <id>")
-    trn                   The "trn" file to write transcriptions to
-  
-  optional arguments:
-    -h, --help            show this help message and exit
-    --file-prefix FILE_PREFIX
-                          The file prefix indicating a torch data file
-    --file-suffix FILE_SUFFIX
-                          The file suffix indicating a torch data file
-    --swap                If set, swaps the order of the key and value in
-                          token/id mapping
-    --num-workers NUM_WORKERS
-                          The number of workers to spawn to process the data. 0
-                          is serial. Defaults to the CPU count
-
-ctm-to-torch-token-data-dir
----------------------------
-
-::
-
-  usage: ctm-to-torch-token-data-dir [-h] [--file-prefix FILE_PREFIX]
-                                     [--file-suffix FILE_SUFFIX] [--swap]
-                                     [--frame-shift-ms FRAME_SHIFT_MS]
-                                     [--wc2utt WC2UTT | --utt2wc UTT2WC]
-                                     [--unk-symbol UNK_SYMBOL]
-                                     ctm token2id dir
-  
-  Convert a NIST "ctm" file to a SpectDataSet token data dir
-  
-      A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
-      conversation file) used in the sclite
-      (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>) toolkit. Here is
-      the format
-  
-          utt_1 A 0.2 0.1 hi
-          utt_1 A 0.3 1.0 there  ;; comment
-          utt_2 A 0.0 1.0 next
-          utt_3 A 0.1 0.4 utterance
-  
-      Where the first number specifies the token start time (in seconds) and the second
-      the duration.
-  
-      This command reads in a "ctm" file and writes its contents as token sequences
-      compatible with the "ref/" directory of a SpectDataSet. See the command
-      "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory.
-      
-  
-  positional arguments:
-    ctm                   The "ctm" file to read token segments from
-    token2id              A file containing mappings from tokens (e.g. words or
-                          phones) to unique IDs. Each line has the format
-                          "<token> <id>". The flag "--swap" can be used to swap
-                          the expected ordering (i.e. to "<id> <token>")
-    dir                   The directory to store token sequences to. If the
-                          directory does not exist, it will be created
-  
-  optional arguments:
-    -h, --help            show this help message and exit
-    --file-prefix FILE_PREFIX
-                          The file prefix indicating a torch data file
-    --file-suffix FILE_SUFFIX
-                          The file suffix indicating a torch data file
-    --swap                If set, swaps the order of the key and value in
-                          token/id mapping
-    --frame-shift-ms FRAME_SHIFT_MS
-                          The number of milliseconds that have passed between
-                          consecutive frames. Used to convert between time in
-                          seconds and frame index. If your features are the raw
-                          sample, set this to 1000 / sample_rate_hz
-    --wc2utt WC2UTT       A file mapping wavefile name and channel combinations
-                          (e.g. 'utt_1 A') to utterance IDs. Each line of the
-                          file has the format '<wavefile_name> <channel>
-                          <utt_id>'. If neither '--wc2utt' nor '--utt2wc' has
-                          been specied, the wavefile name will be treated as the
-                          utterance ID
-    --utt2wc UTT2WC       A file mapping utterance IDs to wavefile name and
-                          channel combinations (e.g. 'utt_1 A'). Each line of
-                          the file has the format '<utt_id> <wavefile_name>
-                          <channel>'. If neither '--wc2utt' nor '--utt2wc' has
-                          been specied, the wavefile name will be treated as the
-                          utterance ID
-    --unk-symbol UNK_SYMBOL
-                          If set, will map out-of-vocabulary tokens to this
-                          symbol
-
-torch-token-data-dir-to-ctm
----------------------------
-
-::
-
-  usage: torch-token-data-dir-to-ctm [-h] [--file-prefix FILE_PREFIX]
-                                     [--file-suffix FILE_SUFFIX] [--swap]
-                                     [--frame-shift-ms FRAME_SHIFT_MS]
-                                     [--wc2utt WC2UTT | --utt2wc UTT2WC | --channel CHANNEL]
-                                     dir id2token ctm
-  
-  Convert a SpectDataSet token data directory to a NIST "ctm" file
-  
-      A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
-      conversation file) used in the sclite
-      (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm) toolkit. Here is the
-      format::
-  
-          utt_1 A 0.2 0.1 hi
-          utt_1 A 0.3 1.0 there  ;; comment
-          utt_2 A 0.0 1.0 next
-          utt_3 A 0.1 0.4 utterance
-  
-      Where the first number specifies the token start time (in seconds) and the second
-      the duration.
-  
-      This command scans the contents of a directory like "ref/" in a SpectDataSete and
-      converts each such file into a transcription. Every token in a given transcription
-      must have information about its duration. Each such transcription is then written to
-      the "ctm" file. See the command "get-torch-spect-data-dir-info" for more info about
-      a SpectDataSet directory.
-      
-  
-  positional arguments:
-    dir                   The directory to read token sequences from
-    id2token              A file containing mappings from unique IDs to tokens
-                          (e.g. words or phones). Each line has the format "<id>
-                          <token>". The flag "--swap" can be used to swap the
-                          expected ordering (i.e. to "<token> <id>")
-    ctm                   The "ctm" file to write token segments to
-  
-  optional arguments:
-    -h, --help            show this help message and exit
-    --file-prefix FILE_PREFIX
-                          The file prefix indicating a torch data file
-    --file-suffix FILE_SUFFIX
-                          The file suffix indicating a torch data file
-    --swap                If set, swaps the order of the key and value in
-                          token/id mapping
-    --frame-shift-ms FRAME_SHIFT_MS
-                          The number of milliseconds that have passed between
-                          consecutive frames. Used to convert between time in
-                          seconds and frame index. If your features are the raw
-                          samples, set this to 1000 / sample_rate_hz
-    --wc2utt WC2UTT       A file mapping wavefile name and channel combinations
-                          (e.g. 'utt_1 A') to utterance IDs. Each line of the
-                          file has the format '<wavefile_name> <channel>
-                          <utt_id>'.
-    --utt2wc UTT2WC       A file mapping utterance IDs to wavefile name and
-                          channel combinations (e.g. 'utt_1 A'). Each line of
-                          the file has the format '<utt_id> <wavefile_name>
-                          <channel>'.
-    --channel CHANNEL     If neither "--wc2utt" nor "--utt2wc" is specified,
-                          utterance IDs are treated as wavefile names and are
-                          given the value of this flag as a channel
-
 compute-torch-token-data-dir-error-rates
 ----------------------------------------
 
@@ -430,4 +96,424 @@ compute-torch-token-data-dir-error-rates
                           respectively
     --nist-costs          Use NIST (sclite, score) default costs for insertions,
                           deletions, and substitutions (3/3/4)
+
+ctm-to-torch-token-data-dir
+---------------------------
+
+::
+
+  usage: ctm-to-torch-token-data-dir [-h] [--file-prefix FILE_PREFIX]
+                                     [--file-suffix FILE_SUFFIX] [--swap]
+                                     [--frame-shift-ms FRAME_SHIFT_MS]
+                                     [--wc2utt WC2UTT | --utt2wc UTT2WC]
+                                     [--unk-symbol UNK_SYMBOL]
+                                     ctm token2id dir
+  
+  Convert a NIST "ctm" file to a SpectDataSet token data dir
+  
+      A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
+      conversation file) used in the sclite
+      (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>) toolkit. Here is
+      the format
+  
+          utt_1 A 0.2 0.1 hi
+          utt_1 A 0.3 1.0 there  ;; comment
+          utt_2 A 0.0 1.0 next
+          utt_3 A 0.1 0.4 utterance
+  
+      Where the first number specifies the token start time (in seconds) and the second
+      the duration.
+  
+      This command reads in a "ctm" file and writes its contents as token sequences
+      compatible with the "ref/" directory of a SpectDataSet. See the command
+      "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory.
+      
+  
+  positional arguments:
+    ctm                   The "ctm" file to read token segments from
+    token2id              A file containing mappings from tokens (e.g. words or
+                          phones) to unique IDs. Each line has the format
+                          "<token> <id>". The flag "--swap" can be used to swap
+                          the expected ordering (i.e. to "<id> <token>")
+    dir                   The directory to store token sequences to. If the
+                          directory does not exist, it will be created
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --swap                If set, swaps the order of the key and value in
+                          token/id mapping
+    --frame-shift-ms FRAME_SHIFT_MS
+                          The number of milliseconds that have passed between
+                          consecutive frames. Used to convert between time in
+                          seconds and frame index. If your features are the raw
+                          sample, set this to 1000 / sample_rate_hz
+    --wc2utt WC2UTT       A file mapping wavefile name and channel combinations
+                          (e.g. 'utt_1 A') to utterance IDs. Each line of the
+                          file has the format '<wavefile_name> <channel>
+                          <utt_id>'. If neither '--wc2utt' nor '--utt2wc' has
+                          been specied, the wavefile name will be treated as the
+                          utterance ID
+    --utt2wc UTT2WC       A file mapping utterance IDs to wavefile name and
+                          channel combinations (e.g. 'utt_1 A'). Each line of
+                          the file has the format '<utt_id> <wavefile_name>
+                          <channel>'. If neither '--wc2utt' nor '--utt2wc' has
+                          been specied, the wavefile name will be treated as the
+                          utterance ID
+    --unk-symbol UNK_SYMBOL
+                          If set, will map out-of-vocabulary tokens to this
+                          symbol
+
+get-torch-spect-data-dir-info
+-----------------------------
+
+::
+
+  usage: get-torch-spect-data-dir-info [-h] [--file-prefix FILE_PREFIX]
+                                       [--file-suffix FILE_SUFFIX]
+                                       [--feat-subdir FEAT_SUBDIR]
+                                       [--ali-subdir ALI_SUBDIR]
+                                       [--ref-subdir REF_SUBDIR]
+                                       [--strict | --fix]
+                                       dir [out_file]
+  
+  Write info about the specified SpectDataSet data dir
+  
+      A torch SpectDataSet data dir is of the form
+  
+          dir/
+              feat/
+                  <file_prefix><utt1><file_suffix>
+                  <file_prefix><utt2><file_suffix>
+                  ...
+              [ali/
+                  <file_prefix><utt1><file_suffix>
+                  <file_prefix><utt1><file_suffix>
+                  ...
+              ]
+              [ref/
+                  <file_prefix><utt1><file_suffix>
+                  <file_prefix><utt1><file_suffix>
+                  ...
+              ]
+  
+      Where "feat/" contains float tensors of shape (N, F), where N is the number of
+      frames (variable) and F is the number of filters (fixed). "ali/" if there, contains
+      long tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids
+      for discriminative training in an DNN-HMM). "ref/", if there, contains long tensors
+      of shape (R, 3) indicating a sequence of reference tokens where element indexed by
+      "[i, 0]" is a token id, "[i, 1]" is the inclusive start frame of the token (or a
+      negative value if unknown), and "[i, 2]" is the exclusive end frame of the token.
+  
+      This command writes the following space-delimited key-value pairs to an
+      output file in sorted order:
+  
+      1. "max_ali_class", the maximum inclusive class id found over "ali/"
+         (if available, -1 if not)
+      2. "max_ref_class", the maximum inclussive class id found over "ref/"
+         (if available, -1 if not)
+      3. "num_utterances", the total number of listed utterances
+      4. "num_filts", F
+      5. "total_frames", the sum of N over the data dir
+      6. "count_<i>", the number of instances of the class "<i>" that appear in "ali/"
+         (if available). If "count_<i>" is a valid key, then so are "count_<0 to i>".
+         "count_<i>" is left-padded with zeros to ensure that the keys remain in the same
+         order in the table as the class indices.  The maximum i will be equal to
+         the value of "max_ali_class"
+  
+      Note that the output can be parsed as a Kaldi (http://kaldi-asr.org/) text table of
+      integers.
+      
+  
+  positional arguments:
+    dir                   The torch data directory
+    out_file              The file to write to. If unspecified, stdout
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --feat-subdir FEAT_SUBDIR
+                          Subdirectory where features are stored
+    --ali-subdir ALI_SUBDIR
+                          Subdirectory where alignments are stored
+    --ref-subdir REF_SUBDIR
+                          Subdirectory where reference token sequences are
+                          stored
+    --strict              If set, validate the data directory before collecting
+                          info. The process is described in
+                          pydrobert.torch.data.validate_spect_data_set
+    --fix                 If set, validate the data directory before collecting
+                          info, potentially fixing small errors in the
+                          directory. The process is described in
+                          pydrobert.torch.validate_spect_data_set
+
+torch-spect-data-dir-to-wds
+---------------------------
+
+::
+
+  usage: torch-spect-data-dir-to-wds [-h] [--file-prefix FILE_PREFIX]
+                                     [--file-suffix FILE_SUFFIX]
+                                     [--feat-subdir FEAT_SUBDIR]
+                                     [--ali-subdir ALI_SUBDIR]
+                                     [--ref-subdir REF_SUBDIR] [--is-uri]
+                                     [--shard]
+                                     [--max-samples-per-shard MAX_SAMPLES_PER_SHARD]
+                                     [--max-size-per-shard MAX_SIZE_PER_SHARD]
+                                     dir tar_pattern
+  
+  Convert a SpectDataSet to a WebDataset
+      
+      A torch SpectDataSet data dir is of the form
+  
+          dir/
+              feat/
+                  <file_prefix><utt1><file_suffix>
+                  <file_prefix><utt2><file_suffix>
+                  ...
+              [ali/
+                  <file_prefix><utt1><file_suffix>
+                  <file_prefix><utt1><file_suffix>
+                  ...
+              ]
+              [ref/
+                  <file_prefix><utt1><file_suffix>
+                  <file_prefix><utt1><file_suffix>
+                  ...
+              ]
+  
+      Where "feat/" contains float tensors of shape (N, F), where N is the number of
+      frames (variable) and F is the number of filters (fixed). "ali/" if there, contains
+      long tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids
+      for discriminative training in an DNN-HMM). "ref/", if there, contains long tensors
+      of shape (R, 3) indicating a sequence of reference tokens where element indexed by
+      "[i, 0]" is a token id, "[i, 1]" is the inclusive start frame of the token (or a
+      negative value if unknown), and "[i, 2]" is the exclusive end frame of the token.
+  
+      This command converts the data directory into a tar file to be used as a
+      WebDataset (https://github.com/webdataset/webdataset), whose contents are files
+  
+          <utt1>.feat.pyd
+          [<utt1>.ali.pyd]
+          [<utt1>.ref.pyd]
+          <utt2>.feat.pyd
+          [<utt2>.ali.pyd]
+          [<utt2>.ref.pyd]
+          ...
+      
+      holding tensors with the same interpretation as above.
+      
+  
+  positional arguments:
+    dir                   The torch data directory
+    tar_pattern           The path or path pattern to store the tar files to.
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --feat-subdir FEAT_SUBDIR
+                          Subdirectory where features are stored.
+    --ali-subdir ALI_SUBDIR
+                          Subdirectory where alignments are stored.
+    --ref-subdir REF_SUBDIR
+                          Subdirectory where reference token sequences are
+                          stored.
+    --is-uri              If set, tar_pattern will be treated as a URI rather
+                          than a path/
+    --shard               Split samples among multiple tar files. 'tar_pattern'
+                          should be a format string into which the shard number
+                          can be inserted.
+    --max-samples-per-shard MAX_SAMPLES_PER_SHARD
+                          If sharding ('--shard' is specified), dictates the
+                          number of samples in each file.
+    --max-size-per-shard MAX_SIZE_PER_SHARD
+                          If sharding ('--shard' is specified), dictates the
+                          maximum size in bytes of each file.
+
+torch-token-data-dir-to-ctm
+---------------------------
+
+::
+
+  usage: torch-token-data-dir-to-ctm [-h] [--file-prefix FILE_PREFIX]
+                                     [--file-suffix FILE_SUFFIX] [--swap]
+                                     [--frame-shift-ms FRAME_SHIFT_MS]
+                                     [--wc2utt WC2UTT | --utt2wc UTT2WC | --channel CHANNEL]
+                                     dir id2token ctm
+  
+  Convert a SpectDataSet token data directory to a NIST "ctm" file
+  
+      A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
+      conversation file) used in the sclite
+      (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm) toolkit. Here is the
+      format::
+  
+          utt_1 A 0.2 0.1 hi
+          utt_1 A 0.3 1.0 there  ;; comment
+          utt_2 A 0.0 1.0 next
+          utt_3 A 0.1 0.4 utterance
+  
+      Where the first number specifies the token start time (in seconds) and the second
+      the duration.
+  
+      This command scans the contents of a directory like "ref/" in a SpectDataSete and
+      converts each such file into a transcription. Every token in a given transcription
+      must have information about its duration. Each such transcription is then written to
+      the "ctm" file. See the command "get-torch-spect-data-dir-info" for more info about
+      a SpectDataSet directory.
+      
+  
+  positional arguments:
+    dir                   The directory to read token sequences from
+    id2token              A file containing mappings from unique IDs to tokens
+                          (e.g. words or phones). Each line has the format "<id>
+                          <token>". The flag "--swap" can be used to swap the
+                          expected ordering (i.e. to "<token> <id>")
+    ctm                   The "ctm" file to write token segments to
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --swap                If set, swaps the order of the key and value in
+                          token/id mapping
+    --frame-shift-ms FRAME_SHIFT_MS
+                          The number of milliseconds that have passed between
+                          consecutive frames. Used to convert between time in
+                          seconds and frame index. If your features are the raw
+                          samples, set this to 1000 / sample_rate_hz
+    --wc2utt WC2UTT       A file mapping wavefile name and channel combinations
+                          (e.g. 'utt_1 A') to utterance IDs. Each line of the
+                          file has the format '<wavefile_name> <channel>
+                          <utt_id>'.
+    --utt2wc UTT2WC       A file mapping utterance IDs to wavefile name and
+                          channel combinations (e.g. 'utt_1 A'). Each line of
+                          the file has the format '<utt_id> <wavefile_name>
+                          <channel>'.
+    --channel CHANNEL     If neither "--wc2utt" nor "--utt2wc" is specified,
+                          utterance IDs are treated as wavefile names and are
+                          given the value of this flag as a channel
+
+torch-token-data-dir-to-trn
+---------------------------
+
+::
+
+  usage: torch-token-data-dir-to-trn [-h] [--file-prefix FILE_PREFIX]
+                                     [--file-suffix FILE_SUFFIX] [--swap]
+                                     [--num-workers NUM_WORKERS]
+                                     dir id2token trn
+  
+  Convert a SpectDataSet token data dir to a NIST trn file
+  
+      A "trn" file is the standard transcription file without alignment information used
+      in the sclite (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm)
+      toolkit. It has the format
+  
+          here is a transcription (utterance_a)
+          here is another (utterance_b)
+  
+      This command scans the contents of a directory like "ref/" in a SpectDataSeet and
+      converts each such file into a transcription. Each such transcription is then
+      written to a "trn" file. See the command "get-torch-spect-data-dir-info" for more
+      info about a SpectDataSet directory.
+      
+  
+  positional arguments:
+    dir                   The directory to read token sequences from
+    id2token              A file containing mappings from unique IDs to tokens
+                          (e.g. words or phones). Each line has the format "<id>
+                          <token>". The flag "--swap" can be used to swap the
+                          expected ordering (i.e. to "<token> <id>")
+    trn                   The "trn" file to write transcriptions to
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --swap                If set, swaps the order of the key and value in
+                          token/id mapping
+    --num-workers NUM_WORKERS
+                          The number of workers to spawn to process the data. 0
+                          is serial. Defaults to the CPU count
+
+trn-to-torch-token-data-dir
+---------------------------
+
+::
+
+  usage: trn-to-torch-token-data-dir [-h] [--alt-handler {error,first}]
+                                     [--file-prefix FILE_PREFIX]
+                                     [--file-suffix FILE_SUFFIX] [--swap]
+                                     [--unk-symbol UNK_SYMBOL]
+                                     [--num-workers NUM_WORKERS]
+                                     [--chunk-size CHUNK_SIZE]
+                                     [--skip-frame-times | --feat-sizing]
+                                     trn token2id dir
+  
+  Convert a NIST "trn" file to the specified SpectDataSet data dir
+  
+      A "trn" file is the standard transcription file without alignment information used
+      in the sclite (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm)
+      toolkit. It has the format
+  
+          here is a transcription (utterance_a)
+          here is another (utterance_b)
+  
+      This command reads in a "trn" file and writes its contents as token sequences
+      compatible with the "ref/" directory of a SpectDataSet. See the command
+      "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory
+      
+  
+  positional arguments:
+    trn                   The input trn file
+    token2id              A file containing mappings from tokens (e.g. words or
+                          phones) to unique IDs. Each line has the format
+                          "<token> <id>". The flag "--swap" can be used to swap
+                          the expected ordering (i.e. to "<id> <token>")
+    dir                   The directory to store token sequences to. If the
+                          directory does not exist, it will be created
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --alt-handler {error,first}
+                          How to handle transcription alternates. If "error",
+                          error if the "trn" file contains alternates. If
+                          "first", always treat the alternate as canon
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --swap                If set, swaps the order of the key and value in
+                          token/id mapping
+    --unk-symbol UNK_SYMBOL
+                          If set, will map out-of-vocabulary tokens to this
+                          symbol
+    --num-workers NUM_WORKERS
+                          The number of workers to spawn to process the data. 0
+                          is serial. Defaults to the CPU count
+    --chunk-size CHUNK_SIZE
+                          The number of lines that a worker will process at
+                          once. Impacts speed and memory consumption.
+    --skip-frame-times    If true, will store token tensors of shape (R,)
+                          instead of (R, 3), foregoing segment start and end
+                          times (which trn does not have).
+    --feat-sizing         If true, will store token tensors of shape (R, 1)
+                          instead of (R, 3), foregoing segment start and end
+                          times (which trn does not have). The extra dimension
+                          will allow data in this directory to be loaded as
+                          features in a SpectDataSet.
 

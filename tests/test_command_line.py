@@ -14,6 +14,7 @@
 
 import os
 import warnings
+import glob
 
 import pytest
 import torch
@@ -497,3 +498,49 @@ def test_error_rates_match_sclite_with_flag(temp_dir):
     with open(total_act_file) as file_:
         total_act = "{:.03f}".format(float(file_.read().strip()))
     assert total_exp == total_act
+
+
+@pytest.mark.cpu
+def test_torch_spect_data_dir_to_wds(temp_dir, populate_torch_dir):
+    wds = pytest.importorskip("webdataset")
+
+    NN, N = 100, 10
+    torch_dir = os.path.join(temp_dir, "foo")
+    tar = os.path.join(temp_dir, "foo.tar")
+    tar_pattern = os.path.join(temp_dir, "foo-%010d.tar")
+
+    feats, alis, refs, _, _, utt_ids = populate_torch_dir(torch_dir, NN)
+    assert not command_line.torch_spect_data_dir_to_wds([torch_dir, tar])
+
+    ds = (
+        wds.WebDataset("file:" + tar.replace("\\", "/"))
+        .decode(wds.handle_extension(".pyd", torch.load))
+        .to_tuple("feat.pyd", "ali.pyd", "ref.pyd", "__key__")
+    )
+
+    for idx, (feat, ali, ref, utt_id) in enumerate(ds):
+        assert (feat == feats[idx]).all()
+        assert (ali == alis[idx]).all()
+        assert (ref == refs[idx]).all()
+        assert utt_id == utt_ids[idx]
+    assert idx == NN - 1
+
+    assert not command_line.torch_spect_data_dir_to_wds(
+        [torch_dir, tar_pattern, "--shard", "--max-samples-per-shard", str(N)]
+    )
+
+    shards = glob.glob(f"{glob.escape(temp_dir)}/foo-*.tar")
+    assert len(shards) == (NN - 1) // N + 1
+    ds = wds.DataPipeline(
+        wds.SimpleShardList(["file:" + x for x in shards]),
+        wds.tarfile_to_samples(),
+        wds.decode(wds.handle_extension(".pyd", torch.load)),
+        wds.to_tuple("feat.pyd", "ali.pyd", "ref.pyd", "__key__"),
+    )
+
+    for idx, (feat, ali, ref, utt_id) in enumerate(ds):
+        assert (feat == feats[idx]).all()
+        assert (ali == alis[idx]).all()
+        assert (ref == refs[idx]).all()
+        assert utt_id == utt_ids[idx]
+    assert idx == NN - 1

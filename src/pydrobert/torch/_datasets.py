@@ -102,13 +102,9 @@ class SpectDataSet(torch.utils.data.Dataset):
     subset_ids
         Deprecated. Use params.subset_ids.
     sos
-        Specify the start-of-sequence token, if any. If unset, uses whatever is in
-        `params`. Specifying `sos` this way is deprecated; it should be done via
-        `params`.
+        Deprecated. Use params.sos.
     eos
-        `eos` is a special token used to delimit the end of a reference or hypothesis
-        sequence. If unset, uses whatever is in `params`. Specifying `eos` this way is
-        deprecated; it should be done via `params`.
+        Deprecated. Use params.eos.
     feat_subdir, ali_subdir, ref_subdir
         Change the names of the subdirectories under which feats, alignments, and
         references are stored. If `ali_subdir` or `ref_subdir` is :obj:`None`, they will
