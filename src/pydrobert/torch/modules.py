@@ -42,6 +42,7 @@ __all__ = [
     "HardOptimalCompletionDistillationLoss",
     "LogisticBernoulliRebarControlVariate",
     "LookupLanguageModel",
+    "MeanVarianceNormalization",
     "MinimumErrorRateLoss",
     "MixableSequentialLanguageModel",
     "MultiHeadedAttention",
@@ -74,6 +75,7 @@ from ._decoding import (
     RandomWalk,
     SequenceLogProbabilities,
 )
+from ._feats import MeanVarianceNormalization
 from ._img import (
     DenseImageWarp,
     PolyharmonicSpline,

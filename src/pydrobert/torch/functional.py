@@ -28,6 +28,7 @@ from ._decoding import (
     random_walk_advance,
     sequence_log_probs,
 )
+from ._feats import mean_var_norm
 from ._img import (
     dense_image_warp,
     pad_variable,
@@ -59,12 +60,13 @@ __all__ = [
     "ctc_prefix_search_advance",
     "dense_image_warp",
     "edit_distance",
-    "enumerate_vocab_sequences",
-    "enumerate_binary_sequences",
     "enumerate_binary_sequences_with_cardinality",
+    "enumerate_binary_sequences",
+    "enumerate_vocab_sequences",
     "error_rate",
     "fill_after_eos",
     "hard_optimal_completion_distillation_loss",
+    "mean_var_norm",
     "minimum_error_rate_loss",
     "optimal_completion",
     "pad_variable",
