@@ -20,6 +20,9 @@ from ._compat import script
 from ._wrappers import functional_wrapper, proxy
 
 
+# FIXME(sdrobert): this should be traceable through the module, but this version of
+# pytorch (1.8.1) isn't getting it
+@script
 @functional_wrapper("MeanVarianceNormalization")
 def mean_var_norm(
     x: torch.Tensor,
@@ -119,6 +122,9 @@ class MeanVarianceNormalization(torch.nn.Module):
     eps: float
     mean: Optional[torch.Tensor]
     std: Optional[torch.Tensor]
+    count: Optional[torch.Tensor]
+    sum: Optional[torch.Tensor]
+    sumsq: Optional[torch.Tensor]
 
     def __init__(
         self,
@@ -153,7 +159,7 @@ class MeanVarianceNormalization(torch.nn.Module):
 
     __call__ = proxy(forward)
 
-    @torch.no_grad()
+    @torch.jit.export
     def accumulate(self, x: torch.Tensor) -> None:
         """Accumulate statistics about mean and variance of input"""
         if self.count is None:
@@ -162,13 +168,19 @@ class MeanVarianceNormalization(torch.nn.Module):
             self.count = torch.zeros(1, dtype=torch.double, device=x.device)
             self.sum = torch.zeros(X, dtype=torch.double, device=x.device)
             self.sumsq = torch.zeros(X, dtype=torch.double, device=x.device)
-        else:
-            assert self.sum is not None and self.sumsq is not None
+        # XXX(sdrobert): this is so that torchscript can figure out the type refinement
+        count, sum_, sumsq = self.count, self.sum, self.sumsq
+        assert (
+            isinstance(count, torch.Tensor)
+            and isinstance(sum_, torch.Tensor)
+            and isinstance(sumsq, torch.Tensor)
+        )
         x = x.transpose(0, self.dim).unsqueeze(-1).flatten(1)
-        self.count += x.size(1)
-        self.sum += x.sum(1)
-        self.sumsq += x.square().sum(1)
+        count += x.size(1)
+        sum_ += x.sum(1)
+        sumsq += x.square().sum(1)
 
+    @torch.jit.export
     def store(self, delete_stats: bool = True, bessel: bool = False) -> None:
         """Store mean and variance in internal buffers using accumulated statistics
 
@@ -191,13 +203,20 @@ class MeanVarianceNormalization(torch.nn.Module):
             accumulated sample is necessary with `bessel` :obj:`False`; two if
             :obj:`True`.
         """
-        if self.count is None or (bessel and self.count < 2):
+        if self.count is None:
             raise RuntimeError("Too few accumulated statistics")
-        assert self.sum is not None and self.sumsq is not None
-        self.mean = self.sum / self.count
-        var = self.sumsq / self.count - self.mean.square()
+        count, sum_, sumsq = self.count, self.sum, self.sumsq
+        assert (
+            isinstance(count, torch.Tensor)
+            and isinstance(sum_, torch.Tensor)
+            and isinstance(sumsq, torch.Tensor)
+        )
+        if count < 2:
+            raise RuntimeError("Too few accumulated statistics")
+        self.mean = mean = sum_ / count
+        var = sumsq / count - mean.square()
         if bessel:
-            var *= self.count / (self.count - 1)
+            var *= count / (count - 1)
         self.std = var.sqrt_()
         if delete_stats:
             self.sum = self.sumsq = self.count = None

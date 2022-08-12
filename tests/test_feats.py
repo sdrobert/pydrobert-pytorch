@@ -28,15 +28,15 @@ def test_mean_var_norm(device, jit_type, style):
     mvn = MeanVarianceNormalization(
         -2, mean if style == "given" else None, std if style == "given" else None, eps
     )
+    if jit_type == "script":
+        mvn = torch.jit.script(mvn)
     if style == "accum":
         for x_n in x:
             mvn.accumulate(x_n)
         mvn.store()
         assert torch.allclose(mean, mvn.mean.float(), atol=1e-2)
         assert torch.allclose(std, mvn.std.float(), atol=1e-2)
-    if jit_type == "script":
-        mvn = torch.jit.script(mvn)
-    elif jit_type == "trace":
+    if jit_type == "trace":
         mvn = torch.jit.trace(mvn, (torch.empty(1, 1, N3, 1, device=device),))
     y_act = mvn(x)
     assert torch.allclose(y_exp, y_act, atol=1e-2)
