@@ -31,6 +31,7 @@ CLI_RST = os.path.join(DIR, "source", "cli.rst")
 
 buff = "Command-Line Interface\n======================\n\n"
 for cmd_name in (
+    "compute-mvn-stats-for-torch-feat-data-dir",
     "compute-torch-token-data-dir-error-rates",
     "ctm-to-torch-token-data-dir",
     "get-torch-spect-data-dir-info",
