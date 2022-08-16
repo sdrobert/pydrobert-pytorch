@@ -380,7 +380,7 @@ class FeatureDeltas(torch.nn.Module):
                 f"'circular', got '{pad_mode}'"
             )
         super().__init__()
-        self.register_buffer("filters", _feat_delta_filters(order, width), False)
+        self.register_buffer("filters", _feat_delta_filters(order, width))
         self.dim, self.time_dim, self.value = dim, time_dim, value
         self.order, self.width, self.pad_mode = order, width, pad_mode
         self.concatenate = concatenate
