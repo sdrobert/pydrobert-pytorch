@@ -15,7 +15,7 @@
 import torch
 import pytest
 
-from pydrobert.torch.modules import MeanVarianceNormalization
+from pydrobert.torch.modules import MeanVarianceNormalization, FeatureDeltas
 
 
 @pytest.mark.parametrize("style", ["given", "sample", "accum"])
@@ -40,3 +40,24 @@ def test_mean_var_norm(device, jit_type, style):
         mvn = torch.jit.trace(mvn, (torch.empty(1, 1, N3, 1, device=device),))
     y_act = mvn(x)
     assert torch.allclose(y_exp, y_act, atol=1e-2)
+
+
+@pytest.mark.parametrize("order, width", [(0, 10), (1, 3), (2, 2)])
+@pytest.mark.parametrize("dim", [-3, 0, 3])
+def test_feat_deltas(device, jit_type, order, width, dim):
+    N1, N2, N3, N4 = 10, 5, 4, 2
+    post = pytest.importorskip("pydrobert.speech.post")
+    x = torch.randn(N1, N2, N3, N4, device=device)
+    op = post.Deltas(order, target_axis=dim, context_window=width)
+    exp = torch.tensor(op.apply(x.numpy(), axis=-2, in_place=True)).to(device)
+    exp_shape = [N1, N2, N3, N4]
+    exp_shape[dim] *= order + 1
+    assert exp.shape == tuple(exp_shape)
+    feat_deltas = FeatureDeltas(dim, -2, True, order, width)
+    if jit_type == "script":
+        feat_deltas = torch.jit.script(feat_deltas)
+    elif jit_type == "trace":
+        feat_deltas = torch.jit.trace(feat_deltas, (torch.empty(1, 1, 1, 1),))
+    act = feat_deltas(x)
+    assert exp.shape == act.shape
+    assert torch.allclose(exp, act, atol=1e-5)

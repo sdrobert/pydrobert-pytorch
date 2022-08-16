@@ -35,6 +35,7 @@ __all__ = [
     "EditDistance",
     "ErrorRate",
     "ExtractableSequentialLanguageModel",
+    "FeatureDeltas",
     "FillAfterEndOfSequence",
     "GeneralizedDotProductSoftAttention",
     "GlobalSoftAttention",
@@ -75,7 +76,7 @@ from ._decoding import (
     RandomWalk,
     SequenceLogProbabilities,
 )
-from ._feats import MeanVarianceNormalization
+from ._feats import FeatureDeltas, MeanVarianceNormalization
 from ._img import (
     DenseImageWarp,
     PolyharmonicSpline,

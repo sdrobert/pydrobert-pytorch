@@ -28,7 +28,7 @@ from ._decoding import (
     random_walk_advance,
     sequence_log_probs,
 )
-from ._feats import mean_var_norm
+from ._feats import feat_deltas, mean_var_norm
 from ._img import (
     dense_image_warp,
     pad_variable,
@@ -64,6 +64,7 @@ __all__ = [
     "enumerate_binary_sequences",
     "enumerate_vocab_sequences",
     "error_rate",
+    "feat_deltas",
     "fill_after_eos",
     "hard_optimal_completion_distillation_loss",
     "mean_var_norm",

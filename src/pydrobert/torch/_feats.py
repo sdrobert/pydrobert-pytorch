@@ -14,9 +14,14 @@
 
 from typing import Optional
 
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
+
 import torch
 
-from ._compat import script
+from ._compat import script, movedim
 from ._wrappers import functional_wrapper, proxy
 
 
@@ -180,6 +185,9 @@ class MeanVarianceNormalization(torch.nn.Module):
         sum_ += x.sum(1)
         sumsq += x.square().sum(1)
 
+    def extra_repr(self) -> str:
+        return f"dim={self.dim}, eps={self.eps:e}"
+
     @torch.jit.export
     def store(self, delete_stats: bool = True, bessel: bool = False) -> None:
         """Store mean and variance in internal buffers using accumulated statistics
@@ -220,4 +228,182 @@ class MeanVarianceNormalization(torch.nn.Module):
         self.std = var.sqrt_()
         if delete_stats:
             self.sum = self.sumsq = self.count = None
+
+
+def _feat_delta_filters(order: int, width: int) -> torch.Tensor:
+    if order < 0:
+        raise RuntimeError(f"order must be non-negative, got {order}")
+    if width < 1:
+        raise RuntimeError(f"width must be positive, got {width}")
+    last_filt = torch.zeros(1 + (2 * width) * order)
+    last_filt[width * order] = 1
+    filts = [last_filt]
+    if order == 0:
+        return last_filt.unsqueeze(0)
+    kernel = torch.arange(width, -width - 1, -1, dtype=torch.float)
+    kernel /= kernel.square().sum()
+    for _ in range(order):
+        last_filt = torch.nn.functional.conv1d(
+            last_filt.view(1, 1, -1), kernel.view(1, 1, -1), padding=width
+        ).flatten()
+        filts.append(last_filt)
+    return torch.stack(filts)
+
+
+@functional_wrapper("FeatureDeltas")
+@script
+def feat_deltas(
+    x: torch.Tensor,
+    dim: int = -1,
+    time_dim: int = -2,
+    concatenate: bool = True,
+    order: int = 2,
+    width: int = 2,
+    pad_mode: str = "replicate",
+    value: float = 0,
+    _filters: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    if _filters is None:
+        _filters = _feat_delta_filters(order, width).to(x)
+    else:
+        assert _filters.shape == (order + 1, 1 + (2 * width) * order)
+
+    D = x.ndim
+    if time_dim < -D or time_dim >= D:
+        raise RuntimeError(
+            f"Expected dimension 'time_dim' to be in [{-D}, {D-1}], got " f"{time_dim}"
+        )
+    time_dim = (time_dim + D) % D
+    if not concatenate:
+        D += 1
+    if dim < -D or dim >= D:
+        raise RuntimeError(
+            f"Expected dimension 'dim' to be in [{-D}, {D-1}], got {dim}"
+        )
+    dim = (dim + D) % D
+
+    x = x.transpose(time_dim, -1)
+    shape = x.shape
+    x = x.unsqueeze(0).flatten(0, -2).unsqueeze(1)
+    if width:
+        x = torch.nn.functional.pad(x, (width * order, width * order), pad_mode, value)
+    x = torch.nn.functional.conv1d(x, _filters.unsqueeze(1))
+    x = x.view(shape[:-1] + (order + 1,) + shape[-1:])
+    x = x.transpose(-2, -1).transpose(time_dim, -2)
+    # the order dimension is moving right-to-left, so the original inhabitant of that
+    # dimension (if any) should be to its right after the move.
+    x = movedim(x, -1, dim)
+    if concatenate:
+        x = x.flatten(dim, dim + 1)
+    return x
+
+
+class FeatureDeltas(torch.nn.Module):
+    r"""Compute deltas of features
+
+    Letting :math:`x` be some input tensor with the `time_dim`-th dimension representing
+    the evolution of features over time. Denote that dimension with indices :math:`t`
+    and the dimension of the `order` of the deltas with :math:`u`. The :math:`0`-th
+    order deltas are just :math:`x` itself; higher order deltas are calculated
+    recursively as
+
+    .. math::
+    
+        x[t, u] = \sum_{w=-width}^{width} x[t + w, u - 1] \frac{w}{\sum_{w'} w'^2}.
+    
+    Deltas can be seen as a rolling averages: first-order deltas akin to first-order
+    derivatives; second-order to second-order, and so on.
+
+    Parameters
+    ----------
+    dim
+        The dimension along which resulting deltas will be stored.
+    time_dim
+        The dimension along which deltas are calculated.
+    concatenate
+        If :obj:`True`, delta orders are merged into a single axis with the previous
+        occupants of the dimension `dim` via concatenation. Otherwise, a new dimension
+        is stacked into the location `dim`.
+    order
+        The non-negative maximum order of deltas.
+    width
+        Controls the width of the averaging window.
+    pad_mode
+        How to pad edges to ensure the same size output. See
+        :func:`torch.nn.functional.pad` for more details.
+    value
+        The value used in constant padding.
+    
+    Call Parameters
+    ---------------
+    x : torch.Tensor
+    
+    Returns
+    -------
+    deltas : torch.Tensor
+        Has the same shape as `x` except for one dimension. If `concatenate` is false,
+        a new dimension is inserted into `x` at position `dim` of size ``order + 1``. If
+        `concatenate` is true, then the `dim`-th dimension of `deltas` is ``order + 1``
+        times the length of that of `x`.
+    """
+
+    __constants__ = [
+        "dim",
+        "time_dim",
+        "concatenate",
+        "order",
+        "width",
+        "pad_mode",
+        "value",
+    ]
+    dim: int
+    time_dim: int
+    order: int
+    width: int
+    pad_mode: str
+    value: float
+    filters: torch.Tensor
+
+    def __init__(
+        self,
+        dim: int = -1,
+        time_dim: int = -2,
+        concatenate: bool = True,
+        order: int = 2,
+        width: int = 2,
+        pad_mode: Literal["replicate", "constant", "reflect", "circular"] = "replicate",
+        value: float = 0.0,
+    ):
+        if pad_mode not in {"replicate", "constant", "reflect", "circular"}:
+            raise ValueError(
+                "Expected pad_mode to be one of 'replicate', 'constant', 'reflect', or "
+                f"'circular', got '{pad_mode}'"
+            )
+        super().__init__()
+        self.register_buffer("filters", _feat_delta_filters(order, width), False)
+        self.dim, self.time_dim, self.value = dim, time_dim, value
+        self.order, self.width, self.pad_mode = order, width, pad_mode
+        self.concatenate = concatenate
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return feat_deltas(
+            x,
+            self.dim,
+            self.time_dim,
+            self.concatenate,
+            self.order,
+            self.width,
+            self.pad_mode,
+            self.value,
+            self.filters,
+        )
+
+    def extra_repr(self) -> str:
+        return (
+            f"dim={self.dim}, time_dim={self.time_dim}, "
+            f"concatenate={self.concatenate}, order={self.order}, width={self.width}, "
+            f"pad_mode={self.pad_mode}, value={self.value}"
+        )
+
+    __call__ = proxy(forward)
 
