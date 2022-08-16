@@ -20,6 +20,7 @@ from typing import (
     Container,
     Set,
     Sequence,
+    Sized,
     Tuple,
     Hashable,
     Union,
@@ -41,7 +42,7 @@ from ._datasets import (
 )
 
 
-class EpochRandomSampler(torch.utils.data.sampler.Sampler):
+class EpochRandomSampler(torch.utils.data.sampler.Sampler[int]):
     """Return random samples that are the same for a fixed epoch
 
     Parameters
@@ -75,13 +76,13 @@ class EpochRandomSampler(torch.utils.data.sampler.Sampler):
     >>> assert tuple(sampler.get_samples_for_epoch(1)) == samples_ep1
     """
 
+    epoch: int
+    base_seed: int
+
     def __init__(
-        self,
-        data_source: torch.utils.data.Dataset,
-        init_epoch: int = 0,
-        base_seed: Optional[int] = None,
+        self, data_source: Sized, init_epoch: int = 0, base_seed: Optional[int] = None,
     ):
-        self.data_source = data_source
+        self._len = len(data_source)
         self.epoch = init_epoch
         if base_seed is None:
             # we use numpy RandomState so that we can run in parallel with
@@ -92,12 +93,12 @@ class EpochRandomSampler(torch.utils.data.sampler.Sampler):
         self.base_seed = base_seed
 
     def __len__(self) -> int:
-        return len(self.data_source)
+        return self._len
 
     def get_samples_for_epoch(self, epoch: int) -> np.ndarray:
         """np.ndarray : samples for a specific epoch"""
         rs = np.random.RandomState(self.base_seed + epoch)
-        return rs.permutation(list(range(len(self.data_source))))
+        return rs.permutation(list(range(self._len)))
 
     def __iter__(self) -> Iterator[int]:
         ret = iter(self.get_samples_for_epoch(self.epoch))
@@ -105,7 +106,7 @@ class EpochRandomSampler(torch.utils.data.sampler.Sampler):
         return ret
 
 
-class BucketBatchSampler(torch.utils.data.sampler.Sampler):
+class BucketBatchSampler(torch.utils.data.sampler.Sampler[int]):
     """Batch samples into buckets, yielding as soon as the bucket is full
     
     Parameters
@@ -147,7 +148,7 @@ class BucketBatchSampler(torch.utils.data.sampler.Sampler):
 
     """
 
-    sampler: torch.utils.data.sampler.Sampler
+    sampler: torch.utils.data.sampler.Sampler[int]
     idx2bucket: Dict[int, Hashable]
     bucket2size: Dict[Hashable, int]
     drop_incomplete: bool
@@ -155,7 +156,7 @@ class BucketBatchSampler(torch.utils.data.sampler.Sampler):
 
     def __init__(
         self,
-        sampler: torch.utils.data.sampler.Sampler,
+        sampler: torch.utils.data.sampler.Sampler[int],
         idx2bucket: Dict[int, Hashable],
         bucket2size: Dict[Hashable, int],
         drop_incomplete: bool,
@@ -262,6 +263,21 @@ class SpectDataLoaderParams(SpectDataParams, DynamicLengthDataLoaderParams):
     pydrobert.torch.data.SpectTrainingDataLoader
     pydrobert.torch.data.SpectEvaluationDataLoader
     """
+
+    @classmethod
+    def get_tunable(cls) -> Set[str]:
+        return (
+            SpectDataParams.get_tunable() | DynamicLengthDataLoaderParams.get_tunable()
+        )
+
+    @classmethod
+    def suggest_params(
+        cls, trial, base=None, only: Container[str] = None, prefix: str = ""
+    ):
+        params = cls() if base is None else base
+        SpectDataParams.suggest_params(trial, params, only, prefix)
+        DynamicLengthDataLoaderParams.suggest_params(trial, params, only, prefix)
+        return params
 
 
 def spect_seq_to_batch(
@@ -387,6 +403,8 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         `params`.
     seed
         The seed used to shuffle data. If unset, will be set randomly.
+    feat_mean
+    feat_std
     **kwargs
         Additional :class:`torch.utils.data.DataLoader` arguments
 
@@ -414,23 +432,17 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         utterance in the batch. If the ``refs/`` directory does not exist, `refs` and
         `ref_sizes` are :obj:`None`.
 
-    Attributes
-    ----------
-    epoch : int
-        The current epoch.
-
     Notes
     -----
-    The first axis of each of `feats`, `alis`, `refs`, `feat_sizes`, and
-    `ref_sizes` is ordered by utterances of descending frame lengths. Shorter
-    utterances in `feats` are zero-padded to the right, `alis` is padded with
-    the module constant :const:`pydrobert.torch.config.INDEX_PAD_VALUE`
+    The first axis of each of `feats`, `alis`, `refs`, `feat_sizes`, and `ref_sizes` is
+    ordered by utterances of descending frame lengths. Shorter utterances in `feats` are
+    zero-padded to the right, `alis` is padded with the module constant
+    :const:`pydrobert.torch.config.INDEX_PAD_VALUE`
 
-    `batch_first` is separated from `params` because it is usually a matter of
-    model architecture whether it is :obj:`True` - something the user doesn't
-    configure. Further, the attribute `batch_first` can be modified after
-    initialization of this loader (outside of the for loop) to suit a model's
-    needs.
+    `batch_first` is separated from `params` because it is usually a matter of model
+    architecture whether it is :obj:`True` - something the user doesn't configure.
+    Further, the attribute `batch_first` can be modified after initialization of this
+    loader (outside of the for loop) to suit a model's needs.
 
     Examples
     --------
@@ -477,6 +489,10 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     >>>     optim.step()
     """
 
+    params: DynamicLengthDataLoaderParams
+    data_params: SpectDataParams
+    batch_first: bool
+
     def __init__(
         self,
         data_dir: str,
@@ -491,6 +507,8 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         batch_first: bool = True,
         data_params: Optional[SpectDataParams] = None,
         seed: Optional[int] = None,
+        feat_mean: Optional[torch.Tensor] = None,
+        feat_std: Optional[torch.Tensor] = None,
         **kwargs,
     ):
         for bad_kwarg in (
@@ -506,7 +524,6 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)
                     )
                 )
-        self.data_dir = data_dir
         self.params = params
         if data_params is None:
             self.data_params = params
@@ -523,7 +540,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
                     )
                     self.data_params.subset_ids = subset_ids
         self.batch_first = batch_first
-        self.data_source = SpectDataSet(
+        dataset = SpectDataSet(
             data_dir,
             file_prefix=file_prefix,
             file_suffix=file_suffix,
@@ -532,15 +549,17 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
             params=self.data_params,
+            feat_mean=feat_mean,
+            feat_std=feat_std,
         )
-        if not self.data_source.has_ali and not self.data_source.has_ref:
+        if dataset.transform is not None:
+            dataset.transform.train()
+        if not dataset.has_ali and not dataset.has_ref:
             raise ValueError(
                 "'{}' must have either alignments or reference tokens for "
                 "training".format(data_dir)
             )
-        utt_sampler = EpochRandomSampler(
-            self.data_source, init_epoch=init_epoch, base_seed=seed
-        )
+        utt_sampler = EpochRandomSampler(dataset, init_epoch=init_epoch, base_seed=seed)
         if not isinstance(
             params, (DynamicLengthDataLoaderParams, SpectDataLoaderParams)
         ) and isinstance(params, DataLoaderParams):
@@ -553,7 +572,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             num_length_buckets = params.num_length_buckets
         if num_length_buckets > 1:
             idx2bucket, bucket2size = _get_bucket_batch_sampler_params(
-                self.data_source,
+                dataset,
                 num_length_buckets,
                 params.batch_size,
                 params.size_batch_by_length,
@@ -565,11 +584,8 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             batch_sampler = torch.utils.data.BatchSampler(
                 utt_sampler, params.batch_size, drop_last=params.drop_last
             )
-        super(SpectTrainingDataLoader, self).__init__(
-            self.data_source,
-            batch_sampler=batch_sampler,
-            collate_fn=self.collate_fn,
-            **kwargs,
+        super().__init__(
+            dataset, batch_sampler=batch_sampler, collate_fn=self.collate_fn, **kwargs,
         )
 
     def collate_fn(
@@ -588,6 +604,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
 
     @property
     def epoch(self) -> int:
+        """int : the current epoch"""
         return self.batch_sampler.sampler.epoch
 
     @epoch.setter
@@ -615,6 +632,8 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         If specified, provides the parameters necessary to instantiate the underlying
         :class:`SpectDataSet`. Parameters in `data_params` will pre-empt any found in
         `params`.
+    feat_mean
+    feat_std
     **kwargs
         Additional :class:`torch.utils.data.DataLoader` arguments
 
@@ -699,11 +718,13 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         def __getitem__(
             self, idx: int
         ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], str]:
-            feat, ali, ref = super(
-                SpectEvaluationDataLoader.SEvalDataSet, self
-            ).__getitem__(idx)
+            feat, ali, ref = super().__getitem__(idx)
             utt_id = self.utt_ids[idx]
             return feat, ali, ref, utt_id
+
+    params: DynamicLengthDataLoaderParams
+    data_params: SpectDataParams
+    batch_first: bool
 
     def eval_collate_fn(
         self,
@@ -742,6 +763,8 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         ref_subdir: str = "ref",
         batch_first: bool = True,
         data_params: Optional[SpectDataParams] = None,
+        feat_mean: Optional[torch.Tensor] = None,
+        feat_std: Optional[torch.Tensor] = None,
         **kwargs,
     ):
         for bad_kwarg in (
@@ -757,7 +780,6 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)
                     )
                 )
-        self.data_dir = data_dir
         self.params = params
         if data_params is None:
             self.data_params = params
@@ -774,7 +796,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
                     )
                     self.data_params.subset_ids = subset_ids
         self.batch_first = batch_first
-        self.data_source = self.SEvalDataSet(
+        dataset = self.SEvalDataSet(
             data_dir,
             file_prefix=file_prefix,
             file_suffix=file_suffix,
@@ -783,8 +805,12 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
             ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
             params=self.data_params,
+            feat_mean=feat_mean,
+            feat_std=feat_std,
         )
-        utt_sampler = torch.utils.data.SequentialSampler(self.data_source)
+        if dataset.transform is not None:
+            dataset.transform.eval()
+        utt_sampler = torch.utils.data.SequentialSampler(dataset)
         if not isinstance(
             params, (DynamicLengthDataLoaderParams, SpectDataLoaderParams)
         ) and isinstance(params, DataLoaderParams):
@@ -797,7 +823,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
             num_length_buckets = params.num_length_buckets
         if num_length_buckets > 1:
             idx2bucket, bucket2size = _get_bucket_batch_sampler_params(
-                self.data_source,
+                dataset,
                 num_length_buckets,
                 params.batch_size,
                 params.size_batch_by_length,
@@ -809,8 +835,8 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
             batch_sampler = torch.utils.data.BatchSampler(
                 utt_sampler, params.batch_size, drop_last=params.drop_last
             )
-        super(SpectEvaluationDataLoader, self).__init__(
-            self.data_source,
+        super().__init__(
+            dataset,
             batch_sampler=batch_sampler,
             collate_fn=self.eval_collate_fn,
             **kwargs,
@@ -883,6 +909,19 @@ class ContextWindowDataLoaderParams(ContextWindowDataParams, DataLoaderParams):
         )
         return params
 
+    @classmethod
+    def get_tunable(cls) -> Set[str]:
+        return ContextWindowDataParams.get_tunable() | DataLoaderParams.get_tunable()
+
+    @classmethod
+    def suggest_params(
+        cls, trial, base=None, only: Container[str] = None, prefix: str = ""
+    ):
+        params = cls() if base is None else base
+        ContextWindowDataParams.suggest_params(trial, params, only, prefix)
+        DataLoaderParams.suggest_params(trial, params, only, prefix)
+        return params
+
 
 class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     """Serve batches of context windows over a random order of utterances
@@ -907,13 +946,10 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     seed
         The seed used to shuffle data. If :obj:`None`, `params` is checked for
         a `seed` parameter or, if none is found, one will be generated randomly
+    feat_mean
+    feat_std
     **kwargs
         Additional :class:`torch.utils.data.DataLoader` arguments
-
-    Attributes
-    ----------
-    epoch : int
-        The current epoch.
 
     Yields
     ------
@@ -947,10 +983,14 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     >>>     optim.step()
     """
 
+    params: DataLoaderParams
+    data_params: ContextWindowDataParams
+    batch_first: bool
+
     def __init__(
         self,
         data_dir: str,
-        params: DataLoaderParams,
+        params: Union[ContextWindowDataLoaderParams, DataLoaderParams],
         init_epoch: int = 0,
         file_prefix: str = "",
         file_suffix: str = ".pt",
@@ -959,6 +999,8 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
         ali_subdir: str = "ali",
         data_params: Optional[ContextWindowDataParams] = None,
         seed: Optional[int] = None,
+        feat_mean: Optional[torch.Tensor] = None,
+        feat_std: Optional[torch.Tensor] = None,
         **kwargs,
     ):
         for bad_kwarg in (
@@ -974,7 +1016,6 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)
                     )
                 )
-        self.data_dir = data_dir
         self.params = params
         if seed is None and hasattr(params, "seed"):
             seed = params.seed
@@ -992,7 +1033,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
                         2,
                     )
                     self.data_params.subset_ids = subset_ids
-        self.data_source = ContextWindowDataSet(
+        dataset = ContextWindowDataSet(
             data_dir,
             file_prefix=file_prefix,
             file_suffix=file_suffix,
@@ -1000,19 +1041,21 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
             feat_subdir=feat_subdir,
             ali_subdir=ali_subdir,
             params=self.data_params,
+            feat_mean=feat_mean,
+            feat_std=feat_std,
         )
-        if not self.data_source.has_ali:
+        if dataset.transform is not None:
+            dataset.transform.train()
+        if not dataset.has_ali:
             raise ValueError(
                 "'{}' must have alignment info for training".format(data_dir)
             )
-        utt_sampler = EpochRandomSampler(
-            self.data_source, init_epoch=init_epoch, base_seed=seed
-        )
+        utt_sampler = EpochRandomSampler(dataset, init_epoch=init_epoch, base_seed=seed)
         batch_sampler = torch.utils.data.BatchSampler(
             utt_sampler, params.batch_size, drop_last=params.drop_last
         )
         super(ContextWindowTrainingDataLoader, self).__init__(
-            self.data_source,
+            dataset,
             batch_sampler=batch_sampler,
             collate_fn=context_window_seq_to_batch,
             **kwargs,
@@ -1020,6 +1063,7 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
 
     @property
     def epoch(self) -> int:
+        """int : the current epoch"""
         return self.batch_sampler.sampler.epoch
 
     @epoch.setter
@@ -1045,6 +1089,8 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
         If specified, provides the parameters necessary to instantiate the underlying
         :class:`ContextWindowDataSet`. Parameters in `data_params` will pre-empt any
         found in `params`.
+    feat_mean
+    feat_std
     **kwargs
         Additional :class:`torch.utils.data.DataLoader` arguments
 
@@ -1101,6 +1147,10 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
             utt_id = self.utt_ids[idx]
             return window, ali, win_size, utt_id
 
+    params: DataLoaderParams
+    data_params: ContextWindowDataParams
+    batch_first: bool
+
     @staticmethod
     def eval_collate_fn(
         seq: Tuple[
@@ -1125,6 +1175,8 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
         feat_subdir: str = "feat",
         ali_subdir: str = "ali",
         data_params: Optional[ContextWindowDataParams] = None,
+        feat_mean: Optional[torch.Tensor] = None,
+        feat_std: Optional[torch.Tensor] = None,
         **kwargs,
     ):
         for bad_kwarg in (
@@ -1140,7 +1192,6 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)
                     )
                 )
-        self.data_dir = data_dir
         self.params = params
         if data_params is None:
             self.data_params = params
@@ -1156,7 +1207,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
                         2,
                     )
                     self.data_params.subset_ids = subset_ids
-        self.data_source = self.CWEvalDataSet(
+        dataset = self.CWEvalDataSet(
             data_dir,
             file_prefix=file_prefix,
             file_suffix=file_suffix,
@@ -1165,8 +1216,10 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
             ali_subdir=ali_subdir,
             params=self.data_params,
         )
-        super(ContextWindowEvaluationDataLoader, self).__init__(
-            self.data_source,
+        if dataset.transform is not None:
+            dataset.transform.eval()
+        super().__init__(
+            dataset,
             batch_size=params.batch_size,
             shuffle=False,
             collate_fn=self.eval_collate_fn,

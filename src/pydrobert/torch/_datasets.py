@@ -15,10 +15,14 @@
 import os
 import warnings
 
-from typing import Optional, Set, Tuple, Union
+from typing import Container, Optional, Set, Tuple, Union
 
 import torch
 import param
+
+import pydrobert.torch.config as config
+
+from ._feats import MeanVarianceNormalization, FeatureDeltas
 
 
 class SpectDataParams(param.Parameterized):
@@ -43,6 +47,39 @@ class SpectDataParams(param.Parameterized):
         "reference and hypothesis transcriptions. If set, `eos` will be "
         "appended to every reference transcription on read",
     )
+    delta_order = param.Integer(
+        0,
+        bounds=(0, None),
+        softbounds=(0, 2),
+        doc="Order of delta coefficients to apply to the spectral features. 0 means "
+        "none",
+    )
+    do_mvn = param.Boolean(
+        False,
+        doc="Whether to perform mean-variance normalization on the spectral features. "
+        "If mean and variance statistics are not passed to the dataset/dataloader as "
+        "an argument, feature coefficients will be unit normalized per utterance",
+    )
+
+    @classmethod
+    def get_tunable(cls) -> Set[str]:
+        return {"delta_order", "do_mvn"}
+
+    @classmethod
+    def suggest_params(
+        cls, trial, base=None, only: Container[str] = None, prefix: str = ""
+    ):
+        """Populate a parameterized instance with values from trial"""
+        params = cls() if base is None else base
+        if only is None:
+            only = cls.get_tunable()
+        if "delta_order" in only:
+            bounds = params.param.params()["delta_order"].get_soft_bounds()
+            params.delta_order = trial.suggest_int(prefix + "delta_order", *bounds)
+        if "do_mvn" in only:
+            params.do_mvn = trial.suggest_categorical(prefix + "do_mvn", [True, False])
+
+        return params
 
 
 class SpectDataSet(torch.utils.data.Dataset):
@@ -112,12 +149,26 @@ class SpectDataSet(torch.utils.data.Dataset):
     params
         Populates the parameters of this class with the instance. If unset, a new
         `SpectDataParams` instance is initialized.
+    feat_mean
+        If specified and ``params.do_mvn`` is :obj:`True`, this tensor will be used
+        as the mean in mean-variance normalization.
+    feat_std
+        If specified and ``params.do_mvn`` is :obj:`True`, this tensor will be used
+        as the standard deviation in mean-variance normalization.
         
     Yields
     ------
     feat : torch.Tensor
     ali : torch.Tensor or None
     ref : torch.Tensor or None
+
+    Warnings
+    --------
+    Specifying non-deterministic transforms via `params` (such as SpecAugment) will
+    yield non-deterministic instances. You can disable this behaviour by setting
+
+    >>> if ds.transform is not None:
+    ...     ds.transform.eval()
 
     Examples
     --------
@@ -171,6 +222,18 @@ class SpectDataSet(torch.utils.data.Dataset):
     >>> data.write_hyp('special', hyp)  # custom name
     """
 
+    data_dir: str
+    file_prefix: str
+    file_suffix: str
+    feats_subdir: str
+    ali_subdir: str
+    ref_subdir: str
+    params: SpectDataParams
+    has_ali: bool
+    has_ref: bool
+    utt_ids: Set[str]
+    transform: Optional[torch.nn.Module]
+
     def __init__(
         self,
         data_dir: str,
@@ -184,6 +247,8 @@ class SpectDataSet(torch.utils.data.Dataset):
         ali_subdir: str = "ali",
         ref_subdir: str = "ref",
         params: Optional[SpectDataParams] = None,
+        feat_mean: Optional[torch.Tensor] = None,
+        feat_std: Optional[torch.Tensor] = None,
     ):
         super(SpectDataSet, self).__init__()
         self.data_dir = data_dir
@@ -239,6 +304,18 @@ class SpectDataSet(torch.utils.data.Dataset):
         self.utt_ids = tuple(
             sorted(self.find_utt_ids(warn_on_missing, subset_ids=subset_ids))
         )
+        transforms = []
+        if params.do_mvn:
+            transforms.append(MeanVarianceNormalization(mean=feat_mean, std=feat_std))
+        if params.delta_order:
+            transforms.append(FeatureDeltas(order=params.delta_order))
+        if len(transforms):
+            transform = torch.nn.Sequential(*transforms)
+            if config.USE_JIT:
+                transform = torch.jit.script(transform)
+            self.transform = transform
+        else:
+            self.transform = None
 
     def __len__(self) -> int:
         return len(self.utt_ids)
@@ -307,6 +384,8 @@ class SpectDataSet(torch.utils.data.Dataset):
                 self.file_prefix + utt_id + self.file_suffix,
             )
         )
+        if self.transform is not None:
+            feat = self.transform(feat)
         if self.has_ali:
             ali = torch.load(
                 os.path.join(
@@ -368,8 +447,7 @@ class SpectDataSet(torch.utils.data.Dataset):
             utt = self.utt_ids[utt]
         if pdfs_dir is None:
             pdfs_dir = os.path.join(self.data_dir, "pdfs")
-        if not os.path.isdir(pdfs_dir):
-            os.makedirs(pdfs_dir)
+        os.makedirs(pdfs_dir, exist_ok=True)
         torch.save(
             pdf.cpu().float(),
             os.path.join(pdfs_dir, self.file_prefix + utt + self.file_suffix),
@@ -706,12 +784,13 @@ class ContextWindowDataParams(SpectDataParams):
     @classmethod
     def get_tunable(cls):
         """Returns a set of tunable parameters"""
-        return {"context_left", "context_right", "reverse"}
+        return super().get_tunable() | {"context_left", "context_right", "reverse"}
 
     @classmethod
     def suggest_params(cls, trial, base=None, only=None, prefix=""):
         """Populate a parameterized instance with values from trial"""
         params = cls() if base is None else base
+        super().suggest_params(trial, params, only, prefix)
         if only is None:
             only = cls._tunable
         pdict = params.param.params()
@@ -779,6 +858,8 @@ class ContextWindowDataSet(SpectDataSet):
     >>> data.get_utterance_tuple(3)  # gets the original (feat, ali) pair
     """
 
+    params: ContextWindowDataParams
+
     def __init__(
         self,
         data_dir: str,
@@ -792,23 +873,11 @@ class ContextWindowDataSet(SpectDataSet):
         ali_subdir: str = "ali",
         reverse: Optional[bool] = None,
         params: Optional[ContextWindowDataParams] = None,
+        feat_mean: Optional[torch.Tensor] = None,
+        feat_std: Optional[torch.Tensor] = None,
     ):
         if params is None:
             params = ContextWindowDataParams()
-        super(ContextWindowDataSet, self).__init__(
-            data_dir,
-            file_prefix=file_prefix,
-            file_suffix=file_suffix,
-            warn_on_missing=warn_on_missing,
-            subset_ids=subset_ids,
-            feat_subdir=feat_subdir,
-            ali_subdir=ali_subdir,
-            ref_subdir=None,
-            params=params,
-        )
-        self.left = self.params.context_left
-        self.right = self.params.context_right
-        self.reverse = self.params.reverse
         if left is not None:
             warnings.warn(
                 "Specifying left by argument is deprecated. Please use "
@@ -816,6 +885,8 @@ class ContextWindowDataSet(SpectDataSet):
                 DeprecationWarning,
             )
             self.left = left
+        else:
+            self.left = params.context_left
         if right is not None:
             warnings.warn(
                 "Specifying right by argument is deprecated. Please use "
@@ -823,16 +894,35 @@ class ContextWindowDataSet(SpectDataSet):
                 DeprecationWarning,
             )
             self.right = right
+        else:
+            self.right = params.context_right
         if reverse is not None:
             warnings.warn(
                 "Specifying reverse by argument is deprecated. Please use "
                 "params.reverse"
             )
             self.reverse = reverse
+        else:
+            self.reverse = params.reverse
+        super().__init__(
+            data_dir,
+            file_prefix,
+            file_suffix,
+            warn_on_missing,
+            subset_ids,
+            None,
+            None,
+            feat_subdir,
+            ali_subdir,
+            "ref",
+            params,
+            feat_mean,
+            feat_std,
+        )
 
     def get_utterance_tuple(self, idx) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Get a tuple of features and alignments"""
-        return super(ContextWindowDataSet, self).get_utterance_tuple(idx)[:2]
+        return super().get_utterance_tuple(idx)[:2]
 
     def get_windowed_utterance(
         self, idx: int

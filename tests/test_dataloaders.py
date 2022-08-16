@@ -554,7 +554,7 @@ def test_data_loader_length_buckets(temp_dir, populate_torch_dir, loader_cls):
     params = data.SpectDataLoaderParams(
         batch_size=N, num_length_buckets=B, drop_last=False
     )
-    loader = loader_cls(temp_dir, params)
+    loader = loader_cls(temp_dir, params, num_workers=2)
     act_feat_sizes = [x[3] for x in loader]
     assert len(act_feat_sizes) == len(loader)
     for i, x in enumerate(act_feat_sizes):
@@ -590,14 +590,15 @@ def test_pydrobert_param_optuna_hooks():
     poptuna = pytest.importorskip("pydrobert.param.optuna")
     optuna = pytest.importorskip("optuna")
     for class_ in (
-        data.DataLoaderParams,
+        data.SpectDataParams,
+        data.DynamicLengthDataLoaderParams,
         data.SpectDataLoaderParams,
         data.ContextWindowDataParams,
         data.ContextWindowDataLoaderParams,
     ):
         assert issubclass(class_, poptuna.TunableParameterized)
     global_dict = {
-        "data_set": data.DataLoaderParams(),
+        "data_set": data.DynamicLengthDataLoaderParams(),
         "spect_data": data.SpectDataParams(),
         "spect_data_set": data.SpectDataLoaderParams(),
         "context_window_data": data.ContextWindowDataParams(),
@@ -606,6 +607,7 @@ def test_pydrobert_param_optuna_hooks():
     assert {
         "data_set.batch_size",
         "spect_data.eos",
+        "spect_data.do_mvn",
         "spect_data_set.batch_size",
         "context_window_data.reverse",
         "context_window_data_set.batch_size",
@@ -623,5 +625,39 @@ def test_pydrobert_param_optuna_hooks():
         "spect_data_set.batch_size",
         "context_window_data.reverse",
         "context_window_data_set.batch_size",
+        "spect_data.do_mvn",
     } - set(study.best_params)
     assert study.best_params["data_set.batch_size"] < 7
+
+
+@pytest.mark.cpu
+def test_transforms(temp_dir, populate_torch_dir):
+    N = 100
+    feats = populate_torch_dir(temp_dir, N, include_ref=False)[0]
+    feats = torch.cat(feats, 0)
+    assert feats.ndim == 2
+    F = feats.size(-1)
+    feat_mean = feats.mean(0)
+    assert not torch.allclose(feat_mean, torch.zeros(1), atol=1e-5)
+    feat_std = feats.std(0, False)
+    assert not torch.allclose(feat_std, torch.ones(1), atol=1e-5)
+    params = data.SpectDataLoaderParams(batch_size=1, do_mvn=True, delta_order=2)
+    dl = data.SpectEvaluationDataLoader(
+        temp_dir, params, feat_mean=feat_mean, feat_std=feat_std, num_workers=2,
+    )
+    feats_a = torch.cat([x[0].flatten(0, 1) for x in dl])
+    assert feats_a.size(-1) == F * 3
+    assert torch.allclose(feats_a[..., :F].mean(0), torch.zeros(1), atol=1e-5)
+    assert torch.allclose(feats_a[..., :F].std(0, False), torch.ones(1), atol=1e-5)
+    feats_b = torch.cat([x[0].flatten(0, 1) for x in dl])
+    assert torch.allclose(feats_a, feats_b)  # no spec augment
+    dl = data.SpectTrainingDataLoader(
+        temp_dir, params, feat_mean=feat_mean, feat_std=feat_std, num_workers=2
+    )
+    feats_a = torch.cat([x[0].flatten(0, 1) for x in dl])
+    assert torch.allclose(feats_a[..., :F].mean(0), torch.zeros(1), atol=1e-5)
+    assert torch.allclose(feats_a[..., :F].std(0, False), torch.ones(1), atol=1e-5)
+    assert not torch.allclose(feats_a, feats_b)
+    dl.epoch = 0
+    feats_b = torch.cat([x[0].flatten(0, 1) for x in dl])
+    assert torch.allclose(feats_a, feats_b)
