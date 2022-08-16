@@ -250,8 +250,8 @@ def _feat_delta_filters(order: int, width: int) -> torch.Tensor:
     return torch.stack(filts)
 
 
-@functional_wrapper("FeatureDeltas")
 @script
+@functional_wrapper("FeatureDeltas")
 def feat_deltas(
     x: torch.Tensor,
     dim: int = -1,
