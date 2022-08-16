@@ -631,29 +631,38 @@ def test_pydrobert_param_optuna_hooks():
 
 
 @pytest.mark.cpu
-def test_transforms(temp_dir, populate_torch_dir):
+@pytest.mark.parametrize("style", ["spect", "cw"])
+def test_transforms(temp_dir, populate_torch_dir, style):
     N = 100
     feats = populate_torch_dir(temp_dir, N, include_ref=False)[0]
     feats = torch.cat(feats, 0)
-    assert feats.ndim == 2
     F = feats.size(-1)
     feat_mean = feats.mean(0)
     assert not torch.allclose(feat_mean, torch.zeros(1), atol=1e-5)
     feat_std = feats.std(0, False)
     assert not torch.allclose(feat_std, torch.ones(1), atol=1e-5)
-    params = data.SpectDataLoaderParams(batch_size=1, do_mvn=True, delta_order=2)
-    dl = data.SpectEvaluationDataLoader(
-        temp_dir, params, feat_mean=feat_mean, feat_std=feat_std, num_workers=2,
-    )
+    if style == "spect":
+        params = data.SpectDataLoaderParams(batch_size=1, do_mvn=True, delta_order=2)
+    else:
+        params = data.ContextWindowDataLoaderParams(
+            batch_size=1, do_mvn=True, delta_order=2, context_left=0, context_right=0
+        )
+    dl = (
+        data.SpectEvaluationDataLoader
+        if style == "spect"
+        else data.ContextWindowEvaluationDataLoader
+    )(temp_dir, params, feat_mean=feat_mean, feat_std=feat_std, num_workers=2,)
     feats_a = torch.cat([x[0].flatten(0, 1) for x in dl])
     assert feats_a.size(-1) == F * 3
     assert torch.allclose(feats_a[..., :F].mean(0), torch.zeros(1), atol=1e-5)
     assert torch.allclose(feats_a[..., :F].std(0, False), torch.ones(1), atol=1e-5)
     feats_b = torch.cat([x[0].flatten(0, 1) for x in dl])
     assert torch.allclose(feats_a, feats_b)  # no spec augment
-    dl = data.SpectTrainingDataLoader(
-        temp_dir, params, feat_mean=feat_mean, feat_std=feat_std, num_workers=2
-    )
+    dl = (
+        data.SpectTrainingDataLoader
+        if style == "spect"
+        else data.ContextWindowTrainingDataLoader
+    )(temp_dir, params, feat_mean=feat_mean, feat_std=feat_std, num_workers=2)
     feats_a = torch.cat([x[0].flatten(0, 1) for x in dl])
     assert torch.allclose(feats_a[..., :F].mean(0), torch.zeros(1), atol=1e-5)
     assert torch.allclose(feats_a[..., :F].std(0, False), torch.ones(1), atol=1e-5)

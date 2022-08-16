@@ -1215,6 +1215,8 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
             feat_subdir=feat_subdir,
             ali_subdir=ali_subdir,
             params=self.data_params,
+            feat_mean=feat_mean,
+            feat_std=feat_std,
         )
         if dataset.transform is not None:
             dataset.transform.eval()
