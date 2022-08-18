@@ -5,20 +5,16 @@ image: Ubuntu
 
 environment:
   matrix:
-    - TOXENV: py36-t151
-      PYTHON: "3.6"
-      NO_SCRIPT: "1"
-    - TOXENV: py36-t181
-      PYTHON: "3.6"
-      ONLY_SCRIPT: "1"
-    - TOXENV: py37
+    - TOXENV: py37-t151
       PYTHON: "3.7"
-    - TOXENV: py38
+      NO_SCRIPT: "1"
+    - TOXENV: py38-t181
       PYTHON: "3.8"
+      ONLY_SCRIPT: "1"
     - TOXENV: py39
       PYTHON: "3.9"
-    # - TOXENV: py310  # wheel not available
-    #   PYTHON: "3.10"
+    - TOXENV: py310
+      PYTHON: "3.10"
 
 stack: python %PYTHON%
 
@@ -30,8 +26,8 @@ for:
   -
     matrix:
       only:
-        - PYTHON: "3.7"
         - PYTHON: "3.8"
+        - PYTHON: "3.9"
     skip_non_tags: true
 
 build: off

@@ -2,6 +2,7 @@
 
 ## HEAD
 
+- Remove py3.6 support.
 - Added  `FillAfterEndOfSequence`.
 - Added `binomial_coefficient`, `enumerate_binary_sequences`,
   `enumerate_vocab_sequences`, and
