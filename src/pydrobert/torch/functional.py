@@ -31,7 +31,6 @@ from ._decoding import (
 from ._feats import feat_deltas, mean_var_norm
 from ._img import (
     dense_image_warp,
-    pad_variable,
     polyharmonic_spline,
     random_shift,
     sparse_image_warp,
@@ -40,6 +39,7 @@ from ._img import (
     spec_augment,
     warp_1d_grid,
 )
+from ._pad import pad_masked_sequence, pad_variable
 from ._rl import time_distributed_return
 from ._string import (
     edit_distance,
@@ -51,7 +51,6 @@ from ._string import (
     prefix_edit_distances,
     prefix_error_rates,
 )
-
 
 __all__ = [
     "beam_search_advance",
@@ -70,6 +69,7 @@ __all__ = [
     "mean_var_norm",
     "minimum_error_rate_loss",
     "optimal_completion",
+    "pad_masked_sequence",
     "pad_variable",
     "polyharmonic_spline",
     "prefix_edit_distances",
