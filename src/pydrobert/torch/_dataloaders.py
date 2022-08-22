@@ -41,8 +41,13 @@ from ._datasets import (
     SpectDataSet,
 )
 
+try:
+    _BaseSampler = torch.utils.data.sampler.Sampler[int]
+except TypeError:
+    _BaseSampler = torch.utils.data.sampler.Sampler
 
-class EpochRandomSampler(torch.utils.data.sampler.Sampler[int]):
+
+class EpochRandomSampler(_BaseSampler):
     """Return random samples that are the same for a fixed epoch
 
     Parameters
@@ -106,7 +111,7 @@ class EpochRandomSampler(torch.utils.data.sampler.Sampler[int]):
         return ret
 
 
-class BucketBatchSampler(torch.utils.data.sampler.Sampler[int]):
+class BucketBatchSampler(_BaseSampler):
     """Batch samples into buckets, yielding as soon as the bucket is full
     
     Parameters
@@ -148,7 +153,7 @@ class BucketBatchSampler(torch.utils.data.sampler.Sampler[int]):
 
     """
 
-    sampler: torch.utils.data.sampler.Sampler[int]
+    sampler: _BaseSampler
     idx2bucket: Dict[int, Hashable]
     bucket2size: Dict[Hashable, int]
     drop_incomplete: bool
@@ -156,7 +161,7 @@ class BucketBatchSampler(torch.utils.data.sampler.Sampler[int]):
 
     def __init__(
         self,
-        sampler: torch.utils.data.sampler.Sampler[int],
+        sampler: _BaseSampler,
         idx2bucket: Dict[int, Hashable],
         bucket2size: Dict[Hashable, int],
         drop_incomplete: bool,
