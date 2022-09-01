@@ -471,12 +471,14 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
 
     Parameters
     ----------
-    data_dir
+    data
+        Either a path to the data directory or an initialized instance of
+        :class:`SpectDataSet`.
     params
         Either provides all the parameters necessary to instantiate this loader (a
         :class:`SpectDataLoaderParams`) or just those related to or just those related
-        to the loader (a :class:`DynamicLengthDataLoaderParams`). If the latter,
-        `data_params` must be specified.
+        to the loader (a :class:`DynamicLengthDataLoaderParams`). If the latter, either
+        `data_params` must be specified or `data` must be a :class:`SpectDataSet`.
     file_prefix
     file_suffix
     warn_on_missing
@@ -489,7 +491,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     data_params
         If specified, provides the parameters necessary to instantiate the underlying
         :class:`SpectDataSet`. Parameters in `data_params` will pre-empt any found in
-        `params`.
+        `params`. Relevant when `data` is not a :class:`SpectDataSet`.
     seed
         The seed used to shuffle data. If unset, will be set randomly.
     sort
@@ -558,13 +560,12 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     """
 
     params: DynamicLengthDataLoaderParams
-    data_params: SpectDataParams
     batch_first: bool
     sort: bool
 
     def __init__(
         self,
-        data_dir: str,
+        data: Union[str, SpectDataSet],
         params: Union[SpectDataLoaderParams, DynamicLengthDataLoaderParams],
         init_epoch: int = 0,
         file_prefix: str = "",
@@ -596,9 +597,8 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
                 )
         self.params = params
         if data_params is None:
-            self.data_params = params
+            data_params = params
         else:
-            self.data_params = data_params
             if hasattr(params, "subset_ids"):
                 subset_ids = params.subset_ids
                 if subset_ids:
@@ -608,26 +608,31 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
                         DeprecationWarning,
                         2,
                     )
-                    self.data_params.subset_ids = subset_ids
+                    data_params.subset_ids = subset_ids
         self.batch_first, self.sort = batch_first, sort
-        dataset = SpectDataSet(
-            data_dir,
-            file_prefix=file_prefix,
-            file_suffix=file_suffix,
-            warn_on_missing=warn_on_missing,
-            feat_subdir=feat_subdir,
-            ali_subdir=ali_subdir,
-            ref_subdir=ref_subdir,
-            params=self.data_params,
-            feat_mean=feat_mean,
-            feat_std=feat_std,
-        )
+        if isinstance(data, SpectDataSet):
+            dataset = data
+            data_dir = data.data_dir
+        else:
+            data_dir = data
+            dataset = SpectDataSet(
+                data_dir,
+                file_prefix=file_prefix,
+                file_suffix=file_suffix,
+                warn_on_missing=warn_on_missing,
+                feat_subdir=feat_subdir,
+                ali_subdir=ali_subdir,
+                ref_subdir=ref_subdir,
+                params=data_params,
+                feat_mean=feat_mean,
+                feat_std=feat_std,
+            )
         if dataset.transform is not None:
             dataset.transform.train()
         if not dataset.has_ali and not dataset.has_ref:
             raise ValueError(
-                "'{}' must have either alignments or reference tokens for "
-                "training".format(data_dir)
+                f"'{data_dir}' must have either alignments or reference tokens for "
+                "training"
             )
         utt_sampler = EpochRandomSampler(dataset, init_epoch=init_epoch, base_seed=seed)
         if not isinstance(
@@ -682,17 +687,58 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         self.batch_sampler.sampler.epoch = val
 
 
+class SpectDataSetEvalWrapper(torch.utils.data.Dataset):
+    """Wraps a SpectDataSet, yielding utterance ids alongside samples"""
+
+    base: SpectDataSet
+
+    def __init__(self, base: SpectDataSet):
+        self.base = base
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def __getitem__(self, idx: int):
+        sample = self.base[idx]
+        utt_id = self.base.utt_ids[idx]
+        return sample + (utt_id,)
+
+    def write_pdf(
+        self, utt: Union[str, int], pdf: torch.Tensor, pdfs_dir: Optional[str] = None
+    ) -> None:
+        warnings.warn(
+            "calling write_pdf directly from an evaluation data loader's data_source "
+            "is deprecated. Call data_source.base.write_pdf instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.base.write_pdf(utt, pdf, pdfs_dir)
+
+    def write_hyp(
+        self, utt: Union[str, int], hyp: torch.Tensor, hyp_dir: Optional[str] = None
+    ) -> None:
+        warnings.warn(
+            "calling write_hyp directly from an evaluation data loader's data_source "
+            "is deprecated. Call data_source.base.write_hyp instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.base.write_hyp(utt, hyp, hyp_dir)
+
+
 class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     """Serves batches of spectral data over a fixed order of utterances
 
     Parameters
     ----------
-    data_dir
+    data
+        Either a path to the data directory or an initialized instance of
+        :class:`SpectDataSet`.
     params
         Either provides all the parameters necessary to instantiate this loader (a
         :class:`SpectDataLoaderParams`) or just those related to or just those related
-        to the loader (a :class:`DynamicLengthDataLoaderParams`). If the latter,
-        `data_params` must be specified.
+        to the loader (a :class:`DynamicLengthDataLoaderParams`). If the latter, either
+        `data_params` must be specified or `data` must be a :class:`SpectDataSet`.
     file_prefix
     file_suffix
     warn_on_missing
@@ -701,7 +747,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     data_params
         If specified, provides the parameters necessary to instantiate the underlying
         :class:`SpectDataSet`. Parameters in `data_params` will pre-empt any found in
-        `params`.
+        `params`. Relevent when `data` is not  a :class:`SpectDataSet`.
     sort
         Whether to sort batches by descending number of feature frames.
     feat_mean
@@ -736,7 +782,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     >>>         packed_logits, batch_first=True)
     >>>     log_probs = torch.nn.functional.log_softmax(logits, -1)
     >>>     for pdf, feat_size, utt_id in zip(log_probs, feat_sizes, utt_ids):
-    >>>         loader.data_source.write_pdf(utt_id, pdf[:feat_size])
+    >>>         loader.data_source.base.write_pdf(utt_id, pdf[:feat_size])
 
     Transcribing utterances with CTC
 
@@ -760,23 +806,17 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     ...             (path != 0) & (path - pathpend[:-1] != 0))
     >>>         hyp = torch.stack(
     ...             [path] + [torch.full_like(path, INDEX_PAD_VALUE)] * 2)
-    >>>         loader.data_source.write_hyp(utt_id, hyp)
+    >>>         loader.data_source.base.write_hyp(utt_id, hyp)
+
+    Notes
+    -----
+    Use ``data_source.base`` to access the underlying :class:`SpectDataSet`.
 
     See Also
     --------
     spect_seq_to_batch
         For a description of the yielded parameters
     """
-
-    class SEvalDataSet(SpectDataSet):
-        """Append utt_id to each sample's tuple"""
-
-        def __getitem__(
-            self, idx: int
-        ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], str]:
-            feat, ali, ref = super().__getitem__(idx)
-            utt_id = self.utt_ids[idx]
-            return feat, ali, ref, utt_id
 
     params: DynamicLengthDataLoaderParams
     data_params: SpectDataParams
@@ -809,7 +849,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
 
     def __init__(
         self,
-        data_dir: str,
+        data: Union[str, SpectDataSet],
         params: Union[DynamicLengthDataLoaderParams, SpectDataLoaderParams],
         file_prefix: str = "",
         file_suffix: str = ".pt",
@@ -839,9 +879,8 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
                 )
         self.params = params
         if data_params is None:
-            self.data_params = params
+            data_params = params
         else:
-            self.data_params = data_params
             if hasattr(params, "subset_ids"):
                 subset_ids = params.subset_ids
                 if subset_ids:
@@ -851,22 +890,28 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
                         DeprecationWarning,
                         2,
                     )
-                    self.data_params.subset_ids = subset_ids
+                    data_params.subset_ids = subset_ids
         self.batch_first, self.sort = batch_first, sort
-        dataset = self.SEvalDataSet(
-            data_dir,
-            file_prefix=file_prefix,
-            file_suffix=file_suffix,
-            warn_on_missing=warn_on_missing,
-            feat_subdir=feat_subdir,
-            ali_subdir=ali_subdir,
-            ref_subdir=ref_subdir,
-            params=self.data_params,
-            feat_mean=feat_mean,
-            feat_std=feat_std,
-        )
+        if isinstance(data, SpectDataSet):
+            dataset = data
+            data_dir = data.data_dir
+        else:
+            data_dir = data
+            dataset = SpectDataSet(
+                data_dir,
+                file_prefix=file_prefix,
+                file_suffix=file_suffix,
+                warn_on_missing=warn_on_missing,
+                feat_subdir=feat_subdir,
+                ali_subdir=ali_subdir,
+                ref_subdir=ref_subdir,
+                params=data_params,
+                feat_mean=feat_mean,
+                feat_std=feat_std,
+            )
         if dataset.transform is not None:
             dataset.transform.eval()
+        dataset = SpectDataSetEvalWrapper(dataset)
         utt_sampler = DistributableSequentialSampler(dataset)
         if not isinstance(
             params, (DynamicLengthDataLoaderParams, SpectDataLoaderParams)
@@ -985,11 +1030,14 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
 
     Parameters
     ----------
-    data_dir
+    data
+        Either a path to the data directory or an initialized instance of
+        :class:`ContextWindowDataSet`.
     params
         Either provides all the parameters necessary to instantiate this loader (a
-        :class:`ContextWindowDataLoaderParams`) or just those related to the loader
-        (a :class:`DataLoaderParams`). If the latter, `data_params` must be specified.
+        :class:`ContextWindowDataLoaderParams`) or just those related to the loader (a
+        :class:`DataLoaderParams`). If the latter, either `data_params` must be
+        specified or `data` must be a :class:`ContextWindowDataSet`.
     file_prefix
     file_suffix
     warn_on_missing
@@ -999,10 +1047,10 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     data_params
         If specified, provides the parameters necessary to instantiate the underlying
         :class:`ContextWindowDataSet`. Parameters in `data_params` will pre-empt any
-        found in `params`.
+        found in `params`. Relevant when `data` is not a :class:`ContextWindowDataSet`.
     seed
         The seed used to shuffle data. If :obj:`None`, `params` is checked for
-        a `seed` parameter or, if none is found, one will be generated randomly
+        a `seed` parameter or, if none is found, one will be generated randomly.
     feat_mean
     feat_std
     **kwargs
@@ -1041,12 +1089,11 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
     """
 
     params: DataLoaderParams
-    data_params: ContextWindowDataParams
     batch_first: bool
 
     def __init__(
         self,
-        data_dir: str,
+        data: Union[str, ContextWindowDataSet],
         params: Union[ContextWindowDataLoaderParams, DataLoaderParams],
         init_epoch: int = 0,
         file_prefix: str = "",
@@ -1077,9 +1124,8 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
         if seed is None and hasattr(params, "seed"):
             seed = params.seed
         if data_params is None:
-            self.data_params = params
+            data_params = params
         else:
-            self.data_params = data_params
             if hasattr(params, "subset_ids"):
                 subset_ids = params.subset_ids
                 if subset_ids:
@@ -1089,18 +1135,23 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
                         DeprecationWarning,
                         2,
                     )
-                    self.data_params.subset_ids = subset_ids
-        dataset = ContextWindowDataSet(
-            data_dir,
-            file_prefix=file_prefix,
-            file_suffix=file_suffix,
-            warn_on_missing=warn_on_missing,
-            feat_subdir=feat_subdir,
-            ali_subdir=ali_subdir,
-            params=self.data_params,
-            feat_mean=feat_mean,
-            feat_std=feat_std,
-        )
+                    data_params.subset_ids = subset_ids
+        if isinstance(data, ContextWindowDataSet):
+            dataset = data
+            data_dir = data.data_dir
+        else:
+            data_dir = data
+            dataset = ContextWindowDataSet(
+                data_dir,
+                file_prefix=file_prefix,
+                file_suffix=file_suffix,
+                warn_on_missing=warn_on_missing,
+                feat_subdir=feat_subdir,
+                ali_subdir=ali_subdir,
+                params=data_params,
+                feat_mean=feat_mean,
+                feat_std=feat_std,
+            )
         if dataset.transform is not None:
             dataset.transform.train()
         if not dataset.has_ali:
@@ -1128,16 +1179,34 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
         self.batch_sampler.sampler.epoch = val
 
 
+class ContextWindowDataSetEvalWrapper(SpectDataSetEvalWrapper):
+    """Wraps a ContextWindowDataSet, yielding window nums and utt ids along samples"""
+
+    base: ContextWindowDataSet
+
+    def __init__(self, base: ContextWindowDataSet):
+        super().__init__(base)
+
+    def __getitem__(self, idx: int):
+        sample = self.base[idx]
+        win_size = sample[0].size(0)
+        utt_id = self.base.utt_ids[idx]
+        return sample + (win_size, utt_id)
+
+
 class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     """Serves batches of context windows over sequential utterances
 
     Parameters
     ----------
-    data_dir
+    data
+        Either a path to the data directory or an initialized instance of
+        :class:`ContextWindowDataSet`.
     params
         Either provides all the parameters necessary to instantiate this loader (a
-        :class:`ContextWindowDataLoaderParams`) or just those related to the loader
-        (a :class:`DataLoaderParams`). If the latter, `data_params` must be specified.
+        :class:`ContextWindowDataLoaderParams`) or just those related to the loader (a
+        :class:`DataLoaderParams`). If the latter, either `data_params` must be
+        specified or `data` must be a :class:`ContextWindowDataSet`.
     file_prefix
     file_suffix
     warn_on_missing
@@ -1145,7 +1214,7 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     data_params
         If specified, provides the parameters necessary to instantiate the underlying
         :class:`ContextWindowDataSet`. Parameters in `data_params` will pre-empt any
-        found in `params`.
+        found in `params`. Relevant when `data` is not a :class:`ContextWindowDataSet`.
     feat_mean
     feat_std
     **kwargs
@@ -1187,25 +1256,15 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     >>>     log_probs = torch.nn.functional.log_softmax(logits, -1)
     >>>     for win_size, utt_id in zip(win_sizes, utt_ids):
     >>>         assert log_probs[:win_size].shape[0] == win_size
-    >>>         loader.data_source.write_pdf(utt_id, log_probs[:win_size])
+    >>>         loader.data_source.base.write_pdf(utt_id, log_probs[:win_size])
     >>>         log_probs = log_probs[win_size:]
+
+    Notes
+    -----
+    Use ``data_source.base`` to access the underlying :class:`ContextWindowDataset`.
     """
 
-    class CWEvalDataSet(ContextWindowDataSet):
-        """Append feat_size and utt_id to each sample's tuple"""
-
-        def __getitem__(
-            self, idx: int
-        ) -> Tuple[torch.Tensor, Optional[torch.Tensor], int, str]:
-            window, ali = super(
-                ContextWindowEvaluationDataLoader.CWEvalDataSet, self
-            ).__getitem__(idx)
-            win_size = window.size()[0]
-            utt_id = self.utt_ids[idx]
-            return window, ali, win_size, utt_id
-
     params: DataLoaderParams
-    data_params: ContextWindowDataParams
     batch_first: bool
 
     @staticmethod
@@ -1224,8 +1283,8 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
 
     def __init__(
         self,
-        data_dir: str,
-        params: DataLoaderParams,
+        data: Union[str, ContextWindowDataSet],
+        params: Union[ContextWindowDataLoaderParams, DataLoaderParams],
         file_prefix: str = "",
         file_suffix: str = ".pt",
         warn_on_missing: bool = True,
@@ -1251,9 +1310,8 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
                 )
         self.params = params
         if data_params is None:
-            self.data_params = params
+            data_params = params
         else:
-            self.data_params = data_params
             if hasattr(params, "subset_ids"):
                 subset_ids = params.subset_ids
                 if subset_ids:
@@ -1263,20 +1321,26 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
                         DeprecationWarning,
                         2,
                     )
-                    self.data_params.subset_ids = subset_ids
-        dataset = self.CWEvalDataSet(
-            data_dir,
-            file_prefix=file_prefix,
-            file_suffix=file_suffix,
-            warn_on_missing=warn_on_missing,
-            feat_subdir=feat_subdir,
-            ali_subdir=ali_subdir,
-            params=self.data_params,
-            feat_mean=feat_mean,
-            feat_std=feat_std,
-        )
+                    data_params.subset_ids = subset_ids
+        if isinstance(data, ContextWindowDataSet):
+            dataset = data
+            data_dir = data.data_dir
+        else:
+            data_dir = data
+            dataset = ContextWindowDataSet(
+                data_dir,
+                file_prefix=file_prefix,
+                file_suffix=file_suffix,
+                warn_on_missing=warn_on_missing,
+                feat_subdir=feat_subdir,
+                ali_subdir=ali_subdir,
+                params=data_params,
+                feat_mean=feat_mean,
+                feat_std=feat_std,
+            )
         if dataset.transform is not None:
             dataset.transform.eval()
+        dataset = ContextWindowDataSetEvalWrapper(dataset)
         utt_sampler = DistributableSequentialSampler(dataset)
         batch_sampler = torch.utils.data.BatchSampler(
             utt_sampler, params.batch_size, drop_last=params.drop_last

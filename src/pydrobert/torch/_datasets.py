@@ -231,7 +231,7 @@ class SpectDataSet(torch.utils.data.Dataset):
     params: SpectDataParams
     has_ali: bool
     has_ref: bool
-    utt_ids: Set[str]
+    utt_ids: Tuple[str, ...]
     transform: Optional[torch.nn.Module]
 
     def __init__(

@@ -165,19 +165,15 @@ def test_spect_seq_to_batch(include_ali, include_ref, batch_first, include_frame
 
 
 @pytest.mark.cpu
-@pytest.mark.parametrize("eos", [None, -1])
-@pytest.mark.parametrize("sos", [None, -2])
-@pytest.mark.parametrize("split_params", [True, False])
-@pytest.mark.parametrize("include_frame_shift", [True, False])
+@pytest.mark.parametrize("eos", [None, -1], ids=["no_eos", "eos"])
+@pytest.mark.parametrize("sos", [None, -2], ids=["no_sos", "sos"])
+@pytest.mark.parametrize("init_style", ["split", "set", "same"])
+@pytest.mark.parametrize(
+    "include_frame_shift", [True, False], ids=["frame_shift", "no_frame_shift"]
+)
 @pytest.mark.parametrize("feat_dtype", [torch.float, torch.int])
 def test_spect_training_data_loader(
-    temp_dir,
-    populate_torch_dir,
-    sos,
-    eos,
-    split_params,
-    include_frame_shift,
-    feat_dtype,
+    temp_dir, populate_torch_dir, sos, eos, init_style, include_frame_shift, feat_dtype,
 ):
     num_utts, batch_size, num_filts = 20, 5, 11
     populate_torch_dir(
@@ -187,24 +183,32 @@ def test_spect_training_data_loader(
         include_frame_shift=include_frame_shift,
         feat_dtype=feat_dtype,
     )
-    if split_params:
+    if init_style == "split":
         params = data.DynamicLengthDataLoaderParams(batch_size=batch_size)
         data_params = data.SpectDataParams(sos=sos, eos=eos)
+        data_ = temp_dir
     else:
         params = data.SpectDataLoaderParams(batch_size=batch_size, sos=sos, eos=eos)
         data_params = None
-    # check missing either ali or ref gives None in batches
+        if init_style == "set":
+            data_ = data.SpectDataSet(temp_dir, params=params)
+        else:
+            data_ = temp_dir
+
+    if init_style != "set":
+        # check missing either ali or ref gives None in batches
+        data_loader = data.SpectTrainingDataLoader(
+            temp_dir, params, data_params=data_params, ali_subdir=None, seed=2
+        )
+        assert next(iter(data_loader))[1] is None
+        data_loader = data.SpectTrainingDataLoader(
+            temp_dir, params, data_params=data_params, ref_subdir=None, seed=2
+        )
+        assert next(iter(data_loader))[2] is None
+        assert next(iter(data_loader))[4] is None
+
     data_loader = data.SpectTrainingDataLoader(
-        temp_dir, params, data_params=data_params, ali_subdir=None, seed=2
-    )
-    assert next(iter(data_loader))[1] is None
-    data_loader = data.SpectTrainingDataLoader(
-        temp_dir, params, data_params=data_params, ref_subdir=None, seed=2
-    )
-    assert next(iter(data_loader))[2] is None
-    assert next(iter(data_loader))[4] is None
-    data_loader = data.SpectTrainingDataLoader(
-        temp_dir, params, data_params=data_params, seed=2
+        data_, params, data_params=data_params, seed=2
     )
 
     def _get_epoch(sort):
@@ -289,7 +293,7 @@ def test_spect_training_data_loader(
     _compare_epochs(ep1, _get_epoch(False), True)
     # XXX(sdrobert): warning spit out on CI if num_workers > 2
     data_loader = data.SpectTrainingDataLoader(
-        temp_dir, params, data_params=data_params, num_workers=2, seed=2
+        data_, params, data_params=data_params, num_workers=2, seed=2
     )
     _compare_epochs(ep0, _get_epoch(False), True)
     _compare_epochs(ep1, _get_epoch(False), True)
@@ -383,34 +387,37 @@ def test_async_data_loader(populate_torch_dir, temp_dir, train, bucket):
 
 
 @pytest.mark.cpu
-@pytest.mark.parametrize("eos", [None, -1])
-@pytest.mark.parametrize("sos", [None, -2])
-@pytest.mark.parametrize("split_params", [True, False])
-@pytest.mark.parametrize("include_frame_shift", [True, False])
+@pytest.mark.parametrize("eos", [None, -1], ids=["no_eos", "eos"])
+@pytest.mark.parametrize("sos", [None, -2], ids=["no_sos", "sos"])
+@pytest.mark.parametrize("init_style", ["split", "set", "same"])
+@pytest.mark.parametrize(
+    "include_frame_shift", [True, False], ids=["frame_shift", "no_frame_shift"]
+)
 @pytest.mark.parametrize("feat_dtype", [torch.float, torch.int])
 def test_spect_evaluation_data_loader(
-    temp_dir,
-    populate_torch_dir,
-    sos,
-    eos,
-    split_params,
-    include_frame_shift,
-    feat_dtype,
+    temp_dir, populate_torch_dir, sos, eos, init_style, include_frame_shift, feat_dtype,
 ):
     feat_dir = os.path.join(temp_dir, "feat")
     ali_dir = os.path.join(temp_dir, "ali")
     os.makedirs(feat_dir)
     os.makedirs(ali_dir)
     batch_size = 5
-    if split_params:
-        params = data.DynamicLengthDataLoaderParams(batch_size=batch_size)
-        data_params = data.SpectDataParams(sos=sos, eos=eos)
-    else:
-        params = data.SpectDataLoaderParams(batch_size=batch_size, sos=sos, eos=eos)
-        data_params = None
     feats, ali, ref, feat_sizes, ref_sizes, utt_ids = populate_torch_dir(
         temp_dir, 20, include_frame_shift=include_frame_shift, feat_dtype=feat_dtype
     )
+
+    if init_style == "split":
+        params = data.DynamicLengthDataLoaderParams(batch_size=batch_size)
+        data_params = data.SpectDataParams(sos=sos, eos=eos)
+        data_ = temp_dir
+    else:
+        params = data.SpectDataLoaderParams(batch_size=batch_size, sos=sos, eos=eos)
+        data_params = None
+        if init_style == "set":
+            data_ = data.SpectDataSet(temp_dir, params=params)
+        else:
+            data_ = temp_dir
+
     if sos is not None:
         if include_frame_shift:
             sos_sym = torch.full((3,), -1, dtype=torch.long)
@@ -429,15 +436,15 @@ def test_spect_evaluation_data_loader(
             eos_sym = torch.full((1,), eos, dtype=torch.long)
         ref = [torch.cat([x, eos_sym], 0) for x in ref]
         ref_sizes = [x + 1 for x in ref_sizes]
-    # check that ali and ref can be missing
-    data_loader = data.SpectEvaluationDataLoader(
-        temp_dir, params, data_params=data_params, ali_subdir=None, ref_subdir=None
-    )
-    assert next(iter(data_loader))[1:3] == (None, None)
-    assert next(iter(data_loader))[4] is None
-    data_loader = data.SpectEvaluationDataLoader(
-        temp_dir, params, data_params=data_params
-    )
+
+    if init_style != "set":
+        # check that ali and ref can be missing
+        data_loader = data.SpectEvaluationDataLoader(
+            temp_dir, params, data_params=data_params, ali_subdir=None, ref_subdir=None
+        )
+        assert next(iter(data_loader))[1:3] == (None, None)
+        assert next(iter(data_loader))[4] is None
+    data_loader = data.SpectEvaluationDataLoader(data_, params, data_params=data_params)
 
     def _compare_data_loader():
         batch_first = data_loader.batch_first
@@ -495,7 +502,7 @@ def test_spect_evaluation_data_loader(
     _compare_data_loader()
     _compare_data_loader()  # order should not change
     data_loader = data.SpectEvaluationDataLoader(
-        temp_dir, params, data_params=data_params, num_workers=2
+        data_, params, data_params=data_params, num_workers=2
     )
     _compare_data_loader()  # order should still not change
     data_loader.batch_first = False
@@ -503,15 +510,16 @@ def test_spect_evaluation_data_loader(
 
 
 @pytest.mark.cpu
-@pytest.mark.parametrize("split_params", [True, False])
-def test_window_training_data_loader(temp_dir, populate_torch_dir, split_params):
+@pytest.mark.parametrize("init_style", ["split", "set", "same"])
+def test_window_training_data_loader(temp_dir, populate_torch_dir, init_style):
     populate_torch_dir(temp_dir, 5, num_filts=2)
     seed, batch_size, context_left, context_right = 2, 5, 1, 1
-    if split_params:
+    if init_style == "split":
         params = data.DataLoaderParams(batch_size=batch_size, drop_last=True)
         data_params = data.ContextWindowDataParams(
             context_left=context_left, context_right=context_right
         )
+        data_ = temp_dir
     else:
         params = data.ContextWindowDataLoaderParams(
             context_left=context_left,
@@ -520,8 +528,12 @@ def test_window_training_data_loader(temp_dir, populate_torch_dir, split_params)
             drop_last=True,
         )
         data_params = None
+        if init_style == "set":
+            data_ = data.ContextWindowDataSet(temp_dir, params=params)
+        else:
+            data_ = temp_dir
     data_loader = data.ContextWindowTrainingDataLoader(
-        temp_dir, params, data_params=data_params, seed=seed
+        data_, params, data_params=data_params, seed=seed
     )
     total_windows_ep0 = 0
     for feat, ali in data_loader:
@@ -541,12 +553,7 @@ def test_window_training_data_loader(temp_dir, populate_torch_dir, split_params)
         total_windows_ep1 += windows
     assert total_windows_ep0 == total_windows_ep1
     data_loader = data.ContextWindowTrainingDataLoader(
-        temp_dir,
-        params,
-        init_epoch=1,
-        data_params=data_params,
-        num_workers=2,
-        seed=seed,
+        data_, params, init_epoch=1, data_params=data_params, num_workers=2, seed=seed,
     )
     feats_ep1_b, alis_ep1_b = [], []
     for feats, alis in data_loader:
@@ -574,23 +581,35 @@ def test_window_training_data_loader(temp_dir, populate_torch_dir, split_params)
 
 
 @pytest.mark.cpu
-@pytest.mark.parametrize("split_params", [True, False])
-def test_window_evaluation_data_loader(temp_dir, populate_torch_dir, split_params):
+@pytest.mark.parametrize("init_style", ["split", "set", "same"])
+def test_window_evaluation_data_loader(temp_dir, populate_torch_dir, init_style):
     feat_dir = os.path.join(temp_dir, "feat")
     ali_dir = os.path.join(temp_dir, "ali")
     os.makedirs(feat_dir)
     os.makedirs(ali_dir)
-    if split_params:
-        params = data.DataLoaderParams(batch_size=5)
-        data_params = data.ContextWindowDataParams(context_left=1, context_right=1)
-    else:
-        params = data.ContextWindowDataLoaderParams(
-            context_left=1, context_right=1, batch_size=5
-        )
-        data_params = None
+    context_left = context_right = 1
+    batch_size = 5
     feats, alis, _, feat_sizes, _, utt_ids = populate_torch_dir(
         temp_dir, 20, include_ref=False
     )
+    if init_style == "split":
+        params = data.DataLoaderParams(batch_size=batch_size, drop_last=True)
+        data_params = data.ContextWindowDataParams(
+            context_left=context_left, context_right=context_right
+        )
+        data_ = temp_dir
+    else:
+        params = data.ContextWindowDataLoaderParams(
+            context_left=context_left,
+            context_right=context_right,
+            batch_size=batch_size,
+            drop_last=True,
+        )
+        data_params = None
+        if init_style == "set":
+            data_ = data.ContextWindowDataSet(temp_dir, params=params)
+        else:
+            data_ = temp_dir
 
     def _compare_data_loader(data_loader):
         assert len(data_loader) == 4
@@ -605,18 +624,20 @@ def test_window_evaluation_data_loader(temp_dir, populate_torch_dir, split_param
             assert torch.all(b_alis == torch.cat(alis[cur_idx : cur_idx + 5]))
             cur_idx += 5
 
+    if init_style != "set":
+        data_loader = data.ContextWindowEvaluationDataLoader(
+            temp_dir, params, data_params=data_params, ali_subdir=None
+        )
+        # check batching works when alignments are empty
+        assert next(iter(data_loader))[1] is None
+
     data_loader = data.ContextWindowEvaluationDataLoader(
-        temp_dir, params, data_params=data_params, ali_subdir=None
-    )
-    # check batching works when alignments are empty
-    assert next(iter(data_loader))[1] is None
-    data_loader = data.ContextWindowEvaluationDataLoader(
-        temp_dir, params, data_params=data_params
+        data_, params, data_params=data_params
     )
     _compare_data_loader(data_loader)
     _compare_data_loader(data_loader)  # order should not change
     data_loader = data.ContextWindowEvaluationDataLoader(
-        temp_dir, params, data_params=data_params, num_workers=2
+        data_, params, data_params=data_params, num_workers=2
     )
     _compare_data_loader(data_loader)  # order should still not change
 
