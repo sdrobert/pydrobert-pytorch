@@ -63,6 +63,10 @@ def pytest_runtest_setup(item):
     # implicitly seeds all tests for the sake of reproducibility
     torch.manual_seed(abs(adler32(bytes(item.name, "utf-8"))))
 
+    # for distributed training (doesn't overwrite test)
+    os.environ.setdefault("MASTER_ADDR", "localhost")
+    os.environ.setdefault("MASTER_PORT", "12355")
+
 
 @pytest.fixture(scope="session")
 def populate_torch_dir():

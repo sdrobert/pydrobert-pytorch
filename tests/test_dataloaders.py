@@ -299,6 +299,89 @@ def test_spect_training_data_loader(
     _compare_epochs(ep1, _get_epoch(False), True)
 
 
+def _test_async_spect_training_data_wrapper(
+    rank, world_size, train, temp_dir, batch_size, bucket=False, out=None
+):
+
+    if world_size:
+        torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
+
+    params = data.SpectDataLoaderParams(batch_size=batch_size)
+    if bucket:
+        params.num_length_buckets = 2
+        params.size_batch_by_length = True
+    if train:
+        loader = data.SpectTrainingDataLoader(temp_dir, params, sort=bucket, seed=0)
+    else:
+        loader = data.SpectEvaluationDataLoader(temp_dir, params, sort=bucket)
+
+    lens = []
+    for batch in loader:
+        lens_n = batch[3]
+        if world_size and rank:
+            if bucket:
+                handle = torch.distributed.isend(torch.tensor([lens_n.size(0)]), 0)
+                handle.wait()
+            handle = torch.distributed.isend(lens_n, 0)
+            handle.wait()
+        else:
+            if world_size and not bucket:
+                lens_n_ = lens_n.new_empty((world_size, batch_size))
+                lens_n_[0] = lens_n
+                handles = []
+                for r in range(1, world_size):
+                    handles.append(torch.distributed.irecv(lens_n_[r], r))
+                for handle in handles:
+                    handle.wait()
+                lens_n = lens_n_.T.flatten()
+            lens.append(lens_n)
+    if world_size and bucket:
+        if rank:
+            handle = torch.distributed.isend(torch.tensor([0]), 0)
+            handle.wait()
+        else:
+            for r in range(1, world_size):
+                while True:
+                    N = torch.empty(1, dtype=torch.long)
+                    handle = torch.distributed.irecv(N, r)
+                    handle.wait()
+                    if N == 0:
+                        break
+                    lens_n = torch.empty(N, dtype=torch.long)
+                    handle = torch.distributed.irecv(lens_n, r)
+                    lens.append(lens_n)
+                    handle.wait()
+
+    if out is None:
+        out = torch.cat(lens)
+    elif not rank:
+        out.copy_(torch.cat(lens))
+    return out
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("train", [True, False], ids=["train", "eval"])
+@pytest.mark.parametrize("bucket", [True, False], ids=["bucket", "unbucket"])
+def test_async_data_loader(populate_torch_dir, temp_dir, train, bucket):
+    if not torch.distributed.is_available():
+        pytest.skip("distributed is not available")
+    NN, N, W = 100, 10, 2
+    assert NN % (N * W) == 0
+    populate_torch_dir(temp_dir, NN)
+    lens_exp = _test_async_spect_training_data_wrapper(0, 0, train, temp_dir, N)
+    lens_act = torch.full_like(lens_exp, -1)
+    torch.multiprocessing.spawn(
+        _test_async_spect_training_data_wrapper,
+        (W, train, temp_dir, N, bucket, lens_act),
+        W,
+        True,
+    )
+    assert lens_exp.shape == lens_act.shape
+    if bucket:
+        lens_exp, lens_act = lens_exp.sort()[0], lens_act.sort()[0]
+    assert (lens_exp == lens_act).all()
+
+
 @pytest.mark.cpu
 @pytest.mark.parametrize("eos", [None, -1])
 @pytest.mark.parametrize("sos", [None, -2])

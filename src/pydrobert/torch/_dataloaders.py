@@ -69,10 +69,18 @@ class EpochRandomSampler(_BaseSampler):
     ------
     sample_idx : int
         The current sample index of the current epoch.
+    
+    Notes
+    -----
+    This sampler can be used transparently with :mod:`torch.distributed`. On
+    initialization, it checks if its process has been assigned a rank in the default
+    group and, if so, yields a partition of the shuffled sample indices assigned to the
+    rank. Unlike :class:`torch.utils.data.distributed.DistributedSampler`, this sampler
+    will throw a :class:`RuntimeError` if the number of samples is not divisible by the
+    number of processes.
 
     Examples
     --------
-
     >>> sampler = EpochRandomSampler(
     ...     torch.utils.data.TensorDataset(torch.arange(100)))
     >>> samples_ep0 = tuple(sampler)  # random
@@ -83,9 +91,11 @@ class EpochRandomSampler(_BaseSampler):
 
     epoch: int
     base_seed: int
+    _offset: int
+    _stride: int
 
     def __init__(
-        self, data_source: Sized, init_epoch: int = 0, base_seed: Optional[int] = None,
+        self, data_source: Sized, init_epoch: int = 0, base_seed: Optional[int] = None
     ):
         self._len = len(data_source)
         self.epoch = init_epoch
@@ -96,6 +106,21 @@ class EpochRandomSampler(_BaseSampler):
             # torch.manual_seed(...)
             base_seed = torch.randint(np.iinfo(np.int32).max, (1,)).long().item()
         self.base_seed = base_seed
+        if (
+            torch.distributed.is_available()
+            and torch.distributed.is_initialized()
+            and torch.distributed.get_rank() >= 0
+        ):
+            self._offset = torch.distributed.get_rank()
+            self._stride = torch.distributed.get_world_size()
+            if self._len % self._stride:
+                raise RuntimeError(
+                    f"dataset length ({self._len}) must be divisible by distributed "
+                    f"world size ({self._stride})"
+                )
+        else:
+            self._offset = 0
+            self._stride = 1
 
     def __len__(self) -> int:
         return self._len
@@ -103,12 +128,62 @@ class EpochRandomSampler(_BaseSampler):
     def get_samples_for_epoch(self, epoch: int) -> np.ndarray:
         """np.ndarray : samples for a specific epoch"""
         rs = np.random.RandomState(self.base_seed + epoch)
-        return rs.permutation(list(range(self._len)))
+        return rs.permutation(self._len)[self._offset :: self._stride]
 
     def __iter__(self) -> Iterator[int]:
         ret = iter(self.get_samples_for_epoch(self.epoch))
         self.epoch += 1
         return ret
+
+
+class DistributableSequentialSampler(torch.utils.data.sampler.SequentialSampler):
+    """A SequentialSampler which quietly handles :mod:`torch.distributed`
+
+    A wrapper around :class:`torch.utils.data.sampler.SequentialSampler` which can be
+    used transparently with :mod:`torch.distributed`.
+
+    Parameters
+    ----------
+    data_source
+        The dataset to draw the sample from.
+    
+    Notes
+    -----
+    On initialization, the sampler checks if its process has been assigned a rank in the
+    default group and, if so, yields sample indices from a partition assigned to that
+    rank. Each process yields strided indices of the form::
+
+        r, r + R, r + 2R, ...
+    
+    where ``r`` is the rank and ``R`` is the world size. The original ordering can be
+    recovered by interleaving reads from the processes. No process actually reads
+    samples ``0, 1, 2, ...`` (unless the world size is ``1``), so any code which
+    requires samples be presented in a global order should avoid this sampler.
+    """
+
+    _offset: int
+    _stride: int
+
+    def __init__(self, data_source: Sized):
+        super().__init__(data_source)
+        if (
+            torch.distributed.is_available()
+            and torch.distributed.is_initialized()
+            and torch.distributed.get_rank() >= 0
+        ):
+            self._offset = torch.distributed.get_rank()
+            self._stride = torch.distributed.get_world_size()
+            if len(self) % self._stride:
+                raise RuntimeError(
+                    f"dataset length ({len(self)}) must be divisible by distributed "
+                    f"world size ({self._stride})"
+                )
+        else:
+            self._offset = 0
+            self._stride = 1
+
+    def __iter__(self) -> Iterator[int]:
+        return iter(range(self._offset, len(self), self._stride))
 
 
 class BucketBatchSampler(_BaseSampler):
@@ -288,6 +363,7 @@ class SpectDataLoaderParams(SpectDataParams, DynamicLengthDataLoaderParams):
 def spect_seq_to_batch(
     seq: Sequence[Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]],
     batch_first: bool = True,
+    sort: bool = True,
 ) -> Tuple[
     torch.Tensor,
     Optional[torch.Tensor],
@@ -297,38 +373,46 @@ def spect_seq_to_batch(
 ]:
     """Convert a sequence of spectral data to a batch
 
-    Assume `seq` is a finite length sequence of tuples ``feat, ali, ref``, where
-    ``feat`` is of size ``(T, F)``, where ``T`` is some number of frames (which can vary
-    across elements in the sequence), ``F`` is some number of filters, ``ali`` is of
-    size ``(T,)``, and ``ref`` is of size ``(R[, 3])``, where ``R`` is some number of
-    reference tokens (which can vary across elements in the sequence) and the ``3`` is a
-    triple of id, start frame and end frame (optional). This method batches all the
-    elements of the sequence into a tuple of ``feats, alis, refs, feat_sizes,
-    ref_sizes``. `feats` and `alis` will have dimensions ``(N, T*, F)``, and ``(N,
-    T*)``, resp., where ``N`` is the batch size, and ``T*`` is the maximum number of
-    frames in `seq` (or ``(T*, N, F)``, ``(T*, N)`` if `batch_first` is :obj:`False`).
-    Similarly, `refs` will have dimensions ``(N, R*[, 3])`` (or ``(R*, N[, 3])``).
-    `feat_sizes` and `ref_sizes` are long tensor  of shape ``(N,)`` containing the
-    original ``T`` and ``R`` values. The batch will be sorted by decreasing numbers of
-    frames. `feats` is zero-padded while `alis` and `refs` are padded with module
-    constant :const:`pydrobert.torch.config.INDEX_PAD_VALUE`
-
-    If ``ali`` or ``ref`` is :obj:`None` in any element, `alis` or `refs` and
-    `ref_sizes` will also be :obj:`None`
-
     Parameters
     ----------
     seq
+        A finite-length (``N``) sequence of tuples ``feat_n, ali_n, ref_n``, where
+        `feat_n` is of size ``(T_n, F)``, `ali_n` is of size ``(T_n,)``, and `ref_n` is
+        of size ``(R_n[, 3])``.
+    batch_first
+        If :obj:`True`, the batch dimension ``N`` comes before the sequence dimension
+        ``T`` or ``R`` in the return values.
+    sort
+        If :obj:`True`, the tuples in `seq` are first sorted in descending order of
+        ``T_n``.
 
     Returns
     -------
     feats : torch.Tensor
+        A tensor of shape ``(max_n T_n, N, F)`` containing the right-padded sequence
+        ``[feat_1, feat_2, ..., feat_N]`` (or the sorted sequence when `sort` is
+        :obj:`True`). Padded with zeros.
     alis : torch.Tensor or None
+        If all `ali_n` are not :obj:`None`, a tensor of shape ``(max_n T_n, N)``
+        containing the right-padded sequence ``[ali_1, ali_2, ... ali_N]`` (or the
+        sorted sequence when `sort` is :obj:`True`). If any `ali_n` is :obj:`None`,
+        `ali` is :obj:`None`. Padded with
+        :const:`pydrobert.torch.config.INDEX_PAD_VALUE`.
     refs : torch.Tensor or None
+        If all `ref_n` are not :obj:`None`, a tensor of shape ``(max_n R_n, N[, 3])``
+        containing the right-padded sequences ``[ref_1, ref_2, ..., ref_N]`` (or the
+        sorted sequence when `sort` is :obj:`True`). All `ref_n` must have the ``3``
+        dimension or none of them. If any `ref_n` is :obj:`None`, `refs` is :obj:`None`.
+        Padded with :const:`pydrobert.torch.config.INDEX_PAD_VALUE`.
     feat_sizes : torch.Tensor
+        A tensor of shape ``(N,)`` containing the sequence ``[T_1, T_2, ..., T_N]``
+        (or the sorted sequence when `sort` is :obj:`True`).
     ref_sizes : torch.Tensor or None
+        A tensor of shape ``(N,)`` containing the sequence ``[R_1, R_2, ..., R_N]``
+        (or the sequence sorted by `feat_sizes` when `sort` is :obj:`True`).
     """
-    seq = sorted(seq, key=lambda x: -x[0].shape[0])
+    if sort:
+        seq = sorted(seq, key=lambda x: x[0].size(0), reverse=True)
     feats, alis, refs = list(zip(*seq))
     has_ali = all(x is not None for x in alis)
     has_ref = all(x is not None for x in refs)
@@ -408,6 +492,8 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         `params`.
     seed
         The seed used to shuffle data. If unset, will be set randomly.
+    sort
+        Whether to sort batches by descending number of feature frames.
     feat_mean
     feat_std
     **kwargs
@@ -416,38 +502,10 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     Yields
     ------
     feats : torch.Tensor
-        A tensor of shape ``(N, T*, F)`` (or ``(T*, N, F)`` if `batch_first` is
-        :obj:`False`), where ``N`` is ``params.batch_size``, ``T*`` is the maximum
-        number of frames in an utterance in the batch, and ``F`` is the number of
-        filters per frame
     alis : torch.Tensor or None
-        A long tensor size ``(N, T*)`` (or ``(T*, N)`` if `batch_first` is :obj:`False`)
-        if an ``ali/`` dir exists, otherwise :obj:`None`
     refs : torch.Tensor or None
-        A long tensor size ``(N, R*[, 3])`` (or ``(R*, N[, 3])`` if `batch_first` is
-        :obj:`False`), where ``R*`` is the maximum number of reference tokens in the
-        batch. The 3rd dimension will only exist if data were saved with frame start/end
-        indices. If the ``refs/`` directory does not exist, `refs` and `ref_sizes` are
-        :obj:`None`.
     feat_sizes : torch.Tensor
-        A long tensor of shape ``(N,)`` specifying the lengths of utterances in the
-        batch
     ref_sizes : torch.Tensor or None
-        A long tensor of shape ``(N,)`` specifying the number reference tokens per
-        utterance in the batch. If the ``refs/`` directory does not exist, `refs` and
-        `ref_sizes` are :obj:`None`.
-
-    Notes
-    -----
-    The first axis of each of `feats`, `alis`, `refs`, `feat_sizes`, and `ref_sizes` is
-    ordered by utterances of descending frame lengths. Shorter utterances in `feats` are
-    zero-padded to the right, `alis` is padded with the module constant
-    :const:`pydrobert.torch.config.INDEX_PAD_VALUE`
-
-    `batch_first` is separated from `params` because it is usually a matter of model
-    architecture whether it is :obj:`True` - something the user doesn't configure.
-    Further, the attribute `batch_first` can be modified after initialization of this
-    loader (outside of the for loop) to suit a model's needs.
 
     Examples
     --------
@@ -492,11 +550,17 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     ...         log_prob.transpose(0, 1),
     ...         refs[..., 0], feat_sizes, ref_sizes).backward()
     >>>     optim.step()
+
+    See Also
+    --------
+    spect_seq_to_batch
+        For a description of the yielded parameters
     """
 
     params: DynamicLengthDataLoaderParams
     data_params: SpectDataParams
     batch_first: bool
+    sort: bool
 
     def __init__(
         self,
@@ -512,6 +576,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         batch_first: bool = True,
         data_params: Optional[SpectDataParams] = None,
         seed: Optional[int] = None,
+        sort: bool = True,
         feat_mean: Optional[torch.Tensor] = None,
         feat_std: Optional[torch.Tensor] = None,
         **kwargs,
@@ -544,7 +609,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
                         2,
                     )
                     self.data_params.subset_ids = subset_ids
-        self.batch_first = batch_first
+        self.batch_first, self.sort = batch_first, sort
         dataset = SpectDataSet(
             data_dir,
             file_prefix=file_prefix,
@@ -605,7 +670,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         torch.Tensor,
         Optional[torch.Tensor],
     ]:
-        return spect_seq_to_batch(seq, batch_first=self.batch_first)
+        return spect_seq_to_batch(seq, self.batch_first, self.sort)
 
     @property
     def epoch(self) -> int:
@@ -637,6 +702,8 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         If specified, provides the parameters necessary to instantiate the underlying
         :class:`SpectDataSet`. Parameters in `data_params` will pre-empt any found in
         `params`.
+    sort
+        Whether to sort batches by descending number of feature frames.
     feat_mean
     feat_std
     **kwargs
@@ -645,33 +712,12 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     Yields
     ------
     feats : torch.Tensor
-        A tensor of shape ``(N, T*, F)`` (or ``(T*, N, F)`` if `batch_first` is
-        :obj:`False`), where ``N`` is ``params.batch_size``, ``T*`` is the
-        maximum number of frames in an utterance in the batch, and ``F`` is the
-        number of filters per frame
     alis : torch.Tensor or None
-        A long tensor of size ``(N, T*)`` (or ``(T*, N)`` if `batch_first` is
-        :obj:`False`) if an ``ali/`` dir exists, otherwise :obj:`None`
     refs : torch.Tensor or None
-        A long tensor of size ``(N, R*[, 3])`` (or ``(R*, N[, 3])`` if `batch_first` is
-        :obj:`False`), where ``R*`` is the maximum number of reference tokens
-        in the batch. The 3rd dimension will only exist if data were saved with
-        frame start/end indices. If the ``refs/`` directory does not exist,
-        `refs` and `ref_sizes` are :obj:`None`.
     feat_sizes : torch.Tensor
-        A long tensor of shape ``(N,)`` specifying the lengths of utterances in the
-        batch
     ref_sizes : torch.Tensor or None
-        A long tensor of shape ``(N,)`` specifying the number reference tokens per
-        utterance in the batch. If the ``refs/`` directory does not exist, `refs` and
-        `ref_sizes` are :obj:`None`.
     utt_ids : tuple
-        An ``N``-tuple specifying the names of utterances in the batch
-
-    Notes
-    -----
-    Shorter utterances in `feats` are zero-padded to the right, `alis` and `refs` are
-    padded with :const:`pydrobert.torch.config.INDEX_PAD_VALUE`
+        An tuple specifying the names of utterances in the batch
 
     Examples
     --------
@@ -715,6 +761,11 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     >>>         hyp = torch.stack(
     ...             [path] + [torch.full_like(path, INDEX_PAD_VALUE)] * 2)
     >>>         loader.data_source.write_hyp(utt_id, hyp)
+
+    See Also
+    --------
+    spect_seq_to_batch
+        For a description of the yielded parameters
     """
 
     class SEvalDataSet(SpectDataSet):
@@ -730,6 +781,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     params: DynamicLengthDataLoaderParams
     data_params: SpectDataParams
     batch_first: bool
+    sort: bool
 
     def eval_collate_fn(
         self,
@@ -742,17 +794,16 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         Optional[torch.Tensor],
         torch.Tensor,
         Optional[torch.Tensor],
-        Sequence[str],
+        Tuple[str, ...],
     ]:
         """Update context_window_seq_to_batch to handle feat_sizes, utt_ids"""
         feats, alis, refs, utt_ids = list(zip(*seq))
-        # spect_seq_to_batch sorts by descending number of frames, so we
-        # sort utt_ids here
-        utt_ids = tuple(
-            x[1] for x in sorted(zip(feats, utt_ids), key=lambda x: -x[0].shape[0])
-        )
+        if self.sort:
+            utt_ids = tuple(
+                x[1] for x in sorted(zip(feats, utt_ids), key=lambda x: -x[0].shape[0])
+            )
         feats, alis, refs, feat_sizes, ref_sizes = spect_seq_to_batch(
-            list(zip(feats, alis, refs)), batch_first=self.batch_first
+            list(zip(feats, alis, refs)), self.batch_first, self.sort
         )
         return feats, alis, refs, feat_sizes, ref_sizes, utt_ids
 
@@ -768,6 +819,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         ref_subdir: str = "ref",
         batch_first: bool = True,
         data_params: Optional[SpectDataParams] = None,
+        sort: bool = True,
         feat_mean: Optional[torch.Tensor] = None,
         feat_std: Optional[torch.Tensor] = None,
         **kwargs,
@@ -800,7 +852,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
                         2,
                     )
                     self.data_params.subset_ids = subset_ids
-        self.batch_first = batch_first
+        self.batch_first, self.sort = batch_first, sort
         dataset = self.SEvalDataSet(
             data_dir,
             file_prefix=file_prefix,
@@ -815,7 +867,7 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         )
         if dataset.transform is not None:
             dataset.transform.eval()
-        utt_sampler = torch.utils.data.SequentialSampler(dataset)
+        utt_sampler = DistributableSequentialSampler(dataset)
         if not isinstance(
             params, (DynamicLengthDataLoaderParams, SpectDataLoaderParams)
         ) and isinstance(params, DataLoaderParams):
@@ -1225,10 +1277,13 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
         )
         if dataset.transform is not None:
             dataset.transform.eval()
+        utt_sampler = DistributableSequentialSampler(dataset)
+        batch_sampler = torch.utils.data.BatchSampler(
+            utt_sampler, params.batch_size, drop_last=params.drop_last
+        )
         super().__init__(
             dataset,
-            batch_size=params.batch_size,
-            shuffle=False,
+            batch_sampler=batch_sampler,
             collate_fn=self.eval_collate_fn,
             **kwargs,
         )
