@@ -22,12 +22,7 @@ import numpy as np
 
 @pytest.mark.parametrize(
     "opt_class",
-    [
-        torch.optim.Adam,
-        torch.optim.Adagrad,
-        torch.optim.LBFGS,
-        torch.optim.SGD,
-    ],
+    [torch.optim.Adam, torch.optim.Adagrad, torch.optim.LBFGS, torch.optim.SGD,],
 )
 def test_controller_stores_and_retrieves(temp_dir, device, opt_class):
     torch.manual_seed(50)
@@ -37,9 +32,7 @@ def test_controller_stores_and_retrieves(temp_dir, device, opt_class):
     state_csv_path = os.path.join(temp_dir, "a.csv")
     state_dir = os.path.join(temp_dir, "states")
     controller = training.TrainingStateController(
-        p,
-        state_csv_path=state_csv_path,
-        state_dir=state_dir,
+        p, state_csv_path=state_csv_path, state_dir=state_dir,
     )
     controller.add_entry("cool_guy_entry", int)
     controller.load_model_and_optimizer_for_epoch(model, optimizer, 0)
@@ -99,9 +92,7 @@ def test_controller_stores_and_retrieves(temp_dir, device, opt_class):
     for parameter_1, parameter_2 in zip(model.parameters(), model_2.parameters()):
         assert not torch.allclose(parameter_1, parameter_2)
     controller = training.TrainingStateController(
-        p,
-        state_csv_path=state_csv_path,
-        state_dir=state_dir,
+        p, state_csv_path=state_csv_path, state_dir=state_dir,
     )
     assert "cool_guy_entry" not in controller[10]
     assert controller[10]["es_resume_cd"] == epoch_info["es_resume_cd"]
@@ -231,7 +222,7 @@ def test_controller_slippery_slope():
     init_lr = optimizer.param_groups[0]["lr"]
     for step in range(6):
         dev = 3.5 - 0.75 * step
-        controller.update_for_epoch(model, optimizer, 1., dev)
+        controller.update_for_epoch(model, optimizer, 1.0, dev)
         assert controller.continue_training(), step
         assert np.isclose(optimizer.param_groups[0]["lr"], init_lr), step
 
@@ -288,9 +279,7 @@ def test_controller_best(temp_dir):
     # ensure we're keeping track of the last when the model name is not
     # unique
     controller = training.TrainingStateController(
-        training.TrainingStateParams(
-            saved_model_fmt="model.pt",
-        ),
+        training.TrainingStateParams(saved_model_fmt="model.pt",),
         state_dir=temp_dir,
         warn=False,
     )
@@ -323,3 +312,104 @@ def test_pydrobert_param_optuna_hooks():
     study = optuna.create_study(sampler=sampler)
     study.optimize(objective, n_trials=50)
     assert study.best_params["training.log10_learning_rate"] < -5
+
+
+def _test_distributed_controller_helper(
+    rank, world_size, num_epochs, temp_dir, device, out=None
+):
+    torch.manual_seed(0)
+    NN, N, F = 100, 10, 5
+    n = 10 // max(world_size, 1)
+    assert n * max(world_size, 1) == N
+    if device.type == "cuda":
+        if world_size:
+            torch.distributed.init_process_group(
+                "nccl", rank=rank, world_size=world_size
+            )
+        device = torch.device(rank)
+    elif world_size:
+        torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
+    if temp_dir is not None:
+        state_csv = os.path.join(temp_dir, "hist.csv")
+    else:
+        state_csv = None
+    x, y = torch.randn(NN, F, device=device), torch.randn(NN, F, device=device)
+    train_loss_func = torch.nn.MSELoss()
+    val_loss_func = torch.nn.L1Loss()
+    ds = torch.utils.data.TensorDataset(x, y)
+    sampler = torch.utils.data.distributed.DistributedSampler(
+        ds, max(world_size, 1), rank
+    )
+    dl = torch.utils.data.DataLoader(ds, n, sampler=sampler)
+
+    model = torch.nn.Linear(F, F)
+    if world_size:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model, [rank] if device.type == "cuda" else None
+        )
+    optim = torch.optim.Adam(model.parameters(), lr=1e-4)
+
+    params = training.TrainingStateParams(num_epochs=num_epochs, seed=0)
+    controller = training.TrainingStateController(params, state_csv, temp_dir)
+    controller.load_model_and_optimizer_for_epoch(model, optim)
+
+    while controller.continue_training():
+        sampler.set_epoch(controller.get_last_epoch() + 1)
+        train_loss = 0
+        for x_, y_ in dl:
+            optim.zero_grad()
+            x_ = model(x_)
+            loss = train_loss_func(x_.flatten(), y_.flatten())
+            loss.backward()
+            train_loss += loss.item()
+            optim.step()
+        val_loss = 0
+        with torch.no_grad():
+            for x_, y_ in dl:
+                x_ = model(x_)
+                loss = val_loss_func(x_.flatten(), y_.flatten())
+                val_loss += loss.item()
+        controller.update_for_epoch(model, optim, train_loss, val_loss)
+
+    info = controller.get_info(controller.get_best_epoch())
+    if out is None:
+        out = torch.tensor([info["train_met"], info["val_met"]])
+    else:
+        out[0] = info["train_met"]
+        out[1] = info["val_met"]
+    return out
+
+
+@pytest.mark.parametrize("world_size", [1, 2])
+def test_distributed_controller(device, temp_dir, world_size):
+    if device.type == "cuda" and world_size > torch.cuda.device_count():
+        pytest.skip("not enough gpus")
+
+    exp_vals_1 = _test_distributed_controller_helper(0, 0, 3, f"{temp_dir}/a", device)
+    exp_vals_2 = _test_distributed_controller_helper(0, 0, 5, f"{temp_dir}/a", device)
+    assert not torch.allclose(exp_vals_1, exp_vals_2, atol=1e-3)
+    exp_vals_3 = _test_distributed_controller_helper(0, 0, 5, None, device)
+    assert torch.allclose(exp_vals_2, exp_vals_3, atol=1e-3)
+
+    act_vals = torch.empty_like(exp_vals_1)
+    torch.multiprocessing.spawn(
+        _test_distributed_controller_helper,
+        (world_size, 3, f"{temp_dir}/b", device, act_vals),
+        world_size,
+        True,
+    )
+    assert torch.allclose(exp_vals_1, act_vals, atol=1e-3)
+    torch.multiprocessing.spawn(
+        _test_distributed_controller_helper,
+        (world_size, 5, f"{temp_dir}/b", device, act_vals),
+        world_size,
+        True,
+    )
+    assert torch.allclose(act_vals, exp_vals_2, atol=1e-3)
+    torch.multiprocessing.spawn(
+        _test_distributed_controller_helper,
+        (world_size, 5, None, device, act_vals),
+        world_size,
+        True,
+    )
+    assert torch.allclose(act_vals, exp_vals_3, atol=1e-3)

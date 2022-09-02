@@ -303,7 +303,7 @@ def test_spect_training_data_loader(
     _compare_epochs(ep1, _get_epoch(False), True)
 
 
-def _test_async_spect_training_data_wrapper(
+def _test_distributed_data_loader(
     rank, world_size, train, temp_dir, batch_size, bucket=False, out=None
 ):
 
@@ -366,16 +366,16 @@ def _test_async_spect_training_data_wrapper(
 @pytest.mark.cpu
 @pytest.mark.parametrize("train", [True, False], ids=["train", "eval"])
 @pytest.mark.parametrize("bucket", [True, False], ids=["bucket", "unbucket"])
-def test_async_data_loader(populate_torch_dir, temp_dir, train, bucket):
+def test_distributed_data_loader(populate_torch_dir, temp_dir, train, bucket):
     if not torch.distributed.is_available():
         pytest.skip("distributed is not available")
     NN, N, W = 100, 10, 2
     assert NN % (N * W) == 0
     populate_torch_dir(temp_dir, NN)
-    lens_exp = _test_async_spect_training_data_wrapper(0, 0, train, temp_dir, N)
+    lens_exp = _test_distributed_data_loader(0, 0, train, temp_dir, N)
     lens_act = torch.full_like(lens_exp, -1)
     torch.multiprocessing.spawn(
-        _test_async_spect_training_data_wrapper,
+        _test_distributed_data_loader,
         (W, train, temp_dir, N, bucket, lens_act),
         W,
         True,

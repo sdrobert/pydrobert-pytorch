@@ -293,6 +293,9 @@ class TrainingStateController(object):
     warn
         Whether to warn using :mod:`warnings` module when a format string does
         not contain the "epoch" field.
+    reduce_op
+        The op to combine metrics and other reducable ops in a distributed environment.
+        See the note below for more details.
     
     Examples
     --------
@@ -311,6 +314,37 @@ class TrainingStateController(object):
     >>>     if not controller.update_for_epoch(
     ...             model, optimizer, train_loss, val_loss):
     >>>         break  # early stopping
+
+    Notes
+    -----
+    :class:`TrainingStateController` has rudimentary support for distributed training
+    via :class:`torch.nn.parallel.DistributedDataParallel`. Please read the `tutorial
+    <https://pytorch.org/tutorials/intermediate/ddp_tutorial.html>`_ to understand the
+    basics of the environment before continuing.
+
+    Simple training loops involving a :class:`TrainingStateController`, like in the
+    example above, should work with only the usual distributed boilerplate (spawning the
+    pool, initializing process group, and wrapping the model with
+    :class:`DistributedDataParallel`). The controller should be created and
+    :func:`update_for_epoch` called in each worker.
+    
+    Each worker maintains its own separate cache of state history, only synchronizing
+    the training and validation metrics across workers via a reduction operation in
+    :func:`update_for_epoch`. No other default state information needs synchronization.
+    If a custom entry in the state history needs to be synchronized (i.e. it depends
+    directly on the data seen over the epoch, not on the training or validation
+    metrics), the `reduce` flag of :func:`add_entry` can be set to :obj:`True` and that
+    value will likewise be synchronized on the call to :func:`update_for_epoch`.
+
+    `reduce_op` determines how the relevant values are synchronized. An average is taken
+    by default by first dividing each copy of the value by the world size and then
+    summing the copies together via :obj:`torch.distributed.ReduceOp.SUM`. See
+    :class:`torch.distributed.ReduceOp` for other options.
+
+    Writing or deleting from disk is performed by only one worker (rank 0). Everyone
+    else waits for it to finish. Reading from disk (e.g. setting up the initial cache
+    from the state csv or loading model parameters) is performed by all workers in
+    parallel. This paradigm is safe if all workers have access to the same disk.
     """
 
     def __init__(
@@ -319,6 +353,7 @@ class TrainingStateController(object):
         state_csv_path: Optional[str] = None,
         state_dir: Optional[str] = None,
         warn: bool = True,
+        reduce_op: Optional[torch.distributed.ReduceOp] = None,
     ):
         super(TrainingStateController, self).__init__()
         self.params = params
@@ -336,6 +371,7 @@ class TrainingStateController(object):
         self.cache_hist = dict()
         self.user_entry_types = OrderedDict()
         self.fmt_dict = dict()
+        self.reduce_op = reduce_op
         if params.num_epochs is None:
             self.fmt_dict["epoch"] = "{:010d}"
         else:
@@ -358,6 +394,11 @@ class TrainingStateController(object):
         self.fmt_dict["lr"] = "{{:.{}e}}".format(self.SCIENTIFIC_PRECISION - 1)
         self.fmt_dict["train_met"] = self.fmt_dict["lr"]
         self.fmt_dict["val_met"] = self.fmt_dict["lr"]
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            self._rank = torch.distributed.get_rank()
+        else:
+            self._rank = -1
+        self.reduced_entries = {"train_met", "val_met"}
 
     """The number of digits in significand of scientific notation
 
@@ -367,7 +408,9 @@ class TrainingStateController(object):
     """
     SCIENTIFIC_PRECISION = 5
 
-    def add_entry(self, name: str, typ: type = str, fmt: str = "{}") -> None:
+    def add_entry(
+        self, name: str, typ: type = str, fmt: str = "{}", reduce: bool = False
+    ) -> None:
         """Add an entry to to be stored and retrieved at every epoch
 
         This method is useful when training loops need specialized, persistent
@@ -387,6 +430,11 @@ class TrainingStateController(object):
             serialized to a string via ``fmt.format(obj)``.
         fmt
             The format string used to serialize the objects into strings.
+        reduce
+            If :obj:`True` and in a distributed environment, the value will be
+            synchronized across workers via a reduction op on each call to
+            :func:`update_for_epoch` see the notes in the class documentation for
+            more information.
 
         Examples
         --------
@@ -408,7 +456,7 @@ class TrainingStateController(object):
         :func:`save_info_to_hist`, or it may corrupt the experiment history. However,
         the controller can safely ignore additional entries when loading history from a
         CSV. Thus, there is no need to call :func:`add_entry` if no new training is to
-        be done (unless those entries are needed outside of training)
+        be done (unless those entries are needed outside of training).
         """
         if name in {
             "epoch",
@@ -425,7 +473,13 @@ class TrainingStateController(object):
             raise ValueError("typ ({}) must be a type".format(typ))
         self.user_entry_types[name] = typ
         self.fmt_dict[name] = fmt
+        if reduce:
+            self.reduced_entries.add(name)
         self.update_cache()
+
+    def _barrier(self):
+        if self._rank >= 0:
+            torch.distributed.barrier()
 
     def update_cache(self) -> None:
         """Update the cache with history stored in state_csv_path"""
@@ -529,10 +583,16 @@ class TrainingStateController(object):
                 torch.manual_seed(self.params.seed)
             if hasattr(model, "reset_parameters"):
                 model.reset_parameters()
+            elif (
+                self._rank >= 0
+                and hasattr(model, "module")
+                and hasattr(model.module, "reset_parameters")
+            ):
+                model.module.reset_parameters()
             else:
                 warnings.warn(
                     "model has no reset_parameters() method, so cannot "
-                    "reset parameters for epoch 0"
+                    "reset parameters for epoch 0",
                 )
         elif self.state_dir is not None:
             epoch_info = self[epoch]
@@ -546,6 +606,7 @@ class TrainingStateController(object):
                 "Unable to load model for epoch {}. No state directory!"
                 "".format(epoch)
             )
+        self._barrier()
 
     def load_model_and_optimizer_for_epoch(
         self,
@@ -578,6 +639,12 @@ class TrainingStateController(object):
                 torch.manual_seed(self.params.seed)
             if hasattr(model, "reset_parameters"):
                 model.reset_parameters()
+            elif (
+                self._rank >= 0
+                and hasattr(model, "module")
+                and hasattr(model.module, "reset_parameters")
+            ):
+                model.module.reset_parameters()
             else:
                 warnings.warn(
                     "model has no reset_parameters() method, so cannot "
@@ -611,6 +678,7 @@ class TrainingStateController(object):
                 "Unable to load model and optimizer for epoch {}. No state"
                 "directory!".format(epoch)
             )
+        self._barrier()
 
     def delete_model_and_optimizer_for_epoch(self, epoch: int) -> None:
         """Delete state dicts for model and epoch off of disk, if they exist
@@ -628,16 +696,18 @@ class TrainingStateController(object):
         epoch_info = self.get_info(epoch, None)
         if epoch_info is None:
             return
-        model_basename = self.params.saved_model_fmt.format(**epoch_info)
-        optimizer_basename = self.params.saved_optimizer_fmt.format(**epoch_info)
-        try:
-            os.remove(os.path.join(self.state_dir, model_basename))
-        except OSError:
-            pass
-        try:
-            os.remove(os.path.join(self.state_dir, optimizer_basename))
-        except OSError:
-            pass
+        if self._rank <= 0:
+            model_basename = self.params.saved_model_fmt.format(**epoch_info)
+            optimizer_basename = self.params.saved_optimizer_fmt.format(**epoch_info)
+            try:
+                os.remove(os.path.join(self.state_dir, model_basename))
+            except OSError:
+                pass
+            try:
+                os.remove(os.path.join(self.state_dir, optimizer_basename))
+            except OSError:
+                pass
+        self._barrier()
 
     def get_info(self, epoch: int, *default) -> dict:
         """Get history entries for a specific epoch
@@ -683,16 +753,19 @@ class TrainingStateController(object):
         """
         if self.state_dir is None:
             return
-        if not os.path.isdir(self.state_dir):
-            os.makedirs(self.state_dir)
-        model_basename = self.params.saved_model_fmt.format(**info)
-        optimizer_basename = self.params.saved_optimizer_fmt.format(**info)
-        torch.save(
-            model.state_dict(), os.path.join(self.state_dir, model_basename),
-        )
-        torch.save(
-            optimizer.state_dict(), os.path.join(self.state_dir, optimizer_basename),
-        )
+        if self._rank <= 0:
+            if not os.path.isdir(self.state_dir):
+                os.makedirs(self.state_dir)
+            model_basename = self.params.saved_model_fmt.format(**info)
+            optimizer_basename = self.params.saved_optimizer_fmt.format(**info)
+            torch.save(
+                model.state_dict(), os.path.join(self.state_dir, model_basename),
+            )
+            torch.save(
+                optimizer.state_dict(),
+                os.path.join(self.state_dir, optimizer_basename),
+            )
+        self._barrier()
 
     def save_info_to_hist(self, info: dict) -> None:
         """Append history entries to the history csv
@@ -709,23 +782,25 @@ class TrainingStateController(object):
         self.cache_hist[info["epoch"]] = info
         if self.state_csv_path is None:
             return
-        names = [
-            "epoch",
-            "es_resume_cd",
-            "es_patience_cd",
-            "rlr_resume_cd",
-            "rlr_patience_cd",
-            "lr",
-            "train_met",
-            "val_met",
-        ]
-        names += list(self.user_entry_types)
-        write_header = not os.path.exists(self.state_csv_path)
-        with open(self.state_csv_path, "a") as f:
-            wr = writer(f)
-            if write_header:
-                wr.writerow(names)
-            wr.writerow([self.fmt_dict[k].format(info[k]) for k in names])
+        if self._rank <= 0:
+            names = [
+                "epoch",
+                "es_resume_cd",
+                "es_patience_cd",
+                "rlr_resume_cd",
+                "rlr_patience_cd",
+                "lr",
+                "train_met",
+                "val_met",
+            ]
+            names += list(self.user_entry_types)
+            write_header = not os.path.exists(self.state_csv_path)
+            with open(self.state_csv_path, "a") as f:
+                wr = writer(f)
+                if write_header:
+                    wr.writerow(names)
+                wr.writerow([self.fmt_dict[k].format(info[k]) for k in names])
+        self._barrier()
 
     def continue_training(self, epoch: Optional[int] = None) -> bool:
         """Return a boolean on whether to continue training
@@ -791,6 +866,19 @@ class TrainingStateController(object):
             Whether to continue training. This can be set to :obj:`False` either by
             hitting the max number of epochs or by early stopping.
         """
+        if self._rank >= 0:
+            reduce_op = self.reduce_op
+            if reduce_op is None:
+                W = torch.distributed.get_world_size()
+                train_met /= W
+                val_met /= W
+                reduce_op = torch.distributed.ReduceOp.SUM
+            train_met, val_met = torch.tensor([train_met]), torch.tensor([val_met])
+            handle_a = torch.distributed.all_reduce(train_met, reduce_op, async_op=True)
+            handle_b = torch.distributed.all_reduce(val_met, reduce_op, async_op=True)
+            handle_a.wait()
+            handle_b.wait()
+            train_met, val_met = train_met.item(), val_met.item()
         if epoch is None:
             epoch = self.get_last_epoch() + 1
         last_best = self.get_best_epoch()
