@@ -867,18 +867,30 @@ class TrainingStateController(object):
             hitting the max number of epochs or by early stopping.
         """
         if self._rank >= 0:
-            reduce_op = self.reduce_op
-            if reduce_op is None:
-                W = torch.distributed.get_world_size()
-                train_met /= W
-                val_met /= W
-                reduce_op = torch.distributed.ReduceOp.SUM
-            train_met, val_met = torch.tensor([train_met]), torch.tensor([val_met])
-            handle_a = torch.distributed.all_reduce(train_met, reduce_op, async_op=True)
-            handle_b = torch.distributed.all_reduce(val_met, reduce_op, async_op=True)
-            handle_a.wait()
-            handle_b.wait()
-            train_met, val_met = train_met.item(), val_met.item()
+            kwargs["train_met"] = train_met
+            kwargs["val_met"] = val_met
+            handles = []
+            reduced_entries = sorted(self.reduced_entries)
+            W = torch.distributed.get_world_size()
+            to_gpu = torch.distributed.get_backend() == torch.distributed.Backend.NCCL
+            for name in reduced_entries:
+                val = torch.tensor([kwargs[name]])
+                if to_gpu:
+                    val = val.to(self._rank)
+                reduce_op = self.reduce_op
+                if reduce_op is None:
+                    val = val / W
+                    reduce_op = torch.distributed.ReduceOp.SUM
+                handles.append(
+                    torch.distributed.all_reduce(val, reduce_op, async_op=True)
+                )
+                kwargs[name] = val
+            for handle in handles:
+                handle.wait()
+            for name in reduced_entries:
+                kwargs[name] = kwargs[name].item()
+            train_met = kwargs.pop("train_met")
+            val_met = kwargs.pop("val_met")
         if epoch is None:
             epoch = self.get_last_epoch() + 1
         last_best = self.get_best_epoch()

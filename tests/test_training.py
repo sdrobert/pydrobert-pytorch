@@ -343,6 +343,7 @@ def _test_distributed_controller_helper(
     dl = torch.utils.data.DataLoader(ds, n, sampler=sampler)
 
     model = torch.nn.Linear(F, F)
+    model.to(device)
     if world_size:
         model = torch.nn.parallel.DistributedDataParallel(
             model, [rank] if device.type == "cuda" else None
@@ -351,12 +352,16 @@ def _test_distributed_controller_helper(
 
     params = training.TrainingStateParams(num_epochs=num_epochs, seed=0)
     controller = training.TrainingStateController(params, state_csv, temp_dir)
+    controller.add_entry("x_mean", float, reduce=True)
     controller.load_model_and_optimizer_for_epoch(model, optim)
 
     while controller.continue_training():
+        x_mean = 0
         sampler.set_epoch(controller.get_last_epoch() + 1)
         train_loss = 0
         for x_, y_ in dl:
+            x_mean += x_.mean().item()
+            x_, y_ = x_.to(device), y_.to(device)
             optim.zero_grad()
             x_ = model(x_)
             loss = train_loss_func(x_.flatten(), y_.flatten())
@@ -366,17 +371,19 @@ def _test_distributed_controller_helper(
         val_loss = 0
         with torch.no_grad():
             for x_, y_ in dl:
+                x_, y_ = x_.to(device), y_.to(device)
                 x_ = model(x_)
                 loss = val_loss_func(x_.flatten(), y_.flatten())
                 val_loss += loss.item()
-        controller.update_for_epoch(model, optim, train_loss, val_loss)
+        controller.update_for_epoch(model, optim, train_loss, val_loss, x_mean=x_mean)
 
     info = controller.get_info(controller.get_best_epoch())
     if out is None:
-        out = torch.tensor([info["train_met"], info["val_met"]])
+        out = torch.tensor([info["train_met"], info["val_met"], info["x_mean"]])
     else:
         out[0] = info["train_met"]
         out[1] = info["val_met"]
+        out[2] = info["x_mean"]
     return out
 
 
