@@ -37,6 +37,7 @@ from ._dataloaders import (
     EpochRandomSampler,
     spect_seq_to_batch,
     SpectDataLoaderParams,
+    SpectDataSetEvaluationWrapper,
     SpectEvaluationDataLoader,
     SpectTrainingDataLoader,
 )
@@ -72,6 +73,7 @@ __all__ = [
     "SpectDataLoaderParams",
     "SpectDataParams",
     "SpectDataSet",
+    "SpectDataSetEvaluationWrapper",
     "SpectEvaluationDataLoader",
     "SpectTrainingDataLoader",
     "token_to_transcript",

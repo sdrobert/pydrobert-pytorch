@@ -74,7 +74,13 @@ def test_valid_spect_data_set(
         os.path.join(temp_dir, "feat", "fake", file_prefix + "fake.pt"),
     )
     params = data.SpectDataParams(eos=eos)
-    data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix, params=params)
+    data_set = data.SpectDataSet(
+        temp_dir,
+        file_prefix=file_prefix,
+        params=params,
+        suppress_alis=False,
+        tokens_only=False,
+    )
     assert not data_set.has_ali and not data_set.has_ref
     assert len(utt_ids) == len(data_set.utt_ids)
     assert all(utt_a == utt_b for (utt_a, utt_b) in zip(utt_ids, data_set.utt_ids))
@@ -96,7 +102,13 @@ def test_valid_spect_data_set(
         eos_sym = eos_sym.unsqueeze(0)
         refs = [torch.cat([x, eos_sym]) for x in refs]
     params.sos = sos
-    data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix, params=params)
+    data_set = data.SpectDataSet(
+        temp_dir,
+        file_prefix=file_prefix,
+        params=params,
+        suppress_alis=False,
+        tokens_only=False,
+    )
     assert data_set.has_ali and data_set.has_ref
     assert len(utt_ids) == len(data_set.utt_ids)
     assert all(utt_a == utt_b for (utt_a, utt_b) in zip(utt_ids, data_set.utt_ids))
@@ -111,7 +123,13 @@ def test_valid_spect_data_set(
     )
     subset_ids = list(data_set.utt_ids[: num_utts // 2])
     params.subset_ids = subset_ids
-    data_set = data.SpectDataSet(temp_dir, file_prefix=file_prefix, params=params)
+    data_set = data.SpectDataSet(
+        temp_dir,
+        file_prefix=file_prefix,
+        params=params,
+        suppress_alis=False,
+        tokens_only=False,
+    )
     assert all(utt_a == utt_b for (utt_a, utt_b) in zip(subset_ids, data_set.utt_ids))
     assert all(
         torch.all(ali_a == ali_b)
@@ -135,11 +153,13 @@ def test_spect_data_set_warnings(temp_dir):
     torch.save(torch.rand(4, 3), os.path.join(feat_dir, "b.pt"))
     torch.save(torch.randint(10, (4,), dtype=torch.long), os.path.join(ali_dir, "b.pt"))
     torch.save(torch.randint(10, (5,), dtype=torch.long), os.path.join(ali_dir, "c.pt"))
-    data_set = data.SpectDataSet(temp_dir, warn_on_missing=False)
+    data_set = data.SpectDataSet(
+        temp_dir, warn_on_missing=False, suppress_alis=False, tokens_only=False
+    )
     assert data_set.has_ali
     assert data_set.utt_ids == ("b",)
     with pytest.warns(UserWarning) as warnings:
-        data_set = data.SpectDataSet(temp_dir)
+        data_set = data.SpectDataSet(temp_dir, suppress_alis=False, tokens_only=False)
     assert len(warnings) == 2
     assert any(str(x.message) == "Missing ali for uttid: 'a'" for x in warnings)
     assert any(str(x.message) == "Missing feat for uttid: 'c'" for x in warnings)
@@ -150,7 +170,7 @@ def test_spect_data_write_pdf(temp_dir, device):
     feat_dir = os.path.join(temp_dir, "feat")
     os.makedirs(feat_dir)
     torch.save(torch.rand(3, 3), os.path.join(feat_dir, "a.pt"))
-    data_set = data.SpectDataSet(temp_dir)
+    data_set = data.SpectDataSet(temp_dir, suppress_alis=False, tokens_only=False)
     z = torch.randint(10, (4, 5), dtype=torch.long)
     if device == "cuda":
         data_set.write_pdf("b", z.cuda())
@@ -173,7 +193,9 @@ def test_spect_data_write_hyp(temp_dir, device, sos, eos):
     os.makedirs(feat_dir)
     torch.save(torch.rand(3, 3), os.path.join(feat_dir, "a.pt"))
     params = data.SpectDataParams(sos=sos, eos=eos)
-    data_set = data.SpectDataSet(temp_dir, params=params)
+    data_set = data.SpectDataSet(
+        temp_dir, params=params, suppress_alis=False, tokens_only=False
+    )
     z = torch.randint(10, (4, 3), dtype=torch.float)
     zz = z
     if sos:
@@ -225,7 +247,9 @@ def test_spect_data_set_validity(temp_dir, eos):
     )
     torch.save(torch.tensor([[0, 3, 4], [1, 1, 2]]), ref_b_pt)
     params = data.SpectDataParams(eos=eos)
-    data_set = data.SpectDataSet(temp_dir, params=params)
+    data_set = data.SpectDataSet(
+        temp_dir, params=params, suppress_alis=False, tokens_only=False
+    )
     data.validate_spect_data_set(data_set)
     torch.save(torch.rand(4, 4).long(), feats_b_pt)
     with pytest.raises(ValueError, match="not the same tensor type"):
@@ -297,7 +321,7 @@ def test_validate_spect_data_set_cuda(temp_dir):
     torch.save(torch.rand(10, 5), feats_pt)
     torch.save(torch.randint(10, (10,), dtype=torch.long), ali_pt)
     torch.save(torch.tensor([1, 2, 3]), ref_pt)
-    data_set = data.SpectDataSet(temp_dir)
+    data_set = data.SpectDataSet(temp_dir, suppress_alis=False, tokens_only=False)
     data.validate_spect_data_set(data_set)
     torch.save(torch.rand(10, 5).cuda(), feats_pt)
     with pytest.raises(ValueError, match="cuda"):

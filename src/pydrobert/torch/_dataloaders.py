@@ -361,81 +361,110 @@ class SpectDataLoaderParams(SpectDataParams, DynamicLengthDataLoaderParams):
 
 
 def spect_seq_to_batch(
-    seq: Sequence[Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]],
+    seq: Sequence[Tuple[Union[torch.Tensor, str, None], ...]],
     batch_first: bool = True,
     sort: bool = True,
-) -> Tuple[
-    torch.Tensor,
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    torch.Tensor,
-    Optional[torch.Tensor],
-]:
+    has_alis: bool = True,
+    has_uttids: bool = False,
+) -> Tuple[Union[torch.Tensor, Tuple[str, ...], None], ...]:
     """Convert a sequence of spectral data to a batch
+
+    This function is used to collate sequences of elements from a :class:`SpectDataSet`
+    into batches.
 
     Parameters
     ----------
     seq
-        A finite-length (``N``) sequence of tuples ``feat_n, ali_n, ref_n``, where
-        `feat_n` is of size ``(T_n, F)``, `ali_n` is of size ``(T_n,)``, and `ref_n` is
-        of size ``(R_n[, 3])``.
+        A finite-length (``N``) sequence of tuples, each tuple corresponding to an
+        utterance and containing, in order:
+
+        1. `feat_n`, a tensor of size ``(T_n, F)`` representing per-frame spectral
+           features.
+        2. `ali_n` (if `has_alis` is :obj:`True)`, either :obj:`None` or a tensor
+           of shape ``(T_n)`` representing per-frame alignment ids.
+        3. `ref_n`, either :obj:`None` or a tensor of size ``(R_n[, 3])`` representing
+           reference token sequences and optionally their frame shifts. Either all
+           `ref_n` must contain the frame shift info (the ``3`` dimension) or none of
+           them.
+        4. `utt_n` (if `has_uttids` is :obj:`True`), the utterance id.
+
     batch_first
         If :obj:`True`, the batch dimension ``N`` comes before the sequence dimension
         ``T`` or ``R`` in the return values.
     sort
         If :obj:`True`, the tuples in `seq` are first sorted in descending order of
-        ``T_n``.
+        ``T_n`` before being batched.
+    has_alis
+        Whether `ali_n` is part of the input values and `alis` is part of the output
+        values. Note that `has_alis` should still be :obj:`True` if `ali_n` is present
+        in `seq` but is :obj:`None`.
+    has_uttids
+        Whether `utt_n` is part of the input values and `uttids` is part of the output
+        values.
 
     Returns
     -------
-    feats : torch.Tensor
-        A tensor of shape ``(max_n T_n, N, F)`` containing the right-padded sequence
-        ``[feat_1, feat_2, ..., feat_N]`` (or the sorted sequence when `sort` is
-        :obj:`True`). Padded with zeros.
-    alis : torch.Tensor or None
-        If all `ali_n` are not :obj:`None`, a tensor of shape ``(max_n T_n, N)``
-        containing the right-padded sequence ``[ali_1, ali_2, ... ali_N]`` (or the
-        sorted sequence when `sort` is :obj:`True`). If any `ali_n` is :obj:`None`,
-        `ali` is :obj:`None`. Padded with
-        :const:`pydrobert.torch.config.INDEX_PAD_VALUE`.
-    refs : torch.Tensor or None
-        If all `ref_n` are not :obj:`None`, a tensor of shape ``(max_n R_n, N[, 3])``
-        containing the right-padded sequences ``[ref_1, ref_2, ..., ref_N]`` (or the
-        sorted sequence when `sort` is :obj:`True`). All `ref_n` must have the ``3``
-        dimension or none of them. If any `ref_n` is :obj:`None`, `refs` is :obj:`None`.
-        Padded with :const:`pydrobert.torch.config.INDEX_PAD_VALUE`.
-    feat_sizes : torch.Tensor
-        A tensor of shape ``(N,)`` containing the sequence ``[T_1, T_2, ..., T_N]``
-        (or the sorted sequence when `sort` is :obj:`True`).
-    ref_sizes : torch.Tensor or None
-        A tensor of shape ``(N,)`` containing the sequence ``[R_1, R_2, ..., R_N]``
-        (or the sequence sorted by `feat_sizes` when `sort` is :obj:`True`).
+    batch
+        A tuple containing the following elements:
+        
+        1. `feats`, a tensor of shape ``(max_n T_n, N, F)`` containing the right-padded
+           sequences ``[feat_1, feat_2, ..., feat_N]``. Padded with zeros.
+        2. `alis` (if `has_alis` is :obj:`True`), either :obj:`None` or a tensor of
+           shape ``(max_n T_n, N)`` containing the right-padded sequence ``[ali_1,
+           ali_2, ... ali_N]``. Padded with
+           :const:`pydrobert.torch.config.INDEX_PAD_VALUE`.
+        3. `refs`, either :obj:`None` or a tensor of shape ``(max_n R_n, N[, 3])``
+            containing the right-padded sequences ``[ref_1, ref_2, ..., ref_N]``. 
+            Padded with :const:`pydrobert.torch.config.INDEX_PAD_VALUE`.
+        4. `feat_sizes`, a tensor of shape ``(N,)`` containing the sequence ``[T_1, T_2,
+           ..., T_N]``.
+        5. `ref_sizes`, a tensor of shape ``(N,)`` containing the sequence ``[R_1, R_2,
+           ..., R_N]``.
+        6. `uttids` (if `has_uttids` is :obj:`True`), an ``N``-tuple of the utterance
+           ids.
     """
     if sort:
         seq = sorted(seq, key=lambda x: x[0].size(0), reverse=True)
-    feats, alis, refs = list(zip(*seq))
-    has_ali = all(x is not None for x in alis)
-    has_ref = all(x is not None for x in refs)
-    feat_sizes = torch.tensor([len(x) for x in feats])
+    seq = list(zip(*seq))
+    if has_alis:
+        if has_uttids:
+            feats, alis, refs, uttids = seq
+        else:
+            feats, alis, refs = seq
+        ali_not_none = all(x is not None for x in alis)
+    elif has_uttids:
+        feats, refs, uttids = seq
+        ali_not_none = False
+    else:
+        feats, refs = seq
+        ali_not_none = False
+    ref_not_none = all(x is not None for x in refs)
+    feat_sizes = torch.tensor([x.size(0) for x in feats])
     feats = torch.nn.utils.rnn.pad_sequence(
         feats, padding_value=0, batch_first=batch_first
     )
-    if has_ali:
+    if ali_not_none:
         alis = torch.nn.utils.rnn.pad_sequence(
             alis, padding_value=config.INDEX_PAD_VALUE, batch_first=batch_first
         )
-    if has_ref:
+    else:
+        alis = None
+    if ref_not_none:
         ref_sizes = torch.tensor([len(x) for x in refs])
         refs = torch.nn.utils.rnn.pad_sequence(
             refs, padding_value=config.INDEX_PAD_VALUE, batch_first=batch_first
         )
-    return (
-        feats,
-        alis if has_ali else None,
-        refs if has_ref else None,
-        feat_sizes,
-        ref_sizes if has_ref else None,
-    )
+    else:
+        ref_sizes = refs = None
+    if has_alis:
+        if has_uttids:
+            return feats, alis, refs, feat_sizes, ref_sizes, tuple(uttids)
+        else:
+            return feats, alis, refs, feat_sizes, ref_sizes
+    elif has_uttids:
+        return feats, refs, feat_sizes, ref_sizes, tuple(uttids)
+    else:
+        return feats, refs, feat_sizes, ref_sizes
 
 
 def _get_bucket_batch_sampler_params(dataset, num_buckets, batch_size, dynamic):
@@ -498,16 +527,16 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         Whether to sort batches by descending number of feature frames.
     feat_mean
     feat_std
+    suppress_alis
+    tokens_only
     **kwargs
         Additional :class:`torch.utils.data.DataLoader` arguments
 
     Yields
     ------
-    feats : torch.Tensor
-    alis : torch.Tensor or None
-    refs : torch.Tensor or None
-    feat_sizes : torch.Tensor
-    ref_sizes : torch.Tensor or None
+    batch
+        Tuples of ``feats[, alis], feat_sizes, ref_sizes``. See
+        :func:`spect_seq_to_batch` for more info about the elements of the tuple.
 
     Examples
     --------
@@ -519,7 +548,8 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     >>> optim = torch.optim.Adam(model.parameters())
     >>> loss = torch.nn.CrossEntropyLoss()
     >>> params = SpectDataLoaderParams()
-    >>> loader = SpectTrainingDataLoader('data', params, batch_first=False)
+    >>> loader = SpectTrainingDataLoader(
+    ...     'data', params, batch_first=False, suppress_alis=False)
     >>> for feats, alis, _, feat_sizes, _ in loader:
     >>>     optim.zero_grad()
     >>>     packed_feats = torch.nn.utils.rnn.pack_padded_sequence(
@@ -543,8 +573,8 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
     >>> optim = torch.optim.Adam(model.parameters(), 1e-4)
     >>> loss = torch.nn.CTCLoss()
     >>> params = SpectDataLoaderParams()
-    >>> loader = SpectTrainingDataLoader('data', params)
-    >>> for feats, _, refs, feat_sizes, ref_sizes in loader:
+    >>> loader = SpectTrainingDataLoader('data', params, suppress_alis=True)
+    >>> for feats, refs, feat_sizes, ref_sizes in loader:
     >>>     optim.zero_grad()
     >>>     feats = feats.unsqueeze(1)  # channels dim
     >>>     log_prob = model(feats).squeeze(1)
@@ -559,6 +589,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         For a description of the yielded parameters
     """
 
+    dataset: SpectDataSet
     params: DynamicLengthDataLoaderParams
     batch_first: bool
     sort: bool
@@ -580,6 +611,8 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         sort: bool = True,
         feat_mean: Optional[torch.Tensor] = None,
         feat_std: Optional[torch.Tensor] = None,
+        suppress_alis: bool = None,
+        tokens_only: bool = None,
         **kwargs,
     ):
         for bad_kwarg in (
@@ -626,6 +659,8 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
                 params=data_params,
                 feat_mean=feat_mean,
                 feat_std=feat_std,
+                suppress_alis=suppress_alis,
+                tokens_only=tokens_only,
             )
         if dataset.transform is not None:
             dataset.transform.train()
@@ -663,19 +698,10 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
             dataset, batch_sampler=batch_sampler, collate_fn=self.collate_fn, **kwargs,
         )
 
-    def collate_fn(
-        self,
-        seq: Sequence[
-            Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]
-        ],
-    ) -> Tuple[
-        torch.Tensor,
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        torch.Tensor,
-        Optional[torch.Tensor],
-    ]:
-        return spect_seq_to_batch(seq, self.batch_first, self.sort)
+    def collate_fn(self, seq):
+        return spect_seq_to_batch(
+            seq, self.batch_first, self.sort, not self.dataset.suppress_alis
+        )
 
     @property
     def epoch(self) -> int:
@@ -687,7 +713,7 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         self.batch_sampler.sampler.epoch = val
 
 
-class SpectDataSetEvalWrapper(torch.utils.data.Dataset):
+class SpectDataSetEvaluationWrapper(torch.utils.data.Dataset):
     """Wraps a SpectDataSet, yielding utterance ids alongside samples"""
 
     base: SpectDataSet
@@ -752,18 +778,16 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         Whether to sort batches by descending number of feature frames.
     feat_mean
     feat_std
+    suppress_alis
+    tokens_only
     **kwargs
         Additional :class:`torch.utils.data.DataLoader` arguments
 
     Yields
     ------
-    feats : torch.Tensor
-    alis : torch.Tensor or None
-    refs : torch.Tensor or None
-    feat_sizes : torch.Tensor
-    ref_sizes : torch.Tensor or None
-    utt_ids : tuple
-        An tuple specifying the names of utterances in the batch
+    batch
+        Tuples of ``feats[, alis], feat_sizes, ref_sizes, uttids``. See
+        :func:`spect_seq_to_batch` for more info about the elements of the tuple.
 
     Examples
     --------
@@ -773,7 +797,8 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     >>> num_filts, num_ali_classes = 40, 100
     >>> model = torch.nn.LSTM(num_filts, num_ali_classes)
     >>> params = SpectDataLoaderParams()
-    >>> loader = SpectEvaluationDataLoader('data', params, batch_first=False)
+    >>> loader = SpectEvaluationDataLoader(
+    ...     'data', params, batch_first=False, suppress_alis=False)
     >>> for feats, _, _, feat_sizes, _, utt_ids in loader:
     >>>     packed_feats = torch.nn.utils.rnn.pack_padded_sequence(
     ...         feats, feat_sizes)
@@ -794,8 +819,8 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     ...     torch.nn.Linear(num_filts, num_ref_classes),
     ...     torch.nn.LogSoftmax(-1)).eval()
     >>> params = SpectDataLoaderParams()
-    >>> loader = SpectEvaluationDataLoader('data', params)
-    >>> for feats, _, _, feat_sizes, _, utt_ids in loader:
+    >>> loader = SpectEvaluationDataLoader('data', params, suppress_alis=True)
+    >>> for feats, _, feat_sizes, _, utt_ids in loader:
     >>>     feats = feats.unsqueeze(1)  # channels dim
     >>>     log_prob = model(feats).squeeze(1)
     >>>     paths = log_prob.argmax(-1)  # best path decoding
@@ -811,41 +836,18 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
     Notes
     -----
     Use ``data_source.base`` to access the underlying :class:`SpectDataSet`.
-
-    See Also
-    --------
-    spect_seq_to_batch
-        For a description of the yielded parameters
     """
 
+    dataset: SpectDataSetEvaluationWrapper
     params: DynamicLengthDataLoaderParams
     data_params: SpectDataParams
     batch_first: bool
     sort: bool
 
-    def eval_collate_fn(
-        self,
-        seq: Sequence[
-            Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], str]
-        ],
-    ) -> Tuple[
-        torch.Tensor,
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        torch.Tensor,
-        Optional[torch.Tensor],
-        Tuple[str, ...],
-    ]:
-        """Update context_window_seq_to_batch to handle feat_sizes, utt_ids"""
-        feats, alis, refs, utt_ids = list(zip(*seq))
-        if self.sort:
-            utt_ids = tuple(
-                x[1] for x in sorted(zip(feats, utt_ids), key=lambda x: -x[0].shape[0])
-            )
-        feats, alis, refs, feat_sizes, ref_sizes = spect_seq_to_batch(
-            list(zip(feats, alis, refs)), self.batch_first, self.sort
+    def collate_fn(self, seq):
+        return spect_seq_to_batch(
+            seq, self.batch_first, self.sort, not self.dataset.base.suppress_alis, True
         )
-        return feats, alis, refs, feat_sizes, ref_sizes, utt_ids
 
     def __init__(
         self,
@@ -862,6 +864,8 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         sort: bool = True,
         feat_mean: Optional[torch.Tensor] = None,
         feat_std: Optional[torch.Tensor] = None,
+        suppress_alis: bool = None,
+        tokens_only: bool = None,
         **kwargs,
     ):
         for bad_kwarg in (
@@ -908,10 +912,12 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
                 params=data_params,
                 feat_mean=feat_mean,
                 feat_std=feat_std,
+                suppress_alis=suppress_alis,
+                tokens_only=tokens_only,
             )
         if dataset.transform is not None:
             dataset.transform.eval()
-        dataset = SpectDataSetEvalWrapper(dataset)
+        dataset = SpectDataSetEvaluationWrapper(dataset)
         utt_sampler = DistributableSequentialSampler(dataset)
         if not isinstance(
             params, (DynamicLengthDataLoaderParams, SpectDataLoaderParams)
@@ -938,17 +944,17 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
                 utt_sampler, params.batch_size, drop_last=params.drop_last
             )
         super().__init__(
-            dataset,
-            batch_sampler=batch_sampler,
-            collate_fn=self.eval_collate_fn,
-            **kwargs,
+            dataset, batch_sampler=batch_sampler, collate_fn=self.collate_fn, **kwargs,
         )
 
 
 def context_window_seq_to_batch(
-    seq: Sequence[Tuple[torch.Tensor, Optional[torch.Tensor]]]
-) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    seq: Sequence[Tuple[Union[torch.Tensor, str, None], ...]], has_uttids: bool = False
+) -> Tuple[Union[torch.Tensor, Sequence[str], None], ...]:
     r"""Convert a sequence of context window elements to a batch
+
+    This function is used to collate sequences of elements from a
+    :class:`ContextWindowDataSet` into batches.
 
     Assume `seq` is a finite length sequence of pairs of ``window, ali``, where
     ``window`` is of size ``(T, C, F)``, where ``T`` is some number of windows (which
@@ -963,25 +969,47 @@ def context_window_seq_to_batch(
     Parameters
     ----------
     seq
+        A finite-length (``N``) sequence of tuples, each tuple corresponding to an
+        utterance and containing, in order:
+
+        1. `window_n`, a tensor of size ``(T_n, C, F)`` representing windowed spectral
+           features.
+        2. `ali_n`, either :obj:`None` or a tensor of shape ``(T_n,)`` representing
+           per-window alignment ids.
+        3. `uttid_n` (if :obj:`has_refs` is :obj:`True`), the utterance id.
+    
+    has_uttids
+        Whether `utt_n` is part of the input values and both `window_sizes` and `uttids`
+        are part of the output values.
 
     Returns
     -------
-    windows : torch.Tensor
-    alis : torch.Tensor or None
+    batch
+        A tuple containing the following elements:
+
+        1. `windows`, a tensor of shape ``(sum_n T_n, C, F)`` containing the
+           concatenated set of windows ``[window_1, window_2, ..., window_N]``
+        2. `alis`, either :obj:`None` or a tensor of shape ``(sum_n T_n,)`` containing
+           the concatenated alignment ids ``[ali_1, ali_2, ..., ali_N]``.
+        3. `window_sizes` (if `has_uttids` is :obj:`True`), a tensor of shape ``(N,)``
+           containing the sequence ``[T_1, T_2, ..., T_N]``.
+        4. `uttids` (if `has_uttids` is :obj:`True`), an ``N``-tuple of utterance ids.
     """
-    windows = []
-    alis = []
-    for window, ali in seq:
-        windows.append(window)
-        if ali is None:
-            # assume every remaining ali will be none
-            alis = None
-        else:
-            alis.append(ali)
+    seq = list(zip(*seq))
+    if has_uttids:
+        windows, alis, uttids = seq
+        window_sizes = torch.tensor([w.size(0) for w in windows])
+    else:
+        windows, alis = seq
     windows = torch.cat(windows)
-    if alis is not None:
+    if all(a is not None for a in alis):
         alis = torch.cat(alis)
-    return windows, alis
+    else:
+        alis = None
+    if has_uttids:
+        return windows, alis, window_sizes, tuple(uttids)
+    else:
+        return windows, alis
 
 
 class ContextWindowDataLoaderParams(ContextWindowDataParams, DataLoaderParams):
@@ -1058,13 +1086,9 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    windows : torch.Tensor
-        A tensor of size ``(N, C, F)``, where ``N`` is the total number of context
-        windows over all utterances in the batch, ``C`` is the context window
-        size, and ``F`` is the number of filters per frame
-    alis : torch.Tensor or None
-        A long tensor of size ``(N,)`` (or :obj:`None` if the ``ali`` dir was not
-        specified)
+    batch
+        A tuple of ``windows, alis``. See :func:`context_window_seq_to_batch` for more
+        information on the elements of the tuple.
 
     Examples
     --------
@@ -1179,21 +1203,6 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
         self.batch_sampler.sampler.epoch = val
 
 
-class ContextWindowDataSetEvalWrapper(SpectDataSetEvalWrapper):
-    """Wraps a ContextWindowDataSet, yielding window nums and utt ids along samples"""
-
-    base: ContextWindowDataSet
-
-    def __init__(self, base: ContextWindowDataSet):
-        super().__init__(base)
-
-    def __getitem__(self, idx: int):
-        sample = self.base[idx]
-        win_size = sample[0].size(0)
-        utt_id = self.base.utt_ids[idx]
-        return sample + (win_size, utt_id)
-
-
 class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     """Serves batches of context windows over sequential utterances
 
@@ -1222,21 +1231,10 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
 
     Yields
     ------
-    windows : torch.Tensor
-        A tensor of size ``(N, C, F)``, where ``N`` is the number of context
-        windows, ``C`` is the context window size, and ``F`` is the number of filters
-        per frame
-    alis : torch.Tensor or None
-        A long tensor of size ``(N,)`` (or :obj:`None` if the ``ali`` dir was not
-        specified)
-    win_sizes : torch.Tensor
-        A long tensor of shape ``(params.batch_size,)`` specifying the number of context
-        windows per utterance in the batch.
-        ``windows[sum(win_sizes[:i]):sum(win_sizes[:i+1])]`` are the context windows for
-        the ``i``-th utterance in the batch (``sum(win_sizes) == N``)
-    utt_ids : tuple
-        `utt_ids` is a tuple of size ``params.batch_size`` naming the
-        utterances in the batch
+    batch
+        A tuple of ``windows, alis, window_sizes, uttids``. See
+        :func:`context_window_seq_to_batch` for more information on the elements of the
+        tuple.
 
     Examples
     --------
@@ -1267,19 +1265,14 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
     params: DataLoaderParams
     batch_first: bool
 
-    @staticmethod
-    def eval_collate_fn(
+    def collate_fn(
+        self,
         seq: Tuple[
-            Sequence[torch.Tensor],
-            Sequence[Optional[torch.Tensor]],
-            Sequence[int],
-            Sequence[str],
-        ]
+            Sequence[torch.Tensor], Sequence[Optional[torch.Tensor]], Sequence[str],
+        ],
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor, Sequence[str]]:
         """Update context_window_seq_to_batch to handle feat_sizes, utt_ids"""
-        windows, alis, feat_sizes, utt_ids = list(zip(*seq))
-        windows, alis = context_window_seq_to_batch(list(zip(windows, alis)))
-        return (windows, alis, torch.tensor(feat_sizes), tuple(utt_ids))
+        return context_window_seq_to_batch(seq, True)
 
     def __init__(
         self,
@@ -1340,15 +1333,12 @@ class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
             )
         if dataset.transform is not None:
             dataset.transform.eval()
-        dataset = ContextWindowDataSetEvalWrapper(dataset)
+        dataset = SpectDataSetEvaluationWrapper(dataset)
         utt_sampler = DistributableSequentialSampler(dataset)
         batch_sampler = torch.utils.data.BatchSampler(
             utt_sampler, params.batch_size, drop_last=params.drop_last
         )
         super().__init__(
-            dataset,
-            batch_sampler=batch_sampler,
-            collate_fn=self.eval_collate_fn,
-            **kwargs,
+            dataset, batch_sampler=batch_sampler, collate_fn=self.collate_fn, **kwargs,
         )
 

@@ -191,24 +191,53 @@ def test_spect_training_data_loader(
         params = data.SpectDataLoaderParams(batch_size=batch_size, sos=sos, eos=eos)
         data_params = None
         if init_style == "set":
-            data_ = data.SpectDataSet(temp_dir, params=params)
+            data_ = data.SpectDataSet(
+                temp_dir, params=params, suppress_alis=False, tokens_only=False
+            )
         else:
             data_ = temp_dir
 
     if init_style != "set":
         # check missing either ali or ref gives None in batches
         data_loader = data.SpectTrainingDataLoader(
-            temp_dir, params, data_params=data_params, ali_subdir=None, seed=2
+            temp_dir,
+            params,
+            data_params=data_params,
+            ali_subdir=None,
+            seed=2,
+            suppress_alis=False,
+            tokens_only=True,
         )
         assert next(iter(data_loader))[1] is None
         data_loader = data.SpectTrainingDataLoader(
-            temp_dir, params, data_params=data_params, ref_subdir=None, seed=2
+            temp_dir,
+            params,
+            data_params=data_params,
+            ref_subdir=None,
+            seed=2,
+            suppress_alis=False,
+            tokens_only=False,
         )
         assert next(iter(data_loader))[2] is None
         assert next(iter(data_loader))[4] is None
+        # check new arguments
+        data_loader = data.SpectTrainingDataLoader(
+            temp_dir,
+            params,
+            data_params=data_params,
+            suppress_alis=True,
+            tokens_only=True,
+        )
+        assert len(next(iter(data_loader))) == 4
+        assert next(iter(data_loader))[1].ndim == 2
 
     data_loader = data.SpectTrainingDataLoader(
-        data_, params, data_params=data_params, seed=2
+        data_,
+        params,
+        data_params=data_params,
+        seed=2,
+        suppress_alis=False,
+        tokens_only=False,
     )
 
     def _get_epoch(sort):
@@ -293,7 +322,13 @@ def test_spect_training_data_loader(
     _compare_epochs(ep1, _get_epoch(False), True)
     # XXX(sdrobert): warning spit out on CI if num_workers > 2
     data_loader = data.SpectTrainingDataLoader(
-        data_, params, data_params=data_params, num_workers=2, seed=2
+        data_,
+        params,
+        data_params=data_params,
+        num_workers=2,
+        seed=2,
+        suppress_alis=False,
+        tokens_only=False,
     )
     _compare_epochs(ep0, _get_epoch(False), True)
     _compare_epochs(ep1, _get_epoch(False), True)
@@ -310,14 +345,23 @@ def _test_distributed_data_loader(
     if world_size:
         torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
 
-    params = data.SpectDataLoaderParams(batch_size=batch_size)
+    params = data.SpectDataLoaderParams(batch_size=batch_size, do_mvn=True)
     if bucket:
         params.num_length_buckets = 2
         params.size_batch_by_length = True
     if train:
-        loader = data.SpectTrainingDataLoader(temp_dir, params, sort=bucket, seed=0)
+        loader = data.SpectTrainingDataLoader(
+            temp_dir,
+            params,
+            sort=bucket,
+            seed=0,
+            suppress_alis=False,
+            tokens_only=False,
+        )
     else:
-        loader = data.SpectEvaluationDataLoader(temp_dir, params, sort=bucket)
+        loader = data.SpectEvaluationDataLoader(
+            temp_dir, params, sort=bucket, suppress_alis=False, tokens_only=False
+        )
 
     lens = []
     for batch in loader:
@@ -414,7 +458,9 @@ def test_spect_evaluation_data_loader(
         params = data.SpectDataLoaderParams(batch_size=batch_size, sos=sos, eos=eos)
         data_params = None
         if init_style == "set":
-            data_ = data.SpectDataSet(temp_dir, params=params)
+            data_ = data.SpectDataSet(
+                temp_dir, params=params, suppress_alis=False, tokens_only=False
+            )
         else:
             data_ = temp_dir
 
@@ -440,11 +486,29 @@ def test_spect_evaluation_data_loader(
     if init_style != "set":
         # check that ali and ref can be missing
         data_loader = data.SpectEvaluationDataLoader(
-            temp_dir, params, data_params=data_params, ali_subdir=None, ref_subdir=None
+            temp_dir,
+            params,
+            data_params=data_params,
+            ali_subdir=None,
+            ref_subdir=None,
+            suppress_alis=False,
+            tokens_only=False,
         )
         assert next(iter(data_loader))[1:3] == (None, None)
         assert next(iter(data_loader))[4] is None
-    data_loader = data.SpectEvaluationDataLoader(data_, params, data_params=data_params)
+        # check new arguments
+        data_loader = data.SpectEvaluationDataLoader(
+            temp_dir,
+            params,
+            data_params=data_params,
+            suppress_alis=True,
+            tokens_only=True,
+        )
+        assert len(next(iter(data_loader))) == 5
+        assert next(iter(data_loader))[1].ndim == 2
+    data_loader = data.SpectEvaluationDataLoader(
+        data_, params, data_params=data_params, suppress_alis=False, tokens_only=False
+    )
 
     def _compare_data_loader():
         batch_first = data_loader.batch_first
@@ -502,7 +566,12 @@ def test_spect_evaluation_data_loader(
     _compare_data_loader()
     _compare_data_loader()  # order should not change
     data_loader = data.SpectEvaluationDataLoader(
-        data_, params, data_params=data_params, num_workers=2
+        data_,
+        params,
+        data_params=data_params,
+        num_workers=2,
+        suppress_alis=False,
+        tokens_only=False,
     )
     _compare_data_loader()  # order should still not change
     data_loader.batch_first = False
@@ -658,7 +727,9 @@ def test_data_loader_length_buckets(temp_dir, populate_torch_dir, loader_cls):
     params = data.SpectDataLoaderParams(
         batch_size=N, num_length_buckets=B, drop_last=False
     )
-    loader = loader_cls(temp_dir, params, num_workers=2)
+    loader = loader_cls(
+        temp_dir, params, num_workers=2, suppress_alis=False, tokens_only=False
+    )
     act_feat_sizes = [x[3] for x in loader]
     assert len(act_feat_sizes) == len(loader)
     for i, x in enumerate(act_feat_sizes):
@@ -676,7 +747,7 @@ def test_data_loader_length_buckets(temp_dir, populate_torch_dir, loader_cls):
     params.drop_last = True
     params.size_batch_by_length = True
     m = N * exp_feat_sizes[-1]
-    loader = loader_cls(temp_dir, params)
+    loader = loader_cls(temp_dir, params, suppress_alis=False, tokens_only=False)
     act_feat_sizes = [x[3] for x in loader]
     assert len(act_feat_sizes) == len(loader)
     for x in act_feat_sizes:
@@ -747,26 +818,42 @@ def test_transforms(temp_dir, populate_torch_dir, style):
     assert not torch.allclose(feat_std, torch.ones(1), atol=1e-5)
     if style == "spect":
         params = data.SpectDataLoaderParams(batch_size=1, do_mvn=True, delta_order=2)
+        dl = data.SpectEvaluationDataLoader(
+            temp_dir,
+            params,
+            feat_mean=feat_mean,
+            feat_std=feat_std,
+            num_workers=2,
+            suppress_alis=False,
+            tokens_only=False,
+        )
     else:
         params = data.ContextWindowDataLoaderParams(
             batch_size=1, do_mvn=True, delta_order=2, context_left=0, context_right=0
         )
-    dl = (
-        data.SpectEvaluationDataLoader
-        if style == "spect"
-        else data.ContextWindowEvaluationDataLoader
-    )(temp_dir, params, feat_mean=feat_mean, feat_std=feat_std, num_workers=2,)
+        dl = data.ContextWindowEvaluationDataLoader(
+            temp_dir, params, feat_mean=feat_mean, feat_std=feat_std, num_workers=2
+        )
     feats_a = torch.cat([x[0].flatten(0, 1) for x in dl])
     assert feats_a.size(-1) == F * 3
     assert torch.allclose(feats_a[..., :F].mean(0), torch.zeros(1), atol=1e-5)
     assert torch.allclose(feats_a[..., :F].std(0, False), torch.ones(1), atol=1e-5)
     feats_b = torch.cat([x[0].flatten(0, 1) for x in dl])
     assert torch.allclose(feats_a, feats_b)  # no spec augment
-    dl = (
-        data.SpectTrainingDataLoader
-        if style == "spect"
-        else data.ContextWindowTrainingDataLoader
-    )(temp_dir, params, feat_mean=feat_mean, feat_std=feat_std, num_workers=2)
+    if style == "spect":
+        dl = data.SpectTrainingDataLoader(
+            temp_dir,
+            params,
+            feat_mean=feat_mean,
+            feat_std=feat_std,
+            num_workers=2,
+            suppress_alis=False,
+            tokens_only=False,
+        )
+    else:
+        dl = data.ContextWindowTrainingDataLoader(
+            temp_dir, params, feat_mean=feat_mean, feat_std=feat_std, num_workers=2
+        )
     feats_a = torch.cat([x[0].flatten(0, 1) for x in dl])
     assert torch.allclose(feats_a[..., :F].mean(0), torch.zeros(1), atol=1e-5)
     assert torch.allclose(feats_a[..., :F].std(0, False), torch.ones(1), atol=1e-5)

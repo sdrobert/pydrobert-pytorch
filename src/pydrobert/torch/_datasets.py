@@ -155,20 +155,18 @@ class SpectDataSet(torch.utils.data.Dataset):
     feat_std
         If specified and ``params.do_mvn`` is :obj:`True`, this tensor will be used
         as the standard deviation in mean-variance normalization.
+    suppress_alis : bool
+        If :obj:`True`, `ali` will not be yielded, nor will alignment information
+        be counted towards the list of utterance ids if available.
+    tokens_only : bool
+        If :obj:`True`, `ref` will drop the segment information if present, always
+        yielding tuples of shape ``(R,)``.
         
     Yields
     ------
     feat : torch.Tensor
     ali : torch.Tensor or None
     ref : torch.Tensor or None
-
-    Warnings
-    --------
-    Specifying non-deterministic transforms via `params` (such as SpecAugment) will
-    yield non-deterministic instances. You can disable this behaviour by setting
-
-    >>> if ds.transform is not None:
-    ...     ds.transform.eval()
 
     Examples
     --------
@@ -225,12 +223,14 @@ class SpectDataSet(torch.utils.data.Dataset):
     data_dir: str
     file_prefix: str
     file_suffix: str
-    feats_subdir: str
-    ali_subdir: str
-    ref_subdir: str
+    feat_subdir: str
+    ali_subdir: Optional[str]
+    ref_subdir: Optional[str]
     params: SpectDataParams
     has_ali: bool
     has_ref: bool
+    suppress_alis: bool
+    tokens_only: bool
     utt_ids: Tuple[str, ...]
     transform: Optional[torch.nn.Module]
 
@@ -244,19 +244,39 @@ class SpectDataSet(torch.utils.data.Dataset):
         sos: Optional[int] = None,
         eos: Optional[int] = None,
         feat_subdir: str = "feat",
-        ali_subdir: str = "ali",
-        ref_subdir: str = "ref",
+        ali_subdir: Optional[str] = "ali",
+        ref_subdir: Optional[str] = "ref",
         params: Optional[SpectDataParams] = None,
         feat_mean: Optional[torch.Tensor] = None,
         feat_std: Optional[torch.Tensor] = None,
+        suppress_alis: bool = None,
+        tokens_only: bool = None,
     ):
         super(SpectDataSet, self).__init__()
+        if suppress_alis is None:
+            warnings.warn(
+                "A future version of pydrobert-pytorch will set suppress_alis=True by "
+                "default. To ensure future compatibility, set suppress_alis=False",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            suppress_alis = False
+        if tokens_only is None:
+            warnings.warn(
+                "A future version of pydrobert-pytorch will set tokens_only=True by "
+                "default. To ensure future compatibility, set tokens_only=False",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            tokens_only = False
         self.data_dir = data_dir
         self.feat_subdir = feat_subdir
         self.ali_subdir = ali_subdir
         self.ref_subdir = ref_subdir
         self.file_prefix = file_prefix
         self.file_suffix = file_suffix
+        self.suppress_alis = suppress_alis
+        self.tokens_only = tokens_only
         if params is None:
             params = SpectDataParams()
         self.params = params
@@ -274,7 +294,7 @@ class SpectDataSet(torch.utils.data.Dataset):
                 DeprecationWarning,
             )
             self.eos = eos
-        if ali_subdir:
+        if ali_subdir and not suppress_alis:
             self.has_ali = os.path.isdir(os.path.join(data_dir, ali_subdir))
         else:
             self.has_ali = False
@@ -320,9 +340,7 @@ class SpectDataSet(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return len(self.utt_ids)
 
-    def __getitem__(
-        self, idx: int
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    def __getitem__(self, idx: int) -> Tuple[Optional[torch.Tensor], ...]:
         return self.get_utterance_tuple(idx)
 
     def find_utt_ids(
@@ -372,10 +390,8 @@ class SpectDataSet(torch.utils.data.Dataset):
             utt_ids &= ref_utt_ids
         return utt_ids
 
-    def get_utterance_tuple(
-        self, idx: int
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
-        """Get a tuple of features, alignments, and references"""
+    def get_utterance_tuple(self, idx: int) -> Tuple[Optional[torch.Tensor]]:
+        """Get a tuple of features, (possibly) alignments, and references"""
         utt_id = self.utt_ids[idx]
         feat = torch.load(
             os.path.join(
@@ -404,31 +420,38 @@ class SpectDataSet(torch.utils.data.Dataset):
                     self.file_prefix + utt_id + self.file_suffix,
                 )
             )
+            D = ref.ndim
+            if self.tokens_only and D == 2:
+                ref, D = ref[..., 0], 1
             if self.sos is not None:
-                if ref.dim() == 2:
+                if D == 2:
                     sos_sym = torch.full_like(ref[0], -1)
                     sos_sym[0] = self.sos
                     ref = torch.cat([sos_sym.unsqueeze(0), ref], 0)
                 else:
                     ref = torch.cat([torch.full_like(ref[:1], self.sos), ref], 0)
             if self.eos is not None:
-                if ref.dim() == 2:
+                if D == 2:
                     eos_sym = torch.full_like(ref[0], -1)
                     eos_sym[0] = self.eos
                     ref = torch.cat([ref, eos_sym.unsqueeze(0)], 0)
                 else:
                     ref = torch.cat([ref, torch.full_like(ref[:1], self.eos)], 0)
+
         else:
             ref = None
-        return feat, ali, ref
+        if self.suppress_alis:
+            return feat, ref
+        else:
+            return feat, ali, ref
 
     def write_pdf(
         self, utt: Union[str, int], pdf: torch.Tensor, pdfs_dir: Optional[str] = None
     ) -> None:
         """Write a pdf tensor to the data directory
 
-        This method writes a pdf matrix to the directory `pdfs_dir`
-        with the name ``<file_prefix><utt><file_suffix>``
+        This method writes a pdf matrix to the directory `pdfs_dir` with the name
+        ``<file_prefix><utt><file_suffix>``
 
         Parameters
         ----------
@@ -824,22 +847,17 @@ class ContextWindowDataSet(SpectDataSet):
     ----------
     data_dir
     left
-        The number of frames to the left of the center frame to be extracted in the
-        window. If unset, uses whatever is in ``params.context_left``. Specifying
-        `left` by argument is deprecated; use ``params.context_left``.
+        Deprecated
     right
-        The number of frames to the right of the center frame to be extracted in the
-        window. If unset, uses whatever is in ``params.context_right``. Specifying
-        `right` by argument is deprecated; use ``params.context_right``.
+        Deprecated
     file_prefix
     file_suffix
     warn_on_missing
     subset_ids
+        Deprecated
     feat_subdir, ali_subdir
     reverse
-        If :obj:`True`, context windows will be reversed along the time dimension. If
-        unset, uses whatever is in ``params.reverse``. Specifying `reverse` by argument
-        is deprecated; use ``params.reverse``.
+        Deprecated
     params
 
     Yields
@@ -870,7 +888,7 @@ class ContextWindowDataSet(SpectDataSet):
         warn_on_missing: bool = True,
         subset_ids: Optional[Set[str]] = None,
         feat_subdir: str = "feat",
-        ali_subdir: str = "ali",
+        ali_subdir: Optional[str] = "ali",
         reverse: Optional[bool] = None,
         params: Optional[ContextWindowDataParams] = None,
         feat_mean: Optional[torch.Tensor] = None,
@@ -918,6 +936,8 @@ class ContextWindowDataSet(SpectDataSet):
             params,
             feat_mean,
             feat_std,
+            False,
+            False,
         )
 
     def get_utterance_tuple(self, idx) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
