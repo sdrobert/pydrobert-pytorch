@@ -353,14 +353,14 @@ def _test_distributed_data_loader(
         loader = data.SpectTrainingDataLoader(
             temp_dir,
             params,
-            sort=bucket,
+            sort_batch=bucket,
             seed=0,
             suppress_alis=False,
             tokens_only=False,
         )
     else:
         loader = data.SpectEvaluationDataLoader(
-            temp_dir, params, sort=bucket, suppress_alis=False, tokens_only=False
+            temp_dir, params, sort_batch=bucket, suppress_alis=False, tokens_only=False
         )
 
     lens = []
@@ -459,7 +459,11 @@ def test_spect_evaluation_data_loader(
         data_params = None
         if init_style == "set":
             data_ = data.SpectDataSet(
-                temp_dir, params=params, suppress_alis=False, tokens_only=False
+                temp_dir,
+                params=params,
+                suppress_alis=False,
+                suppress_uttids=False,
+                tokens_only=False,
             )
         else:
             data_ = temp_dir
@@ -676,7 +680,9 @@ def test_window_evaluation_data_loader(temp_dir, populate_torch_dir, init_style)
         )
         data_params = None
         if init_style == "set":
-            data_ = data.ContextWindowDataSet(temp_dir, params=params)
+            data_ = data.ContextWindowDataSet(
+                temp_dir, params=params, suppress_uttids=False
+            )
         else:
             data_ = temp_dir
 

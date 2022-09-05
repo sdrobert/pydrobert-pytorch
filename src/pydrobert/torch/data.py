@@ -28,18 +28,19 @@ from ._datasets import (
 from ._dataloaders import (
     BucketBatchSampler,
     context_window_seq_to_batch,
+    ContextWindowDataLoader,
     ContextWindowDataLoaderParams,
-    ContextWindowEvaluationDataLoader,
-    ContextWindowTrainingDataLoader,
+    ContextWindowEvaluationDataLoader,  # deprecated
+    ContextWindowTrainingDataLoader,  # deprecated
     DataLoaderParams,
     DistributableSequentialSampler,
     DynamicLengthDataLoaderParams,
     EpochRandomSampler,
     spect_seq_to_batch,
+    SpectDataLoader,
     SpectDataLoaderParams,
-    SpectDataSetEvaluationWrapper,
-    SpectEvaluationDataLoader,
-    SpectTrainingDataLoader,
+    SpectEvaluationDataLoader,  # deprecated
+    SpectTrainingDataLoader,  # deprecated
 )
 from ._parsing import (
     parse_arpa_lm,
@@ -58,8 +59,6 @@ __all__ = [
     "ContextWindowDataLoaderParams",
     "ContextWindowDataParams",
     "ContextWindowDataSet",
-    "ContextWindowEvaluationDataLoader",
-    "ContextWindowTrainingDataLoader",
     "DataLoaderParams",
     "DistributableSequentialSampler",
     "DynamicLengthDataLoaderParams",
@@ -73,9 +72,7 @@ __all__ = [
     "SpectDataLoaderParams",
     "SpectDataParams",
     "SpectDataSet",
-    "SpectDataSetEvaluationWrapper",
-    "SpectEvaluationDataLoader",
-    "SpectTrainingDataLoader",
+    "SpectDataLoader",
     "token_to_transcript",
     "transcript_to_token",
     "validate_spect_data_set",

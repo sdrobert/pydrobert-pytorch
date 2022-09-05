@@ -85,49 +85,10 @@ class SpectDataParams(param.Parameterized):
 class SpectDataSet(torch.utils.data.Dataset):
     """Accesses spectrographic filter data stored in a data directory
 
-    :class:`SpectDataSet` assumes that `data_dir` is structured as::
-
-        data_dir/
-            feat/
-                <file_prefix><utt_ids[0]><file_suffix>
-                <file_prefix><utt_ids[1]><file_suffix>
-                ...
-            [
-            ali/
-                <file_prefix><utt_ids[0]><file_suffix>
-                <file_prefix><utt_ids[1]><file_suffix>
-                ...
-            ]
-            [
-            ref/
-                <file_prefix><utt_ids[0]><file_suffix>
-                <file_prefix><utt_ids[1]><file_suffix>
-                ...
-            ]
-
-    The ``feat`` dir stores filter bank data in the form of a :class:`torch.Tensor` of
-    size ``(T, F)``, where ``T`` is the time dimension and ``F`` is the
-    filter/log-frequency dimension. ``feat`` is the only required directory.
-
-    ``ali`` stores long tensor of size ``(T,)``, indicating the pdf-id of the most
-    likely target. ``ali`` is suitable for discriminative training of DNNs in hybrid
-    DNN-HMM recognition, or any frame-wise loss. ``ali/`` is optional.
-
-    ``ref`` stores long tensor of size indicating reference transcriptions. The tensors
-    can have either shape ``(R, 3)`` or ``(R,)``, depending on whether frame start/end
-    times were included along with the tokens. Letting ``r`` be such a tensor of size
-    ``(R, 3)``, ``r[..., 0]`` is the sequence of token ids for the utterance and
-    ``r[..., 1:]`` are the 0-indexed frames they start (inclusive) and end (exclusive)
-    at, respectively. Negative values can be used when the start and end frames are
-    unknown. If ``r`` is of shape ``(R,)``, ``r`` is only the sequence of token ids.
-    Only one version of ``r`` (with or without frame start/end times) should be used
-    across the entire folder. ``ref/`` is suitable for end-to-end training. ``ref/`` is
-    optional.
-
     Parameters
     ----------
     data_dir
-        A path to feature directory
+        A path to the data directory
     file_prefix
         The prefix that indicates that the file counts toward the data set
     file_suffix
@@ -158,15 +119,23 @@ class SpectDataSet(torch.utils.data.Dataset):
     suppress_alis : bool
         If :obj:`True`, `ali` will not be yielded, nor will alignment information
         be counted towards the list of utterance ids if available.
+    suppress_uttids : bool
+        If :obj:`True`, `uttid` will not be yielded.
     tokens_only : bool
         If :obj:`True`, `ref` will drop the segment information if present, always
         yielding tuples of shape ``(R,)``.
-        
+    
     Yields
     ------
-    feat : torch.Tensor
-    ali : torch.Tensor or None
-    ref : torch.Tensor or None
+    tup
+        For a given utterance, a tuple:
+
+        1. `feat`, the filter bank data.
+        2. `ali` (if `suppress_ali` is :obj:`False`), frame-level alignments or
+           :obj:`None` if not available.
+        3. `ref`, a sequence of reference tokens or :obj:`None` if not available.
+        4. `uttid` (if `suppress_uttid` is :obj:`False`), the string representing the
+           utterance id.
 
     Examples
     --------
@@ -230,6 +199,7 @@ class SpectDataSet(torch.utils.data.Dataset):
     has_ali: bool
     has_ref: bool
     suppress_alis: bool
+    suppress_uttids: bool
     tokens_only: bool
     utt_ids: Tuple[str, ...]
     transform: Optional[torch.nn.Module]
@@ -250,6 +220,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         feat_mean: Optional[torch.Tensor] = None,
         feat_std: Optional[torch.Tensor] = None,
         suppress_alis: bool = None,
+        suppress_uttids: bool = True,
         tokens_only: bool = None,
     ):
         super(SpectDataSet, self).__init__()
@@ -276,6 +247,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         self.file_prefix = file_prefix
         self.file_suffix = file_suffix
         self.suppress_alis = suppress_alis
+        self.suppress_uttids = suppress_uttids
         self.tokens_only = tokens_only
         if params is None:
             params = SpectDataParams()
@@ -340,7 +312,7 @@ class SpectDataSet(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return len(self.utt_ids)
 
-    def __getitem__(self, idx: int) -> Tuple[Optional[torch.Tensor], ...]:
+    def __getitem__(self, idx: int) -> Tuple[Union[torch.Tensor, str, None], ...]:
         return self.get_utterance_tuple(idx)
 
     def find_utt_ids(
@@ -390,8 +362,9 @@ class SpectDataSet(torch.utils.data.Dataset):
             utt_ids &= ref_utt_ids
         return utt_ids
 
-    def get_utterance_tuple(self, idx: int) -> Tuple[Optional[torch.Tensor]]:
-        """Get a tuple of features, (possibly) alignments, and references"""
+    def get_utterance_tuple(
+        self, idx: int
+    ) -> Tuple[Union[torch.Tensor, str, None], ...]:
         utt_id = self.utt_ids[idx]
         feat = torch.load(
             os.path.join(
@@ -441,9 +414,14 @@ class SpectDataSet(torch.utils.data.Dataset):
         else:
             ref = None
         if self.suppress_alis:
-            return feat, ref
-        else:
+            if self.suppress_uttids:
+                return feat, ref
+            else:
+                return feat, ref, utt_id
+        elif self.suppress_uttids:
             return feat, ali, ref
+        else:
+            return feat, ali, ref, utt_id
 
     def write_pdf(
         self, utt: Union[str, int], pdf: torch.Tensor, pdfs_dir: Optional[str] = None
@@ -831,17 +809,8 @@ class ContextWindowDataParams(SpectDataParams):
 class ContextWindowDataSet(SpectDataSet):
     """SpectDataSet, extracting fixed-width windows over the utterance
 
-    Like a :class:`SpectDataSet`, :class:`ContextWindowDataSet` indexes tuples of
-    features and alignments. Instead of returning features of shape ``(T, F)``,
-    instances return features of shape ``(T, 1 + left + right, F)``, where the ``T``
-    axis indexes the so-called center frame and the ``1 + left + right`` axis contains
-    frame vectors (size ``F``) including the center frame, ``left`` frames in time
-    before the center frame, and ``right`` frames after.
-
-    :class:`ContextWindowDataSet` does not have support for reference token
-    subdirectories as it is unclear how to always pair tokens with context windows. If
-    tokens are one-to-one with frames, it is suggested that ``ali/`` be re-used for this
-    purpose.
+    Like a :class:`SpectDataSet`, but replaces the `feat` tensor with `window`, which
+    runs a sliding window over the frame dimension of `feat`.
 
     Parameters
     ----------
@@ -859,15 +828,24 @@ class ContextWindowDataSet(SpectDataSet):
     reverse
         Deprecated
     params
+    suppress_uttids
+        If :obj:`True`, `uttid` will not be yielded.
 
     Yields
     ------
-    window : torch.Tensor
-    ali : torch.Tensor
+    tup
+        For a given utterance, a tuple:
 
+        1. `window`, windowed spectral features of shape ``(T, 1 + left + right, F)``,
+           where the ``T`` axis indexes the so-called center frame and the ``1 + left +
+           right`` axis contains frame vectors (size ``F``) including the center frame
+           and the those to the `left` and `right`.
+        2. `ali`, window-level alignments, or :obj:`None` if not available.
+        3. `uttid` (if `suppress_uttid` is :obj:`False`), the string representing the
+           utterance id.
+        
     Examples
     --------
-
     >>> # see 'SpectDataSet' to set up data directory
     >>> data = ContextWindowDataSet('data')
     >>> data[0]  # random access returns (window, ali) pairs
@@ -893,6 +871,7 @@ class ContextWindowDataSet(SpectDataSet):
         params: Optional[ContextWindowDataParams] = None,
         feat_mean: Optional[torch.Tensor] = None,
         feat_std: Optional[torch.Tensor] = None,
+        suppress_uttids: bool = True,
     ):
         if params is None:
             params = ContextWindowDataParams()
@@ -937,26 +916,32 @@ class ContextWindowDataSet(SpectDataSet):
             feat_mean,
             feat_std,
             False,
+            suppress_uttids,
             False,
         )
 
-    def get_utterance_tuple(self, idx) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Get a tuple of features and alignments"""
-        return super().get_utterance_tuple(idx)[:2]
+    def get_utterance_tuple(self, idx) -> Tuple[Union[torch.Tensor, str, None], ...]:
+        tup = super().get_utterance_tuple(idx)
+        if self.suppress_uttids:
+            return tup[:2]
+        else:
+            return tup[:2] + tup[-1:]
 
     def get_windowed_utterance(
         self, idx: int
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Get pair of features (w/ context windows) and alignments"""
-        feat, ali = self.get_utterance_tuple(idx)
+    ) -> Tuple[Union[torch.Tensor, str, None], ...]:
+        feat, ali = super().get_utterance_tuple(idx)[:2]
         num_frames, num_filts = feat.shape
         window = torch.empty(num_frames, 1 + self.left + self.right, num_filts)
         for center_frame in range(num_frames):
             window[center_frame] = extract_window(
                 feat, center_frame, self.left, self.right, reverse=self.reverse
             )
-        return window, ali
+        if self.suppress_uttids:
+            return window, ali
+        else:
+            return window, ali, self.utt_ids[idx]
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def __getitem__(self, idx: int):
         return self.get_windowed_utterance(idx)
 
