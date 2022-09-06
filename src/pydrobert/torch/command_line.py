@@ -193,6 +193,8 @@ integers.
         feat_subdir=options.feat_subdir,
         ali_subdir=options.ali_subdir,
         ref_subdir=options.ref_subdir,
+        suppress_alis=False,
+        tokens_only=False,
     )
     if options.strict or options.fix:
         data.validate_spect_data_set(data_set, options.fix)
@@ -1255,6 +1257,8 @@ def torch_spect_data_dir_to_wds(args: Optional[Sequence[str]] = None):
         feat_subdir=options.feat_subdir,
         ali_subdir=options.ali_subdir,
         ref_subdir=options.ref_subdir,
+        suppress_alis=False,
+        tokens_only=False,
     )
     pattern = Path(options.tar_path)
     os.makedirs(pattern.parent, exist_ok=True)

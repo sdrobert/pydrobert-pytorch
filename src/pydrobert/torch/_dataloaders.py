@@ -526,6 +526,12 @@ class SpectDataLoader(torch.utils.data.DataLoader):
         :class:`torch.utils.data.DataLoader`. The former is only relevant when
         `data` is a path.
     
+    Warnings
+    --------
+    :class:`SpectDataLoader` uses the default :obj:`True` for `suppress_alis` and
+    `tokens_only` while the current, deprecated default used by :class:`SpectDataSet`
+    is :obj:`False`.
+    
     Yields
     ------
     batch
@@ -600,7 +606,15 @@ class SpectDataLoader(torch.utils.data.DataLoader):
         if isinstance(data, SpectDataSet):
             dataset = data
         else:
-            dataset = SpectDataSet(data, params=data_params, **ds_kwargs)
+            suppress_alis = ds_kwargs.pop("suppress_alis", True)
+            tokens_only = ds_kwargs.pop("tokens_only", True)
+            dataset = SpectDataSet(
+                data,
+                params=data_params,
+                suppress_alis=suppress_alis,
+                tokens_only=tokens_only,
+                **ds_kwargs,
+            )
         if shuffle:
             utt_sampler = EpochRandomSampler(
                 dataset, init_epoch=init_epoch, base_seed=seed
