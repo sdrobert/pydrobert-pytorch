@@ -2,6 +2,9 @@
 
 ## HEAD
 
+- Changed method of constructing random state in `EpochRandomSampler`.
+  Rerunning training on this new version with the same seed will likely result
+  in different results from the old version!
 - Remove py3.6 support.
 - Added  `FillAfterEndOfSequence`.
 - Added `binomial_coefficient`, `enumerate_binary_sequences`,

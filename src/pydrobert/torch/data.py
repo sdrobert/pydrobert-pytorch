@@ -26,6 +26,7 @@ from ._datasets import (
     validate_spect_data_set,
 )
 from ._dataloaders import (
+    AbstractEpochSampler,
     BucketBatchSampler,
     context_window_seq_to_batch,
     ContextWindowDataLoader,
@@ -33,9 +34,9 @@ from ._dataloaders import (
     ContextWindowEvaluationDataLoader,  # deprecated
     ContextWindowTrainingDataLoader,  # deprecated
     DataLoaderParams,
-    DistributableSequentialSampler,
     DynamicLengthDataLoaderParams,
     EpochRandomSampler,
+    EpochSequentialSampler,
     spect_seq_to_batch,
     SpectDataLoader,
     SpectDataLoaderParams,
@@ -54,25 +55,27 @@ from ._parsing import (
 )
 
 __all__ = [
+    "AbstractEpochSampler",
     "BucketBatchSampler",
     "context_window_seq_to_batch",
+    "ContextWindowDataLoader",
     "ContextWindowDataLoaderParams",
     "ContextWindowDataParams",
     "ContextWindowDataSet",
     "DataLoaderParams",
-    "DistributableSequentialSampler",
     "DynamicLengthDataLoaderParams",
     "EpochRandomSampler",
+    "EpochSequentialSampler",
     "extract_window",
     "parse_arpa_lm",
     "read_ctm",
     "read_trn_iter",
     "read_trn",
     "spect_seq_to_batch",
+    "SpectDataLoader",
     "SpectDataLoaderParams",
     "SpectDataParams",
     "SpectDataSet",
-    "SpectDataLoader",
     "token_to_transcript",
     "transcript_to_token",
     "validate_spect_data_set",

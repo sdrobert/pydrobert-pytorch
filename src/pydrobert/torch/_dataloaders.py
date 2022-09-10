@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import abc
 from typing import (
     Dict,
+    Iterable,
     List,
     Optional,
     Iterator,
@@ -28,6 +30,12 @@ from typing import (
 import warnings
 
 from collections import Counter
+from itertools import islice
+
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
 
 import param
 import numpy as np
@@ -47,37 +55,106 @@ except TypeError:
     _BaseSampler = torch.utils.data.sampler.Sampler
 
 
-class EpochRandomSampler(_BaseSampler):
-    """Return random samples that are the same for a fixed epoch
+class AbstractEpochSampler(_BaseSampler, metaclass=abc.ABCMeta):
+
+    epoch: int  #:
+    _rank: int
+    _world_size: int
+    total: int
+    effective_total: int
+
+    def __init__(
+        self,
+        data_source: Sized,
+        init_epoch: int = 0,
+        on_uneven_distributed: Literal["raise", "drop", "uneven", "ignore"] = "raise",
+    ):
+        self.effective_total = self.total = len(data_source)
+        self.epoch = init_epoch
+        if (
+            on_uneven_distributed != "ignore"
+            and torch.distributed.is_available()
+            and torch.distributed.is_initialized()
+            and torch.distributed.get_rank() >= 0
+        ):
+            self._rank = torch.distributed.get_rank()
+            self._world_size = torch.distributed.get_world_size()
+            if self.total % self._world_size:
+                if on_uneven_distributed == "raise":
+                    raise ValueError(
+                        f"dataset length ({self.total}) must be divisible by "
+                        f"the distributed world size ({self._world_size})"
+                    )
+                elif on_uneven_distributed == "drop":
+                    self.effective_total = self.total - (self.total % self._world_size)
+                elif on_uneven_distributed == "uneven":
+                    self.effective_total = self.total
+                else:
+                    raise ValueError(
+                        "Unknown on_uneven_distributed value "
+                        f"'{on_uneven_distributed}'. Expected one of 'ignore', "
+                        "'raise', or 'drop'"
+                    )
+        else:
+            self._rank = 0
+            self._world_size = 1
+
+    def __len__(self) -> int:
+        offs = (self.epoch + self._rank) % self._world_size
+        return (self.effective_total - offs + self._world_size - 1) // self._world_size
+
+    @abc.abstractmethod
+    def get_samples_for_epoch(self, epoch: int) -> Iterable[int]:
+        ...
+
+    def __iter__(self) -> Iterator[int]:
+        ret = islice(
+            self.get_samples_for_epoch(self.epoch),
+            (self.epoch + self._rank) % self._world_size,
+            self.effective_total,
+            self._world_size,
+        )
+        self.epoch += 1
+        return ret
+
+
+class EpochRandomSampler(AbstractEpochSampler):
+    """A deterministic RandomSampler which handles :mod:`torch.distributed`
 
     Parameters
     ----------
     data_source
         The dataset to draw the sample from.
     init_epoch
-        The initial epoch
+        The initial epoch.
     base_seed
-        Determines the starting seed of the sampler. Sampling is seeded with ``base_seed
-        + epoch``. If unset, a seed is randomly generated from the default generator
+        Determines the starting seed of the sampler. Sampling is seeded with
+        ``(base_seed, epoch)```. If unset, a seed is randomly generated from the default
+        pytorch generator.
+    on_uneven_distributed
+        What to do if the sampler detects that it's in a distributed environment and
+        the number of processes does not evenly divide the number of samples:
 
-    Attributes
-    ----------
-    epoch : int
-        The current epoch. Responsible for seeding the upcoming samples.
+        - :obj:`'raise'` raise a :class:`ValueError`.
+        - :obj:`'drop'` drop the remainder. The dropped samples will be randomized each
+          epoch.
+        - :obj:`'uneven'` allow some processes to yield fewer samples. The processes
+          handling fewer samples will cycle each epoch, also changing the length of
+          the sampler in each epoch.
+        - :obj:`'ignore'` ignore the distributed context. Each process will yield all
+          samples.
     
-    Yields
-    ------
-    sample_idx : int
-        The current sample index of the current epoch.
+    Warnings
+    --------
+    The default means of seeding the shuffler changed from version 0.3. Previously the
+    shuffler was seeded on each epoch with the value ``base_seed + epoch``. The change
+    means training a network in this version will yield different results from that
+    trained in version 0.3 even if `base_seed` is the same.
     
-    Notes
-    -----
-    This sampler can be used transparently with :mod:`torch.distributed`. On
-    initialization, it checks if its process has been assigned a rank in the default
-    group and, if so, yields a partition of the shuffled sample indices assigned to the
-    rank. Unlike :class:`torch.utils.data.distributed.DistributedSampler`, this sampler
-    will throw a :class:`RuntimeError` if the number of samples is not divisible by the
-    number of processes.
+    The change was made because, if repeated experiments were seeded sequentially, then
+    the ``n``-th epoch of the ``m``-th run would see samples in the same order as the
+    ``m``-th epoch of the ``n``-th run. Thus, repeated trials were unintentionally
+    correlated.
 
     Examples
     --------
@@ -89,106 +166,58 @@ class EpochRandomSampler(_BaseSampler):
     >>> assert tuple(sampler.get_samples_for_epoch(1)) == samples_ep1
     """
 
-    epoch: int
-    base_seed: int
-    _offset: int
-    _stride: int
+    base_seed: int  #:
 
     def __init__(
-        self, data_source: Sized, init_epoch: int = 0, base_seed: Optional[int] = None
+        self,
+        data_source: Sized,
+        init_epoch: int = 0,
+        base_seed: Optional[int] = None,
+        on_uneven_distributed: Literal["raise", "drop", "uneven", "ignore"] = "raise",
     ):
-        self._len = len(data_source)
-        self.epoch = init_epoch
+        super().__init__(data_source, init_epoch, on_uneven_distributed)
+        max_ = np.iinfo(np.int32).max
         if base_seed is None:
             # we use numpy RandomState so that we can run in parallel with
             # torch's RandomState, but we acquire the initial random seed from
             # torch so that we'll be deterministic with a prior call to
             # torch.manual_seed(...)
-            base_seed = torch.randint(np.iinfo(np.int32).max, (1,)).long().item()
+            base_seed = torch.randint(max_, (1,)).long().item()
+        if base_seed >= max_:
+            raise ValueError(f"base_seed is too high! Pick something less than {max_}")
         self.base_seed = base_seed
-        if (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-            and torch.distributed.get_rank() >= 0
-        ):
-            self._offset = torch.distributed.get_rank()
-            self._stride = torch.distributed.get_world_size()
-            if self._len % self._stride:
-                raise RuntimeError(
-                    f"dataset length ({self._len}) must be divisible by distributed "
-                    f"world size ({self._stride})"
-                )
-        else:
-            self._offset = 0
-            self._stride = 1
 
-    def __len__(self) -> int:
-        return self._len
-
-    def get_samples_for_epoch(self, epoch: int) -> np.ndarray:
-        """np.ndarray : samples for a specific epoch"""
-        rs = np.random.RandomState(self.base_seed + epoch)
-        return rs.permutation(self._len)[self._offset :: self._stride]
-
-    def __iter__(self) -> Iterator[int]:
-        ret = iter(self.get_samples_for_epoch(self.epoch))
-        self.epoch += 1
-        return ret
+    def get_samples_for_epoch(self, epoch: int) -> Iterable[int]:
+        rs = np.random.RandomState((self.base_seed, epoch))
+        shuffled = rs.permutation(self.total)
+        return shuffled
 
 
-class DistributableSequentialSampler(torch.utils.data.sampler.SequentialSampler):
-    """A SequentialSampler which quietly handles :mod:`torch.distributed`
-
-    A wrapper around :class:`torch.utils.data.sampler.SequentialSampler` which can be
-    used transparently with :mod:`torch.distributed`.
+class EpochSequentialSampler(AbstractEpochSampler):
+    """A SequentialSampler which handles :mod:`torch.distributed`
 
     Parameters
     ----------
     data_source
         The dataset to draw the sample from.
-    
-    Notes
-    -----
-    On initialization, the sampler checks if its process has been assigned a rank in the
-    default group and, if so, yields sample indices from a partition assigned to that
-    rank. Each process yields strided indices of the form::
+    init_epoch
+        The initial epoch.
+    on_uneven_distributed
+        What to do if the sampler detects that it's in a distributed environment and
+        the number of processes does not evenly divide the number of samples:
 
-        r, r + R, r + 2R, ...
-    
-    where ``r`` is the rank and ``R`` is the world size. The original ordering can be
-    recovered by interleaving reads from the processes. No process actually reads
-    samples ``0, 1, 2, ...`` (unless the world size is ``1``), so any code which
-    requires samples be presented in a global order should avoid this sampler.
+        - :obj:`'raise'` raise a :class:`ValueError`.
+        - :obj:`'drop'` drop the remainder. The dropped samples will cycle over epochs.
+        - :obj:`'uneven'` allow some processes to yield fewer samples. The processes
+          handling fewer samples will cycle each epoch, also changing the length of
+          the sampler within the process.
+        - :obj:`'ignore'` ignore the distributed context. Each process will yield all
+          samples.
     """
 
-    epoch: int
+    def get_samples_for_epoch(self, epoch: int) -> Iterable[int]:
+        return range(self.total)
 
-    _offset: int
-    _stride: int
-
-    def __init__(self, data_source: Sized, init_epoch: int = 0):
-        super().__init__(data_source)
-        if (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-            and torch.distributed.get_rank() >= 0
-        ):
-            self._offset = torch.distributed.get_rank()
-            self._stride = torch.distributed.get_world_size()
-            if len(self) % self._stride:
-                raise RuntimeError(
-                    f"dataset length ({len(self)}) must be divisible by distributed "
-                    f"world size ({self._stride})"
-                )
-        else:
-            self._offset = 0
-            self._stride = 1
-        self.epoch = init_epoch
-
-    def __iter__(self) -> Iterator[int]:
-        ret = iter(range(self._offset, len(self), self._stride))
-        self.epoch += 1
-        return ret
 
 
 class BucketBatchSampler(_BaseSampler):
@@ -620,7 +649,7 @@ class SpectDataLoader(torch.utils.data.DataLoader):
                 dataset, init_epoch=init_epoch, base_seed=seed
             )
         else:
-            utt_sampler = DistributableSequentialSampler(dataset)
+            utt_sampler = EpochSequentialSampler(dataset)
         if not isinstance(
             params, (DynamicLengthDataLoaderParams, SpectDataLoaderParams)
         ) and isinstance(params, DataLoaderParams):
@@ -987,7 +1016,7 @@ class ContextWindowDataLoader(torch.utils.data.DataLoader):
         if shuffle:
             utt_sampler = EpochRandomSampler(dataset, init_epoch, seed)
         else:
-            utt_sampler = DistributableSequentialSampler(dataset, init_epoch)
+            utt_sampler = EpochSequentialSampler(dataset, init_epoch)
         batch_sampler = torch.utils.data.BatchSampler(
             utt_sampler, params.batch_size, drop_last=params.drop_last
         )
