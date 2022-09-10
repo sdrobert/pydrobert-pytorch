@@ -76,16 +76,15 @@ def populate_torch_dir():
         min_width=1,
         max_width=10,
         num_filts=5,
-        max_class=10,
+        max_ali_class=9,
+        max_ref_class=99,
         include_ali=True,
         include_ref=True,
         file_prefix="",
         file_suffix=".pt",
-        seed=1,
         include_frame_shift=True,
         feat_dtype=torch.float,
     ):
-        torch.manual_seed(seed)
         feat_dir = os.path.join(dr, "feat")
         ali_dir = os.path.join(dr, "ali")
         ref_dir = os.path.join(dr, "ref")
@@ -109,7 +108,7 @@ def populate_torch_dir():
             feat_sizes.append(feat_size)
             utt_ids.append(utt_id)
             if include_ali:
-                ali = torch.randint(max_class + 1, (feat_size,)).long()
+                ali = torch.randint(max_ali_class + 1, (feat_size,)).long()
                 torch.save(
                     ali, os.path.join(ali_dir, file_prefix + utt_id + file_suffix)
                 )
@@ -118,7 +117,7 @@ def populate_torch_dir():
                 ref_size = torch.randint(1, feat_size + 1, (1,)).long().item()
                 max_ref_length = torch.randint(1, feat_size + 1, (1,)).long()
                 max_ref_length = max_ref_length.item()
-                ref = torch.randint(100, (ref_size,)).long()
+                ref = torch.randint(max_ref_class + 1, (ref_size,)).long()
                 if include_frame_shift:
                     ref_starts = torch.randint(
                         feat_size - max_ref_length + 1, (ref_size,)

@@ -754,7 +754,7 @@ def test_window_evaluation_data_loader(temp_dir, populate_torch_dir, init_style)
 
 
 @pytest.mark.cpu
-@pytest.mark.parametrize("shuffle", [True, False])
+@pytest.mark.parametrize("shuffle", [True, False], ids=["shuffled", "sorted"])
 def test_data_loader_length_buckets(temp_dir, populate_torch_dir, shuffle):
     NN, N, B = 31, 3, 5
     exp_feat_sizes = populate_torch_dir(temp_dir, NN, max_width=NN, include_ref=False)[
@@ -773,13 +773,12 @@ def test_data_loader_length_buckets(temp_dir, populate_torch_dir, shuffle):
     for i, x in enumerate(act_feat_sizes):
         assert x.numel() == N or (i >= (NN // N - B) and x.numel() < N)
         i = exp_feat_sizes.index(x[0].item())
-        b = (B * i) // NN
-        assert b < B
-        ui = NN - 1 if b == (B - 1) else (b + 1) * (NN // B) - 1
-        li = b * (NN // B) - 1
-        upper = exp_feat_sizes[ui]
-        lower = exp_feat_sizes[li] if li > -1 else -1
-        assert ((lower < x) & (x <= upper)).all()
+        b = min(i // (NN // B), B - 1)
+        ui = NN if b == (B - 1) else (b + 1) * (NN // B)
+        li = b * (NN // B)
+        upper = exp_feat_sizes[ui - 1]
+        lower = exp_feat_sizes[li]
+        assert ((lower <= x) & (x <= upper)).all()
     act_feat_sizes = torch.cat(act_feat_sizes)
     assert sorted(act_feat_sizes.tolist()) == exp_feat_sizes
     params.drop_last = True
@@ -790,10 +789,10 @@ def test_data_loader_length_buckets(temp_dir, populate_torch_dir, shuffle):
     assert len(act_feat_sizes) == len(loader)
     for x in act_feat_sizes:
         i = exp_feat_sizes.index(x[0].item())
-        b = (B * i) // NN
+        b = min(i // (NN // B), B - 1)
         assert b < B
-        ui = NN - 1 if b == (B - 1) else (b + 1) * (NN // B) - 1
-        upper = exp_feat_sizes[ui]
+        ui = NN if b == (B - 1) else (b + 1) * (NN // B)
+        upper = exp_feat_sizes[ui - 1]
         assert upper * x.numel() <= m
         assert upper * (x.numel() + 1) > m
 

@@ -27,7 +27,11 @@ def test_get_torch_spect_data_dir_info(
     temp_dir, populate_torch_dir, include_frame_shift
 ):
     _, alis, _, feat_sizes, _, _ = populate_torch_dir(
-        temp_dir, 19, num_filts=5, max_class=10, include_frame_shift=include_frame_shift
+        temp_dir,
+        19,
+        num_filts=5,
+        max_ali_class=10,
+        include_frame_shift=include_frame_shift,
     )
     # add one with class idx 10 to ensure all classes are accounted for
     torch.save(torch.rand(1, 5), os.path.join(temp_dir, "feat", "utt19.pt"))

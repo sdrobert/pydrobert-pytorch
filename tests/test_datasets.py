@@ -54,6 +54,7 @@ def test_extract_window(left, right, T):
 def test_valid_spect_data_set(
     temp_dir, num_utts, file_prefix, populate_torch_dir, sos, eos, feat_dtype
 ):
+    s = torch.get_rng_state()
     feats, _, _, _, _, utt_ids = populate_torch_dir(
         temp_dir,
         num_utts,
@@ -62,6 +63,7 @@ def test_valid_spect_data_set(
         include_ref=False,
         feat_dtype=feat_dtype,
     )
+    torch.set_rng_state(s)
     # note that this'll just resave the same features if there's no file
     # prefix. If there is, these ought to be ignored by the data set
     populate_torch_dir(
@@ -84,10 +86,11 @@ def test_valid_spect_data_set(
     assert not data_set.has_ali and not data_set.has_ref
     assert len(utt_ids) == len(data_set.utt_ids)
     assert all(utt_a == utt_b for (utt_a, utt_b) in zip(utt_ids, data_set.utt_ids))
-    assert all(
-        ali_b is None and ref_b is None and torch.allclose(feat_a, feat_b)
-        for (feat_a, (feat_b, ali_b, ref_b)) in zip(feats, data_set)
-    )
+    for feat_a, (feat_b, ali_b, ref_b) in zip(feats, data_set):
+        assert ali_b is None
+        assert ref_b is None
+        assert feat_a.shape == feat_b.shape
+        assert (feat_a == feat_b).all()
     feats, alis, refs, _, _, utt_ids = populate_torch_dir(
         temp_dir, num_utts, file_prefix=file_prefix, feat_dtype=feat_dtype
     )
