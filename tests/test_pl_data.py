@@ -15,10 +15,8 @@
 import os
 
 import torch
-import pytorch_lightning as pl
 import pytest
 
-import pydrobert.torch.lightning as plightning
 import pydrobert.torch.command_line as cmd
 
 
@@ -62,7 +60,7 @@ def populate_lit_dir(request, populate_torch_dir):
             f.write(f"num_filts {num_filts}\n")
             f.write(f"max_ali_class {max_ali_class}\n")
             f.write(f"max_ref_class {max_ref_class}\n")
-        params = plightning.LitSpectDataModuleParams(
+        params = dict(
             train_dir=f"{root_dir}/train",
             val_dir=f"{root_dir}/dev",
             test_dir=f"{root_dir}/test",
@@ -72,15 +70,20 @@ def populate_lit_dir(request, populate_torch_dir):
             assert not cmd.compute_mvn_stats_for_torch_feat_data_dir(
                 [f"{root_dir}/train/feat", f"{root_dir}/mvn.pt"]
             )
-            params.mvn_path = f"{root_dir}/mvn.pt"
+            params["mvn_path"] = f"{root_dir}/mvn.pt"
         return params
 
     return _populate_lit_dir
 
 
 def test_lit_spect_data_module_basic(temp_dir, populate_lit_dir):
+    pl = pytest.importorskip("pytorch_lightning")
+    import pydrobert.torch.lightning as plightning
+
     tN, VN, TN, N, F, A, V = 101, 11, 21, 10, 5, 9, 10
-    params = populate_lit_dir(f"{temp_dir}/data", F, A, V - 1, tN, VN, TN)
+    params = plightning.LitSpectDataModuleParams(
+        **populate_lit_dir(f"{temp_dir}/data", F, A, V - 1, tN, VN, TN)
+    )
     params.prefer_split = False
     params.train_params.batch_size = N
     params.train_params.drop_last = True
