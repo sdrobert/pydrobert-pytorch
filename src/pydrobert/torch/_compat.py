@@ -58,15 +58,7 @@ __all__ = [
     "script",
     "SpoofPackedSequence",
     "trunc_divide",
-    "TypeAlias",
-    "Literal",
 ]
-
-try:
-    from typing import TypeAlias, Literal
-except ImportError:
-    from typing_extensions import TypeAlias, Literal
-
 
 
 def check_methods(C, *methods):

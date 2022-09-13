@@ -15,10 +15,10 @@
 import abc
 
 from typing import Callable
+from typing_extensions import TypeAlias
 
 import torch
 
-from ._compat import TypeAlias
 
 FunctionOnSample: TypeAlias = Callable[[torch.Tensor], torch.Tensor]
 

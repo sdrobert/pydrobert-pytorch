@@ -16,11 +16,12 @@ import abc
 import warnings
 
 from typing import Optional, overload
+from typing_extensions import Literal
 
 import torch
 
 from . import config
-from ._compat import script, Literal
+from ._compat import script
 from ._wrappers import functional_wrapper, proxy
 
 

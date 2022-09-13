@@ -13,10 +13,11 @@
 # limitations under the License.
 
 from typing import Tuple, overload
+from typing_extensions import Literal
 
 import torch
 
-from ._compat import script, Literal
+from ._compat import script
 from ._wrappers import functional_wrapper, proxy
 
 

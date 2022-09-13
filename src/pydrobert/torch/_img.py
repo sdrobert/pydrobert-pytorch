@@ -24,11 +24,12 @@
 import math
 
 from typing import Any, Optional, Tuple, Union, overload
+from typing_extensions import Literal
 
 import torch
 
 from ._pad import pad_variable
-from ._compat import meshgrid, script, linalg_solve, Literal
+from ._compat import meshgrid, script, linalg_solve
 from ._wrappers import functional_wrapper, proxy
 
 

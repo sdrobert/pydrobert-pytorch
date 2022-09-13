@@ -13,6 +13,10 @@
 # limitations under the License.
 
 import abc
+import warnings
+
+from collections import Counter
+from itertools import islice
 from typing import (
     Collection,
     Dict,
@@ -29,17 +33,13 @@ from typing import (
     TypeVar,
     Union,
 )
-import warnings
-
-from collections import Counter
-from itertools import islice
+from typing_extensions import Literal
 
 import param
 import numpy as np
 import torch
 
 from . import config
-from ._compat import Literal
 from ._datasets import (
     ContextWindowDataParams,
     ContextWindowDataSet,

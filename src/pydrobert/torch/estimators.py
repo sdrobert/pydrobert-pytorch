@@ -24,6 +24,7 @@ import functools
 import warnings
 
 import torch
+
 from ._enumerate_estimator import EnumerateEstimator
 from ._estimators import Estimator, FunctionOnSample
 from ._mc import (

@@ -13,10 +13,11 @@
 # limitations under the License.
 
 from typing import Optional
+from typing_extensions import Literal
 
 import torch
 
-from ._compat import script, movedim, Literal
+from ._compat import script, movedim
 from ._wrappers import functional_wrapper, proxy
 
 
