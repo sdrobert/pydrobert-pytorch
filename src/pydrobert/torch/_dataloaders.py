@@ -14,6 +14,7 @@
 
 import abc
 from typing import (
+    Collection,
     Dict,
     Iterable,
     List,
@@ -25,6 +26,7 @@ from typing import (
     Sized,
     Tuple,
     Hashable,
+    TypeVar,
     Union,
 )
 import warnings
@@ -83,13 +85,12 @@ class AbstractEpochSampler(_BaseSampler, metaclass=abc.ABCMeta):
                 if on_uneven_distributed == "raise":
                     raise ValueError(
                         f"dataset length ({self.total}) must be divisible by "
-                        f"the distributed world size ({self._world_size})"
+                        f"the distributed world size ({self._world_size}). Consult the "
+                        "documentation for on_uneven_distributed"
                     )
                 elif on_uneven_distributed == "drop":
                     self.effective_total = self.total - (self.total % self._world_size)
-                elif on_uneven_distributed == "uneven":
-                    self.effective_total = self.total
-                else:
+                elif on_uneven_distributed != "uneven":
                     raise ValueError(
                         "Unknown on_uneven_distributed value "
                         f"'{on_uneven_distributed}'. Expected one of 'ignore', "
@@ -100,20 +101,29 @@ class AbstractEpochSampler(_BaseSampler, metaclass=abc.ABCMeta):
             self._world_size = 1
 
     def __len__(self) -> int:
-        offs = (self.epoch + self._rank) % self._world_size
-        return (self.effective_total - offs + self._world_size - 1) // self._world_size
+        return (
+            self.effective_total - self._rank + self._world_size - 1
+        ) // self._world_size
 
     @abc.abstractmethod
-    def get_samples_for_epoch(self, epoch: int) -> Iterable[int]:
+    def get_samples_for_epoch_ignoring_distributed(self, epoch: int) -> Iterable[int]:
+        """Get all samples for the provided epoch, ignoring the distruted environment
+
+        Ignores the distributed environment. All replicas should return the same value.
+
+        See Also
+        --------
+        get_samples_for_epoch
+        """
         ...
 
+    def get_samples_for_epoch(self, epoch: int) -> Iterable[int]:
+        """Get all samples for the provided epoch"""
+        ret = self.get_samples_for_epoch_ignoring_distributed(epoch)
+        return islice(ret, self._rank, self.effective_total, self._world_size)
+
     def __iter__(self) -> Iterator[int]:
-        ret = islice(
-            self.get_samples_for_epoch(self.epoch),
-            (self.epoch + self._rank) % self._world_size,
-            self.effective_total,
-            self._world_size,
-        )
+        ret = self.get_samples_for_epoch(self.epoch)
         self.epoch += 1
         return ret
 
@@ -138,9 +148,7 @@ class EpochRandomSampler(AbstractEpochSampler):
         - :obj:`'raise'` raise a :class:`ValueError`.
         - :obj:`'drop'` drop the remainder. The dropped samples will be randomized each
           epoch.
-        - :obj:`'uneven'` allow some processes to yield fewer samples. The processes
-          handling fewer samples will cycle each epoch, also changing the length of
-          the sampler in each epoch.
+        - :obj:`'uneven'` allow some processes to yield fewer samples.
         - :obj:`'ignore'` ignore the distributed context. Each process will yield all
           samples.
     
@@ -162,8 +170,8 @@ class EpochRandomSampler(AbstractEpochSampler):
     ...     torch.utils.data.TensorDataset(torch.arange(100)))
     >>> samples_ep0 = tuple(sampler)  # random
     >>> samples_ep1 = tuple(sampler)  # random, probably not same as first
-    >>> assert tuple(sampler.get_samples_for_epoch(0)) == samples_ep0
-    >>> assert tuple(sampler.get_samples_for_epoch(1)) == samples_ep1
+    >>> assert tuple(sampler.get_samples_for_epoch_ignoring_distributed(0)) == samples_ep0
+    >>> assert tuple(sampler.get_samples_for_epoch_ignoring_distributed(1)) == samples_ep1
     """
 
     base_seed: int  #:
@@ -187,14 +195,16 @@ class EpochRandomSampler(AbstractEpochSampler):
             raise ValueError(f"base_seed is too high! Pick something less than {max_}")
         self.base_seed = base_seed
 
-    def get_samples_for_epoch(self, epoch: int) -> Iterable[int]:
+    def get_samples_for_epoch_ignoring_distributed(self, epoch: int) -> Iterable[int]:
         rs = np.random.RandomState((self.base_seed, epoch))
         shuffled = rs.permutation(self.total)
-        return shuffled
+        return iter(shuffled)
 
 
 class EpochSequentialSampler(AbstractEpochSampler):
     """A SequentialSampler which handles :mod:`torch.distributed`
+
+    Yields samples ``[1, 2, ...]``
 
     Parameters
     ----------
@@ -207,17 +217,59 @@ class EpochSequentialSampler(AbstractEpochSampler):
         the number of processes does not evenly divide the number of samples:
 
         - :obj:`'raise'` raise a :class:`ValueError`.
-        - :obj:`'drop'` drop the remainder. The dropped samples will cycle over epochs.
-        - :obj:`'uneven'` allow some processes to yield fewer samples. The processes
-          handling fewer samples will cycle each epoch, also changing the length of
-          the sampler within the process.
+        - :obj:`'drop'` drop the last few samples.
+        - :obj:`'uneven'` allow some processes to yield fewer samples.
         - :obj:`'ignore'` ignore the distributed context. Each process will yield all
           samples.
+        
+        See the below note for more information.
+    
+    Notes
+    -----
+    The following note regards how the sampler handles :mod:`torch.distributed`.
+
+    Sequential sampling in a distributed, parallel environment is not well defined. When
+    `on_uneven_distributed` is :obj:`'ignore'`, each process sees all data sequentially.
+    As such, every process repeats the same work and returns the same value. Though
+    wasteful, results are likely correct, and hence easiest to adapt to from a
+    non-distributed codebase (e.g. with
+    :class:`pydrobert.torch.training.TraningStateController`). Distributed sequential
+    sampling may still be appropriate otherwise when ordering does not matter, such as
+    when an evaluation metric is computed in aggregate. 
+
+    When in a distributed environment and `on_uneven_distributed` is not :obj:`'ignore'`
+    process ``r`` of ``W`` processes will be responsible for samples ``[r, r + W, r +
+    2W, ...]`` (assuming `shifting` is :obj:`False`). When the total number of samples
+    ``N`` is divisble by ``W``, each process sees the same number of samples and all
+    samples are yielded by exactly one process. Assuming the quantity of interest is an
+    average over all samples, computing the average per process and then that averaged
+    over processes should yield the same results.
+    
+    When ``W`` does not divide ``N`` and `on_uneven_distributed` is :obj:`'uneven'`, all
+    samples will be yielded by exactly one process but not all processes will yield the
+    same number of samples. Averaging must be performed with specialized logic; see
+    :class:`torch.distributed.algorithms.Join` for one option.
+
+    Finally, when ``W`` does not divide ``N`` and `on_uneven_distributed` is
+    :obj:`'drop'`, the last ``N % W`` samples are dropped to ensure divisibility. Each
+    process will see the same number of samples, but the last few samples will never
+    be yielded. While averaging will almost always yield a different result from the
+    distributed case, it may nonetheless be close when ``N % W`` is small.
     """
 
-    def get_samples_for_epoch(self, epoch: int) -> Iterable[int]:
+    def __init__(
+        self,
+        data_source: Sized,
+        init_epoch: int = 0,
+        on_uneven_distributed: Literal["raise", "drop", "uneven", "ignore"] = "raise",
+    ):
+        super().__init__(data_source, init_epoch, on_uneven_distributed)
+
+    def get_samples_for_epoch_ignoring_distributed(self, epoch: int) -> Iterable[int]:
         return range(self.total)
 
+
+H = TypeVar("H", bound=Hashable)
 
 
 class BucketBatchSampler(_BaseSampler):
@@ -245,6 +297,12 @@ class BucketBatchSampler(_BaseSampler):
         yielded as soon as it is full (or the epoch has ended with `drop_incomplete` set
         to :obj:`False`).
     
+    Warnings
+    --------
+    :class:`BucketBatchSampler` has no :func:`__len__` method. Correctly determining the
+    length of the batched sampler requires knowledge of which indices of `sampler` are
+    being iterated over which can only be determined by iterating over the `sampler`.
+    
     Examples
     --------
 
@@ -262,38 +320,25 @@ class BucketBatchSampler(_BaseSampler):
 
     """
 
-    sampler: _BaseSampler
-    idx2bucket: Dict[int, Hashable]
-    bucket2size: Dict[Hashable, int]
+    sampler: Collection[int]
+    idx2bucket: Dict[int, H]
+    bucket2size: Dict[H, int]
     drop_incomplete: bool
-    _len: Optional[int]
 
     def __init__(
         self,
-        sampler: _BaseSampler,
-        idx2bucket: Dict[int, Hashable],
-        bucket2size: Dict[Hashable, int],
-        drop_incomplete: bool,
+        sampler: Collection[int],
+        idx2bucket: Dict[int, H],
+        bucket2size: Dict[H, int],
+        drop_incomplete: bool = False,
     ):
         self.sampler = sampler
         self.idx2bucket = idx2bucket
         self.bucket2size = bucket2size
         self.drop_incomplete = drop_incomplete
-        self._len = None
-
-    def __len__(self) -> int:
-        if self._len is None:
-            bucket2count = Counter(self.idx2bucket.values())
-            self._len = 0
-            for bucket, size in self.bucket2size.items():
-                count = bucket2count.get(bucket, 0)
-                self._len += count // size
-                if not self.drop_incomplete and count % size:
-                    self._len += 1
-        return self._len
 
     def __iter__(self) -> Iterator[List[int]]:
-        batches: Dict[Hashable, List[int]] = dict()
+        batches: Dict[H, List[int]] = dict()
         for idx in self.sampler:
             hash_ = self.idx2bucket[idx]
             batch_size = self.bucket2size[hash_]
@@ -320,7 +365,8 @@ class DataLoaderParams(param.Parameterized):
         10, bounds=(1, None), softbounds=(5, 10), doc="Number of elements in a batch.",
     )
     drop_last = param.Boolean(
-        False, doc="Whether to drop the last batch if it does reach batch_size"
+        False,
+        doc="Whether to drop a batch when there are too few samples to match its size.",
     )
 
     @classmethod
@@ -550,6 +596,14 @@ class SpectDataLoader(torch.utils.data.DataLoader):
     seed
         The initial seed used for shuffling data. If unset, a random one will be
         generated.
+    on_uneven_distributed
+        What to do if the sampler detects that it's in a distributed environment and the
+        number of processes does not evenly divide the number of samples:
+
+        - :obj:`'raise'` raise a :class:`ValueError`.
+        - :obj:`'uneven'` allow some processes to yield fewer samples.
+        - :obj:`'ignore'` ignore the distributed context. Each process will yield all
+          samples.
     **kwargs
         Additional keyword arguments to initialize :class:`SpectDataSet` and
         :class:`torch.utils.data.DataLoader`. The former is only relevant when
@@ -574,6 +628,7 @@ class SpectDataLoader(torch.utils.data.DataLoader):
     batch_first: bool
     batch_sampler: Union[BucketBatchSampler, torch.utils.data.BatchSampler]
     sort_batch: bool
+    _len: int
 
     def __init__(
         self,
@@ -584,14 +639,16 @@ class SpectDataLoader(torch.utils.data.DataLoader):
         batch_first: bool = True,
         sort_batch: bool = False,
         init_epoch: int = 0,
+        on_uneven_distributed: Literal["raise", "unordered", "ignore"] = "raise",
         seed: Optional[int] = None,
         **kwargs,
     ):
         for bad_kwarg in {
-            "batch_size",
-            "sampler",
             "batch_sampler",
+            "batch_size",
             "collate_fn",
+            "drop_last",
+            "sampler",
         }:
             if bad_kwarg in kwargs:
                 raise TypeError(
@@ -618,19 +675,28 @@ class SpectDataLoader(torch.utils.data.DataLoader):
                 ds_kwargs[key] = val
             else:
                 dl_kwargs[key] = val
+        if not isinstance(
+            params, (DynamicLengthDataLoaderParams, SpectDataLoaderParams)
+        ) and isinstance(params, DataLoaderParams):
+            warnings.warn(
+                "Passing a DataLoaderParams instance as params is deprecated. "
+                "Switch to DynamicLengthDataLoaderParams.",
+                DeprecationWarning,
+            )
+            num_length_buckets = 1
+        else:
+            num_length_buckets = params.num_length_buckets
         if data_params is None:
             data_params = params
-        else:
-            if hasattr(params, "subset_ids"):
-                subset_ids = params.subset_ids
-                if subset_ids:
-                    warnings.warn(
-                        "setting subset_ids in data loader parameters is deprecated. "
-                        "Use data_params.subset_ids instead.",
-                        DeprecationWarning,
-                        2,
-                    )
-                    data_params.subset_ids = subset_ids
+        elif hasattr(params, "subset_ids"):
+            subset_ids = params.subset_ids
+            if subset_ids:
+                warnings.warn(
+                    "setting subset_ids in data loader parameters is deprecated. "
+                    "Use data_params.subset_ids instead.",
+                    DeprecationWarning,
+                )
+                data_params.subset_ids = subset_ids
         self.batch_first, self.sort_batch = batch_first, sort_batch
         if isinstance(data, SpectDataSet):
             dataset = data
@@ -644,23 +710,17 @@ class SpectDataLoader(torch.utils.data.DataLoader):
                 tokens_only=tokens_only,
                 **ds_kwargs,
             )
+        utt_sampler_kwargs = {"init_epoch": init_epoch}
+        if params.drop_last:
+            utt_sampler_kwargs["on_uneven_distributed"] = "drop"
+        else:
+            utt_sampler_kwargs["on_uneven_distributed"] = on_uneven_distributed
         if shuffle:
             utt_sampler = EpochRandomSampler(
-                dataset, init_epoch=init_epoch, base_seed=seed
+                dataset, base_seed=seed, **utt_sampler_kwargs
             )
         else:
-            utt_sampler = EpochSequentialSampler(dataset)
-        if not isinstance(
-            params, (DynamicLengthDataLoaderParams, SpectDataLoaderParams)
-        ) and isinstance(params, DataLoaderParams):
-            warnings.warn(
-                "Passing a DataLoaderParams instance as params is deprecated. "
-                "Switch to DynamicLengthDataLoaderParams.",
-                DeprecationWarning,
-            )
-            num_length_buckets = 1
-        else:
-            num_length_buckets = params.num_length_buckets
+            utt_sampler = EpochSequentialSampler(dataset, **utt_sampler_kwargs)
         if num_length_buckets > 1:
             idx2bucket, bucket2size = _get_bucket_batch_sampler_params(
                 dataset,
@@ -669,7 +729,7 @@ class SpectDataLoader(torch.utils.data.DataLoader):
                 params.size_batch_by_length,
             )
             batch_sampler = BucketBatchSampler(
-                utt_sampler, idx2bucket, bucket2size, params.drop_last
+                utt_sampler, idx2bucket, bucket2size, params.drop_last,
             )
         else:
             batch_sampler = torch.utils.data.BatchSampler(
@@ -690,6 +750,23 @@ class SpectDataLoader(torch.utils.data.DataLoader):
             not self.dataset.suppress_alis,
             not self.dataset.suppress_uttids,
         )
+
+    def __len__(self) -> int:
+        if isinstance(self.batch_sampler, BucketBatchSampler):
+            bucket2count = Counter(
+                self.batch_sampler.idx2bucket[i]
+                for i in self.batch_sampler.sampler.get_samples_for_epoch(self.epoch)
+            )
+            self._len = 0
+            for bucket, count in bucket2count.items():
+                size = self.batch_sampler.bucket2size[bucket]
+                if self.batch_sampler.drop_incomplete:
+                    self._len += count // size
+                else:
+                    self._len += (count + size - 1) // size
+        else:
+            self._len = len(self.batch_sampler)
+        return self._len
 
     @property
     def epoch(self) -> int:
@@ -942,6 +1019,11 @@ class ContextWindowDataLoader(torch.utils.data.DataLoader):
         A tuple ``windows, alis[, window_sizes, uttids]``, with `window_sizes` and
         `uttids` included if `suppress_uttids` is :obj:`False`. See
         :func:`context_window_seq_to_batch` for more information on the elements.
+    
+    Warnings
+    --------
+    This class does not currently support :mod:`torch.distributed`. Each process will
+    return the same batches.
     """
 
     dataset: ContextWindowDataSet
@@ -959,6 +1041,7 @@ class ContextWindowDataLoader(torch.utils.data.DataLoader):
         shuffle: bool = True,
         init_epoch: int = 0,
         seed: Optional[int] = None,
+        on_uneven_distributed: Literal["raise", "unordered", "ignore"] = "raise",
         **kwargs,
     ):
         for bad_kwarg in (
@@ -966,6 +1049,7 @@ class ContextWindowDataLoader(torch.utils.data.DataLoader):
             "sampler",
             "batch_sampler",
             "collate_fn",
+            "drop_last",
         ):
             if bad_kwarg in kwargs:
                 raise TypeError(
@@ -1014,9 +1098,9 @@ class ContextWindowDataLoader(torch.utils.data.DataLoader):
             data_dir = data
             dataset = ContextWindowDataSet(data_dir, params=data_params, **ds_kwargs)
         if shuffle:
-            utt_sampler = EpochRandomSampler(dataset, init_epoch, seed)
+            utt_sampler = EpochRandomSampler(dataset, init_epoch, seed, "ignore")
         else:
-            utt_sampler = EpochSequentialSampler(dataset, init_epoch)
+            utt_sampler = EpochSequentialSampler(dataset, init_epoch, "ignore")
         batch_sampler = torch.utils.data.BatchSampler(
             utt_sampler, params.batch_size, drop_last=params.drop_last
         )
@@ -1026,6 +1110,9 @@ class ContextWindowDataLoader(torch.utils.data.DataLoader):
             collate_fn=self.collate_fn,
             **dl_kwargs,
         )
+
+    def __len__(self) -> int:
+        return len(self.batch_sampler)
 
     @property
     def epoch(self) -> int:
