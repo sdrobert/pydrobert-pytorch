@@ -33,7 +33,7 @@ from typing import (
     TypeVar,
     Union,
 )
-from typing_extensions import Literal
+from typing_extensions import Literal, TypeGuard
 
 import param
 import numpy as np
