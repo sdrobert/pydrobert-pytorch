@@ -59,12 +59,14 @@ __all__ = [
     "SpoofPackedSequence",
     "trunc_divide",
     "TypeAlias",
+    "Literal",
 ]
 
 try:
-    from typing import TypeAlias
+    from typing import TypeAlias, Literal
 except ImportError:
-    from typing_extensions import TypeAlias
+    from typing_extensions import TypeAlias, Literal
+
 
 
 def check_methods(C, *methods):

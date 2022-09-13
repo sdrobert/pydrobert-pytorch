@@ -15,11 +15,11 @@
 import re
 import warnings
 
-import torch
-import numpy as np
-
 from typing import Tuple, Optional, List, TextIO, Union, Iterable, Sequence, Mapping
 from collections import OrderedDict
+
+import torch
+import numpy as np
 
 
 def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) -> list:

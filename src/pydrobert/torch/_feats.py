@@ -14,14 +14,9 @@
 
 from typing import Optional
 
-try:
-    from typing import Literal
-except ImportError:
-    from typing_extensions import Literal
-
 import torch
 
-from ._compat import script, movedim
+from ._compat import script, movedim, Literal
 from ._wrappers import functional_wrapper, proxy
 
 

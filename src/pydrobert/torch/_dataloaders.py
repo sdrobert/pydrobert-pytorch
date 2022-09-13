@@ -34,16 +34,12 @@ import warnings
 from collections import Counter
 from itertools import islice
 
-try:
-    from typing import Literal
-except ImportError:
-    from typing_extensions import Literal
-
 import param
 import numpy as np
 import torch
 
 from . import config
+from ._compat import Literal
 from ._datasets import (
     ContextWindowDataParams,
     ContextWindowDataSet,
