@@ -96,7 +96,7 @@ class SpectDataSet(torch.utils.data.Dataset):
     warn_on_missing
         If ``ali/`` or ``ref/`` exist, there's a mismatch between the
         utterances in the directories, and `warn_on_missing` is :obj:`True`, a
-        warning will be issued (via ``warnings``) regarding each such mismatch
+        warning will be issued (via :mod:`warnings`) regarding each such mismatch.
     subset_ids
         Deprecated. Use params.subset_ids.
     sos

@@ -13,11 +13,21 @@
 # limitations under the License.
 
 import os
+import argparse
 
 import torch
 import pytest
 
 import pydrobert.torch.command_line as cmd
+
+try:
+    import pytorch_lightning as pl
+    import pydrobert.torch.lightning as plightning
+    import pydrobert.param.serialization as serial
+except ImportError:
+    pytest.skip(
+        "no pytorch_lightning, pydrobert.params not available", allow_module_level=True
+    )
 
 
 @pytest.fixture(scope="session")
@@ -36,8 +46,15 @@ def populate_lit_dir(request, populate_torch_dir):
         with_mvn=True,
         **kwargs,
     ):
+        params = dict(
+            train_dir=f"{root_dir}/train",
+            val_dir=f"{root_dir}/dev",
+            test_dir=f"{root_dir}/test",
+            info_path=f"{root_dir}/info.ark",
+        )
         x = [("train", train_utts), ("dev", dev_utts), ("test", test_utts)]
         if predict_utts is not None:
+            params["predict_dir"] = f"{root_dir}/predict"
             x.append(("predict", predict_utts))
         if not include_ali:
             max_ali_class = -1
@@ -60,12 +77,7 @@ def populate_lit_dir(request, populate_torch_dir):
             f.write(f"num_filts {num_filts}\n")
             f.write(f"max_ali_class {max_ali_class}\n")
             f.write(f"max_ref_class {max_ref_class}\n")
-        params = dict(
-            train_dir=f"{root_dir}/train",
-            val_dir=f"{root_dir}/dev",
-            test_dir=f"{root_dir}/test",
-            info_path=f"{root_dir}/info.ark",
-        )
+
         if with_mvn:
             assert not cmd.compute_mvn_stats_for_torch_feat_data_dir(
                 [f"{root_dir}/train/feat", f"{root_dir}/mvn.pt"]
@@ -77,14 +89,12 @@ def populate_lit_dir(request, populate_torch_dir):
 
 
 def test_lit_spect_data_module_basic(temp_dir, populate_lit_dir):
-    pl = pytest.importorskip("pytorch_lightning")
-    import pydrobert.torch.lightning as plightning
-
     tN, VN, TN, N, F, A, V = 101, 11, 21, 10, 5, 9, 10
     params = plightning.LitSpectDataModuleParams(
         **populate_lit_dir(f"{temp_dir}/data", F, A, V - 1, tN, VN, TN)
     )
     params.prefer_split = False
+    params.initialize_set_parameters()
     params.train_params.batch_size = N
     params.train_params.drop_last = True
     data = plightning.LitSpectDataModule(params)
@@ -119,3 +129,51 @@ def test_lit_spect_data_module_basic(temp_dir, populate_lit_dir):
     ref_lens_1 = torch.cat(ref_lens)
     assert (feat_lens_0 == feat_lens_1).all()
     assert (ref_lens_0 == ref_lens_1).all()
+
+
+def test_lit_spect_data_module_argparse(temp_dir, populate_lit_dir):
+    tNN, VNN, TNN, PNN, tN, TN = 50, 40, 30, 20, 5, 10
+    assert tNN % tN == VNN % tN == TNN % TN == PNN % TN == 0
+    params = plightning.LitSpectDataModuleParams(
+        **populate_lit_dir(
+            f"{temp_dir}/data",
+            train_utts=tNN,
+            dev_utts=VNN,
+            test_utts=TNN,
+            predict_utts=PNN,
+        )
+    )
+    params.initialize_set_parameters()
+    params.train_params.batch_size = params.val_params.batch_size = tN
+    params.test_params.batch_size = TN
+    cfg = f"{temp_dir}/conf.json"
+
+    serial.register_serializer("reckless_json")
+    json_ = params.param.serialize_parameters(mode="reckless_json")
+    with open(cfg, "w") as f:
+        f.write(json_)
+
+    parser = argparse.ArgumentParser()
+    plightning.LitSpectDataModule.add_argparse_args(parser)
+    args = ["--read-json", cfg]
+    namespace = parser.parse_args(args)
+    dm = plightning.LitSpectDataModule.from_argparse_args(namespace)
+    assert dm.params.pprint() == params.pprint()
+    dm.prepare_data()
+    dm.setup()
+    assert len(dm.train_dataloader()) == tNN // tN
+    assert len(dm.val_dataloader()) == VNN // tN
+    assert len(dm.test_dataloader()) == TNN // TN
+    assert len(dm.predict_dataloader()) == PNN // TN
+
+    args += ["--predict-dir", f"{temp_dir}/data/test"]
+    namespace = parser.parse_args(args)
+    dm = plightning.LitSpectDataModule.from_argparse_args(namespace)
+    assert dm.params.pprint() != params.pprint()
+    dm.prepare_data()
+    dm.setup()
+    assert len(dm.train_dataloader()) == tNN // tN
+    assert len(dm.val_dataloader()) == VNN // tN
+    assert len(dm.test_dataloader()) == TNN // TN
+    assert len(dm.predict_dataloader()) == TNN // TN
+

@@ -15,7 +15,7 @@
 import os
 import argparse
 
-from typing import Any, Dict, Optional
+from typing import Optional
 from typing_extensions import Literal
 
 import torch
@@ -46,28 +46,30 @@ class LitSpectDataModuleParams(param.Parameterized):
     test = param.ClassSelector(SpectDataLoaderParams, instantiate=False)
     predict = param.ClassSelector(SpectDataLoaderParams, instantiate=False)
 
-    train_dir = param.Foldername(None)
-    val_dir = param.Foldername(None)
-    test_dir = param.Foldername(None)
-    predict_dir = param.Foldername(None)
+    train_dir = param.Foldername(None, doc="Path to training data directory")
+    val_dir = param.Foldername(None, doc="Path to validation data directory")
+    test_dir = param.Foldername(None, doc="Path to test data directory")
+    predict_dir = param.Foldername(
+        None,
+        doc="Path to prediction data directory (leave empty to use test_dir if avail.)",
+    )
 
-    info_path = param.Filename(None)
+    info_path = param.Filename(
+        None, doc="Path to output of get-torch-spect-data-dir-info command on train_dir"
+    )
 
-    mvn_path = param.Filename(None)
-    warn_on_missing = param.Boolean(True)
-    sort_batch = param.Boolean(False)
-    suppress_alis = param.Boolean(True)
-    tokens_only = param.Boolean(True)
+    mvn_path = param.Filename(
+        None,
+        doc="Path to output of compute-mvn-stats-for-torch-feat-data-dir on train_dir",
+    )
 
     @property
-    @param.depends("train", "val", "test", "predict")
     def loader_params_are_split(self) -> bool:
         return any(
             x is not None for x in (self.train, self.val, self.test, self.predict)
         )
 
     @property
-    @param.depends("common")
     def loader_params_are_merged(self) -> bool:
         return self.common is not None
 
@@ -80,43 +82,85 @@ class LitSpectDataModuleParams(param.Parameterized):
             )
 
     @property
-    @param.depends("common", "train", "val", "test", "predict")
-    def train_params(self) -> SpectDataLoaderParams:
+    def train_params(self) -> Optional[SpectDataLoaderParams]:
         if self._use_split():
-            return self._get_parameterized_and_init("train")
+            return self.train
         else:
-            return self._get_parameterized_and_init("common")
+            return self.common
+
+    @train_params.setter
+    def train_params(self, params: Optional[SpectDataLoaderParams]):
+        if self._use_split():
+            self.train = params
+        else:
+            self.common = params
 
     @property
-    @param.depends("common", "train", "val", "test", "predict")
-    def val_params(self) -> SpectDataLoaderParams:
+    def val_params(self) -> Optional[SpectDataLoaderParams]:
         if self._use_split():
-            return self._get_parameterized_and_init("val")
+            return self.val
         else:
-            return self._get_parameterized_and_init("common")
+            return self.common
+
+    @val_params.setter
+    def val_params(self, params: Optional[SpectDataLoaderParams]):
+        if self._use_split():
+            self.val = params
+        else:
+            self.common = params
 
     @property
-    @param.depends("common", "train", "val", "test", "predict")
-    def test_params(self) -> SpectDataLoaderParams:
+    def test_params(self) -> Optional[SpectDataLoaderParams]:
         if self._use_split():
-            return self._get_parameterized_and_init("test")
+            return self.test
         else:
-            return self._get_parameterized_and_init("common")
+            return self.common
+
+    @test_params.setter
+    def test_params(self, params: Optional[SpectDataLoaderParams]):
+        if self._use_split():
+            self.train = params
+        else:
+            self.common = params
 
     @property
-    @param.depends("common", "train", "val", "test", "predict")
-    def predict_params(self) -> SpectDataLoaderParams:
+    def predict_params(self) -> Optional[SpectDataLoaderParams]:
         if self._use_split():
             return self.predict
         else:
-            return self._get_parameterized_and_init("common")
+            return self.common
 
-    def _get_parameterized_and_init(self, name: str):
-        val = getattr(self, name)
-        if val is None:
-            val = self.param[name].class_(name=name)
-            setattr(self, name, val)
-        return val
+    @test_params.setter
+    def test_params(self, params: Optional[SpectDataLoaderParams]):
+        if self._use_split():
+            self.test = params
+        else:
+            self.common = params
+
+    def initialize_set_parameters(self, include_predict: bool = False):
+        if self._use_split():
+            with param.parameterized.batch_call_watchers(self):
+                self.train = SpectDataLoaderParams(name="train")
+                self.val = SpectDataLoaderParams(name="val")
+                self.test = SpectDataLoaderParams(name="test")
+                if include_predict:
+                    self.predict = SpectDataLoaderParams(name="predict")
+        else:
+            self.common = SpectDataLoaderParams(name="common")
+
+    @property
+    def dev_dir(self) -> str:
+        """Alias of val_dir"""
+        return self.val_dir
+
+    @dev_dir.setter
+    def dev_dir(self, val) -> str:
+        self.val_dir = val
+
+    @property
+    def dev_params(self) -> SpectDataLoaderParams:
+        """Alias of val_params"""
+        return self.val_params
 
     def _use_split(self):
         return self.loader_params_are_split or (
@@ -163,8 +207,12 @@ class LitSpectDataModule(pl.LightningDataModule):
         self,
         params: LitSpectDataModuleParams,
         batch_first: bool = False,
+        sort_batch: bool = False,
+        suppress_alis: bool = True,
+        tokens_only: bool = True,
         num_workers: Optional[int] = None,
         pin_memory: Optional[bool] = None,
+        warn_on_missing: bool = True,
         on_uneven_distributed: Literal["raise", "uneven", "ignore"] = "raise",
     ) -> None:
         super().__init__()
@@ -177,6 +225,8 @@ class LitSpectDataModule(pl.LightningDataModule):
 
         self.train_set = self.predict_set = self.test_set = self.val_set = None
         self._num_filts = self._max_ref_class = self._max_ali_class = None
+
+        # XXX(sdrobert): save_hyperparameters saves unused arguments to self.hparams
         self.save_hyperparameters()
 
     @property
@@ -190,12 +240,42 @@ class LitSpectDataModule(pl.LightningDataModule):
         return self.hparams.batch_first
 
     @property
+    def sort_batch(self) -> bool:
+        """bool : whether dataloaders sort batch elements by number of features"""
+        return self.hparams.sort_batch
+
+    @property
+    def suppress_alis(self) -> bool:
+        """bool : whether dataloaders suppress alignment info"""
+        return self.hparams.suppress_alis
+
+    @property
+    def tokens_only(self) -> bool:
+        """bool : whether dataloaders suppress segment info in token seqs if avail."""
+        return self.hparams.tokens_only
+
+    @property
     def num_workers(self) -> Optional[int]:
+        """Optional[int]: the number of parallel workers in a dataloader
+
+        If initially unset, the value will be populated during :func:`setup` based on
+        the number of CPU cores on the node.
+        """
         return self._num_workers
 
     @property
     def pin_memory(self) -> Optional[bool]:
+        """Optional[bool]: whether to pin memory to the cuda device
+        
+        If initially unset, the value will be populated during :func:`setup` based on
+        whether the trainer's accelerator is on the GPU.
+        """
         return self._pin_memory
+
+    @property
+    def warn_on_missing(self) -> bool:
+        """bool : whether to issue a warning if utterances are missing in subdirs"""
+        return self.hparams.warn_on_missing
 
     @property
     def on_uneven_distributed(self) -> Literal["raise", "uneven", "ignore"]:
@@ -270,12 +350,12 @@ class LitSpectDataModule(pl.LightningDataModule):
             )
 
         kwargs = {
-            "warn_on_missing": self.params.warn_on_missing,
+            "warn_on_missing": self.warn_on_missing,
             "params": params,
             "feat_mean": feat_mean,
             "feat_std": feat_std,
-            "suppress_alis": self.params.suppress_alis,
-            "tokens_only": self.params.tokens_only,
+            "suppress_alis": self.suppress_alis,
+            "tokens_only": self.tokens_only,
         }
         kwargs.update(kwargs_)
 
@@ -368,6 +448,7 @@ class LitSpectDataModule(pl.LightningDataModule):
             params,
             shuffle=shuffle,
             batch_first=self.batch_first,
+            sort_batch=self.sort_batch,
             init_epoch=0 if self.trainer is None else self.trainer.current_epoch,
             num_workers=self._num_workers,
             pin_memory=self._pin_memory,
@@ -382,28 +463,57 @@ class LitSpectDataModule(pl.LightningDataModule):
     def val_dataloader(self):
         return self._construct_dataloader(self.val_set, self.params.val_params, False)
 
+    def dev_dataloader(self):
+        """Alias of val_dataloader"""
+        return self.val_dataloader()
+
     def test_dataloader(self):
         return self._construct_dataloader(self.test_set, self.params.test_params, False)
 
     def predict_dataloader(self):
-        return self._construct_dataloader(
-            self.predict_set, self.params.predict_params, False
-        )
+        params = self.params.predict_params
+        if params is None:
+            params = self.params.test_params
+        return self._construct_dataloader(self.predict_set, params, False)
 
     @staticmethod
     def add_argparse_args(
-        parser: argparse.ArgumentParser, include_overloads: bool = True
+        parser: argparse.ArgumentParser,
+        split: bool = True,
+        include_overloads: bool = True,
     ):
         if pargparse is None:
             raise _pargparse_error
+        pobj = LitSpectDataModuleParams(name="data_params")
+        pobj.prefer_split = split
+        pobj.initialize_set_parameters()
         grp = pargparse.add_deserialization_group_to_parser(
-            parser, LitSpectDataModuleParams, "data_params", reckless=True
+            parser, pobj, "data_params", reckless=True
         )
 
         if include_overloads:
-            grp.add_argument("--train-dir", type=readable_dir, default=None)
-            grp.add_argument("--val-dir", type=readable_dir, default=None)
-            grp.add_argument("--test-dir", type=readable_dir, default=None)
+            grp.add_argument(
+                "--train-dir",
+                metavar="PTH",
+                type=readable_dir,
+                default=None,
+                help="Path to training directory. Clobbers value in data_params",
+            )
+            grp.add_argument(
+                "--val-dir",
+                "--dev-dir",
+                metavar="PTH",
+                type=readable_dir,
+                default=None,
+                help="Path to validation directory. Clobbers value in data_params",
+            )
+            grp.add_argument(
+                "--test-dir",
+                metavar="PTH",
+                type=readable_dir,
+                default=None,
+                help="Path to test directory. Clobbers value in data_params",
+            )
             grp.add_argument("--predict-dir", type=readable_dir, default=None)
             grp.add_argument("--mvn-path", type=readable_file, default=None)
             grp.add_argument("--info-file", type=readable_file, default=None)
@@ -413,8 +523,12 @@ class LitSpectDataModule(pl.LightningDataModule):
         cls,
         namespace: argparse.Namespace,
         batch_first: bool = False,
+        sort_batch: bool = False,
+        suppress_alis: bool = True,
+        tokens_only: bool = True,
         num_workers: Optional[int] = None,
         pin_memory: Optional[bool] = None,
+        warn_on_missing: bool = True,
         on_uneven_distributed: Literal["raise", "uneven", "ignore"] = "raise",
         **overloads,
     ):
@@ -432,10 +546,19 @@ class LitSpectDataModule(pl.LightningDataModule):
             if val is not None:
                 overloads[overload] = val
 
-        data_params.update(**overloads)
+        for key, value in overloads.items():
+            setattr(data_params, key, value)
 
         return cls(
-            data_params, batch_first, num_workers, pin_memory, on_uneven_distributed
+            data_params,
+            batch_first,
+            sort_batch,
+            suppress_alis,
+            tokens_only,
+            num_workers,
+            pin_memory,
+            warn_on_missing,
+            on_uneven_distributed,
         )
 
     # def state_dict(self) -> Dict[str, Any]:
