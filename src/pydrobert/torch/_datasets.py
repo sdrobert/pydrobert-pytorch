@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from multiprocessing.sharedctypes import Value
 import os
 import warnings
 
@@ -25,8 +26,8 @@ import pydrobert.torch.config as config
 from ._feats import MeanVarianceNormalization, FeatureDeltas
 
 
-class SpectDataParams(param.Parameterized):
-    """Parameters for SpectDataSet"""
+class LangDataParams(param.Parameterized):
+    """Parameters for LangDataSet"""
 
     subset_ids = param.List(
         [],
@@ -47,6 +48,185 @@ class SpectDataParams(param.Parameterized):
         "reference and hypothesis transcriptions. If set, `eos` will be "
         "appended to every reference transcription on read",
     )
+
+
+def _utts_in_dir(dir_: str, file_prefix: str, file_suffix: str) -> Set[str]:
+    neg_fsl = -len(file_suffix)
+    if not neg_fsl:
+        neg_fsl = None
+    fpl = len(file_prefix)
+    return set(
+        x[fpl:neg_fsl]
+        for x in os.listdir(dir_)
+        if x.startswith(file_prefix) and x.endswith(file_suffix)
+    )
+
+
+def _load_ref(
+    pth: str, tokens_only: bool, sos: Optional[int], eos: Optional[int]
+) -> torch.Tensor:
+    ref = torch.load(pth)
+    D = ref.ndim
+    if tokens_only and D == 2:
+        ref, D = ref[..., 0], 1
+    if sos is not None:
+        if D == 2:
+            sos_sym = torch.full_like(ref[0], -1)
+            sos_sym[0] = sos
+            ref = torch.cat([sos_sym.unsqueeze(0), ref], 0)
+        else:
+            ref = torch.cat([torch.full_like(ref[:1], sos), ref], 0)
+    if eos is not None:
+        if D == 2:
+            eos_sym = torch.full_like(ref[0], -1)
+            eos_sym[0] = eos
+            ref = torch.cat([ref, eos_sym.unsqueeze(0)], 0)
+        else:
+            ref = torch.cat([ref, torch.full_like(ref[:1], eos)], 0)
+    return ref
+
+
+def _write_hyp(hyp: torch.Tensor, pth: str, sos: Optional[int], eos: Optional[int]):
+    hyp = hyp.cpu().long()
+    if sos is not None:
+        if hyp.dim() == 1:
+            sos_idxs = torch.nonzero(hyp.eq(sos), as_tuple=False)
+        else:
+            sos_idxs = torch.nonzero(hyp[:, 0].eq(sos), as_tuple=False)
+        if sos_idxs.numel():
+            sos_idx = sos_idxs[-1].item()
+            hyp = hyp[sos_idx + 1 :]
+    if eos is not None:
+        if hyp.dim() == 1:
+            eos_idxs = torch.nonzero(hyp.eq(eos), as_tuple=False)
+        else:
+            eos_idxs = torch.nonzero(hyp[:, 0].eq(eos), as_tuple=False)
+        if eos_idxs.numel():
+            eos_idx = eos_idxs[0].item()
+            hyp = hyp[:eos_idx]
+    torch.save(hyp, pth)
+
+
+class LangDataSet(torch.utils.data.Dataset):
+    """Accesses token sequences stored in a data directory
+    
+    A stripped-down version of :class:`SpectDataSet` containing only the reference
+    token sequences `ref`. Suitable for language model training.
+
+    Parameters
+    ----------
+    data_dir
+        A path to the data directory. If using the ``ref/`` directory of a
+        :class:`SpectDataSet`, `data_dir` should include ``ref/``.
+    file_prefix
+        The prefix that indicates that the file counts toward the data set
+    file_suffix
+        The suffix that indicates that the file counts toward the data set
+    suppress_uttids : bool
+        If :obj:`True`, `uttid` will not be yielded.
+    tokens_only : bool
+        If :obj:`True`, `ref` will drop the segment information if present, always
+        yielding tuples of shape ``(R,)``.
+    
+    Yields
+    ------
+    sample : Union[torch.Tensor, Tuple[torch.Tensor, str]]
+        For a given utterance, either just the sequence of tokens `ref` (when
+        `suppress_uttids` is :obj:`True`) or the tuple ``ref, uttid``, where `uttid`
+        is a string representing the utterance id.
+    
+    Notes
+    -----
+    While similar to a :class:`SpectDataSet`, neither this nor that class inherits from
+    the other. In a :class:`SpectDataSet`, `data_dir` points to a root directory under
+    which a feature subdirectory definitely exists and a reference sequence subdirectory
+    may exist. Conversely, the `data_dir` of a :class:`LangDataSet` points directly
+    to the reference sequence subdirectory, which definitely exists.
+    """
+
+    data_dir: str
+    file_prefix: str
+    file_suffix: str
+    params: LangDataParams
+    suppress_uttids: bool
+    tokens_only: bool
+    utt_ids: Tuple[str, ...]
+
+    def __init__(
+        self,
+        data_dir: str,
+        params: Optional[LangDataParams] = None,
+        file_prefix: str = "",
+        file_suffix: str = ".pt",
+        suppress_uttids: bool = True,
+        tokens_only: bool = True,
+    ):
+        if not os.path.isdir(data_dir):
+            raise ValueError(f"'{data_dir}' is not a directory")
+        super().__init__()
+        if params is None:
+            params = LangDataParams()
+        self.data_dir = data_dir
+        self.params = params
+        self.file_prefix, self.file_suffix = file_prefix, file_suffix
+        self.suppress_uttids = suppress_uttids
+        self.tokens_only = tokens_only
+        self.utt_ids = tuple(sorted(self.find_utt_ids(set(self.params.subset_ids))))
+
+    def __len__(self) -> int:
+        return len(self.utt_ids)
+
+    def __getitem__(self, idx: int):
+        return self.get_utterance_tuple(idx)
+
+    def get_utterance_tuple(
+        self, idx: int
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, str]]:
+        utt_id = self.utt_ids[idx]
+        ref = _load_ref(
+            os.path.join(self.data_dir, self.file_prefix + utt_id + self.file_suffix),
+            self.tokens_only,
+            self.params.sos,
+            self.params.eos,
+        )
+        if self.suppress_uttids:
+            return ref
+        else:
+            return ref, utt_id
+
+    def find_utt_ids(self, subset_ids: Set[str] = set()) -> Set[str]:
+        """Returns a set of all utterance ids from data_dir"""
+        utt_ids = _utts_in_dir(self.data_dir, self.file_prefix, self.file_suffix)
+        if subset_ids:
+            utt_ids &= subset_ids
+        return utt_ids
+
+    def write_hyp(self, utt: Union[str, int], hyp: torch.Tensor, hyp_dir: str) -> None:
+        """Write hypothesis tensor to a directory
+        
+        Parameters
+        ----------
+        utt
+            The name of the utterance to write. If an integer is specified,
+            `utt` is assumed to index an utterance id specified in
+            ``self.utt_ids``
+        hyp
+            The tensor to write. Either of shape ``(R,)`` or ``(R, 3)``. It will be
+            converted to a long tensor using the command ``hyp.cpu().long()``
+        hyp_dir
+            The directory the sequence is written to.
+        """
+        if isinstance(utt, int):
+            utt = self.utt_ids[utt]
+        if not os.path.isdir(hyp_dir):
+            os.makedirs(hyp_dir)
+        pth = os.path.join(hyp_dir, self.file_prefix + utt + self.file_suffix)
+        _write_hyp(hyp, pth, self.params.sos, self.params.eos)
+
+
+class SpectDataParams(LangDataParams):
+    """Parameters for SpectDataSet"""
+
     delta_order = param.Integer(
         0,
         bounds=(0, None),
@@ -223,7 +403,7 @@ class SpectDataSet(torch.utils.data.Dataset):
         suppress_uttids: bool = True,
         tokens_only: bool = None,
     ):
-        super(SpectDataSet, self).__init__()
+        super().__init__()
         if suppress_alis is None:
             warnings.warn(
                 "A future version of pydrobert-pytorch will set suppress_alis=True by "
@@ -323,18 +503,18 @@ class SpectDataSet(torch.utils.data.Dataset):
         if not neg_fsl:
             neg_fsl = None
         fpl = len(self.file_prefix)
-        utt_ids = set(
-            x[fpl:neg_fsl]
-            for x in os.listdir(os.path.join(self.data_dir, self.feat_subdir))
-            if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
+        utt_ids = _utts_in_dir(
+            os.path.join(self.data_dir, self.feat_subdir),
+            self.file_prefix,
+            self.file_suffix,
         )
         if subset_ids:
             utt_ids &= subset_ids
         if self.has_ali:
-            ali_utt_ids = set(
-                x[fpl:neg_fsl]
-                for x in os.listdir(os.path.join(self.data_dir, self.ali_subdir))
-                if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
+            ali_utt_ids = _utts_in_dir(
+                os.path.join(self.data_dir, self.ali_subdir),
+                self.file_prefix,
+                self.file_suffix,
             )
             if subset_ids:
                 ali_utt_ids &= subset_ids
@@ -344,10 +524,10 @@ class SpectDataSet(torch.utils.data.Dataset):
                 for utt_id in ali_utt_ids.difference(utt_ids):
                     warnings.warn("Missing feat for uttid: '{}'".format(utt_id))
         if self.has_ref:
-            ref_utt_ids = set(
-                x[fpl:neg_fsl]
-                for x in os.listdir(os.path.join(self.data_dir, self.ref_subdir))
-                if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
+            ref_utt_ids = _utts_in_dir(
+                os.path.join(self.data_dir, self.ref_subdir),
+                self.file_prefix,
+                self.file_suffix,
             )
             if subset_ids:
                 ref_utt_ids &= subset_ids
@@ -386,31 +566,16 @@ class SpectDataSet(torch.utils.data.Dataset):
         else:
             ali = None
         if self.has_ref:
-            ref = torch.load(
+            ref = _load_ref(
                 os.path.join(
                     self.data_dir,
                     self.ref_subdir,
                     self.file_prefix + utt_id + self.file_suffix,
-                )
+                ),
+                self.tokens_only,
+                self.sos,
+                self.eos,
             )
-            D = ref.ndim
-            if self.tokens_only and D == 2:
-                ref, D = ref[..., 0], 1
-            if self.sos is not None:
-                if D == 2:
-                    sos_sym = torch.full_like(ref[0], -1)
-                    sos_sym[0] = self.sos
-                    ref = torch.cat([sos_sym.unsqueeze(0), ref], 0)
-                else:
-                    ref = torch.cat([torch.full_like(ref[:1], self.sos), ref], 0)
-            if self.eos is not None:
-                if D == 2:
-                    eos_sym = torch.full_like(ref[0], -1)
-                    eos_sym[0] = self.eos
-                    ref = torch.cat([ref, eos_sym.unsqueeze(0)], 0)
-                else:
-                    ref = torch.cat([ref, torch.full_like(ref[:1], self.eos)], 0)
-
         else:
             ref = None
         if self.suppress_alis:
@@ -482,7 +647,7 @@ class SpectDataSet(torch.utils.data.Dataset):
             The tensor to write. Either of shape ``(R,)`` or ``(R, 3)``. It will be
             converted to a long tensor using the command ``hyp.cpu().long()``
         hyp_dir
-            The directory pdfs are written to. If :obj:`None`, it will be set to
+            The directory sequence is written to. If :obj:`None`, it will be set to
             ``self.data_dir + '/hyp'``
         """
         if isinstance(utt, int):
@@ -491,27 +656,8 @@ class SpectDataSet(torch.utils.data.Dataset):
             hyp_dir = os.path.join(self.data_dir, "hyp")
         if not os.path.isdir(hyp_dir):
             os.makedirs(hyp_dir)
-        hyp = hyp.cpu().long()
-        if self.sos is not None:
-            if hyp.dim() == 1:
-                sos_idxs = torch.nonzero(hyp.eq(self.sos), as_tuple=False)
-            else:
-                sos_idxs = torch.nonzero(hyp[:, 0].eq(self.sos), as_tuple=False)
-            if sos_idxs.numel():
-                sos_idx = sos_idxs[-1].item()
-                hyp = hyp[sos_idx + 1 :]
-        if self.eos is not None:
-            if hyp.dim() == 1:
-                eos_idxs = torch.nonzero(hyp.eq(self.eos), as_tuple=False)
-            else:
-                eos_idxs = torch.nonzero(hyp[:, 0].eq(self.eos), as_tuple=False)
-            if eos_idxs.numel():
-                eos_idx = eos_idxs[0].item()
-                hyp = hyp[:eos_idx]
-        torch.save(
-            hyp.cpu().long(),
-            os.path.join(hyp_dir, self.file_prefix + utt + self.file_suffix),
-        )
+        pth = os.path.join(hyp_dir, self.file_prefix + utt + self.file_suffix)
+        _write_hyp(hyp, pth, self.sos, self.eos)
 
 
 def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:

@@ -147,7 +147,6 @@ def test_valid_spect_data_set(
 
 @pytest.mark.cpu
 def test_spect_data_set_warnings(temp_dir):
-    torch.manual_seed(1)
     feat_dir = os.path.join(temp_dir, "feat")
     ali_dir = os.path.join(temp_dir, "ali")
     os.makedirs(feat_dir)
@@ -169,7 +168,6 @@ def test_spect_data_set_warnings(temp_dir):
 
 
 def test_spect_data_write_pdf(temp_dir, device):
-    torch.manual_seed(1)
     feat_dir = os.path.join(temp_dir, "feat")
     os.makedirs(feat_dir)
     torch.save(torch.rand(3, 3), os.path.join(feat_dir, "a.pt"))
@@ -191,7 +189,6 @@ def test_spect_data_write_pdf(temp_dir, device):
 @pytest.mark.parametrize("eos", [None, -1])
 @pytest.mark.parametrize("sos", [None, -2])
 def test_spect_data_write_hyp(temp_dir, device, sos, eos):
-    torch.manual_seed(1)
     feat_dir = os.path.join(temp_dir, "feat")
     os.makedirs(feat_dir)
     torch.save(torch.rand(3, 3), os.path.join(feat_dir, "a.pt"))
@@ -219,9 +216,40 @@ def test_spect_data_write_hyp(temp_dir, device, sos, eos):
 
 
 @pytest.mark.cpu
+@pytest.mark.parametrize("eos", [None, -1])
+@pytest.mark.parametrize("sos", [None, -2])
+def test_lang_data_set(temp_dir, populate_torch_dir, sos, eos):
+    N = 100
+    utt_ids = populate_torch_dir(temp_dir, N, include_ali=False, include_ref=True)[-1]
+    subset_ids = utt_ids[: N // 2]
+    lparams = data.LangDataParams(sos=sos, eos=eos, subset_ids=subset_ids)
+    sparams = data.SpectDataParams(sos=sos, eos=eos, subset_ids=subset_ids)
+    hyp_dir_exp = f"{temp_dir}/hyp"
+    hyp_dir_act = f"{temp_dir}/hyp_"
+    lds = data.LangDataSet(f"{temp_dir}/ref", lparams)
+    sds = data.SpectDataSet(
+        temp_dir, params=sparams, suppress_alis=True, tokens_only=True
+    )
+    assert lds.utt_ids == sds.utt_ids == tuple(subset_ids)
+    assert len(lds) == len(sds) == len(subset_ids)
+    for n in range(len(subset_ids)):
+        ref_exp = sds[n][1]
+        ref_act = lds[n]
+        assert ref_exp.shape == ref_act.shape
+        assert (ref_exp == ref_act).all()
+        hyp = torch.randint(10, (10,))
+        sds.write_hyp(n, hyp)
+        lds.write_hyp(n, hyp, hyp_dir_act)
+        utt = sds.utt_ids[n]
+        hyp_exp = torch.load(f"{hyp_dir_exp}/{utt}.pt")
+        hyp_act = torch.load(f"{hyp_dir_act}/{utt}.pt")
+        assert (hyp_exp == hyp).all()
+        assert (hyp_act == hyp).all()
+
+
+@pytest.mark.cpu
 @pytest.mark.parametrize("eos", [None, 10000])
 def test_spect_data_set_validity(temp_dir, eos):
-    torch.manual_seed(1)
     feat_dir = os.path.join(temp_dir, "feat")
     ali_dir = os.path.join(temp_dir, "ali")
     ref_dir = os.path.join(temp_dir, "ref")
@@ -311,7 +339,6 @@ def test_spect_data_set_validity(temp_dir, eos):
 
 @pytest.mark.gpu
 def test_validate_spect_data_set_cuda(temp_dir):
-    torch.manual_seed(29)
     feat_dir = os.path.join(temp_dir, "feat")
     ali_dir = os.path.join(temp_dir, "ali")
     ref_dir = os.path.join(temp_dir, "ref")
@@ -345,7 +372,6 @@ def test_validate_spect_data_set_cuda(temp_dir):
 @pytest.mark.cpu
 @pytest.mark.parametrize("reverse", [True, False])
 def test_context_window_data_set(temp_dir, reverse):
-    torch.manual_seed(1)
     feat_dir = os.path.join(temp_dir, "feat")
     os.makedirs(feat_dir)
     a = torch.rand(2, 10)
