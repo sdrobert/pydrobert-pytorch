@@ -675,7 +675,7 @@ class LangDataLoader(torch.utils.data.DataLoader):
         self.batch_sampler.sampler.epoch = val
 
 
-class SpectDataLoaderParams(SpectDataParams, DynamicLengthDataLoaderParams):
+class SpectDataLoaderParams(SpectDataParams, LangDataLoaderParams):
     """Parameters for a :class:`SpectDataLoader`
 
     This implements the :class:`pydrobert.param.optuna.TunableParameterized` interface.

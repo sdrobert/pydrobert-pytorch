@@ -37,14 +37,36 @@ except ImportError as _pargparse_error:
 
 
 class LitSpectDataModuleParams(param.Parameterized):
+    """Parameters for LitSpectDataModule"""
 
     prefer_split = param.Boolean(True)
 
-    common = param.ClassSelector(SpectDataLoaderParams, instantiate=False)
-    train = param.ClassSelector(SpectDataLoaderParams, instantiate=False)
-    val = param.ClassSelector(SpectDataLoaderParams, instantiate=False)
-    test = param.ClassSelector(SpectDataLoaderParams, instantiate=False)
-    predict = param.ClassSelector(SpectDataLoaderParams, instantiate=False)
+    common = param.ClassSelector(
+        SpectDataLoaderParams,
+        instantiate=False,
+        doc="Common data loader parameters. If set, cannot instantiate train, val, "
+        "test, or predict",
+    )
+    train = param.ClassSelector(
+        SpectDataLoaderParams,
+        instantiate=False,
+        doc="Training data loader parameters. If set, cannot instantiate common",
+    )
+    val = param.ClassSelector(
+        SpectDataLoaderParams,
+        instantiate=False,
+        doc="Validation data loader parameters. If set, cannot instantiate common",
+    )
+    test = param.ClassSelector(
+        SpectDataLoaderParams,
+        instantiate=False,
+        doc="Test data loader parameters. If set, cannot instantiate common",
+    )
+    predict = param.ClassSelector(
+        SpectDataLoaderParams,
+        instantiate=False,
+        doc="Prediction data loader parameters. If set, cannot instantiate common",
+    )
 
     train_dir = param.Foldername(None, doc="Path to training data directory")
     val_dir = param.Foldername(None, doc="Path to validation data directory")
@@ -191,6 +213,7 @@ def natural(v: str) -> int:
 
 
 class LitSpectDataModule(pl.LightningDataModule):
+    """A LightningDataModule for SpectDataLoaders"""
 
     train_set: Optional[SpectDataSet]
     predict_set: Optional[SpectDataSet]
