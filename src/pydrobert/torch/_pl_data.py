@@ -14,6 +14,7 @@
 
 import os
 import argparse
+import abc
 
 from typing import Optional, TypeVar, Generic, Type
 from typing_extensions import Literal
@@ -22,19 +23,15 @@ import torch
 import param
 import pytorch_lightning as pl
 import pydrobert.param.abc as pabc
+import pydrobert.param.argparse as pargparse
 
 from ._datasets import SpectDataSet, SpectDataParams
 from ._dataloaders import (
     DynamicLengthDataLoaderParams,
     SpectDataLoader,
     SpectDataLoaderParams,
+    LangDataLoaderParams,
 )
-
-
-try:
-    import pydrobert.param.argparse as pargparse
-except ImportError as _pargparse_error:
-    pargparse = None
 
 
 class LitDataModuleParamsMetaclass(pabc.AbstractParameterizedMetaclass):
@@ -203,18 +200,18 @@ class LitDataModuleParams(
         )
 
 
-class LitSpectDataModuleParams(LitDataModuleParams[SpectDataLoaderParams]):
-    """Parameters for LitSpectDataModule"""
+class LitLangDataModuleParams(LitDataModuleParams[LangDataLoaderParams]):
 
-    pclass = SpectDataLoaderParams
+    pclass = LangDataLoaderParams
 
-    info_path: Optional[str] = param.Filename(
-        None, doc="Path to output of get-torch-spect-data-dir-info command on train_dir"
+    vocab_size: Optional[int] = param.Integer(
+        None, bounds=(1, None), doc="Vocabulary size",
     )
-
-    mvn_path: Optional[str] = param.Filename(
+    info_path: Optional[str] = param.Filename(
         None,
-        doc="Path to output of compute-mvn-stats-for-torch-feat-data-dir on train_dir",
+        doc="Path to output of get-torch-spect-data-dir-info command on train_dir/.., "
+        "if train_dir happens to be a subdirectory of a SpectDataSet. Can be "
+        "used to infer the vocabulary size.",
     )
 
 
@@ -240,19 +237,270 @@ def natural(v: str) -> int:
     return v
 
 
-class LitSpectDataModule(pl.LightningDataModule):
-    """A LightningDataModule for SpectDataLoaders"""
+DS = TypeVar("DS", bound=torch.utils.data.Dataset)
+DL = TypeVar("DL", bound=torch.utils.data.DataLoader)
 
-    train_set: Optional[SpectDataSet]
-    predict_set: Optional[SpectDataSet]
-    test_set: Optional[SpectDataSet]
-    val_set: Optional[SpectDataSet]
+
+class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.ABCMeta):
+
+    pclass: Type[LitDataModuleParams[P]]
+
+    train_set: Optional[DS]
+    predict_set: Optional[DS]
+    test_set: Optional[DS]
+    predict_set: Optional[DS]
 
     _num_workers: Optional[int]
     _pin_memory: Optional[bool]
+
+    def __init__(
+        self,
+        params: LitDataModuleParams[P],
+        num_workers: Optional[int] = None,
+        pin_memory: Optional[bool] = None,
+    ) -> None:
+        if not isinstance(params, self.pclass):
+            raise ValueError(f"Incorrect parameter class {type(params)}")
+        super().__init__()
+
+        # The member is a "local copy" of the hyperparameter. The default changes
+        # depending on the node we're running on, so we don't want to propagate them
+        # back to the module state
+        self._num_workers = num_workers
+        self._pin_memory = pin_memory
+
+        self.train_set = self.predict_set = self.test_set = self.val_set = None
+
+        # XXX(sdrobert): save_hyperparameters saves unused arguments to self.hparams
+        self.save_hyperparameters()
+
+    @property
+    def params(self) -> LitDataModuleParams[P]:
+        """the data module parameters"""
+        return self.hparams.params
+
+    @property
+    def num_workers(self) -> Optional[int]:
+        """Optional[int]: the number of parallel workers in a dataloader
+
+        If initially unset, the value will be populated during :func:`setup` based on
+        the number of CPU cores on the node.
+        """
+        return self._num_workers
+
+    @property
+    def pin_memory(self) -> Optional[bool]:
+        """Optional[bool]: whether to pin memory to the cuda device
+        
+        If initially unset, the value will be populated during :func:`setup` based on
+        whether the trainer's accelerator is on the GPU.
+        """
+        return self._pin_memory
+
+    @abc.abstractmethod
+    def construct_dataset(
+        self,
+        partition: Literal["train", "val", "test", "predict"],
+        path: str,
+        params: P,
+    ) -> DS:
+        ...
+
+    def _construct_dataset_with_checks(
+        self,
+        partition: Literal["train", "val", "test", "predict"],
+        path: Optional[str],
+        params: Optional[P],
+    ) -> DS:
+        if path is None:
+            raise ValueError(f"Cannot construct {partition} dataset: no data directory")
+        if params is None:
+            raise ValueError(
+                f"Cannot construct {partition} dataset: parameters not initialized"
+            )
+        return self.construct_dataset(partition, path, params)
+
+    def setup(self, stage: Optional[str] = None):
+
+        if self._num_workers is None:
+            # FIXME(sdrobert): DDP and such
+            self._num_workers = torch.multiprocessing.cpu_count()
+
+        if self._pin_memory is None:
+            if self.trainer is not None:
+                self._pin_memory = isinstance(
+                    self.trainer.accelerator,
+                    pl.accelerators.accelerator.CUDAAccelerator,
+                )
+            else:
+                self._pin_memory = True
+
+        if stage in {"fit", None}:
+            self.train_set = self._construct_dataset_with_checks(
+                "train", self.params.train_dir, self.params.train_params,
+            )
+            if self.params.val_dir is not None:
+                self.val_set = self._construct_dataset_with_checks(
+                    "val", self.params.val_dir, self.params.val_params,
+                )
+
+        if stage in {"test", None}:
+            self.test_set = self._construct_dataset_with_checks(
+                "test", self.params.test_dir, self.params.test_params,
+            )
+
+        if stage in {"predict", None}:
+            if self.params.predict_dir is None:
+                pred_dir = self.params.test_dir
+            else:
+                pred_dir = self.params.predict_dir
+            if self.params.predict_params is None:
+                pred_params = self.params.test_params
+            else:
+                pred_params = self.params.predict_params
+            self.predict_set = self._construct_dataset_with_checks(
+                "predict", pred_dir, pred_params
+            )
+
+    @abc.abstractmethod
+    def construct_dataloader(
+        self, partition: Literal["train", "val", "test", "predict"], ds: DS, params: P
+    ) -> DL:
+        ...
+
+    def _construct_dataloader_with_checks(
+        self,
+        partition: Literal["train", "val", "test", "predict"],
+        ds: Optional[DS],
+        params: Optional[P],
+    ) -> DL:
+        if params is None:
+            raise ValueError(
+                f"Cannot construct {partition} dataloader: parameters not "
+                "initialized"
+            )
+        if ds is None:
+            raise ValueError(
+                f"Cannot construct {partition} dataloader: dataset not "
+                "initialized (was setup performed?)"
+            )
+        return self.construct_dataloader(partition, ds, params)
+
+    def train_dataloader(self) -> DL:
+        return self._construct_dataloader_with_checks(
+            "train", self.train_set, self.params.train_params
+        )
+
+    def val_dataloader(self) -> DL:
+        return self._construct_dataloader_with_checks(
+            "val", self.val_set, self.params.val_params
+        )
+
+    def dev_dataloader(self) -> DL:
+        """Alias of val_dataloader"""
+        return self.val_dataloader()
+
+    def test_dataloader(self) -> DL:
+        return self._construct_dataloader_with_checks(
+            "test", self.test_set, self.params.test_params,
+        )
+
+    def predict_dataloader(self) -> DL:
+        params = self.params.predict_params
+        if params is None:
+            params = self.params.test_params
+        return self._construct_dataloader_with_checks(
+            "predict", self.predict_set, params,
+        )
+
+    @classmethod
+    def add_argparse_args(
+        cls,
+        parser: argparse.ArgumentParser,
+        split: bool = True,
+        include_overloads: bool = True,
+    ):
+        pobj = cls.pclass(name="data_params")
+        pobj.prefer_split = split
+        pobj.initialize_set_parameters()
+        grp = pargparse.add_deserialization_group_to_parser(
+            parser, pobj, "data_params", reckless=True
+        )
+
+        if include_overloads:
+            grp.add_argument(
+                "--train-dir",
+                metavar="DIR",
+                type=readable_dir,
+                default=None,
+                help="Path to training directory. Clobbers value in data_params",
+            )
+            grp.add_argument(
+                "--val-dir",
+                "--dev-dir",
+                metavar="DIR",
+                type=readable_dir,
+                default=None,
+                help="Path to validation directory. Clobbers value in data_params",
+            )
+            grp.add_argument(
+                "--test-dir",
+                metavar="DIR",
+                type=readable_dir,
+                default=None,
+                help="Path to test directory. Clobbers value in data_params",
+            )
+            grp.add_argument(
+                "--predict-dir",
+                metavar="DIR",
+                type=readable_dir,
+                default=None,
+                help="Path to predict directory. Clobbers value in data_params",
+            )
+
+        return grp
+
+    @classmethod
+    def from_argparse_args(
+        cls, namespace: argparse.Namespace, **kwargs,
+    ):
+        data_params = namespace.data_params
+        for overload in ("train_dir", "val_dir", "test_dir", "predict_dir"):
+            value = getattr(namespace, overload, None)
+            if value is not None:
+                setattr(data_params, overload, value)
+
+        return cls(data_params, **kwargs)
+
+
+class LitSpectDataModuleParams(LitDataModuleParams[SpectDataLoaderParams]):
+    """Parameters for LitSpectDataModule"""
+
+    pclass = SpectDataLoaderParams
+
+    info_path: Optional[str] = param.Filename(
+        None, doc="Path to output of get-torch-spect-data-dir-info command on train_dir"
+    )
+
+    mvn_path: Optional[str] = param.Filename(
+        None,
+        doc="Path to output of compute-mvn-stats-for-torch-feat-data-dir on train_dir",
+    )
+
+
+class LitSpectDataModule(
+    LitDataModule[SpectDataLoaderParams, SpectDataSet, SpectDataLoader]
+):
+    """A LightningDataModule for SpectDataLoaders"""
+
+    pclass = LitSpectDataModuleParams
+    params: LitSpectDataModuleParams
+
     _num_filts: Optional[int]
     _max_ref_class: Optional[int]
     _max_ali_class: Optional[int]
+    _mvn_mean = Optional[torch.Tensor]
+    _mvn_std = Optional[torch.Tensor]
 
     def __init__(
         self,
@@ -266,24 +514,11 @@ class LitSpectDataModule(pl.LightningDataModule):
         warn_on_missing: bool = True,
         on_uneven_distributed: Literal["raise", "uneven", "ignore"] = "raise",
     ) -> None:
-        super().__init__()
+        super().__init__(params, num_workers, pin_memory)
 
-        # The member is a "local copy" of the hyperparameter. The default changes
-        # depending on the node we're running on, so we don't want to propagate them
-        # back to the module state
-        self._num_workers = num_workers
-        self._pin_memory = pin_memory
-
-        self.train_set = self.predict_set = self.test_set = self.val_set = None
         self._num_filts = self._max_ref_class = self._max_ali_class = None
 
-        # XXX(sdrobert): save_hyperparameters saves unused arguments to self.hparams
         self.save_hyperparameters()
-
-    @property
-    def params(self) -> LitSpectDataModuleParams:
-        """LitSpectDataModuleParams : the data module parameters"""
-        return self.hparams.params
 
     @property
     def batch_first(self) -> bool:
@@ -304,24 +539,6 @@ class LitSpectDataModule(pl.LightningDataModule):
     def tokens_only(self) -> bool:
         """bool : whether dataloaders suppress segment info in token seqs if avail."""
         return self.hparams.tokens_only
-
-    @property
-    def num_workers(self) -> Optional[int]:
-        """Optional[int]: the number of parallel workers in a dataloader
-
-        If initially unset, the value will be populated during :func:`setup` based on
-        the number of CPU cores on the node.
-        """
-        return self._num_workers
-
-    @property
-    def pin_memory(self) -> Optional[bool]:
-        """Optional[bool]: whether to pin memory to the cuda device
-        
-        If initially unset, the value will be populated during :func:`setup` based on
-        whether the trainer's accelerator is on the GPU.
-        """
-        return self._pin_memory
 
     @property
     def warn_on_missing(self) -> bool:
@@ -378,43 +595,11 @@ class LitSpectDataModule(pl.LightningDataModule):
         """
         return self._num_filts
 
-    def _get_mvn(self):
-        if self.params.mvn_path is not None:
-            dict_ = torch.load(self.params.mvn_path, "cpu")
-            return dict_["mean"], dict_["std"]
-        else:
-            return None, None
-
-    def _construct_dataset(
-        self,
-        stage: str,
-        path: Optional[str],
-        params: SpectDataParams,
-        feat_mean: Optional[torch.Tensor],
-        feat_std: Optional[torch.Tensor],
-        **kwargs_,
-    ):
-        if path is None:
-            raise ValueError(
-                f"Cannot initialize datast for stage '{stage}': no data directory "
-                "specified"
-            )
-
-        kwargs = {
-            "warn_on_missing": self.warn_on_missing,
-            "params": params,
-            "feat_mean": feat_mean,
-            "feat_std": feat_std,
-            "suppress_alis": self.suppress_alis,
-            "tokens_only": self.tokens_only,
-        }
-        kwargs.update(kwargs_)
-
-        return SpectDataSet(path, **kwargs)
-
     def prepare_data(self):
-
-        if self.params.info_path is not None:
+        if self.params.info_path is not None and all(
+            x is None
+            for x in (self._num_filts, self._max_ali_class, self._max_ref_class)
+        ):
             with open(self.params.info_path) as f:
                 for line in f:
                     line = line.strip()
@@ -429,200 +614,89 @@ class LitSpectDataModule(pl.LightningDataModule):
                     elif key == "max_ref_class" and value != -1:
                         self._max_ref_class = value
 
+    def construct_dataset(
+        self,
+        partition: Literal["train", "val", "test", "predict"],
+        path: str,
+        params: SpectDataLoaderParams,
+    ) -> SpectDataSet:
+        suppress_uttids = partition != "predict"
+        return SpectDataSet(
+            path,
+            warn_on_missing=self.warn_on_missing,
+            params=params,
+            feat_mean=self._mvn_mean,
+            feat_std=self._mvn_std,
+            suppress_alis=self.suppress_alis,
+            tokens_only=self.tokens_only,
+            suppress_uttids=suppress_uttids,
+        )
+
     def setup(self, stage: Optional[str] = None):
+        if (
+            self.params.mvn_path is not None
+            and self._mvn_mean is None
+            and self._mvn_std is None
+        ):
+            dict_ = torch.load(self.params.mvn_path, "cpu")
+            self._mvn_mean = dict_["mean"]
+            self._mvn_std = dict_["std"]
+        super().setup(stage)
 
-        if self._num_workers is None:
-            # FIXME(sdrobert): DDP and such
-            self._num_workers = torch.multiprocessing.cpu_count()
-
-        if self._pin_memory is None:
-            if self.trainer is not None:
-                self._pin_memory = isinstance(
-                    self.trainer.accelerator,
-                    pl.accelerators.accelerator.CUDAAccelerator,
-                )
-            else:
-                self._pin_memory = True
-
-        feat_mean, feat_std = self._get_mvn()
-
-        if stage in {"fit", None}:
-            self.train_set = self._construct_dataset(
-                "fit",
-                self.params.train_dir,
-                self.params.train_params,
-                feat_mean,
-                feat_std,
-            )
-            if self.params.val_dir is not None:
-                self.val_set = self._construct_dataset(
-                    "fit",
-                    self.params.val_dir,
-                    self.params.val_params,
-                    feat_mean,
-                    feat_std,
-                )
-
-        if stage in {"test", None}:
-            self.test_set = self._construct_dataset(
-                "test",
-                self.params.test_dir,
-                self.params.test_params,
-                feat_mean,
-                feat_std,
-            )
-
-        if stage in {"predict", None}:
-            if self.params.predict_dir is None:
-                pred_dir = self.params.test_dir
-            else:
-                pred_dir = self.params.predict_dir
-            if self.params.predict_params is None:
-                pred_params = self.params.test_params
-            else:
-                pred_params = self.params.predict_params
-            self.predict_set = self._construct_dataset(
-                "predict",
-                pred_dir,
-                pred_params,
-                feat_mean,
-                feat_std,
-                suppress_uttids=False,
-            )
-
-    def _construct_dataloader(
-        self, ds: SpectDataSet, params: DynamicLengthDataLoaderParams, shuffle: bool,
+    def construct_dataloader(
+        self,
+        partition: Literal["train", "val", "test", "predict"],
+        ds: SpectDataSet,
+        params: SpectDataLoaderParams,
     ) -> SpectDataLoader:
-
         return SpectDataLoader(
             ds,
             params,
-            shuffle=shuffle,
+            shuffle=partition == "train",
             batch_first=self.batch_first,
             sort_batch=self.sort_batch,
             init_epoch=0 if self.trainer is None else self.trainer.current_epoch,
-            num_workers=self._num_workers,
-            pin_memory=self._pin_memory,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
             on_uneven_distributed=self.on_uneven_distributed,
         )
 
-    def train_dataloader(self):
-        return self._construct_dataloader(
-            self.train_set, self.params.train_params, True
-        )
-
-    def val_dataloader(self):
-        return self._construct_dataloader(self.val_set, self.params.val_params, False)
-
-    def dev_dataloader(self):
-        """Alias of val_dataloader"""
-        return self.val_dataloader()
-
-    def test_dataloader(self):
-        return self._construct_dataloader(self.test_set, self.params.test_params, False)
-
-    def predict_dataloader(self):
-        params = self.params.predict_params
-        if params is None:
-            params = self.params.test_params
-        return self._construct_dataloader(self.predict_set, params, False)
-
-    @staticmethod
+    @classmethod
     def add_argparse_args(
+        cls,
         parser: argparse.ArgumentParser,
         split: bool = True,
         include_overloads: bool = True,
     ):
-        if pargparse is None:
-            raise _pargparse_error
-        pobj = LitSpectDataModuleParams(name="data_params")
-        pobj.prefer_split = split
-        pobj.initialize_set_parameters()
-        grp = pargparse.add_deserialization_group_to_parser(
-            parser, pobj, "data_params", reckless=True
-        )
-
+        grp = super().add_argparse_args(parser, split, include_overloads)
         if include_overloads:
             grp.add_argument(
-                "--train-dir",
+                "--mvn-path",
                 metavar="PTH",
-                type=readable_dir,
                 default=None,
-                help="Path to training directory. Clobbers value in data_params",
+                type=readable_file,
+                help="Path to mean-variance normalization statistics. Clobbers value "
+                "in data_params",
             )
             grp.add_argument(
-                "--val-dir",
-                "--dev-dir",
+                "--info-file",
                 metavar="PTH",
-                type=readable_dir,
                 default=None,
-                help="Path to validation directory. Clobbers value in data_params",
+                type=readable_file,
+                help="Path to data set info file. Clobbers value in data_params",
             )
-            grp.add_argument(
-                "--test-dir",
-                metavar="PTH",
-                type=readable_dir,
-                default=None,
-                help="Path to test directory. Clobbers value in data_params",
-            )
-            grp.add_argument("--predict-dir", type=readable_dir, default=None)
-            grp.add_argument("--mvn-path", type=readable_file, default=None)
-            grp.add_argument("--info-file", type=readable_file, default=None)
+        return grp
 
     @classmethod
-    def from_argparse_args(
-        cls,
-        namespace: argparse.Namespace,
-        batch_first: bool = False,
-        sort_batch: bool = False,
-        suppress_alis: bool = True,
-        tokens_only: bool = True,
-        num_workers: Optional[int] = None,
-        pin_memory: Optional[bool] = None,
-        warn_on_missing: bool = True,
-        on_uneven_distributed: Literal["raise", "uneven", "ignore"] = "raise",
-        **overloads,
-    ):
+    def from_argparse_args(cls, namespace: argparse.Namespace, **kwargs):
         data_params: LitSpectDataModuleParams = namespace.data_params
 
         for overload in (
-            "train_dir",
-            "val_dir",
-            "test_dir",
-            "predict_dir",
             "mvn_path",
             "info_file",
         ):
             val = getattr(namespace, overload, None)
             if val is not None:
-                overloads[overload] = val
+                setattr(data_params, overload, val)
 
-        for key, value in overloads.items():
-            setattr(data_params, key, value)
-
-        return cls(
-            data_params,
-            batch_first,
-            sort_batch,
-            suppress_alis,
-            tokens_only,
-            num_workers,
-            pin_memory,
-            warn_on_missing,
-            on_uneven_distributed,
-        )
-
-    # def state_dict(self) -> Dict[str, Any]:
-    #     return {
-    #         "train_set": self.train_set,
-    #         "predict_set": self.predict_set,
-    #         "test_set": self.test_set,
-    #         "val_set": self.val_set,
-    #     }
-
-    # def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
-    #     self.train_set = state_dict["train_set"]
-    #     self.predict_set = state_dict["predict_set"]
-    #     self.test_set = state_dict["test_set"]
-    #     self.val_set = state_dict["val_set"]
-
+        return super().from_argparse_args(namespace, **kwargs)
