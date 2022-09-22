@@ -15,12 +15,13 @@
 import os
 import argparse
 
-from typing import Optional
+from typing import Optional, TypeVar, Generic, Type
 from typing_extensions import Literal
 
 import torch
 import param
 import pytorch_lightning as pl
+import pydrobert.param.abc as pabc
 
 from ._datasets import SpectDataSet, SpectDataParams
 from ._dataloaders import (
@@ -36,53 +37,65 @@ except ImportError as _pargparse_error:
     pargparse = None
 
 
-class LitSpectDataModuleParams(param.Parameterized):
-    """Parameters for LitSpectDataModule"""
+class LitDataModuleParamsMetaclass(pabc.AbstractParameterizedMetaclass):
+    def __init__(mcs: "LitDataModuleParams", name, bases, dict_):
+        pclass = dict_["pclass"]
+        super().__init__(name, bases, dict_)
+        mcs.param.params()["common"].class_ = pclass
+        mcs.param.params()["train"].class_ = pclass
+        mcs.param.params()["val"].class_ = pclass
+        mcs.param.params()["test"].class_ = pclass
+        mcs.param.params()["predict"].class_ = pclass
 
-    prefer_split = param.Boolean(True)
 
-    common = param.ClassSelector(
-        SpectDataLoaderParams,
+P = TypeVar("P", bound=param.Parameterized)
+
+
+class LitDataModuleParams(
+    param.Parameterized, Generic[P], metaclass=LitDataModuleParamsMetaclass
+):
+
+    pclass: Type[P] = param.Parameterized
+
+    prefer_split: bool = param.Boolean(True)
+
+    common: Optional[P] = param.ClassSelector(
+        param.Parameterized,
         instantiate=False,
         doc="Common data loader parameters. If set, cannot instantiate train, val, "
         "test, or predict",
     )
-    train = param.ClassSelector(
-        SpectDataLoaderParams,
+    train: Optional[P] = param.ClassSelector(
+        param.Parameterized,
         instantiate=False,
         doc="Training data loader parameters. If set, cannot instantiate common",
     )
-    val = param.ClassSelector(
-        SpectDataLoaderParams,
+    val: Optional[P] = param.ClassSelector(
+        param.Parameterized,
         instantiate=False,
         doc="Validation data loader parameters. If set, cannot instantiate common",
     )
-    test = param.ClassSelector(
-        SpectDataLoaderParams,
+    test: Optional[P] = param.ClassSelector(
+        param.Parameterized,
         instantiate=False,
         doc="Test data loader parameters. If set, cannot instantiate common",
     )
-    predict = param.ClassSelector(
-        SpectDataLoaderParams,
+    predict: Optional[P] = param.ClassSelector(
+        param.Parameterized,
         instantiate=False,
         doc="Prediction data loader parameters. If set, cannot instantiate common",
     )
 
-    train_dir = param.Foldername(None, doc="Path to training data directory")
-    val_dir = param.Foldername(None, doc="Path to validation data directory")
-    test_dir = param.Foldername(None, doc="Path to test data directory")
-    predict_dir = param.Foldername(
+    train_dir: Optional[str] = param.Foldername(
+        None, doc="Path to training data directory"
+    )
+    val_dir: Optional[str] = param.Foldername(
+        None, doc="Path to validation data directory"
+    )
+    test_dir: Optional[str] = param.Foldername(None, doc="Path to test data directory")
+    predict_dir: Optional[str] = param.Foldername(
         None,
         doc="Path to prediction data directory (leave empty to use test_dir if avail.)",
-    )
-
-    info_path = param.Filename(
-        None, doc="Path to output of get-torch-spect-data-dir-info command on train_dir"
-    )
-
-    mvn_path = param.Filename(
-        None,
-        doc="Path to output of compute-mvn-stats-for-torch-feat-data-dir on train_dir",
     )
 
     @property
@@ -104,56 +117,56 @@ class LitSpectDataModuleParams(param.Parameterized):
             )
 
     @property
-    def train_params(self) -> Optional[SpectDataLoaderParams]:
+    def train_params(self) -> Optional[P]:
         if self._use_split():
             return self.train
         else:
             return self.common
 
     @train_params.setter
-    def train_params(self, params: Optional[SpectDataLoaderParams]):
+    def train_params(self, params: Optional[P]):
         if self._use_split():
             self.train = params
         else:
             self.common = params
 
     @property
-    def val_params(self) -> Optional[SpectDataLoaderParams]:
+    def val_params(self) -> Optional[P]:
         if self._use_split():
             return self.val
         else:
             return self.common
 
     @val_params.setter
-    def val_params(self, params: Optional[SpectDataLoaderParams]):
+    def val_params(self, params: Optional[P]):
         if self._use_split():
             self.val = params
         else:
             self.common = params
 
     @property
-    def test_params(self) -> Optional[SpectDataLoaderParams]:
+    def test_params(self) -> Optional[P]:
         if self._use_split():
             return self.test
         else:
             return self.common
 
     @test_params.setter
-    def test_params(self, params: Optional[SpectDataLoaderParams]):
+    def test_params(self, params: Optional[P]):
         if self._use_split():
             self.train = params
         else:
             self.common = params
 
     @property
-    def predict_params(self) -> Optional[SpectDataLoaderParams]:
+    def predict_params(self) -> Optional[P]:
         if self._use_split():
             return self.predict
         else:
             return self.common
 
     @test_params.setter
-    def test_params(self, params: Optional[SpectDataLoaderParams]):
+    def test_params(self, params: Optional[P]):
         if self._use_split():
             self.test = params
         else:
@@ -162,13 +175,13 @@ class LitSpectDataModuleParams(param.Parameterized):
     def initialize_set_parameters(self, include_predict: bool = False):
         if self._use_split():
             with param.parameterized.batch_call_watchers(self):
-                self.train = SpectDataLoaderParams(name="train")
-                self.val = SpectDataLoaderParams(name="val")
-                self.test = SpectDataLoaderParams(name="test")
+                self.train = self.pclass(name="train")
+                self.val = self.pclass(name="val")
+                self.test = self.pclass(name="test")
                 if include_predict:
-                    self.predict = SpectDataLoaderParams(name="predict")
+                    self.predict = self.pclass(name="predict")
         else:
-            self.common = SpectDataLoaderParams(name="common")
+            self.common = self.pclass(name="common")
 
     @property
     def dev_dir(self) -> str:
@@ -180,14 +193,29 @@ class LitSpectDataModuleParams(param.Parameterized):
         self.val_dir = val
 
     @property
-    def dev_params(self) -> SpectDataLoaderParams:
+    def dev_params(self) -> Optional[P]:
         """Alias of val_params"""
         return self.val_params
 
-    def _use_split(self):
+    def _use_split(self) -> bool:
         return self.loader_params_are_split or (
             self.prefer_split and not self.loader_params_are_merged
         )
+
+
+class LitSpectDataModuleParams(LitDataModuleParams[SpectDataLoaderParams]):
+    """Parameters for LitSpectDataModule"""
+
+    pclass = SpectDataLoaderParams
+
+    info_path: Optional[str] = param.Filename(
+        None, doc="Path to output of get-torch-spect-data-dir-info command on train_dir"
+    )
+
+    mvn_path: Optional[str] = param.Filename(
+        None,
+        doc="Path to output of compute-mvn-stats-for-torch-feat-data-dir on train_dir",
+    )
 
 
 def readable_dir(path: str) -> str:
