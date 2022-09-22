@@ -902,3 +902,56 @@ def test_distributed_spect_data_loader(populate_torch_dir, temp_dir, train, buck
     if bucket:
         lens_exp, lens_act = lens_exp.sort()[0], lens_act.sort()[0]
     assert (lens_exp == lens_act).all()
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("shuffle", [True, False], ids=["shuffled", "unshuffled"])
+@pytest.mark.parametrize("bucket", [True, False], ids=["bucket", "unbucket"])
+def test_lang_data_loader(populate_torch_dir, temp_dir, shuffle, bucket):
+    NN, N, B = 140, 11, 5 if bucket else 1
+    ref_sizes_exp, uttids_exp = populate_torch_dir(temp_dir, NN)[4:]
+    if shuffle or bucket:
+        ref_sizes_exp = sorted(ref_sizes_exp)
+        uttids_exp = set(uttids_exp)
+    lparams = data.LangDataLoaderParams(batch_size=N, num_length_buckets=B)
+    ldl = data.LangDataLoader(
+        f"{temp_dir}/ref", lparams, shuffle=shuffle, suppress_uttids=False, seed=0
+    )
+    last_epoch_sizes = None
+    for _ in range(2):
+        ref_sizes_act, uttids_act = [], []
+        for refs_n, ref_sizes_n, uttids_n in ldl:
+            assert refs_n.size(0) == ref_sizes_n.numel() == len(uttids_n)
+            assert refs_n.size(1) == ref_sizes_n.max()
+            ref_sizes_act.extend(ref_sizes_n.tolist())
+            uttids_act.extend(uttids_n)
+        if last_epoch_sizes is not None:
+            assert (last_epoch_sizes == ref_sizes_act) != shuffle
+        last_epoch_sizes = ref_sizes_act
+        if shuffle or bucket:
+            assert sorted(ref_sizes_act) == ref_sizes_exp
+            assert set(uttids_act) == uttids_exp
+        else:
+            assert ref_sizes_act == ref_sizes_exp
+            assert uttids_act == uttids_exp
+    ldl.epoch = 1
+    ref_sizes_act = []
+    for _, ref_sizes_n, _ in ldl:
+        ref_sizes_act.extend(ref_sizes_n.tolist())
+    assert last_epoch_sizes == ref_sizes_act
+    if not bucket:
+        sparams = data.SpectDataLoaderParams(batch_size=N)
+        sdl = data.SpectDataLoader(
+            temp_dir,
+            sparams,
+            shuffle=shuffle,
+            suppress_uttids=False,
+            seed=0,
+            init_epoch=2,
+        )
+        assert len(ldl) == len(sdl)
+        for (r0, s0, u0), (_, r1, _, s1, u1) in zip(ldl, sdl):
+            assert r0.shape == r1.shape and (r0 == r1).all()
+            assert s0.shape == s1.shape and (s0 == s1).all()
+            assert u0 == u1
+

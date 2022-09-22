@@ -19,21 +19,22 @@ from collections import Counter
 from itertools import islice
 from typing import (
     Collection,
+    Container,
     Dict,
+    Hashable,
     Iterable,
+    Iterator,
     List,
     Optional,
-    Iterator,
-    Container,
-    Set,
+    overload,
     Sequence,
+    Set,
     Sized,
     Tuple,
-    Hashable,
     TypeVar,
     Union,
 )
-from typing_extensions import Literal, TypeGuard
+from typing_extensions import Literal
 
 import param
 import numpy as np
@@ -43,6 +44,8 @@ from . import config
 from ._datasets import (
     ContextWindowDataParams,
     ContextWindowDataSet,
+    LangDataParams,
+    LangDataSet,
     SpectDataParams,
     SpectDataSet,
 )
@@ -392,7 +395,8 @@ class DynamicLengthDataLoaderParams(DataLoaderParams):
         1,
         bounds=(1, None),
         doc="If greater than 1, elements will be batched with other elements of "
-        "similar length (along the feature time dimension). Elements will be "
+        "similar length. For SpectDataSet, length is along the feature time dimension. "
+        "For LangDataSet, length is the reference sequence length. Elements will be "
         "partioned roughly evenly into num_length_buckets. Increasing "
         "num_length_buckets will usually decrease the total amount of padding "
         "per batch at the cost of fewer candidates to choose from within batches.",
@@ -406,6 +410,269 @@ class DynamicLengthDataLoaderParams(DataLoaderParams):
         "the bucket, and Y be the length of the largest element in the corpus, x is "
         "the greatest value such that x * y <= Y * batch_size",
     )
+
+
+class LangDataLoaderParams(LangDataParams, DynamicLengthDataLoaderParams):
+    """Parameters for a :class:`LangDataLoader`
+    
+    This implements the :class:`pydrobert.param.optuna.TunableParameterized` interface.
+    """
+
+    pass
+
+
+@overload
+def lang_seq_to_batch(
+    seq: Sequence[torch.Tensor],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_uttids: Literal[False] = False,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    ...
+
+
+@overload
+def lang_seq_to_batch(
+    seq: Sequence[Tuple[torch.Tensor, str]],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_uttids: Literal[True] = False,
+) -> Tuple[torch.Tensor, torch.Tensor, Tuple[str, ...]]:
+    ...
+
+
+def lang_seq_to_batch(
+    seq: Sequence[Union[torch.Tensor, Tuple[torch.Tensor, str]]],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_uttids: bool = False,
+) -> Union[
+    Tuple[torch.Tensor, torch.Tensor],
+    Tuple[torch.Tensor, torch.Tensor, Tuple[str, ...]],
+]:
+    """Convert a sequence of reference sequences to a batch
+    
+    This function is used to collate sequences of elements from a :class:`LangDataSet`
+    into batches.
+
+    Parameters
+    ----------
+    seq
+        A finite-length (``N``) sequence of either just `ref_n` or tuples ``ref_n,
+        utt_n``, where
+        
+        - `ref_n` is a tensor of size ``(R_n[, 3])`` representing reference token
+          sequences and optionally their frame shifts. Either all `ref_n` must contain
+          the frame shift info (the ``3`` dimension) or none of them.
+        - `utt_n` (if `has_uttids` is :obj:`True`) is the utterance id.
+    batch_first
+        If :obj:`True`, the batch dimension ``N`` comes before the sequence dimension
+        ``R`` in `refs`.
+    sort
+        If :obj:`True`, the elements of `seq` are ordered in descending order of
+        ``R_n`` before being batched.
+    has_uttids
+        Whether `utt_n` is part of the input values and `uttids` is part of the output
+        values.
+    
+    Returns
+    -------
+    batch
+        A tuple containing the following elements:
+
+        1. `refs`, a tensor of shape ``(max_n R_n, N[, 3])``
+            containing the right-padded sequences ``[ref_1, ref_2, ..., ref_N]``. 
+            Padded with :const:`pydrobert.torch.config.INDEX_PAD_VALUE`.
+        2. `ref_sizes`, a tensor of shape ``(N,)`` containing the sequence ``[R_1, R_2,
+           ..., R_N]``.
+        3. `uttids` (if `has_uttids` is :obj:`True`), an ``N``-tuple of the utterance
+           ids.
+    """
+    if sort and has_uttids:
+        seq = sorted(seq, key=lambda x: x[0].size(0), reverse=True)
+    elif sort:
+        seq = sorted(seq, key=lambda x: x.size(0), reverse=True)
+    seq = list(zip(*seq))
+    if has_uttids:
+        refs, uttids = seq
+    else:
+        refs = seq
+    ref_sizes = torch.tensor([len(x) for x in refs])
+    refs = torch.nn.utils.rnn.pad_sequence(
+        refs, padding_value=config.INDEX_PAD_VALUE, batch_first=batch_first
+    )
+    if has_uttids:
+        return refs, ref_sizes, tuple(uttids)
+    else:
+        return refs, ref_sizes
+
+
+def _get_batch_sampler_len(batch_sampler) -> int:
+    if isinstance(batch_sampler, BucketBatchSampler):
+        bucket2count = Counter(
+            batch_sampler.idx2bucket[i]
+            for i in batch_sampler.sampler.get_samples_for_epoch(
+                batch_sampler.sampler.epoch
+            )
+        )
+        len_ = 0
+        for bucket, count in bucket2count.items():
+            size = batch_sampler.bucket2size[bucket]
+            if batch_sampler.drop_incomplete:
+                len_ += count // size
+            else:
+                len_ += (count + size - 1) // size
+    else:
+        len_ = len(batch_sampler)
+    return len_
+
+
+class LangDataLoader(torch.utils.data.DataLoader):
+    """DataLoader for a :class:`LangDataSet`
+
+    Parameters
+    ----------
+    data
+        Either a :class:`LangDataSet` or a path to the data directory.
+    params
+        Contains at least the parameters specific to the loader. May also contain
+        data set params -- see `data_params`.
+    data_params
+        Data set parameters. Relevant only when `data` is a path. Used to initialize the
+        underlying :class:`LangDataSet`. If :obj:`None`, `params` is assumed to also
+        contain the data set parameters.
+    shuffle
+        Whether utterances are shuffled at every epoch or presented sequentially.
+    batch_first
+        Whether the batch dimension comes before the sequence dimension in `refs`.
+    sort_batch
+        Whether utterances in a batch are sorted by feature length.
+    init_epoch
+        The epoch to resume from. When combined with a fixed `seed`, ensures the same
+        batches are always delivered for a given epoch.
+    seed
+        The initial seed used for shuffling data. If unset, a random one will be
+        generated.
+    on_uneven_distributed
+        What to do if the sampler detects that it's in a distributed environment and the
+        number of processes does not evenly divide the number of samples:
+
+        - :obj:`'raise'` raise a :class:`ValueError`.
+        - :obj:`'uneven'` allow some processes to yield fewer samples.
+        - :obj:`'ignore'` ignore the distributed context. Each process will yield all
+          samples.
+    **kwargs
+        Additional keyword arguments to initialize :class:`LangDataSet` and
+        :class:`torch.utils.data.DataLoader`. The former is only relevant when
+        `data` is a path.
+    
+    Yields
+    ------
+    batch : Union[torch.Tensor, Tuple[torch.Tensor]]
+        A tuple ``refs, ref_lens[, utt_ids]``, with the presence of `utt_ids` dependent
+        on `suppress_uttids` in the underlying :class:`LangDataSet` is :obj:`True`). See
+        :func:`lang_seq_to_batch` for more information on the elements.
+    """
+
+    dataset: LangDataSet
+    batch_first: bool
+    batch_sampler: Union[BucketBatchSampler, torch.utils.data.BatchSampler]
+    sort_batch: bool
+    _len: int
+
+    def __init__(
+        self,
+        data: Union[str, LangDataSet],
+        params: Union[LangDataLoaderParams, DynamicLengthDataLoaderParams],
+        data_params: Optional[LangDataParams] = None,
+        shuffle: bool = True,
+        batch_first: bool = True,
+        sort_batch: bool = False,
+        init_epoch: int = 0,
+        on_uneven_distributed: Literal["raise", "unordered", "ignore"] = "raise",
+        seed: Optional[int] = None,
+        **kwargs,
+    ):
+        for bad_kwarg in {
+            "batch_sampler",
+            "batch_size",
+            "collate_fn",
+            "drop_last",
+            "sampler",
+        }:
+            if bad_kwarg in kwargs:
+                raise TypeError(
+                    f"keyword argument '{bad_kwarg}' invalid for {type(self)} types"
+                )
+        ds_kwargs, dl_kwargs = dict(), dict()
+        for key, val in kwargs.items():
+            if key in {
+                "file_prefix",
+                "file_suffix",
+                "suppress_uttids",
+                "tokens_only",
+            }:
+                ds_kwargs[key] = val
+            else:
+                dl_kwargs[key] = val
+        if data_params is None:
+            data_params = params
+        self.batch_first, self.sort_batch = batch_first, sort_batch
+        if isinstance(data, LangDataSet):
+            dataset = data
+        else:
+            dataset = LangDataSet(data, params=data_params, **ds_kwargs,)
+        utt_sampler_kwargs = {"init_epoch": init_epoch}
+        if params.drop_last:
+            utt_sampler_kwargs["on_uneven_distributed"] = "drop"
+        else:
+            utt_sampler_kwargs["on_uneven_distributed"] = on_uneven_distributed
+        if shuffle:
+            utt_sampler = EpochRandomSampler(
+                dataset, base_seed=seed, **utt_sampler_kwargs
+            )
+        else:
+            utt_sampler = EpochSequentialSampler(dataset, **utt_sampler_kwargs)
+        if params.num_length_buckets > 1:
+            idx2bucket, bucket2size = _get_bucket_batch_sampler_params(
+                dataset,
+                params.num_length_buckets,
+                params.batch_size,
+                params.size_batch_by_length,
+            )
+            batch_sampler = BucketBatchSampler(
+                utt_sampler, idx2bucket, bucket2size, params.drop_last,
+            )
+        else:
+            batch_sampler = torch.utils.data.BatchSampler(
+                utt_sampler, params.batch_size, drop_last=params.drop_last
+            )
+        self._len = None
+        super().__init__(
+            dataset,
+            batch_sampler=batch_sampler,
+            collate_fn=self.collate_fn,
+            **dl_kwargs,
+        )
+
+    def collate_fn(self, seq):
+        return lang_seq_to_batch(
+            seq, self.batch_first, self.sort_batch, not self.dataset.suppress_uttids,
+        )
+
+    def __len__(self) -> int:
+        if self._len is None:
+            self._len = _get_batch_sampler_len(self.batch_sampler)
+        return self._len
+
+    @property
+    def epoch(self) -> int:
+        """int : the current epoch"""
+        return self.batch_sampler.sampler.epoch
+
+    @epoch.setter
+    def epoch(self, val: int):
+        self.batch_sampler.sampler.epoch = val
 
 
 class SpectDataLoaderParams(SpectDataParams, DynamicLengthDataLoaderParams):
@@ -428,6 +695,71 @@ class SpectDataLoaderParams(SpectDataParams, DynamicLengthDataLoaderParams):
         SpectDataParams.suggest_params(trial, params, only, prefix)
         DynamicLengthDataLoaderParams.suggest_params(trial, params, only, prefix)
         return params
+
+
+@overload
+def spect_seq_to_batch(
+    seq: Sequence[Tuple[torch.Tensor, Optional[torch.Tensor]]],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_alis: Literal[False] = True,
+    has_uttids: Literal[False] = False,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor, Optional[torch.Tensor]]:
+    ...
+
+
+@overload
+def spect_seq_to_batch(
+    seq: Sequence[Tuple[torch.Tensor, Optional[torch.Tensor], str]],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_alis: Literal[False] = True,
+    has_uttids: Literal[True] = False,
+) -> Tuple[
+    torch.Tensor,
+    Optional[torch.Tensor],
+    torch.Tensor,
+    Optional[torch.Tensor],
+    Tuple[str, ...],
+]:
+    ...
+
+
+@overload
+def spect_seq_to_batch(
+    seq: Sequence[Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_alis: Literal[True] = True,
+    has_uttids: Literal[False] = False,
+) -> Tuple[
+    torch.Tensor,
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    torch.Tensor,
+    Optional[torch.Tensor],
+]:
+    ...
+
+
+@overload
+def spect_seq_to_batch(
+    seq: Sequence[
+        Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], str]
+    ],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_alis: Literal[True] = True,
+    has_uttids: Literal[True] = False,
+) -> Tuple[
+    torch.Tensor,
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    torch.Tensor,
+    Optional[torch.Tensor],
+    Tuple[str, ...],
+]:
+    ...
 
 
 def spect_seq_to_batch(
@@ -566,7 +898,7 @@ def _get_bucket_batch_sampler_params(dataset, num_buckets, batch_size, dynamic):
 
 
 class SpectDataLoader(torch.utils.data.DataLoader):
-    """Dataloader for a :class:`SpectDataSet`
+    """DataLoader for a :class:`SpectDataSet`
 
     Parameters
     ----------
@@ -731,6 +1063,7 @@ class SpectDataLoader(torch.utils.data.DataLoader):
             batch_sampler = torch.utils.data.BatchSampler(
                 utt_sampler, params.batch_size, drop_last=params.drop_last
             )
+        self._len = None
         super().__init__(
             dataset,
             batch_sampler=batch_sampler,
@@ -748,20 +1081,8 @@ class SpectDataLoader(torch.utils.data.DataLoader):
         )
 
     def __len__(self) -> int:
-        if isinstance(self.batch_sampler, BucketBatchSampler):
-            bucket2count = Counter(
-                self.batch_sampler.idx2bucket[i]
-                for i in self.batch_sampler.sampler.get_samples_for_epoch(self.epoch)
-            )
-            self._len = 0
-            for bucket, count in bucket2count.items():
-                size = self.batch_sampler.bucket2size[bucket]
-                if self.batch_sampler.drop_incomplete:
-                    self._len += count // size
-                else:
-                    self._len += (count + size - 1) // size
-        else:
-            self._len = len(self.batch_sampler)
+        if self._len is None:
+            self._len = _get_batch_sampler_len(self.batch_sampler)
         return self._len
 
     @property
