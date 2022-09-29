@@ -492,9 +492,8 @@ def lang_seq_to_batch(
         seq = sorted(seq, key=lambda x: x[0].size(0), reverse=True)
     elif sort:
         seq = sorted(seq, key=lambda x: x.size(0), reverse=True)
-    seq = list(zip(*seq))
     if has_uttids:
-        refs, uttids = seq
+        refs, uttids = zip(*seq)
     else:
         refs = seq
     ref_sizes = torch.tensor([len(x) for x in refs])
