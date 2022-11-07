@@ -427,7 +427,7 @@ class BeamSearch(torch.nn.Module):
                 )
                 done_mask = eos_mask[..., :1]
 
-            y_prev_ = y_prev.clamp(0, self.lm.vocab_size)
+            y_prev_ = y_prev.clamp(0, self.lm.vocab_size - 1)
 
             # determine extension probabilities
             log_probs_t, in_next = self.lm.calc_idx_log_probs(
