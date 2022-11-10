@@ -200,43 +200,6 @@ class LitDataModuleParams(
         )
 
 
-class LitLangDataModuleParams(LitDataModuleParams[LangDataLoaderParams]):
-
-    pclass = LangDataLoaderParams
-
-    vocab_size: Optional[int] = param.Integer(
-        None, bounds=(1, None), doc="Vocabulary size",
-    )
-    info_path: Optional[str] = param.Filename(
-        None,
-        doc="Path to output of get-torch-spect-data-dir-info command on train_dir/.., "
-        "if train_dir happens to be a subdirectory of a SpectDataSet. Can be "
-        "used to infer the vocabulary size.",
-    )
-
-
-def readable_dir(path: str) -> str:
-    if not os.path.isdir(path):
-        raise argparse.ArgumentTypeError(f"'{path}' is not a directory")
-    return path
-
-
-def readable_file(path: str) -> str:
-    if not os.path.isfile(path):
-        raise argparse.ArgumentTypeError(f"'{path}' is not a file")
-    return path
-
-
-def natural(v: str) -> int:
-    try:
-        v = int(v)
-    except ValueError as e:
-        raise argparse.ArgumentTypeError from e
-    if v < 1:
-        raise argparse.ArgumentTypeError(f"'{v}' is not a natural number")
-    return v
-
-
 DS = TypeVar("DS", bound=torch.utils.data.Dataset)
 DL = TypeVar("DL", bound=torch.utils.data.DataLoader)
 
@@ -471,6 +434,43 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
                 setattr(data_params, overload, value)
 
         return cls(data_params, **kwargs)
+
+
+class LitLangDataModuleParams(LitDataModuleParams[LangDataLoaderParams]):
+
+    pclass = LangDataLoaderParams
+
+    vocab_size: Optional[int] = param.Integer(
+        None, bounds=(1, None), doc="Vocabulary size",
+    )
+    info_path: Optional[str] = param.Filename(
+        None,
+        doc="Path to output of get-torch-spect-data-dir-info command on train_dir/.., "
+        "if train_dir happens to be a subdirectory of a SpectDataSet. Can be "
+        "used to infer the vocabulary size.",
+    )
+
+
+def readable_dir(path: str) -> str:
+    if not os.path.isdir(path):
+        raise argparse.ArgumentTypeError(f"'{path}' is not a directory")
+    return path
+
+
+def readable_file(path: str) -> str:
+    if not os.path.isfile(path):
+        raise argparse.ArgumentTypeError(f"'{path}' is not a file")
+    return path
+
+
+def natural(v: str) -> int:
+    try:
+        v = int(v)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError from e
+    if v < 1:
+        raise argparse.ArgumentTypeError(f"'{v}' is not a natural number")
+    return v
 
 
 class LitSpectDataModuleParams(LitDataModuleParams[SpectDataLoaderParams]):

@@ -279,7 +279,9 @@ def test_controller_best(temp_dir):
     # ensure we're keeping track of the last when the model name is not
     # unique
     controller = training.TrainingStateController(
-        training.TrainingStateParams(saved_model_fmt="model.pt",),
+        training.TrainingStateParams(
+            saved_model_fmt="model.pt", keep_last_and_best_only=False
+        ),
         state_dir=temp_dir,
         warn=False,
     )
