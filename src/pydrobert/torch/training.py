@@ -331,12 +331,11 @@ class TrainingStateController(object):
     
     Each worker maintains its own separate cache of state history, only synchronizing
     the training and validation metrics across workers via a reduction operation in
-    :func:`update_for_epoch` (and during checkpoint deletion). No other default state
-    information needs synchronization. If a custom entry in the state history needs to
-    be synchronized (i.e. it depends directly on the data seen over the epoch, not on
-    the training or validation metrics), the `reduce` flag of :func:`add_entry` can be
-    set to :obj:`True` and that value will likewise be synchronized on the call to
-    :func:`update_for_epoch`.
+    :func:`update_for_epoch`. No other default state information needs synchronization.
+    If a custom entry in the state history needs to be synchronized (i.e. it depends
+    directly on the data seen over the epoch, not on the training or validation
+    metrics), the `reduce` flag of :func:`add_entry` can be set to :obj:`True` and that
+    value will likewise be synchronized on the call to :func:`update_for_epoch`.
 
     `reduce_op` determines how the relevant values are synchronized. An average is taken
     by default by first dividing each copy of the value by the world size and then
@@ -344,8 +343,8 @@ class TrainingStateController(object):
     :class:`torch.distributed.ReduceOp` for other options.
 
     Writing or deleting from disk is performed by only one worker (rank 0). Workers are
-    synchronized prior to a deletion. Reading from disk (e.g. setting up the initial
-    cache from the state csv or loading model parameters) is performed by all workers in
+    synchronized prior to a load. Reading from disk (e.g. setting up the initial cache
+    from the state csv or loading model parameters) is performed by all workers in
     parallel. This paradigm is safe if all workers have access to the same disk.
     """
 
@@ -578,7 +577,7 @@ class TrainingStateController(object):
             Whether to strictly enforce that the keys in ``model.state_dict()`` match
             those that were saved.
         """
-        # no barrier should be necessary here if deletes have barrier
+        self._barrier()
         if epoch is None:
             epoch = self.get_best_epoch()
         if not epoch:
@@ -631,7 +630,7 @@ class TrainingStateController(object):
             Whether to strictly enforce that the keys in ``model.state_dict()``
             match those that were saved.
         """
-        # no barrier should be necessary here if deletes have barrier
+        self._barrier()
         if epoch is None:
             epoch = self.get_last_epoch()
         if not epoch:
@@ -675,16 +674,10 @@ class TrainingStateController(object):
             )
 
     def _clean_up_files(self, *pths):
-        pths = [x for x in pths if os.path.exists(x)]
-        if not pths:
-            return
-        # the barrier comes at the beginning so that a) the above check is correct
-        # and b) nobody tries to load something deleted. Another barrier could come
-        # after the deletion to ensure no one tries to load a deletion, but this would
-        # be a program error and barriers are expensive
-        self._barrier()
         if self._rank <= 0:
             for pth in pths:
+                if not os.path.exists(pth):
+                    continue
                 try:
                     os.remove(pth)
                 except OSError:
@@ -767,7 +760,6 @@ class TrainingStateController(object):
             The history dictionary. Entries can be used in the state dict's path's
             format strings.
         """
-        # no barrier here
         if self.state_dir is None:
             return
         if self._rank <= 0:
@@ -960,8 +952,8 @@ class TrainingStateController(object):
                 info["es_patience_cd"] = 0
         else:
             info["es_patience_cd"] = self.params.early_stopping_patience
-        # we do it this way in case someone continues training after early
-        # stopping has been reached
+        # we do it this way in case someone continues training after early stopping has
+        # been reached
         if self.params.early_stopping_threshold and not info["es_patience_cd"]:
             cont = False
         rlr_epoch = epoch - self.params.reduce_lr_patience + info["rlr_patience_cd"] - 1
