@@ -879,9 +879,9 @@ class TrainingStateController(object):
             W = torch.distributed.get_world_size()
             to_gpu = torch.distributed.get_backend() == torch.distributed.Backend.NCCL
             for name in reduced_entries:
-                val = torch.tensor([kwargs[name]])
-                if to_gpu:
-                    val = val.to(self._rank)
+                val = torch.as_tensor(kwargs[name])
+                if to_gpu and val.device.type != "cuda":
+                    val = val.cuda()
                 reduce_op = self.reduce_op
                 if reduce_op is None:
                     val = val / W
