@@ -72,6 +72,7 @@ __all__ = [
     "EpochRandomSampler",
     "EpochSequentialSampler",
     "extract_window",
+    "lang_seq_to_batch",
     "LangDataLoader",
     "LangDataLoaderParams",
     "LangDataParams",

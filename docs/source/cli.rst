@@ -335,49 +335,46 @@ torch-spect-data-dir-to-wds
   
   Convert a SpectDataSet to a WebDataset
       
-      A torch SpectDataSet data dir is of the form
+  A torch SpectDataSet data dir is of the form
   
-          dir/
-              feat/
-                  <file_prefix><utt1><file_suffix>
-                  <file_prefix><utt2><file_suffix>
-                  ...
-              [ali/
-                  <file_prefix><utt1><file_suffix>
-                  <file_prefix><utt1><file_suffix>
-                  ...
-              ]
-              [ref/
-                  <file_prefix><utt1><file_suffix>
-                  <file_prefix><utt1><file_suffix>
-                  ...
-              ]
+      dir/
+          feat/
+              <file_prefix><utt1><file_suffix>
+              <file_prefix><utt2><file_suffix>
+              ...
+          [ali/
+              <file_prefix><utt1><file_suffix>
+              <file_prefix><utt1><file_suffix>
+              ...
+          ]
+          [ref/
+              <file_prefix><utt1><file_suffix>
+              <file_prefix><utt1><file_suffix>
+              ...
+          ]
   
-      Where "feat/" contains float tensors of shape (N, F), where N is the number of
-      frames (variable) and F is the number of filters (fixed). "ali/" if there, contains
-      long tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids
-      for discriminative training in an DNN-HMM). "ref/", if there, contains long tensors
-      of shape (R, 3) indicating a sequence of reference tokens where element indexed by
-      "[i, 0]" is a token id, "[i, 1]" is the inclusive start frame of the token (or a
-      negative value if unknown), and "[i, 2]" is the exclusive end frame of the token.
+  Where "feat/" contains float tensors of shape (N, F), where N is the number of
+  frames (variable) and F is the number of filters (fixed). "ali/" if there, contains
+  long tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids
+  for discriminative training in an DNN-HMM). "ref/", if there, contains long tensors
+  of shape (R, 3) indicating a sequence of reference tokens where element indexed by
+  "[i, 0]" is a token id, "[i, 1]" is the inclusive start frame of the token (or a
+  negative value if unknown), and "[i, 2]" is the exclusive end frame of the token.
   
-      This command converts the data directory into a tar file to be used as a
-      WebDataset (https://github.com/webdataset/webdataset), whose contents are files
+  This command converts the data directory into a tar file to be used as a
+  WebDataset (https://github.com/webdataset/webdataset), whose contents are files
   
-          meta
-          <utt1>.feat.pth
-          [<utt1>.ali.pth]
-          [<utt1>.ref.pth]
-          <utt2>.feat.pth
-          [<utt2>.ali.pth]
-          [<utt2>.ref.pth]
-          ...
-      
-      holding tensors with the same interpretation as above. The special "meta" file
-      stores 
+      <utt1>.feat.pth
+      [<utt1>.ali.pth]
+      [<utt1>.ref.pth]
+      <utt2>.feat.pth
+      [<utt2>.ali.pth]
+      [<utt2>.ref.pth]
+      ...
   
-      This command does not require WebDataset to be installed.
-      
+  holding tensors with the same interpretation as above.
+  
+  This command does not require WebDataset to be installed.
   
   positional arguments:
     dir                   The torch data directory

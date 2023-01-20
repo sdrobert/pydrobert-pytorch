@@ -2,10 +2,40 @@
 
 ## HEAD
 
+- Added py 3.10 support; removed py 3.6 support.
+- Initial (undocumented) support for
+  [PyTorch-Lightning](https://www.pytorchlightning.ai/) in
+  `pydrobert.torch.lightning` submodule. Will document when I get some time.
+- Refactored much of `pydrobert.torch.data`. Best just to look at the API.
+  `ContextWindowEvaluationDataLoader`, `ContextWindowTrainingDataLoader`,
+  `SpectEvaluationDataLoader`, `SpectTrainingDataLoader`, `DataSetParams`,
+  `SpectDataSetParams`, and `ContextWindowDataSetParams` are now deprecated.
+  The data loaders have been simplified to `ContextWindowDataLoader` and
+  `SpectDataLoader`. Keyword arguments (like `shuffle`) now control their
+  behaviour. The `*DataSetParams` have been renamed `*DataLoaderParams` with
+  some of the parameters moved around. Notably, `LangDataParams` now stores
+  `sos`, `eos`, and `subset_ids` parameters, from which a number of parameter
+  objects inherit. `SpectDataLoaderParams` inherits from
+  `LangDataLoaderParams`, which in turn inherits from
+  `DynamicLengthDataLoaderParams`. The latter allows the loader's batch
+  elements to be bucketed by length using the new `BucketBatchSampler`. It and
+  a number of other samplers inherit from `AbstractEpochSampler` to help
+  facilitate the simplified loaders and better resemble the PyTorch API.
+  Mean-variance normalization of features is possible through the loaders and
+  the new `MeanVarianceNormalization` module. `LangDataSet` and
+  `LangDataLoader` have been introduced to facilitate language mdoel training.
+  Finally, loaders (and samplers) are compatible with `DistributedDataParallel`
+  environments.
+- Mean-variance statistics for normalization may be estimated from a data
+  partition using the command `compute-mvn-stats-for-torch-feat-data-dir`.
+- Added `torch-spect-data-dir-to-wds` to convert a data dir to a
+  [WebDataset](https://github.com/webdataset/webdataset).
 - Changed method of constructing random state in `EpochRandomSampler`.
   Rerunning training on this new version with the same seed will likely result
   in different results from the old version!
-- Remove py3.6 support.
+- `FeatureDeltas` now a module, in case you want to compute them online rather
+  than waste disk space.
+- Added `PadMaskedSequence`.
 - Added  `FillAfterEndOfSequence`.
 - Added `binomial_coefficient`, `enumerate_binary_sequences`,
   `enumerate_vocab_sequences`, and
@@ -55,13 +85,17 @@
 - `version.py` -> `_version.py`.
 - A number of modifications and additions related to decoding and language
   models, including:
-  - `beam_search_advance` and `random_walk_advance` have been simplified, with much of the end-of-sequence logic punted to their associated modules.
+  - `beam_search_advance` and `random_walk_advance` have been simplified, with
+    much of the end-of-sequence logic punted to their associated modules.
   - Rejigged `SequentialLanguageModel` and `LookupLanguageModel` to be both
     simpler and compatible with decoder interfaces.
   - `ctc_greedy_search` and `ctc_prefix_search_advance` functions have been
     added.
   - `ExtractableSequentialLanguageModel`, `MixableSequentialLanguageModel`,
     `BeamSearch`, `RandomWalk`, and `CTCPrefixSearch` modules have been added.
+  - A `SequentialLanguageModelDistribution` wrapping `RandomWalk` which
+    implements PyTorch's `Distribution` interface. Language models now work
+    with estimators!
   - A new documentation page on how to deal with all of that.
 - Fixed bug in controller that always compared thresholds against best, not the
   last point that reset the countdown (#55)
