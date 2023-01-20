@@ -1,6 +1,4 @@
 version: build.{build}.branch.{branch}
-# FIXME(sdrobert): tox-ltt doesn't work on Windows as of yet, causing a
-# virtualenv error. Until it's fixed we'll use the Ubuntu image.
 image: Ubuntu
 
 environment:
@@ -15,6 +13,8 @@ environment:
       PYTHON: "3.9"
     - TOXENV: py310
       PYTHON: "3.10"
+    - TOXENV: py311
+      PYTHON: "3.11"
 
 stack: python %PYTHON%
 
@@ -28,14 +28,13 @@ for:
       only:
         - PYTHON: "3.8"
         - PYTHON: "3.9"
+        - PYTHON: "3.10"
     skip_non_tags: true
 
 build: off
 
 install:
-  - python3 -m pip install -U pip virtualenv setuptools wheel six
-  # FIXME(sdrobert): https://github.com/pmeier/tox-ltt/issues/17
-  - python3 -m pip install -U tox
+  - python3 -m pip install -U pip virtualenv setuptools wheel six tox
 
 test_script:
   - >-
