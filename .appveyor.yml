@@ -1,7 +1,7 @@
 version: build.{build}.branch.{branch}
-# # FIXME(sdrobert): tox-ltt doesn't work on Windows as of yet, causing a
-# # virtualenv error. Until it's fixed we'll use the Ubuntu image.
-# image: Ubuntu
+# FIXME(sdrobert): tox-ltt doesn't work on Windows as of yet, causing a
+# virtualenv error. Until it's fixed we'll use the Ubuntu image.
+image: Ubuntu
 
 environment:
   matrix:
