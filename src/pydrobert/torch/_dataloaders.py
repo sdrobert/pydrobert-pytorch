@@ -12,85 +12,345 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Iterator, Container, Set, Sequence, Tuple
+import abc
+import warnings
+
+from collections import Counter
+from itertools import islice
+from typing import (
+    Collection,
+    Container,
+    Dict,
+    Hashable,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    overload,
+    Sequence,
+    Set,
+    Sized,
+    Tuple,
+    TypeVar,
+    Union,
+)
+from typing_extensions import Literal
 
 import param
 import numpy as np
 import torch
 
-
 from . import config
 from ._datasets import (
     ContextWindowDataParams,
     ContextWindowDataSet,
+    LangDataParams,
+    LangDataSet,
     SpectDataParams,
     SpectDataSet,
 )
 
+try:
+    _BaseSampler = torch.utils.data.sampler.Sampler[int]
+except TypeError:
+    _BaseSampler = torch.utils.data.sampler.Sampler
 
-class EpochRandomSampler(torch.utils.data.Sampler):
-    """Return random samples that are the same for a fixed epoch
+
+class AbstractEpochSampler(_BaseSampler, metaclass=abc.ABCMeta):
+
+    epoch: int  #:
+    _rank: int
+    _world_size: int
+    total: int
+    effective_total: int
+
+    def __init__(
+        self,
+        data_source: Sized,
+        init_epoch: int = 0,
+        on_uneven_distributed: Literal["raise", "drop", "uneven", "ignore"] = "raise",
+    ):
+        self.effective_total = self.total = len(data_source)
+        self.epoch = init_epoch
+        if (
+            on_uneven_distributed != "ignore"
+            and torch.distributed.is_available()
+            and torch.distributed.is_initialized()
+            and torch.distributed.get_rank() >= 0
+        ):
+            self._rank = torch.distributed.get_rank()
+            self._world_size = torch.distributed.get_world_size()
+            if self.total % self._world_size:
+                if on_uneven_distributed == "raise":
+                    raise ValueError(
+                        f"dataset length ({self.total}) must be divisible by "
+                        f"the distributed world size ({self._world_size}). Consult the "
+                        "documentation for on_uneven_distributed"
+                    )
+                elif on_uneven_distributed == "drop":
+                    self.effective_total = self.total - (self.total % self._world_size)
+                elif on_uneven_distributed != "uneven":
+                    raise ValueError(
+                        "Unknown on_uneven_distributed value "
+                        f"'{on_uneven_distributed}'. Expected one of 'ignore', "
+                        "'raise', or 'drop'"
+                    )
+        else:
+            self._rank = 0
+            self._world_size = 1
+
+    def __len__(self) -> int:
+        return (
+            self.effective_total - self._rank + self._world_size - 1
+        ) // self._world_size
+
+    @abc.abstractmethod
+    def get_samples_for_epoch_ignoring_distributed(self, epoch: int) -> Iterable[int]:
+        """Get all samples for the provided epoch, ignoring the distruted environment
+
+        Ignores the distributed environment. All replicas should return the same value.
+
+        See Also
+        --------
+        get_samples_for_epoch
+        """
+        ...
+
+    def get_samples_for_epoch(self, epoch: int) -> Iterable[int]:
+        """Get all samples for the provided epoch"""
+        ret = self.get_samples_for_epoch_ignoring_distributed(epoch)
+        return islice(ret, self._rank, self.effective_total, self._world_size)
+
+    def __iter__(self) -> Iterator[int]:
+        ret = self.get_samples_for_epoch(self.epoch)
+        self.epoch += 1
+        return ret
+
+
+class EpochRandomSampler(AbstractEpochSampler):
+    """A deterministic RandomSampler which handles :mod:`torch.distributed`
 
     Parameters
     ----------
     data_source
-        The total number of samples
+        The dataset to draw the sample from.
     init_epoch
-        The initial epoch
+        The initial epoch.
     base_seed
-        Determines the starting seed of the sampler. Sampling is seeded with ``base_seed
-        + epoch``. If unset, a seed is randomly generated from the default generator
+        Determines the starting seed of the sampler. Sampling is seeded with
+        ``(base_seed, epoch)```. If unset, a seed is randomly generated from the default
+        pytorch generator.
+    on_uneven_distributed
+        What to do if the sampler detects that it's in a distributed environment and
+        the number of processes does not evenly divide the number of samples:
 
-    Attributes
-    ----------
-    epoch : int
-        The current epoch. Responsible for seeding the upcoming samples.
+        - :obj:`'raise'` raise a :class:`ValueError`.
+        - :obj:`'drop'` drop the remainder. The dropped samples will be randomized each
+          epoch.
+        - :obj:`'uneven'` allow some processes to yield fewer samples.
+        - :obj:`'ignore'` ignore the distributed context. Each process will yield all
+          samples.
     
-    Yields
-    ------
-    sample_idx : int
-        The current sample index of the current epoch.
+    Warnings
+    --------
+    The default means of seeding the shuffler changed from version 0.3. Previously the
+    shuffler was seeded on each epoch with the value ``base_seed + epoch``. The change
+    means training a network in this version will yield different results from that
+    trained in version 0.3 even if `base_seed` is the same.
+    
+    The change was made because, if repeated experiments were seeded sequentially, then
+    the ``n``-th epoch of the ``m``-th run would see samples in the same order as the
+    ``m``-th epoch of the ``n``-th run. Thus, repeated trials were unintentionally
+    correlated.
 
     Examples
     --------
-
     >>> sampler = EpochRandomSampler(
-    ...     torch.data.utils.TensorDataset(torch.arange(100)))
+    ...     torch.utils.data.TensorDataset(torch.arange(100)))
     >>> samples_ep0 = tuple(sampler)  # random
     >>> samples_ep1 = tuple(sampler)  # random, probably not same as first
-    >>> assert tuple(sampler.get_samples_for_epoch(0)) == samples_ep0
-    >>> assert tuple(sampler.get_samples_for_epoch(1)) == samples_ep1
+    >>> assert tuple(sampler.get_samples_for_epoch_ignoring_distributed(0)) == samples_ep0
+    >>> assert tuple(sampler.get_samples_for_epoch_ignoring_distributed(1)) == samples_ep1
     """
+
+    base_seed: int  #:
 
     def __init__(
         self,
-        data_source: torch.utils.data.Dataset,
+        data_source: Sized,
         init_epoch: int = 0,
         base_seed: Optional[int] = None,
+        on_uneven_distributed: Literal["raise", "drop", "uneven", "ignore"] = "raise",
     ):
-        super(EpochRandomSampler, self).__init__(data_source)
-        self.data_source = data_source
-        self.epoch = init_epoch
+        super().__init__(data_source, init_epoch, on_uneven_distributed)
+        max_ = np.iinfo(np.int32).max
         if base_seed is None:
             # we use numpy RandomState so that we can run in parallel with
             # torch's RandomState, but we acquire the initial random seed from
             # torch so that we'll be deterministic with a prior call to
             # torch.manual_seed(...)
-            base_seed = torch.randint(np.iinfo(np.int32).max, (1,)).long().item()
+            base_seed = torch.randint(max_, (1,)).long().item()
+        if base_seed >= max_:
+            raise ValueError(f"base_seed is too high! Pick something less than {max_}")
         self.base_seed = base_seed
 
-    def __len__(self) -> int:
-        return len(self.data_source)
+    def get_samples_for_epoch_ignoring_distributed(self, epoch: int) -> Iterable[int]:
+        rs = np.random.RandomState((self.base_seed, epoch))
+        shuffled = rs.permutation(self.total)
+        return iter(shuffled)
 
-    def get_samples_for_epoch(self, epoch: int) -> np.ndarray:
-        """np.ndarray : samples for a specific epoch"""
-        rs = np.random.RandomState(self.base_seed + epoch)
-        return rs.permutation(list(range(len(self.data_source))))
 
-    def __iter__(self) -> Iterator[np.ndarray]:
-        ret = iter(self.get_samples_for_epoch(self.epoch))
-        self.epoch += 1
-        return ret
+class EpochSequentialSampler(AbstractEpochSampler):
+    """A SequentialSampler which handles :mod:`torch.distributed`
+
+    Yields samples ``[1, 2, ...]``
+
+    Parameters
+    ----------
+    data_source
+        The dataset to draw the sample from.
+    init_epoch
+        The initial epoch.
+    on_uneven_distributed
+        What to do if the sampler detects that it's in a distributed environment and
+        the number of processes does not evenly divide the number of samples:
+
+        - :obj:`'raise'` raise a :class:`ValueError`.
+        - :obj:`'drop'` drop the last few samples.
+        - :obj:`'uneven'` allow some processes to yield fewer samples.
+        - :obj:`'ignore'` ignore the distributed context. Each process will yield all
+          samples.
+        
+        See the below note for more information.
+    
+    Notes
+    -----
+    The following note regards how the sampler handles :mod:`torch.distributed`.
+
+    Sequential sampling in a distributed, parallel environment is not well defined. When
+    `on_uneven_distributed` is :obj:`'ignore'`, each process sees all data sequentially.
+    As such, every process repeats the same work and returns the same value. Though
+    wasteful, results are likely correct, and hence easiest to adapt to from a
+    non-distributed codebase (e.g. with
+    :class:`pydrobert.torch.training.TraningStateController`). Distributed sequential
+    sampling may still be appropriate otherwise when ordering does not matter, such as
+    when an evaluation metric is computed in aggregate. 
+
+    When in a distributed environment and `on_uneven_distributed` is not :obj:`'ignore'`
+    process ``r`` of ``W`` processes will be responsible for samples ``[r, r + W, r +
+    2W, ...]`` (assuming `shifting` is :obj:`False`). When the total number of samples
+    ``N`` is divisble by ``W``, each process sees the same number of samples and all
+    samples are yielded by exactly one process. Assuming the quantity of interest is an
+    average over all samples, computing the average per process and then that averaged
+    over processes should yield the same results.
+    
+    When ``W`` does not divide ``N`` and `on_uneven_distributed` is :obj:`'uneven'`, all
+    samples will be yielded by exactly one process but not all processes will yield the
+    same number of samples. Averaging must be performed with specialized logic; see
+    :class:`torch.distributed.algorithms.Join` for one option.
+
+    Finally, when ``W`` does not divide ``N`` and `on_uneven_distributed` is
+    :obj:`'drop'`, the last ``N % W`` samples are dropped to ensure divisibility. Each
+    process will see the same number of samples, but the last few samples will never
+    be yielded. While averaging will almost always yield a different result from the
+    distributed case, it may nonetheless be close when ``N % W`` is small.
+    """
+
+    def __init__(
+        self,
+        data_source: Sized,
+        init_epoch: int = 0,
+        on_uneven_distributed: Literal["raise", "drop", "uneven", "ignore"] = "raise",
+    ):
+        super().__init__(data_source, init_epoch, on_uneven_distributed)
+
+    def get_samples_for_epoch_ignoring_distributed(self, epoch: int) -> Iterable[int]:
+        return range(self.total)
+
+
+H = TypeVar("H", bound=Hashable)
+
+
+class BucketBatchSampler(_BaseSampler):
+    """Batch samples into buckets, yielding as soon as the bucket is full
+    
+    Parameters
+    ----------
+    sampler
+        Determines the order in which samples are put into buckets.
+    idx2bucket
+        A map specifying which bucket each sample belongs to. The keys are the indices
+        yielded by `sampler`; the values are the ids of the corresponding buckets.
+    bucket2size
+        A map from the bucket ids (the values in `idx2bucket`) to the corresponding
+        batch size. Values must be positive.
+    drop_incomplete
+        If :obj:`True`, any batches which are incomplete (smaller than the bucket's
+        batch size) at the end of an epoch will be discarded. Otherwise, the incomplete
+        batches will be yielded in the order of their bucket ids' hashes.
+    
+    Yields
+    ------
+    batch : list of int
+        A list of indices from `sampler` all belonging to the same bucket. The batch is
+        yielded as soon as it is full (or the epoch has ended with `drop_incomplete` set
+        to :obj:`False`).
+    
+    Warnings
+    --------
+    :class:`BucketBatchSampler` has no :func:`__len__` method. Correctly determining the
+    length of the batched sampler requires knowledge of which indices of `sampler` are
+    being iterated over which can only be determined by iterating over the `sampler`.
+    
+    Examples
+    --------
+
+    >>> N = 14
+    >>> dataset = torch.utils.data.TensorDataset(torch.rand(N))
+    >>> ssampler = torch.utils.data.SequentialSampler(dataset)
+    >>> idx2bucket = dict((n, int(n % 3 == 0)) for n in range(N))
+    >>> bucket2size = {0: 2, 1: 2}
+    >>> bsampler = BucketBatchSampler(ssampler, idx2bucket, bucket2size, True)
+    >>> print(list(bsampler))
+    [[1, 2], [0, 3], [4, 5], [7, 8], [6, 9], [10, 11]]
+    >>> bsampler = BucketBatchSampler(ssampler, idx2bucket, bucket2size, False)
+    >>> print(list(bsampler))
+    [[1, 2], [0, 3], [4, 5], [7, 8], [6, 9], [10, 11], [13], [12]]
+
+    """
+
+    sampler: Collection[int]
+    idx2bucket: Dict[int, H]
+    bucket2size: Dict[H, int]
+    drop_incomplete: bool
+
+    def __init__(
+        self,
+        sampler: Collection[int],
+        idx2bucket: Dict[int, H],
+        bucket2size: Dict[H, int],
+        drop_incomplete: bool = False,
+    ):
+        self.sampler = sampler
+        self.idx2bucket = idx2bucket
+        self.bucket2size = bucket2size
+        self.drop_incomplete = drop_incomplete
+
+    def __iter__(self) -> Iterator[List[int]]:
+        batches: Dict[H, List[int]] = dict()
+        for idx in self.sampler:
+            hash_ = self.idx2bucket[idx]
+            batch_size = self.bucket2size[hash_]
+            batch = batches.setdefault(hash_, [])
+            batch.append(idx)
+            if batch_size == len(batch):
+                yield batch
+                del batches[hash_]
+            elif batch_size < len(batch):
+                raise RuntimeError(f"batch '{hash_}' has invalid size '{batch_size}'")
+        if not self.drop_incomplete:
+            for _, batch in sorted(batches.items(), key=lambda x: x[0]):
+                yield batch
 
 
 class DataLoaderParams(param.Parameterized):
@@ -101,21 +361,11 @@ class DataLoaderParams(param.Parameterized):
     """
 
     batch_size = param.Integer(
-        10,
-        bounds=(1, None),
-        softbounds=(5, 10),
-        doc="Number of elements in a batch, which equals the number of "
-        "utterances in the batch",
+        10, bounds=(1, None), softbounds=(5, 10), doc="Number of elements in a batch.",
     )
     drop_last = param.Boolean(
-        False, doc="Whether to drop the last batch if it does reach batch_size"
-    )
-    subset_ids = param.List(
-        [],
-        class_=str,
-        bounds=None,
-        doc="A list of utterance ids. If non-empty, the data set will be "
-        "restricted to these utterances",
+        False,
+        doc="Whether to drop a batch when there are too few samples to match its size.",
     )
 
     @classmethod
@@ -138,285 +388,285 @@ class DataLoaderParams(param.Parameterized):
         return params
 
 
-class SpectDataLoaderParams(SpectDataParams, DataLoaderParams):
-    """Parameters for a Spect*DataLoader
+class DynamicLengthDataLoaderParams(DataLoaderParams):
+    """Parameters for a data loader whose elements have dynamic lengths"""
 
-    This implements the :class:`pydrobert.param.optuna.TunableParameterized`
-    interface.
+    num_length_buckets = param.Integer(
+        1,
+        bounds=(1, None),
+        doc="If greater than 1, elements will be batched with other elements of "
+        "similar length. For SpectDataSet, length is along the feature time dimension. "
+        "For LangDataSet, length is the reference sequence length. Elements will be "
+        "partioned roughly evenly into num_length_buckets. Increasing "
+        "num_length_buckets will usually decrease the total amount of padding "
+        "per batch at the cost of fewer candidates to choose from within batches.",
+    )
+    size_batch_by_length = param.Boolean(
+        False,
+        doc="Only matters when num_length_buckets > 1. If false, all buckets have the "
+        "same batch size of batch_size. If true, buckets with shorter-length "
+        "utterances will contain greater than batch_size elements per batch. Letting "
+        "x be the batch size of a bucket, y be the length of the largest element in "
+        "the bucket, and Y be the length of the largest element in the corpus, x is "
+        "the greatest value such that x * y <= Y * batch_size",
+    )
 
-    See Also
-    --------
-    pydrobert.torch.data.SpectTrainingDataLoader
-    pydrobert.torch.data.SpectEvaluationDataLoader
+
+class LangDataLoaderParams(LangDataParams, DynamicLengthDataLoaderParams):
+    """Parameters for a :class:`LangDataLoader`
+    
+    This implements the :class:`pydrobert.param.optuna.TunableParameterized` interface.
     """
 
+    pass
 
-def spect_seq_to_batch(
-    seq: Sequence[Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]],
+
+@overload
+def lang_seq_to_batch(
+    seq: Sequence[torch.Tensor],
     batch_first: bool = True,
-) -> Tuple[
-    torch.Tensor,
-    Optional[torch.Tensor],
-    Optional[torch.Tensor],
-    torch.Tensor,
-    Optional[torch.Tensor],
+    sort: bool = True,
+    has_uttids: Literal[False] = False,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    ...
+
+
+@overload
+def lang_seq_to_batch(
+    seq: Sequence[Tuple[torch.Tensor, str]],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_uttids: Literal[True] = False,
+) -> Tuple[torch.Tensor, torch.Tensor, Tuple[str, ...]]:
+    ...
+
+
+def lang_seq_to_batch(
+    seq: Sequence[Union[torch.Tensor, Tuple[torch.Tensor, str]]],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_uttids: bool = False,
+) -> Union[
+    Tuple[torch.Tensor, torch.Tensor],
+    Tuple[torch.Tensor, torch.Tensor, Tuple[str, ...]],
 ]:
-    """Convert a sequence of spectral data to a batch
-
-    Assume `seq` is a finite length sequence of tuples ``feat, ali, ref``, where
-    ``feat`` is of size ``(T, F)``, where ``T`` is some number of frames (which can vary
-    across elements in the sequence), ``F`` is some number of filters, ``ali`` is of
-    size ``(T,)``, and ``ref`` is of size ``(R[, 3])``, where ``R`` is some number of
-    reference tokens (which can vary across elements in the sequence) and the ``3`` is a
-    triple of id, start frame and end frame (optional). This method batches all the
-    elements of the sequence into a tuple of ``feats, alis, refs, feat_sizes,
-    ref_sizes``. `feats` and `alis` will have dimensions ``(N, T*, F)``, and ``(N,
-    T*)``, resp., where ``N`` is the batch size, and ``T*`` is the maximum number of
-    frames in `seq` (or ``(T*, N, F)``, ``(T*, N)`` if `batch_first` is :obj:`False`).
-    Similarly, `refs` will have dimensions ``(N, R*[, 3])`` (or ``(R*, N[, 3])``).
-    `feat_sizes` and `ref_sizes` are long tensor  of shape ``(N,)`` containing the
-    original ``T`` and ``R`` values. The batch will be sorted by decreasing numbers of
-    frames. `feats` is zero-padded while `alis` and `refs` are padded with module
-    constant :const:`pydrobert.torch.config.INDEX_PAD_VALUE`
-
-    If ``ali`` or ``ref`` is :obj:`None` in any element, `alis` or `refs` and
-    `ref_sizes` will also be :obj:`None`
+    """Convert a sequence of reference sequences to a batch
+    
+    This function is used to collate sequences of elements from a :class:`LangDataSet`
+    into batches.
 
     Parameters
     ----------
     seq
-
+        A finite-length (``N``) sequence of either just `ref_n` or tuples ``ref_n,
+        utt_n``, where
+        
+        - `ref_n` is a tensor of size ``(R_n[, 3])`` representing reference token
+          sequences and optionally their frame shifts. Either all `ref_n` must contain
+          the frame shift info (the ``3`` dimension) or none of them.
+        - `utt_n` (if `has_uttids` is :obj:`True`) is the utterance id.
+    batch_first
+        If :obj:`True`, the batch dimension ``N`` comes before the sequence dimension
+        ``R`` in `refs`.
+    sort
+        If :obj:`True`, the elements of `seq` are ordered in descending order of
+        ``R_n`` before being batched.
+    has_uttids
+        Whether `utt_n` is part of the input values and `uttids` is part of the output
+        values.
+    
     Returns
     -------
-    feats : torch.Tensor
-    alis : torch.Tensor or None
-    refs : torch.Tensor or None
-    feat_sizes : torch.Tensor
-    ref_sizes : torch.Tensor or None
+    batch
+        A tuple containing the following elements:
+
+        1. `refs`, a tensor of shape ``(max_n R_n, N[, 3])``
+            containing the right-padded sequences ``[ref_1, ref_2, ..., ref_N]``. 
+            Padded with :const:`pydrobert.torch.config.INDEX_PAD_VALUE`.
+        2. `ref_sizes`, a tensor of shape ``(N,)`` containing the sequence ``[R_1, R_2,
+           ..., R_N]``.
+        3. `uttids` (if `has_uttids` is :obj:`True`), an ``N``-tuple of the utterance
+           ids.
     """
-    seq = sorted(seq, key=lambda x: -x[0].shape[0])
-    feats, alis, refs = list(zip(*seq))
-    has_ali = all(x is not None for x in alis)
-    has_ref = all(x is not None for x in refs)
-    feat_sizes = torch.tensor([len(x) for x in feats])
-    feats = torch.nn.utils.rnn.pad_sequence(
-        feats, padding_value=0, batch_first=batch_first
+    if sort and has_uttids:
+        seq = sorted(seq, key=lambda x: x[0].size(0), reverse=True)
+    elif sort:
+        seq = sorted(seq, key=lambda x: x.size(0), reverse=True)
+    if has_uttids:
+        refs, uttids = zip(*seq)
+    else:
+        refs = seq
+    ref_sizes = torch.tensor([len(x) for x in refs])
+    refs = torch.nn.utils.rnn.pad_sequence(
+        refs, padding_value=config.INDEX_PAD_VALUE, batch_first=batch_first
     )
-    if has_ali:
-        alis = torch.nn.utils.rnn.pad_sequence(
-            alis, padding_value=config.INDEX_PAD_VALUE, batch_first=batch_first
-        )
-    if has_ref:
-        ref_sizes = torch.tensor([len(x) for x in refs])
-        refs = torch.nn.utils.rnn.pad_sequence(
-            refs, padding_value=config.INDEX_PAD_VALUE, batch_first=batch_first
-        )
-    return (
-        feats,
-        alis if has_ali else None,
-        refs if has_ref else None,
-        feat_sizes,
-        ref_sizes if has_ref else None,
-    )
+    if has_uttids:
+        return refs, ref_sizes, tuple(uttids)
+    else:
+        return refs, ref_sizes
 
 
-class SpectTrainingDataLoader(torch.utils.data.DataLoader):
-    """Serves batches of spectral data over random orders of utterances
+def _get_batch_sampler_len(batch_sampler) -> int:
+    if isinstance(batch_sampler, BucketBatchSampler):
+        bucket2count = Counter(
+            batch_sampler.idx2bucket[i]
+            for i in batch_sampler.sampler.get_samples_for_epoch(
+                batch_sampler.sampler.epoch
+            )
+        )
+        len_ = 0
+        for bucket, count in bucket2count.items():
+            size = batch_sampler.bucket2size[bucket]
+            if batch_sampler.drop_incomplete:
+                len_ += count // size
+            else:
+                len_ += (count + size - 1) // size
+    else:
+        len_ = len(batch_sampler)
+    return len_
+
+
+class LangDataLoader(torch.utils.data.DataLoader):
+    """DataLoader for a :class:`LangDataSet`
 
     Parameters
     ----------
-    data_dir
+    data
+        Either a :class:`LangDataSet` or a path to the data directory.
     params
-        Either provides all the parameters necessary to instantiate this loader (a
-        :class:`SpectDataLoaderParams`) or just those related to or just those related
-        to the loader (a :class:`DataLoaderParams`). If the latter, `data_params` must
-        be specified.
-    file_prefix
-    file_suffix
-    warn_on_missing
-    feat_subdir
-    ali_subdir
-    ref_subdir
-    init_epoch
-        Where training should resume from.
-    batch_first
+        Contains at least the parameters specific to the loader. May also contain
+        data set params -- see `data_params`.
     data_params
-        If specified, provides the parameters necessary to instantiate the underlying
-        :class:`SpectDataSet`. Parameters in `data_params` will pre-empt any found in
-        `params`.
+        Data set parameters. Relevant only when `data` is a path. Used to initialize the
+        underlying :class:`LangDataSet`. If :obj:`None`, `params` is assumed to also
+        contain the data set parameters.
+    shuffle
+        Whether utterances are shuffled at every epoch or presented sequentially.
+    batch_first
+        Whether the batch dimension comes before the sequence dimension in `refs`.
+    sort_batch
+        Whether utterances in a batch are sorted by feature length.
+    init_epoch
+        The epoch to resume from. When combined with a fixed `seed`, ensures the same
+        batches are always delivered for a given epoch.
     seed
-        The seed used to shuffle data. If unset, will be set randomly.
-    **kwargs
-        Additional :class:`torch.utils.data.DataLoader` arguments
+        The initial seed used for shuffling data. If unset, a random one will be
+        generated.
+    on_uneven_distributed
+        What to do if the sampler detects that it's in a distributed environment and the
+        number of processes does not evenly divide the number of samples:
 
+        - :obj:`'raise'` raise a :class:`ValueError`.
+        - :obj:`'uneven'` allow some processes to yield fewer samples.
+        - :obj:`'ignore'` ignore the distributed context. Each process will yield all
+          samples.
+    **kwargs
+        Additional keyword arguments to initialize :class:`LangDataSet` and
+        :class:`torch.utils.data.DataLoader`. The former is only relevant when
+        `data` is a path.
+    
     Yields
     ------
-    feats : torch.Tensor
-        A tensor of shape ``(N, T*, F)`` (or ``(T*, N, F)`` if `batch_first` is
-        :obj:`False`), where ``N`` is ``params.batch_size``, ``T*`` is the maximum
-        number of frames in an utterance in the batch, and ``F`` is the number of
-        filters per frame
-    alis : torch.Tensor or None
-        A long tensor size ``(N, T*)`` (or ``(T*, N)`` if `batch_first` is :obj:`False`)
-        if an ``ali/`` dir exists, otherwise :obj:`None`
-    refs : torch.Tensor or None
-        A long tensor size ``(N, R*[, 3])`` (or ``(R*, N[, 3])`` if `batch_first` is
-        :obj:`False`), where ``R*`` is the maximum number of reference tokens in the
-        batch. The 3rd dimension will only exist if data were saved with frame start/end
-        indices. If the ``refs/`` directory does not exist, `refs` and `ref_sizes` are
-        :obj:`None`.
-    feat_sizes : torch.Tensor
-        A long tensor of shape ``(N,)`` specifying the lengths of utterances in the
-        batch
-    ref_sizes : torch.Tensor or None
-        A long tensor of shape ``(N,)`` specifying the number reference tokens per
-        utterance in the batch. If the ``refs/`` directory does not exist, `refs` and
-        `ref_sizes` are :obj:`None`.
-
-    Attributes
-    ----------
-    epoch : int
-        The current epoch.
-
-    Notes
-    -----
-    The first axis of each of `feats`, `alis`, `refs`, `feat_sizes`, and
-    `ref_sizes` is ordered by utterances of descending frame lengths. Shorter
-    utterances in `feats` are zero-padded to the right, `alis` is padded with
-    the module constant :const:`pydrobert.torch.config.INDEX_PAD_VALUE`
-
-    `batch_first` is separated from `params` because it is usually a matter of
-    model architecture whether it is :obj:`True` - something the user doesn't
-    configure. Further, the attribute `batch_first` can be modified after
-    initialization of this loader (outside of the for loop) to suit a model's
-    needs.
-
-    Examples
-    --------
-    Training on alignments for one epoch
-
-    >>> # see 'SpectDataSet' to initialize data set
-    >>> num_filts, num_ali_classes = 40, 100
-    >>> model = torch.nn.LSTM(num_filts, num_ali_classes)
-    >>> optim = torch.optim.Adam(model.parameters())
-    >>> loss = torch.nn.CrossEntropyLoss()
-    >>> params = SpectDataLoaderParams()
-    >>> loader = SpectTrainingDataLoader('data', params, batch_first=False)
-    >>> for feats, alis, _, feat_sizes, _ in loader:
-    >>>     optim.zero_grad()
-    >>>     packed_feats = torch.nn.utils.rnn.pack_padded_sequence(
-    ...         feats, feat_sizes)
-    >>>     packed_alis = torch.nn.utils.rnn.pack_padded_sequence(
-    ...         alis, feat_sizes)
-    >>>     packed_logits, _ = model(packed_feats)
-    >>>     # no need to unpack: loss is the same as if we ignored padded vals
-    >>>     loss(packed_logits.data, packed_alis.data).backward()
-    >>>     optim.step()
-
-    Training on reference tokens with CTC for one epoch
-
-    >>> num_filts, num_ref_classes, kern = 40, 2000, 3
-    >>> # we use padding to ensure gradients are unaffected by batch padding
-    >>> model = torch.nn.Sequential(
-    ...     torch.nn.Conv2d(1, 1, kern, padding=(kern - 1) // 2),
-    ...     torch.nn.ReLU(),
-    ...     torch.nn.Linear(num_filts, num_ref_classes),
-    ...     torch.nn.LogSoftmax(-1))
-    >>> optim = torch.optim.Adam(model.parameters(), 1e-4)
-    >>> loss = torch.nn.CTCLoss()
-    >>> params = SpectDataLoaderParams()
-    >>> loader = SpectTrainingDataLoader('data', params)
-    >>> for feats, _, refs, feat_sizes, ref_sizes in loader:
-    >>>     optim.zero_grad()
-    >>>     feats = feats.unsqueeze(1)  # channels dim
-    >>>     log_prob = model(feats).squeeze(1)
-    >>>     loss(
-    ...         log_prob.transpose(0, 1),
-    ...         refs[..., 0], feat_sizes, ref_sizes).backward()
-    >>>     optim.step()
+    batch : Union[torch.Tensor, Tuple[torch.Tensor]]
+        A tuple ``refs, ref_lens[, utt_ids]``, with the presence of `utt_ids` dependent
+        on `suppress_uttids` in the underlying :class:`LangDataSet` is :obj:`True`). See
+        :func:`lang_seq_to_batch` for more information on the elements.
     """
+
+    dataset: LangDataSet
+    batch_first: bool
+    batch_sampler: Union[BucketBatchSampler, torch.utils.data.BatchSampler]
+    sort_batch: bool
+    _len: int
 
     def __init__(
         self,
-        data_dir: str,
-        params: DataLoaderParams,
-        init_epoch: int = 0,
-        file_prefix: str = "",
-        file_suffix: str = ".pt",
-        warn_on_missing: bool = True,
-        feat_subdir: str = "feat",
-        ali_subdir: str = "ali",
-        ref_subdir: str = "ref",
+        data: Union[str, LangDataSet],
+        params: Union[LangDataLoaderParams, DynamicLengthDataLoaderParams],
+        data_params: Optional[LangDataParams] = None,
+        shuffle: bool = True,
         batch_first: bool = True,
-        data_params: Optional[SpectDataParams] = None,
+        sort_batch: bool = False,
+        init_epoch: int = 0,
+        on_uneven_distributed: Literal["raise", "unordered", "ignore"] = "raise",
         seed: Optional[int] = None,
-        **kwargs
+        **kwargs,
     ):
-        for bad_kwarg in (
-            "batch_size",
-            "sampler",
+        for bad_kwarg in {
             "batch_sampler",
-            "shuffle",
+            "batch_size",
             "collate_fn",
-        ):
+            "drop_last",
+            "sampler",
+        }:
             if bad_kwarg in kwargs:
                 raise TypeError(
-                    'keyword argument "{}" invalid for {} types'.format(
-                        bad_kwarg, type(self)
-                    )
+                    f"keyword argument '{bad_kwarg}' invalid for {type(self)} types"
                 )
-        self.data_dir = data_dir
-        self.params = params
+        ds_kwargs, dl_kwargs = dict(), dict()
+        for key, val in kwargs.items():
+            if key in {
+                "file_prefix",
+                "file_suffix",
+                "suppress_uttids",
+                "tokens_only",
+            }:
+                ds_kwargs[key] = val
+            else:
+                dl_kwargs[key] = val
         if data_params is None:
-            self.data_params = params
+            data_params = params
+        self.batch_first, self.sort_batch = batch_first, sort_batch
+        if isinstance(data, LangDataSet):
+            dataset = data
         else:
-            self.data_params = data_params
-        self.batch_first = batch_first
-        self.data_source = SpectDataSet(
-            data_dir,
-            file_prefix=file_prefix,
-            file_suffix=file_suffix,
-            warn_on_missing=warn_on_missing,
-            subset_ids=set(params.subset_ids) if params.subset_ids else None,
-            feat_subdir=feat_subdir,
-            ali_subdir=ali_subdir,
-            ref_subdir=ref_subdir,
-            params=self.data_params,
-        )
-        if not self.data_source.has_ali and not self.data_source.has_ref:
-            raise ValueError(
-                "'{}' must have either alignments or reference tokens for "
-                "training".format(data_dir)
+            dataset = LangDataSet(data, params=data_params, **ds_kwargs,)
+        utt_sampler_kwargs = {"init_epoch": init_epoch}
+        if params.drop_last:
+            utt_sampler_kwargs["on_uneven_distributed"] = "drop"
+        else:
+            utt_sampler_kwargs["on_uneven_distributed"] = on_uneven_distributed
+        if shuffle:
+            utt_sampler = EpochRandomSampler(
+                dataset, base_seed=seed, **utt_sampler_kwargs
             )
-        epoch_sampler = EpochRandomSampler(
-            self.data_source, init_epoch=init_epoch, base_seed=seed
-        )
-        batch_sampler = torch.utils.data.BatchSampler(
-            epoch_sampler, params.batch_size, drop_last=params.drop_last
-        )
-        super(SpectTrainingDataLoader, self).__init__(
-            self.data_source,
+        else:
+            utt_sampler = EpochSequentialSampler(dataset, **utt_sampler_kwargs)
+        if params.num_length_buckets > 1:
+            idx2bucket, bucket2size = _get_bucket_batch_sampler_params(
+                dataset,
+                params.num_length_buckets,
+                params.batch_size,
+                params.size_batch_by_length,
+            )
+            batch_sampler = BucketBatchSampler(
+                utt_sampler, idx2bucket, bucket2size, params.drop_last,
+            )
+        else:
+            batch_sampler = torch.utils.data.BatchSampler(
+                utt_sampler, params.batch_size, drop_last=params.drop_last
+            )
+        self._len = None
+        super().__init__(
+            dataset,
             batch_sampler=batch_sampler,
             collate_fn=self.collate_fn,
-            **kwargs
+            **dl_kwargs,
         )
 
-    def collate_fn(
-        self,
-        seq: Sequence[
-            Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]
-        ],
-    ) -> Tuple[
-        torch.Tensor,
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        torch.Tensor,
-        Optional[torch.Tensor],
-    ]:
-        return spect_seq_to_batch(seq, batch_first=self.batch_first)
+    def collate_fn(self, seq):
+        return lang_seq_to_batch(
+            seq, self.batch_first, self.sort_batch, not self.dataset.suppress_uttids,
+        )
+
+    def __len__(self) -> int:
+        if self._len is None:
+            self._len = _get_batch_sampler_len(self.batch_sampler)
+        return self._len
 
     @property
     def epoch(self) -> int:
+        """int : the current epoch"""
         return self.batch_sampler.sampler.epoch
 
     @epoch.setter
@@ -424,145 +674,489 @@ class SpectTrainingDataLoader(torch.utils.data.DataLoader):
         self.batch_sampler.sampler.epoch = val
 
 
-class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
-    """Serves batches of spectral data over a fixed order of utterances
+class SpectDataLoaderParams(SpectDataParams, LangDataLoaderParams):
+    """Parameters for a :class:`SpectDataLoader`
+
+    This implements the :class:`pydrobert.param.optuna.TunableParameterized` interface.
+    """
+
+    @classmethod
+    def get_tunable(cls) -> Set[str]:
+        return (
+            SpectDataParams.get_tunable() | DynamicLengthDataLoaderParams.get_tunable()
+        )
+
+    @classmethod
+    def suggest_params(
+        cls, trial, base=None, only: Container[str] = None, prefix: str = ""
+    ):
+        params = cls() if base is None else base
+        SpectDataParams.suggest_params(trial, params, only, prefix)
+        DynamicLengthDataLoaderParams.suggest_params(trial, params, only, prefix)
+        return params
+
+
+@overload
+def spect_seq_to_batch(
+    seq: Sequence[Tuple[torch.Tensor, Optional[torch.Tensor]]],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_alis: Literal[False] = True,
+    has_uttids: Literal[False] = False,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor, Optional[torch.Tensor]]:
+    ...
+
+
+@overload
+def spect_seq_to_batch(
+    seq: Sequence[Tuple[torch.Tensor, Optional[torch.Tensor], str]],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_alis: Literal[False] = True,
+    has_uttids: Literal[True] = False,
+) -> Tuple[
+    torch.Tensor,
+    Optional[torch.Tensor],
+    torch.Tensor,
+    Optional[torch.Tensor],
+    Tuple[str, ...],
+]:
+    ...
+
+
+@overload
+def spect_seq_to_batch(
+    seq: Sequence[Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_alis: Literal[True] = True,
+    has_uttids: Literal[False] = False,
+) -> Tuple[
+    torch.Tensor,
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    torch.Tensor,
+    Optional[torch.Tensor],
+]:
+    ...
+
+
+@overload
+def spect_seq_to_batch(
+    seq: Sequence[
+        Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], str]
+    ],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_alis: Literal[True] = True,
+    has_uttids: Literal[True] = False,
+) -> Tuple[
+    torch.Tensor,
+    Optional[torch.Tensor],
+    Optional[torch.Tensor],
+    torch.Tensor,
+    Optional[torch.Tensor],
+    Tuple[str, ...],
+]:
+    ...
+
+
+def spect_seq_to_batch(
+    seq: Sequence[Tuple[Union[torch.Tensor, str, None], ...]],
+    batch_first: bool = True,
+    sort: bool = True,
+    has_alis: bool = True,
+    has_uttids: bool = False,
+) -> Tuple[Union[torch.Tensor, Tuple[str, ...], None], ...]:
+    """Convert a sequence of spectral data to a batch
+
+    This function is used to collate sequences of elements from a :class:`SpectDataSet`
+    into batches.
 
     Parameters
     ----------
-    data_dir
-    params
-        Either provides all the parameters necessary to instantiate this loader (a
-        :class:`SpectDataLoaderParams`) or just those related to or just those related
-        to the loader (a :class:`DataLoaderParams`). If the latter, `data_params` must
-        be specified.
-    file_prefix
-    file_suffix
-    warn_on_missing
-    feat_subdir, ali_subdir, ref_subdir
-    batch_first
-    data_params
-        If specified, provides the parameters necessary to instantiate the underlying
-        :class:`SpectDataSet`. Parameters in `data_params` will pre-empt any found in
-        `params`.
-    **kwargs
-        Additional :class:`torch.utils.data.DataLoader` arguments
+    seq
+        A finite-length (``N``) sequence of tuples, each tuple corresponding to an
+        utterance and containing, in order:
 
+        1. `feat_n`, a tensor of size ``(T_n, F)`` representing per-frame spectral
+           features.
+        2. `ali_n` (if `has_alis` is :obj:`True)`, either :obj:`None` or a tensor
+           of shape ``(T_n)`` representing per-frame alignment ids.
+        3. `ref_n`, either :obj:`None` or a tensor of size ``(R_n[, 3])`` representing
+           reference token sequences and optionally their frame shifts. Either all
+           `ref_n` must contain the frame shift info (the ``3`` dimension) or none of
+           them.
+        4. `utt_n` (if `has_uttids` is :obj:`True`), the utterance id.
+
+    batch_first
+        If :obj:`True`, the batch dimension ``N`` comes before the sequence dimension
+        ``T`` or ``R`` in the return values.
+    sort
+        If :obj:`True`, the tuples in `seq` are first sorted in descending order of
+        ``T_n`` before being batched.
+    has_alis
+        Whether `ali_n` is part of the input values and `alis` is part of the output
+        values. Note that `has_alis` should still be :obj:`True` if `ali_n` is present
+        in `seq` but is :obj:`None`.
+    has_uttids
+        Whether `utt_n` is part of the input values and `uttids` is part of the output
+        values.
+
+    Returns
+    -------
+    batch
+        A tuple containing the following elements:
+        
+        1. `feats`, a tensor of shape ``(max_n T_n, N, F)`` containing the right-padded
+           sequences ``[feat_1, feat_2, ..., feat_N]``. Padded with zeros.
+        2. `alis` (if `has_alis` is :obj:`True`), either :obj:`None` or a tensor of
+           shape ``(max_n T_n, N)`` containing the right-padded sequence ``[ali_1,
+           ali_2, ... ali_N]``. Padded with
+           :const:`pydrobert.torch.config.INDEX_PAD_VALUE`.
+        3. `refs`, either :obj:`None` or a tensor of shape ``(max_n R_n, N[, 3])``
+            containing the right-padded sequences ``[ref_1, ref_2, ..., ref_N]``. 
+            Padded with :const:`pydrobert.torch.config.INDEX_PAD_VALUE`.
+        4. `feat_sizes`, a tensor of shape ``(N,)`` containing the sequence ``[T_1, T_2,
+           ..., T_N]``.
+        5. `ref_sizes`, a tensor of shape ``(N,)`` containing the sequence ``[R_1, R_2,
+           ..., R_N]``.
+        6. `uttids` (if `has_uttids` is :obj:`True`), an ``N``-tuple of the utterance
+           ids.
+    """
+    if sort:
+        seq = sorted(seq, key=lambda x: x[0].size(0), reverse=True)
+    seq = list(zip(*seq))
+    if has_alis:
+        if has_uttids:
+            feats, alis, refs, uttids = seq
+        else:
+            feats, alis, refs = seq
+        ali_not_none = all(x is not None for x in alis)
+    elif has_uttids:
+        feats, refs, uttids = seq
+        ali_not_none = False
+    else:
+        feats, refs = seq
+        ali_not_none = False
+    ref_not_none = all(x is not None for x in refs)
+    feat_sizes = torch.tensor([x.size(0) for x in feats])
+    feats = torch.nn.utils.rnn.pad_sequence(
+        feats, padding_value=0, batch_first=batch_first
+    )
+    if ali_not_none:
+        alis = torch.nn.utils.rnn.pad_sequence(
+            alis, padding_value=config.INDEX_PAD_VALUE, batch_first=batch_first
+        )
+    else:
+        alis = None
+    if ref_not_none:
+        ref_sizes = torch.tensor([len(x) for x in refs])
+        refs = torch.nn.utils.rnn.pad_sequence(
+            refs, padding_value=config.INDEX_PAD_VALUE, batch_first=batch_first
+        )
+    else:
+        ref_sizes = refs = None
+    if has_alis:
+        if has_uttids:
+            return feats, alis, refs, feat_sizes, ref_sizes, tuple(uttids)
+        else:
+            return feats, alis, refs, feat_sizes, ref_sizes
+    elif has_uttids:
+        return feats, refs, feat_sizes, ref_sizes, tuple(uttids)
+    else:
+        return feats, refs, feat_sizes, ref_sizes
+
+
+def _get_bucket_batch_sampler_params(dataset, num_buckets, batch_size, dynamic):
+    elem_per_bucket = len(dataset) // num_buckets
+    if elem_per_bucket < batch_size:
+        warnings.warn(
+            f"The number of elements per bucket of the dataset ({elem_per_bucket}) "
+            f"is less than batch_size ({batch_size}). Consider decreasing "
+            "num_length_buckets"
+        )
+    len_idx = sorted((x[0].size(0), i) for (i, x) in enumerate(dataset))
+    len_bounds = [len_idx[(n + 1) * elem_per_bucket - 1][0] for n in range(num_buckets)]
+    len_bounds[-1] = len_idx[-1][0]
+    len_bounds_ = sorted(set(len_bounds))
+    if len_bounds_ != len_bounds:
+        warnings.warn(
+            f"Cannot evenly split dataset into {num_buckets} buckets. Decreasing to "
+            f"{len(len_bounds_)}"
+        )
+        len_bounds = len_bounds_
+    num_buckets = len(len_bounds)
+    idx2bucket = dict((i, sum(int(l > b) for b in len_bounds)) for (l, i) in len_idx)
+    if dynamic:
+        m = len_bounds[-1] * batch_size
+        bucket2size = dict((j, m // len_bounds[j]) for j in range(num_buckets))
+    else:
+        bucket2size = dict((j, batch_size) for j in range(num_buckets))
+    return idx2bucket, bucket2size
+
+
+class SpectDataLoader(torch.utils.data.DataLoader):
+    """DataLoader for a :class:`SpectDataSet`
+
+    Parameters
+    ----------
+    data
+        Either a :class:`SpectDataSet` or a path to the data directory.
+    params
+        Contains at least the parameters specific to the loader. May also contain
+        data set params -- see `data_params`.
+    data_params
+        Data set parameters. Relevant only when `data` is a path. Used to initialize
+        the underlying :class:`SpectDataSet`. If :obj:`None`, `params` is assumed to
+        also contain the data set parameters.
+    shuffle
+        Whether utterances are shuffled at every epoch or presented sequentially.
+    batch_first
+        Whether the batch dimension comes before the sequence dimension in `feats`
+        and `refs`.
+    sort_batch
+        Whether utterances in a batch are sorted by feature length.
+    init_epoch
+        The epoch to resume from. When combined with a fixed `seed`, ensures the same
+        batches are always delivered for a given epoch.
+    seed
+        The initial seed used for shuffling data. If unset, a random one will be
+        generated.
+    on_uneven_distributed
+        What to do if the sampler detects that it's in a distributed environment and the
+        number of processes does not evenly divide the number of samples:
+
+        - :obj:`'raise'` raise a :class:`ValueError`.
+        - :obj:`'uneven'` allow some processes to yield fewer samples.
+        - :obj:`'ignore'` ignore the distributed context. Each process will yield all
+          samples.
+    **kwargs
+        Additional keyword arguments to initialize :class:`SpectDataSet` and
+        :class:`torch.utils.data.DataLoader`. The former is only relevant when
+        `data` is a path.
+    
+    Warnings
+    --------
+    :class:`SpectDataLoader` uses the default :obj:`True` for `suppress_alis` and
+    `tokens_only` while the current, deprecated default used by :class:`SpectDataSet`
+    is :obj:`False`.
+    
     Yields
     ------
-    feats : torch.Tensor
-        A tensor of shape ``(N, T*, F)`` (or ``(T*, N, F)`` if `batch_first` is
-        :obj:`False`), where ``N`` is ``params.batch_size``, ``T*`` is the
-        maximum number of frames in an utterance in the batch, and ``F`` is the
-        number of filters per frame
-    alis : torch.Tensor or None
-        A long tensor of size ``(N, T*)`` (or ``(T*, N)`` if `batch_first` is
-        :obj:`False`) if an ``ali/`` dir exists, otherwise :obj:`None`
-    refs : torch.Tensor or None
-        A long tensor of size ``(N, R*[, 3])`` (or ``(R*, N[, 3])`` if `batch_first` is
-        :obj:`False`), where ``R*`` is the maximum number of reference tokens
-        in the batch. The 3rd dimension will only exist if data were saved with
-        frame start/end indices. If the ``refs/`` directory does not exist,
-        `refs` and `ref_sizes` are :obj:`None`.
-    feat_sizes : torch.Tensor
-        A long tensor of shape ``(N,)`` specifying the lengths of utterances in the
-        batch
-    ref_sizes : torch.Tensor or None
-        A long tensor of shape ``(N,)`` specifying the number reference tokens per
-        utterance in the batch. If the ``refs/`` directory does not exist, `refs` and
-        `ref_sizes` are :obj:`None`.
-    utt_ids : tuple
-        An ``N``-tuple specifying the names of utterances in the batch
-
-    Notes
-    -----
-    Shorter utterances in `feats` are zero-padded to the right, `alis` and `refs` are
-    padded with :const:`pydrobert.torch.config.INDEX_PAD_VALUE`
-
-    Examples
-    --------
-    Computing class likelihoods and writing them to disk
-
-    >>> # see 'SpectDataSet' to initialize data set
-    >>> num_filts, num_ali_classes = 40, 100
-    >>> model = torch.nn.LSTM(num_filts, num_ali_classes)
-    >>> params = SpectDataLoaderParams()
-    >>> loader = SpectEvaluationDataLoader('data', params, batch_first=False)
-    >>> for feats, _, _, feat_sizes, _, utt_ids in loader:
-    >>>     packed_feats = torch.nn.utils.rnn.pack_padded_sequence(
-    ...         feats, feat_sizes)
-    >>>     packed_logits, _ = model(packed_feats)
-    >>>     logits, _ = torch.nn.utils.rnn.pad_packed_sequence(
-    >>>         packed_logits, batch_first=True)
-    >>>     log_probs = torch.nn.functional.log_softmax(logits, -1)
-    >>>     for pdf, feat_size, utt_id in zip(log_probs, feat_sizes, utt_ids):
-    >>>         loader.data_source.write_pdf(utt_id, pdf[:feat_size])
-
-    Transcribing utterances with CTC
-
-    >>> num_filts, num_ref_classes, kern = 40, 2000, 3
-    >>> # we use padding to ensure gradients are unaffected by batch padding
-    >>> model = torch.nn.Sequential(
-    ...     torch.nn.Conv2d(1, 1, kern, padding=(kern - 1) // 2),
-    ...     torch.nn.ReLU(),
-    ...     torch.nn.Linear(num_filts, num_ref_classes),
-    ...     torch.nn.LogSoftmax(-1)).eval()
-    >>> params = SpectDataLoaderParams()
-    >>> loader = SpectEvaluationDataLoader('data', params)
-    >>> for feats, _, _, feat_sizes, _, utt_ids in loader:
-    >>>     feats = feats.unsqueeze(1)  # channels dim
-    >>>     log_prob = model(feats).squeeze(1)
-    >>>     paths = log_prob.argmax(-1)  # best path decoding
-    >>>     for path, feat_size, utt_id in zip(paths, feat_sizes, utt_ids):
-    >>>         path = path[:feat_size]
-    >>>         pathpend = torch.cat([torch.tensor([-1]), path])
-    >>>         path = path.masked_select(
-    ...             (path != 0) & (path - pathpend[:-1] != 0))
-    >>>         hyp = torch.stack(
-    ...             [path] + [torch.full_like(path, INDEX_PAD_VALUE)] * 2)
-    >>>         loader.data_source.write_hyp(utt_id, hyp)
+    batch
+        A tuple ``feats[, alis,] refs, feat_sizes, ref_sizes[, uttids]``, with `alis`
+        included if `suppress_alis` is :obj:`False` and `uttids` included if
+        `suppress_uttids` is :obj:`False`. See :func:`spect_seq_to_batch` for more
+        information on the elements.
     """
 
-    class SEvalDataSet(SpectDataSet):
-        """Append utt_id to each sample's tuple"""
-
-        def __getitem__(
-            self, idx: int
-        ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], str]:
-            feat, ali, ref = super(
-                SpectEvaluationDataLoader.SEvalDataSet, self
-            ).__getitem__(idx)
-            utt_id = self.utt_ids[idx]
-            return feat, ali, ref, utt_id
-
-    def eval_collate_fn(
-        self,
-        seq: Sequence[
-            Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], str]
-        ],
-    ) -> Tuple[
-        torch.Tensor,
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        torch.Tensor,
-        Optional[torch.Tensor],
-        Sequence[str],
-    ]:
-        """Update context_window_seq_to_batch to handle feat_sizes, utt_ids"""
-        feats, alis, refs, utt_ids = list(zip(*seq))
-        # spect_seq_to_batch sorts by descending number of frames, so we
-        # sort utt_ids here
-        utt_ids = tuple(
-            x[1] for x in sorted(zip(feats, utt_ids), key=lambda x: -x[0].shape[0])
-        )
-        feats, alis, refs, feat_sizes, ref_sizes = spect_seq_to_batch(
-            list(zip(feats, alis, refs)), batch_first=self.batch_first
-        )
-        return feats, alis, refs, feat_sizes, ref_sizes, utt_ids
+    dataset: SpectDataSet
+    batch_first: bool
+    batch_sampler: Union[BucketBatchSampler, torch.utils.data.BatchSampler]
+    sort_batch: bool
+    _len: int
 
     def __init__(
         self,
-        data_dir: str,
-        params: DataLoaderParams,
+        data: Union[str, SpectDataSet],
+        params: Union[SpectDataLoaderParams, DynamicLengthDataLoaderParams],
+        data_params: Optional[SpectDataParams] = None,
+        shuffle: bool = True,
+        batch_first: bool = True,
+        sort_batch: bool = False,
+        init_epoch: int = 0,
+        on_uneven_distributed: Literal["raise", "unordered", "ignore"] = "raise",
+        seed: Optional[int] = None,
+        **kwargs,
+    ):
+        for bad_kwarg in {
+            "batch_sampler",
+            "batch_size",
+            "collate_fn",
+            "drop_last",
+            "sampler",
+        }:
+            if bad_kwarg in kwargs:
+                raise TypeError(
+                    f"keyword argument '{bad_kwarg}' invalid for {type(self)} types"
+                )
+        ds_kwargs, dl_kwargs = dict(), dict()
+        for key, val in kwargs.items():
+            if key in {
+                "file_prefix",
+                "file_suffix",
+                "warn_on_missing",
+                "subset_ids",
+                "sos",
+                "eos",
+                "feat_subdir",
+                "ali_subdir",
+                "ref_subdir",
+                "feat_mean",
+                "feat_std",
+                "suppress_alis",
+                "suppress_uttids",
+                "tokens_only",
+            }:
+                ds_kwargs[key] = val
+            else:
+                dl_kwargs[key] = val
+        if not isinstance(
+            params, (DynamicLengthDataLoaderParams, SpectDataLoaderParams)
+        ) and isinstance(params, DataLoaderParams):
+            warnings.warn(
+                "Passing a DataLoaderParams instance as params is deprecated. "
+                "Switch to DynamicLengthDataLoaderParams.",
+                DeprecationWarning,
+            )
+            num_length_buckets = 1
+        else:
+            num_length_buckets = params.num_length_buckets
+        if data_params is None:
+            data_params = params
+        elif hasattr(params, "subset_ids"):
+            subset_ids = params.subset_ids
+            if subset_ids:
+                warnings.warn(
+                    "setting subset_ids in data loader parameters is deprecated. "
+                    "Use data_params.subset_ids instead.",
+                    DeprecationWarning,
+                )
+                data_params.subset_ids = subset_ids
+        self.batch_first, self.sort_batch = batch_first, sort_batch
+        if isinstance(data, SpectDataSet):
+            dataset = data
+        else:
+            suppress_alis = ds_kwargs.pop("suppress_alis", True)
+            tokens_only = ds_kwargs.pop("tokens_only", True)
+            dataset = SpectDataSet(
+                data,
+                params=data_params,
+                suppress_alis=suppress_alis,
+                tokens_only=tokens_only,
+                **ds_kwargs,
+            )
+        utt_sampler_kwargs = {"init_epoch": init_epoch}
+        if params.drop_last:
+            utt_sampler_kwargs["on_uneven_distributed"] = "drop"
+        else:
+            utt_sampler_kwargs["on_uneven_distributed"] = on_uneven_distributed
+        if shuffle:
+            utt_sampler = EpochRandomSampler(
+                dataset, base_seed=seed, **utt_sampler_kwargs
+            )
+        else:
+            utt_sampler = EpochSequentialSampler(dataset, **utt_sampler_kwargs)
+        if num_length_buckets > 1:
+            idx2bucket, bucket2size = _get_bucket_batch_sampler_params(
+                dataset,
+                num_length_buckets,
+                params.batch_size,
+                params.size_batch_by_length,
+            )
+            batch_sampler = BucketBatchSampler(
+                utt_sampler, idx2bucket, bucket2size, params.drop_last,
+            )
+        else:
+            batch_sampler = torch.utils.data.BatchSampler(
+                utt_sampler, params.batch_size, drop_last=params.drop_last
+            )
+        self._len = None
+        super().__init__(
+            dataset,
+            batch_sampler=batch_sampler,
+            collate_fn=self.collate_fn,
+            **dl_kwargs,
+        )
+
+    def collate_fn(self, seq):
+        return spect_seq_to_batch(
+            seq,
+            self.batch_first,
+            self.sort_batch,
+            not self.dataset.suppress_alis,
+            not self.dataset.suppress_uttids,
+        )
+
+    def __len__(self) -> int:
+        if self._len is None:
+            self._len = _get_batch_sampler_len(self.batch_sampler)
+        return self._len
+
+    @property
+    def epoch(self) -> int:
+        """int : the current epoch"""
+        return self.batch_sampler.sampler.epoch
+
+    @epoch.setter
+    def epoch(self, val: int):
+        self.batch_sampler.sampler.epoch = val
+
+
+class SpectTrainingDataLoader(SpectDataLoader):
+    """Serves batches of spectral data over random orders of utterances
+
+    Deprecated. Use :class:`SpectDataLoader`.
+    """
+
+    def __init__(
+        self,
+        data: Union[str, SpectDataSet],
+        params: Union[SpectDataLoaderParams, DynamicLengthDataLoaderParams],
+        file_prefix: str = "",
+        file_suffix: str = ".pt",
+        warn_on_missing: bool = True,
+        feat_subdir: str = "feat",
+        ali_subdir: str = "ali",
+        ref_subdir: str = "ref",
+        init_epoch: int = 0,
+        batch_first: bool = True,
+        data_params: Optional[SpectDataParams] = None,
+        seed: Optional[int] = None,
+        **kwargs,
+    ):
+        warnings.warn(
+            "SpectTrainingDataLoader is deprecated. Use SpectDataLoader instead",
+            DeprecationWarning,
+        )
+        shuffle = kwargs.pop("shuffle", True)
+        suppress_alis = kwargs.pop("suppress_alis", False)
+        suppress_uttids = kwargs.pop("suppress_uttids", True)
+        tokens_only = kwargs.pop("tokens_only", False)
+        sort_batch = kwargs.pop("sort_batch", True)
+        super().__init__(
+            data,
+            params,
+            data_params,
+            shuffle,
+            batch_first,
+            sort_batch,
+            init_epoch,
+            seed,
+            file_prefix=file_prefix,
+            file_suffix=file_suffix,
+            warn_on_missing=warn_on_missing,
+            feat_subdir=feat_subdir,
+            ali_subdir=ali_subdir,
+            ref_subdir=ref_subdir,
+            suppress_alis=suppress_alis,
+            suppress_uttids=suppress_uttids,
+            tokens_only=tokens_only,
+            **kwargs,
+        )
+
+
+class SpectEvaluationDataLoader(SpectDataLoader):
+    """Serves batches of spectral data over random orders of utterances
+
+    Deprecated. Use :class:`SpectDataLoader`.
+    """
+
+    def __init__(
+        self,
+        data: Union[str, SpectDataSet],
+        params: Union[SpectDataLoaderParams, DynamicLengthDataLoaderParams],
         file_prefix: str = "",
         file_suffix: str = ".pt",
         warn_on_missing: bool = True,
@@ -571,52 +1165,48 @@ class SpectEvaluationDataLoader(torch.utils.data.DataLoader):
         ref_subdir: str = "ref",
         batch_first: bool = True,
         data_params: Optional[SpectDataParams] = None,
-        **kwargs
+        **kwargs,
     ):
-        for bad_kwarg in (
-            "batch_size",
-            "sampler",
-            "batch_sampler",
-            "shuffle",
-            "collate_fn",
-        ):
-            if bad_kwarg in kwargs:
-                raise TypeError(
-                    'keyword argument "{}" invalid for {} types'.format(
-                        bad_kwarg, type(self)
-                    )
-                )
-        self.data_dir = data_dir
-        self.params = params
-        if data_params is None:
-            self.data_params = params
-        else:
-            self.data_params = data_params
-        self.batch_first = batch_first
-        self.data_source = self.SEvalDataSet(
-            data_dir,
+        warnings.warn(
+            "SpectEvaluationDataLoader is deprecated. Use SpectDataLoader instead",
+            DeprecationWarning,
+        )
+        shuffle = kwargs.pop("shuffle", False)
+        suppress_alis = kwargs.pop("suppress_alis", False)
+        suppress_uttids = kwargs.pop("suppress_uttids", False)
+        tokens_only = kwargs.pop("tokens_only", False)
+        init_epoch = kwargs.pop("init_epoch", 0)
+        seed = kwargs.pop("seed", None)
+        sort_batch = kwargs.pop("sort_batch", True)
+        super().__init__(
+            data,
+            params,
+            data_params,
+            shuffle,
+            batch_first,
+            sort_batch,
+            init_epoch,
+            seed,
             file_prefix=file_prefix,
             file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
-            subset_ids=set(params.subset_ids) if params.subset_ids else None,
             feat_subdir=feat_subdir,
             ali_subdir=ali_subdir,
             ref_subdir=ref_subdir,
-            params=self.data_params,
-        )
-        super(SpectEvaluationDataLoader, self).__init__(
-            self.data_source,
-            batch_size=params.batch_size,
-            shuffle=False,
-            collate_fn=self.eval_collate_fn,
-            **kwargs
+            suppress_alis=suppress_alis,
+            suppress_uttids=suppress_uttids,
+            tokens_only=tokens_only,
+            **kwargs,
         )
 
 
 def context_window_seq_to_batch(
-    seq: Sequence[Tuple[torch.Tensor, Optional[torch.Tensor]]]
-) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    seq: Sequence[Tuple[Union[torch.Tensor, str, None], ...]], has_uttids: bool = False
+) -> Tuple[Union[torch.Tensor, Sequence[str], None], ...]:
     r"""Convert a sequence of context window elements to a batch
+
+    This function is used to collate sequences of elements from a
+    :class:`ContextWindowDataSet` into batches.
 
     Assume `seq` is a finite length sequence of pairs of ``window, ali``, where
     ``window`` is of size ``(T, C, F)``, where ``T`` is some number of windows (which
@@ -631,36 +1221,53 @@ def context_window_seq_to_batch(
     Parameters
     ----------
     seq
+        A finite-length (``N``) sequence of tuples, each tuple corresponding to an
+        utterance and containing, in order:
+
+        1. `window_n`, a tensor of size ``(T_n, C, F)`` representing windowed spectral
+           features.
+        2. `ali_n`, either :obj:`None` or a tensor of shape ``(T_n,)`` representing
+           per-window alignment ids.
+        3. `uttid_n` (if :obj:`has_refs` is :obj:`True`), the utterance id.
+    
+    has_uttids
+        Whether `utt_n` is part of the input values and both `window_sizes` and `uttids`
+        are part of the output values.
 
     Returns
     -------
-    windows : torch.Tensor
-    alis : torch.Tensor or None
+    batch
+        A tuple containing the following elements:
+
+        1. `windows`, a tensor of shape ``(sum_n T_n, C, F)`` containing the
+           concatenated set of windows ``[window_1, window_2, ..., window_N]``
+        2. `alis`, either :obj:`None` or a tensor of shape ``(sum_n T_n,)`` containing
+           the concatenated alignment ids ``[ali_1, ali_2, ..., ali_N]``.
+        3. `window_sizes` (if `has_uttids` is :obj:`True`), a tensor of shape ``(N,)``
+           containing the sequence ``[T_1, T_2, ..., T_N]``.
+        4. `uttids` (if `has_uttids` is :obj:`True`), an ``N``-tuple of utterance ids.
     """
-    windows = []
-    alis = []
-    for window, ali in seq:
-        windows.append(window)
-        if ali is None:
-            # assume every remaining ali will be none
-            alis = None
-        else:
-            alis.append(ali)
+    seq = list(zip(*seq))
+    if has_uttids:
+        windows, alis, uttids = seq
+        window_sizes = torch.tensor([w.size(0) for w in windows])
+    else:
+        windows, alis = seq
     windows = torch.cat(windows)
-    if alis is not None:
+    if all(a is not None for a in alis):
         alis = torch.cat(alis)
-    return windows, alis
+    else:
+        alis = None
+    if has_uttids:
+        return windows, alis, window_sizes, tuple(uttids)
+    else:
+        return windows, alis
 
 
 class ContextWindowDataLoaderParams(ContextWindowDataParams, DataLoaderParams):
-    """Parameters for a ContextWindow*DataLoader
+    """Parameters for a :class:`ContextWindowDataLoader`
 
     This implements the :class:`pydrobert.param.optuna.TunableParameterized` interface.
-
-    See Also
-    --------
-    pydrobert.torch.data.ContextWindowTrainingDataLoader
-    pydrobert.torch.data.ContextWindowEvaluationDataLoader
     """
 
     @classmethod
@@ -679,90 +1286,86 @@ class ContextWindowDataLoaderParams(ContextWindowDataParams, DataLoaderParams):
         )
         return params
 
+    @classmethod
+    def get_tunable(cls) -> Set[str]:
+        return ContextWindowDataParams.get_tunable() | DataLoaderParams.get_tunable()
 
-class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
-    """Serve batches of context windows over a random order of utterances
+    @classmethod
+    def suggest_params(
+        cls, trial, base=None, only: Container[str] = None, prefix: str = ""
+    ):
+        params = cls() if base is None else base
+        ContextWindowDataParams.suggest_params(trial, params, only, prefix)
+        DataLoaderParams.suggest_params(trial, params, only, prefix)
+        return params
+
+
+class ContextWindowDataLoader(torch.utils.data.DataLoader):
+    """DataLoader for :class:`ContextWindowDataSet`
 
     Parameters
     ----------
-    data_dir
+    data
+        Either a :class:`ContextWindowDataSet` or a path to the data directory.
     params
-        Either provides all the parameters necessary to instantiate this loader (a
-        :class:`ContextWindowDataLoaderParams`) or just those related to the loader
-        (a :class:`DataLoaderParams`). If the latter, `data_params` must be specified.
-    file_prefix
-    file_suffix
-    warn_on_missing
-    feat_subdir, ali_subdir
-    init_epoch
-        Where training should resume from
+        Contains at least the parameters specific to the loader. May also contain
+        data set params --- see `data_params`.
     data_params
-        If specified, provides the parameters necessary to instantiate the underlying
-        :class:`ContextWindowDataSet`. Parameters in `data_params` will pre-empt any
-        found in `params`.
+        Data set parameters. Relevant only when `data` is a path. Used to initialize
+        the underlying :class:`ContextWindowDataset`. If :obj:`None`, `params` is
+        assumed to also contain the data set parameters.
+    shuffle
+        Whether utterances are shuffled at every epoch or presented sequentially.
+    sort_batch
+        Whether utterances in a batch are sorted by feature length.
+    init_epoch
+        The epoch to resume from. When combined with a fixed `seed`, ensures the same
+        batches are always delivered for a given epoch.
     seed
-        The seed used to shuffle data. If :obj:`None`, `params` is checked for
-        a `seed` parameter or, if none is found, one will be generated randomly
+        The initial seed used for shuffling data. If unset, a random one will be
+        generated.
     **kwargs
-        Additional :class:`torch.utils.data.DataLoader` arguments
-
-    Attributes
-    ----------
-    epoch : int
-        The current epoch.
-
+        Additional keyword arguments to initialize :class:`ContextWindowDataSet` and
+        :class:`torch.utils.data.DataLoader`. The former is only relevant when `data` is
+        a path.
+    
     Yields
     ------
-    windows : torch.Tensor
-        A tensor of size ``(N, C, F)``, where ``N`` is the total number of context
-        windows over all utterances in the batch, ``C`` is the context window
-        size, and ``F`` is the number of filters per frame
-    alis : torch.Tensor or None
-        A long tensor of size ``(N,)`` (or :obj:`None` if the ``ali`` dir was not
-        specified)
-
-    Examples
+    batch
+        A tuple ``windows, alis[, window_sizes, uttids]``, with `window_sizes` and
+        `uttids` included if `suppress_uttids` is :obj:`False`. See
+        :func:`context_window_seq_to_batch` for more information on the elements.
+    
+    Warnings
     --------
-    Training on alignments for one epoch
-
-    >>> # see 'SpectDataSet' to initialize data set
-    >>> num_filts, num_ali_classes, left, right = 40, 100, 4, 4
-    >>> window_width = left + right + 1
-    >>> model = torch.torch.nn.Linear(
-    ...     num_filts * window_width, num_ali_classes)
-    >>> optim = torch.optim.Adam(model.parameters())
-    >>> loss = torch.nn.CrossEntropyLoss()
-    >>> params = ContextWindowDataLoaderParams(
-    ...     context_left=left, context_right=right)
-    >>> loader = ContextWindowTrainingDataLoader('data', params)
-    >>> for windows, alis in loader:
-    >>>     optim.zero_grad()
-    >>>     windows = windows.view(-1, num_filts * window_width)  # flatten win
-    >>>     logits = model(windows)
-    >>>     loss(logits, alis).backward()
-    >>>     optim.step()
+    This class does not currently support :mod:`torch.distributed`. Each process will
+    return the same batches.
     """
+
+    dataset: ContextWindowDataSet
+    batch_sampler: torch.utils.data.BatchSampler
+    batch_first: bool
+
+    def collate_fn(self, seq):
+        return context_window_seq_to_batch(seq, not self.dataset.suppress_uttids)
 
     def __init__(
         self,
-        data_dir: str,
-        params: DataLoaderParams,
-        init_epoch: int = 0,
-        file_prefix: str = "",
-        file_suffix: str = ".pt",
-        warn_on_missing: bool = True,
-        feat_subdir: str = "feat",
-        ali_subdir: str = "ali",
+        data: Union[str, ContextWindowDataSet],
+        params: Union[ContextWindowDataLoaderParams, DataLoaderParams],
         data_params: Optional[ContextWindowDataParams] = None,
+        shuffle: bool = True,
+        init_epoch: int = 0,
         seed: Optional[int] = None,
-        **kwargs
+        on_uneven_distributed: Literal["raise", "unordered", "ignore"] = "raise",
+        **kwargs,
     ):
         for bad_kwarg in (
             "batch_size",
             "sampler",
             "batch_sampler",
-            "shuffle",
             "collate_fn",
+            "drop_last",
         ):
             if bad_kwarg in kwargs:
                 raise TypeError(
@@ -770,43 +1373,66 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
                         bad_kwarg, type(self)
                     )
                 )
-        self.data_dir = data_dir
-        self.params = params
+        ds_kwargs, dl_kwargs = dict(), dict()
+        for key, val in kwargs.items():
+            if key in {
+                "left",
+                "right",
+                "file_prefix",
+                "file_suffix",
+                "warn_on_missing",
+                "subset_ids",
+                "feat_subdir",
+                "ali_subdir",
+                "reverse",
+                "feat_mean",
+                "feat_std",
+                "suppress_uttids",
+            }:
+                ds_kwargs[key] = val
+            else:
+                dl_kwargs[key] = val
         if seed is None and hasattr(params, "seed"):
             seed = params.seed
         if data_params is None:
-            self.data_params = params
+            data_params = params
         else:
-            self.data_params = data_params
-        self.data_source = ContextWindowDataSet(
-            data_dir,
-            file_prefix=file_prefix,
-            file_suffix=file_suffix,
-            warn_on_missing=warn_on_missing,
-            subset_ids=set(params.subset_ids) if params.subset_ids else None,
-            feat_subdir=feat_subdir,
-            ali_subdir=ali_subdir,
-            params=self.data_params,
-        )
-        if not self.data_source.has_ali:
-            raise ValueError(
-                "'{}' must have alignment info for training".format(data_dir)
-            )
-        epoch_sampler = EpochRandomSampler(
-            self.data_source, init_epoch=init_epoch, base_seed=seed
-        )
+            if hasattr(params, "subset_ids"):
+                subset_ids = params.subset_ids
+                if subset_ids:
+                    warnings.warn(
+                        "setting subset_ids in data loader parameters is deprecated. "
+                        "Use data_params.subset_ids instead.",
+                        DeprecationWarning,
+                        2,
+                    )
+                    data_params.subset_ids = subset_ids
+        if isinstance(data, ContextWindowDataSet):
+            dataset = data
+            data_dir = data.data_dir
+        else:
+            data_dir = data
+            dataset = ContextWindowDataSet(data_dir, params=data_params, **ds_kwargs)
+        if shuffle:
+            utt_sampler = EpochRandomSampler(dataset, init_epoch, seed, "ignore")
+        else:
+            utt_sampler = EpochSequentialSampler(dataset, init_epoch, "ignore")
         batch_sampler = torch.utils.data.BatchSampler(
-            epoch_sampler, params.batch_size, drop_last=params.drop_last
+            utt_sampler, params.batch_size, drop_last=params.drop_last
         )
-        super(ContextWindowTrainingDataLoader, self).__init__(
-            self.data_source,
+        super().__init__(
+            dataset,
             batch_sampler=batch_sampler,
-            collate_fn=context_window_seq_to_batch,
-            **kwargs
+            collate_fn=self.collate_fn,
+            **dl_kwargs,
         )
+
+    def __len__(self) -> int:
+        return len(self.batch_sampler)
 
     @property
     def epoch(self) -> int:
+        """int : the current epoch"""
         return self.batch_sampler.sampler.epoch
 
     @epoch.setter
@@ -814,139 +1440,90 @@ class ContextWindowTrainingDataLoader(torch.utils.data.DataLoader):
         self.batch_sampler.sampler.epoch = val
 
 
-class ContextWindowEvaluationDataLoader(torch.utils.data.DataLoader):
-    """Serves batches of context windows over sequential utterances
+class ContextWindowTrainingDataLoader(ContextWindowDataLoader):
+    """Serve batches of context windows over a random order of utterances
 
-    Parameters
-    ----------
-    data_dir
-    params
-        Either provides all the parameters necessary to instantiate this loader (a
-        :class:`ContextWindowDataLoaderParams`) or just those related to the loader
-        (a :class:`DataLoaderParams`). If the latter, `data_params` must be specified.
-    file_prefix
-    file_suffix
-    warn_on_missing
-    feat_subdir, ali_subdir
-    data_params
-        If specified, provides the parameters necessary to instantiate the underlying
-        :class:`ContextWindowDataSet`. Parameters in `data_params` will pre-empt any
-        found in `params`.
-    **kwargs
-        Additional :class:`torch.utils.data.DataLoader` arguments
-
-    Yields
-    ------
-    windows : torch.Tensor
-        A tensor of size ``(N, C, F)``, where ``N`` is the number of context
-        windows, ``C`` is the context window size, and ``F`` is the number of filters
-        per frame
-    alis : torch.Tensor or None
-        A long tensor of size ``(N,)`` (or :obj:`None` if the ``ali`` dir was not
-        specified)
-    win_sizes : torch.Tensor
-        A long tensor of shape ``(params.batch_size,)`` specifying the number of context
-        windows per utterance in the batch.
-        ``windows[sum(win_sizes[:i]):sum(win_sizes[:i+1])]`` are the context windows for
-        the ``i``-th utterance in the batch (``sum(win_sizes) == N``)
-    utt_ids : tuple
-        `utt_ids` is a tuple of size ``params.batch_size`` naming the
-        utterances in the batch
-
-    Examples
-    --------
-    Computing class likelihoods and writing them to disk
-
-    >>> # see 'SpectDataSet' to initialize data set
-    >>> num_filts, num_ali_classes, left, right = 40, 100, 4, 4
-    >>> window_width = left + right + 1
-    >>> model = torch.torch.nn.Linear(
-    ...     num_filts * window_width, num_ali_classes).eval()
-    >>> params = ContextWindowDataLoaderParams(
-    ...     context_left=left, context_right=right)
-    >>> loader = ContextWindowEvaluationDataLoader('data', params)
-    >>> for windows, _, win_sizes, utt_ids in loader:
-    >>>     windows = windows.view(-1, num_filts * window_width)  # flatten win
-    >>>     logits = model(windows)
-    >>>     log_probs = torch.nn.functional.log_softmax(logits, -1)
-    >>>     for win_size, utt_id in zip(win_sizes, utt_ids):
-    >>>         assert log_probs[:win_size].shape[0] == win_size
-    >>>         loader.data_source.write_pdf(utt_id, log_probs[:win_size])
-    >>>         log_probs = log_probs[win_size:]
+    Deprecated. Use :class:`ContextWindowDataLoader`.
     """
-
-    class CWEvalDataSet(ContextWindowDataSet):
-        """Append feat_size and utt_id to each sample's tuple"""
-
-        def __getitem__(
-            self, idx: int
-        ) -> Tuple[torch.Tensor, Optional[torch.Tensor], int, str]:
-            window, ali = super(
-                ContextWindowEvaluationDataLoader.CWEvalDataSet, self
-            ).__getitem__(idx)
-            win_size = window.size()[0]
-            utt_id = self.utt_ids[idx]
-            return window, ali, win_size, utt_id
-
-    @staticmethod
-    def eval_collate_fn(
-        seq: Tuple[
-            Sequence[torch.Tensor],
-            Sequence[Optional[torch.Tensor]],
-            Sequence[int],
-            Sequence[str],
-        ]
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor, Sequence[str]]:
-        """Update context_window_seq_to_batch to handle feat_sizes, utt_ids"""
-        windows, alis, feat_sizes, utt_ids = list(zip(*seq))
-        windows, alis = context_window_seq_to_batch(list(zip(windows, alis)))
-        return (windows, alis, torch.tensor(feat_sizes), tuple(utt_ids))
 
     def __init__(
         self,
-        data_dir: str,
-        params: DataLoaderParams,
+        data: Union[str, ContextWindowDataSet],
+        params: Union[ContextWindowDataLoaderParams, DataLoaderParams],
+        file_prefix: str = "",
+        file_suffix: str = ".pt",
+        warn_on_missing: bool = True,
+        feat_subdir: str = "feat",
+        ali_subdir: str = "ali",
+        init_epoch: int = 0,
+        data_params: Optional[ContextWindowDataParams] = None,
+        seed: Optional[int] = None,
+        **kwargs,
+    ):
+        warnings.warn(
+            "ContextWindowTrainingDataLoader is deprecated. Use "
+            "ContextWindowDataLoader instead",
+            DeprecationWarning,
+        )
+        shuffle = kwargs.pop("shuffle", True)
+        suppress_uttids = kwargs.pop("suppress_uttids", True)
+        super().__init__(
+            data,
+            params,
+            data_params,
+            shuffle,
+            init_epoch,
+            seed,
+            file_prefix=file_prefix,
+            file_suffix=file_suffix,
+            warn_on_missing=warn_on_missing,
+            feat_subdir=feat_subdir,
+            ali_subdir=ali_subdir,
+            suppress_uttids=suppress_uttids,
+            **kwargs,
+        )
+
+
+class ContextWindowEvaluationDataLoader(ContextWindowDataLoader):
+    """Serves batches of context windows over sequential utterances
+
+    Deprecated. Use :class:`ContextWindowDataLoader`.
+    """
+
+    def __init__(
+        self,
+        data: Union[str, ContextWindowDataSet],
+        params: Union[ContextWindowDataLoaderParams, DataLoaderParams],
         file_prefix: str = "",
         file_suffix: str = ".pt",
         warn_on_missing: bool = True,
         feat_subdir: str = "feat",
         ali_subdir: str = "ali",
         data_params: Optional[ContextWindowDataParams] = None,
-        **kwargs
+        **kwargs,
     ):
-        for bad_kwarg in (
-            "batch_size",
-            "sampler",
-            "batch_sampler",
-            "shuffle",
-            "collate_fn",
-        ):
-            if bad_kwarg in kwargs:
-                raise TypeError(
-                    'keyword argument "{}" invalid for {} types'.format(
-                        bad_kwarg, type(self)
-                    )
-                )
-        self.data_dir = data_dir
-        self.params = params
-        if data_params is None:
-            self.data_params = params
-        else:
-            self.data_params = data_params
-        self.data_source = self.CWEvalDataSet(
-            data_dir,
+        warnings.warn(
+            "ContextWindowEvaluationDataLoader is deprecated. Use "
+            "ContextWindowDataLoader instead",
+            DeprecationWarning,
+        )
+        shuffle = kwargs.pop("shuffle", False)
+        suppress_uttids = kwargs.pop("suppress_uttids", False)
+        init_epoch = kwargs.pop("init_epoch", 0)
+        seed = kwargs.pop("seed", None)
+        super().__init__(
+            data,
+            params,
+            data_params,
+            shuffle,
+            init_epoch,
+            seed,
             file_prefix=file_prefix,
             file_suffix=file_suffix,
             warn_on_missing=warn_on_missing,
-            subset_ids=set(params.subset_ids) if params.subset_ids else None,
             feat_subdir=feat_subdir,
             ali_subdir=ali_subdir,
-            params=self.data_params,
+            suppress_uttids=suppress_uttids,
+            **kwargs,
         )
-        super(ContextWindowEvaluationDataLoader, self).__init__(
-            self.data_source,
-            batch_size=params.batch_size,
-            shuffle=False,
-            collate_fn=self.eval_collate_fn,
-            **kwargs
-        )
+

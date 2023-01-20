@@ -12,18 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from multiprocessing.sharedctypes import Value
 import os
 import warnings
 
-from typing import Optional, Set, Tuple, Union
+from typing import Container, Optional, Set, Tuple, Union
 
 import torch
 import param
 
+import pydrobert.torch.config as config
 
-class SpectDataParams(param.Parameterized):
-    """Parameters for SpectDataSet"""
+from ._feats import MeanVarianceNormalization, FeatureDeltas
 
+
+class LangDataParams(param.Parameterized):
+    """Parameters for LangDataSet"""
+
+    subset_ids = param.List(
+        [],
+        class_=str,
+        bounds=None,
+        doc="A list of utterance ids. If non-empty, the data set will be "
+        "restricted to these utterances",
+    )
     sos = param.Integer(
         None,
         doc="A special symbol used to indicate the start of a sequence "
@@ -38,52 +50,225 @@ class SpectDataParams(param.Parameterized):
     )
 
 
-class SpectDataSet(torch.utils.data.Dataset):
-    """Accesses spectrographic filter data stored in a data directory
+def _utts_in_dir(dir_: str, file_prefix: str, file_suffix: str) -> Set[str]:
+    neg_fsl = -len(file_suffix)
+    if not neg_fsl:
+        neg_fsl = None
+    fpl = len(file_prefix)
+    return set(
+        x[fpl:neg_fsl]
+        for x in os.listdir(dir_)
+        if x.startswith(file_prefix) and x.endswith(file_suffix)
+    )
 
-    :class:`SpectDataSet` assumes that `data_dir` is structured as::
 
-        data_dir/
-            feat/
-                <file_prefix><utt_ids[0]><file_suffix>
-                <file_prefix><utt_ids[1]><file_suffix>
-                ...
-            [
-            ali/
-                <file_prefix><utt_ids[0]><file_suffix>
-                <file_prefix><utt_ids[1]><file_suffix>
-                ...
-            ]
-            [
-            ref/
-                <file_prefix><utt_ids[0]><file_suffix>
-                <file_prefix><utt_ids[1]><file_suffix>
-                ...
-            ]
+def _load_ref(
+    pth: str, tokens_only: bool, sos: Optional[int], eos: Optional[int]
+) -> torch.Tensor:
+    ref = torch.load(pth)
+    D = ref.ndim
+    if tokens_only and D == 2:
+        ref, D = ref[..., 0], 1
+    if sos is not None:
+        if D == 2:
+            sos_sym = torch.full_like(ref[0], -1)
+            sos_sym[0] = sos
+            ref = torch.cat([sos_sym.unsqueeze(0), ref], 0)
+        else:
+            ref = torch.cat([torch.full_like(ref[:1], sos), ref], 0)
+    if eos is not None:
+        if D == 2:
+            eos_sym = torch.full_like(ref[0], -1)
+            eos_sym[0] = eos
+            ref = torch.cat([ref, eos_sym.unsqueeze(0)], 0)
+        else:
+            ref = torch.cat([ref, torch.full_like(ref[:1], eos)], 0)
+    return ref
 
-    The ``feat`` dir stores filter bank data in the form of a :class:`torch.Tensor` of
-    size ``(T, F)``, where ``T`` is the time dimension and ``F`` is the
-    filter/log-frequency dimension. ``feat`` is the only required directory.
 
-    ``ali`` stores long tensor of size ``(T,)``, indicating the pdf-id of the most
-    likely target. ``ali`` is suitable for discriminative training of DNNs in hybrid
-    DNN-HMM recognition, or any frame-wise loss. ``ali/`` is optional.
+def _write_hyp(hyp: torch.Tensor, pth: str, sos: Optional[int], eos: Optional[int]):
+    hyp = hyp.cpu().long()
+    if sos is not None:
+        if hyp.dim() == 1:
+            sos_idxs = torch.nonzero(hyp.eq(sos), as_tuple=False)
+        else:
+            sos_idxs = torch.nonzero(hyp[:, 0].eq(sos), as_tuple=False)
+        if sos_idxs.numel():
+            sos_idx = sos_idxs[-1].item()
+            hyp = hyp[sos_idx + 1 :]
+    if eos is not None:
+        if hyp.dim() == 1:
+            eos_idxs = torch.nonzero(hyp.eq(eos), as_tuple=False)
+        else:
+            eos_idxs = torch.nonzero(hyp[:, 0].eq(eos), as_tuple=False)
+        if eos_idxs.numel():
+            eos_idx = eos_idxs[0].item()
+            hyp = hyp[:eos_idx]
+    torch.save(hyp, pth)
 
-    ``ref`` stores long tensor of size indicating reference transcriptions. The tensors
-    can have either shape ``(R, 3)`` or ``(R,)``, depending on whether frame start/end
-    times were included along with the tokens. Letting ``r`` be such a tensor of size
-    ``(R, 3)``, ``r[..., 0]`` is the sequence of token ids for the utterance and
-    ``r[..., 1:]`` are the 0-indexed frames they start (inclusive) and end (exclusive)
-    at, respectively. Negative values can be used when the start and end frames are
-    unknown. If ``r`` is of shape ``(R,)``, ``r`` is only the sequence of token ids.
-    Only one version of ``r`` (with or without frame start/end times) should be used
-    across the entire folder. ``ref/`` is suitable for end-to-end training. ``ref/`` is
-    optional.
+
+class LangDataSet(torch.utils.data.Dataset):
+    """Accesses token sequences stored in a data directory
+    
+    A stripped-down version of :class:`SpectDataSet` containing only the reference
+    token sequences `ref`. Suitable for language model training.
 
     Parameters
     ----------
     data_dir
-        A path to feature directory
+        A path to the data directory. If using the ``ref/`` directory of a
+        :class:`SpectDataSet`, `data_dir` should include ``ref/``.
+    file_prefix
+        The prefix that indicates that the file counts toward the data set
+    file_suffix
+        The suffix that indicates that the file counts toward the data set
+    suppress_uttids : bool
+        If :obj:`True`, `uttid` will not be yielded.
+    tokens_only : bool
+        If :obj:`True`, `ref` will drop the segment information if present, always
+        yielding tuples of shape ``(R,)``.
+    
+    Yields
+    ------
+    sample : Union[torch.Tensor, Tuple[torch.Tensor, str]]
+        For a given utterance, either just the sequence of tokens `ref` (when
+        `suppress_uttids` is :obj:`True`) or the tuple ``ref, uttid``, where `uttid`
+        is a string representing the utterance id.
+    
+    Notes
+    -----
+    While similar to a :class:`SpectDataSet`, neither this nor that class inherits from
+    the other. In a :class:`SpectDataSet`, `data_dir` points to a root directory under
+    which a feature subdirectory definitely exists and a reference sequence subdirectory
+    may exist. Conversely, the `data_dir` of a :class:`LangDataSet` points directly
+    to the reference sequence subdirectory, which definitely exists.
+    """
+
+    data_dir: str
+    file_prefix: str
+    file_suffix: str
+    params: LangDataParams
+    suppress_uttids: bool
+    tokens_only: bool
+    utt_ids: Tuple[str, ...]
+
+    def __init__(
+        self,
+        data_dir: str,
+        params: Optional[LangDataParams] = None,
+        file_prefix: str = "",
+        file_suffix: str = ".pt",
+        suppress_uttids: bool = True,
+        tokens_only: bool = True,
+    ):
+        if not os.path.isdir(data_dir):
+            raise ValueError(f"'{data_dir}' is not a directory")
+        super().__init__()
+        if params is None:
+            params = LangDataParams()
+        self.data_dir = data_dir
+        self.params = params
+        self.file_prefix, self.file_suffix = file_prefix, file_suffix
+        self.suppress_uttids = suppress_uttids
+        self.tokens_only = tokens_only
+        self.utt_ids = tuple(sorted(self.find_utt_ids(set(self.params.subset_ids))))
+
+    def __len__(self) -> int:
+        return len(self.utt_ids)
+
+    def __getitem__(self, idx: int):
+        return self.get_utterance_tuple(idx)
+
+    def get_utterance_tuple(
+        self, idx: int
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, str]]:
+        utt_id = self.utt_ids[idx]
+        ref = _load_ref(
+            os.path.join(self.data_dir, self.file_prefix + utt_id + self.file_suffix),
+            self.tokens_only,
+            self.params.sos,
+            self.params.eos,
+        )
+        if self.suppress_uttids:
+            return ref
+        else:
+            return ref, utt_id
+
+    def find_utt_ids(self, subset_ids: Set[str] = set()) -> Set[str]:
+        """Returns a set of all utterance ids from data_dir"""
+        utt_ids = _utts_in_dir(self.data_dir, self.file_prefix, self.file_suffix)
+        if subset_ids:
+            utt_ids &= subset_ids
+        return utt_ids
+
+    def write_hyp(self, utt: Union[str, int], hyp: torch.Tensor, hyp_dir: str) -> None:
+        """Write hypothesis tensor to a directory
+        
+        Parameters
+        ----------
+        utt
+            The name of the utterance to write. If an integer is specified,
+            `utt` is assumed to index an utterance id specified in
+            ``self.utt_ids``
+        hyp
+            The tensor to write. Either of shape ``(R,)`` or ``(R, 3)``. It will be
+            converted to a long tensor using the command ``hyp.cpu().long()``
+        hyp_dir
+            The directory the sequence is written to.
+        """
+        if isinstance(utt, int):
+            utt = self.utt_ids[utt]
+        if not os.path.isdir(hyp_dir):
+            os.makedirs(hyp_dir)
+        pth = os.path.join(hyp_dir, self.file_prefix + utt + self.file_suffix)
+        _write_hyp(hyp, pth, self.params.sos, self.params.eos)
+
+
+class SpectDataParams(LangDataParams):
+    """Parameters for SpectDataSet"""
+
+    delta_order = param.Integer(
+        0,
+        bounds=(0, None),
+        softbounds=(0, 2),
+        doc="Order of delta coefficients to apply to the spectral features. 0 means "
+        "none",
+    )
+    do_mvn = param.Boolean(
+        False,
+        doc="Whether to perform mean-variance normalization on the spectral features. "
+        "If mean and variance statistics are not passed to the dataset/dataloader as "
+        "an argument, feature coefficients will be unit normalized per utterance",
+    )
+
+    @classmethod
+    def get_tunable(cls) -> Set[str]:
+        return {"delta_order", "do_mvn"}
+
+    @classmethod
+    def suggest_params(
+        cls, trial, base=None, only: Container[str] = None, prefix: str = ""
+    ):
+        """Populate a parameterized instance with values from trial"""
+        params = cls() if base is None else base
+        if only is None:
+            only = cls.get_tunable()
+        if "delta_order" in only:
+            bounds = params.param.params()["delta_order"].get_soft_bounds()
+            params.delta_order = trial.suggest_int(prefix + "delta_order", *bounds)
+        if "do_mvn" in only:
+            params.do_mvn = trial.suggest_categorical(prefix + "do_mvn", [True, False])
+
+        return params
+
+
+class SpectDataSet(torch.utils.data.Dataset):
+    """Accesses spectrographic filter data stored in a data directory
+
+    Parameters
+    ----------
+    data_dir
+        A path to the data directory
     file_prefix
         The prefix that indicates that the file counts toward the data set
     file_suffix
@@ -91,18 +276,13 @@ class SpectDataSet(torch.utils.data.Dataset):
     warn_on_missing
         If ``ali/`` or ``ref/`` exist, there's a mismatch between the
         utterances in the directories, and `warn_on_missing` is :obj:`True`, a
-        warning will be issued (via ``warnings``) regarding each such mismatch
+        warning will be issued (via :mod:`warnings`) regarding each such mismatch.
     subset_ids
-        If set, only utterances with ids listed in this set will count towards
-        the data set. The rest will be ignored
+        Deprecated. Use params.subset_ids.
     sos
-        Specify the start-of-sequence token, if any. If unset, uses whatever is in
-        `params`. Specifying `sos` this way is deprecated; it should be done via
-        `params`.
+        Deprecated. Use params.sos.
     eos
-        `eos` is a special token used to delimit the end of a reference or hypothesis
-        sequence. If unset, uses whatever is in `params`. Specifying `eos` this way is
-        deprecated; it should be done via `params`.
+        Deprecated. Use params.eos.
     feat_subdir, ali_subdir, ref_subdir
         Change the names of the subdirectories under which feats, alignments, and
         references are stored. If `ali_subdir` or `ref_subdir` is :obj:`None`, they will
@@ -110,12 +290,32 @@ class SpectDataSet(torch.utils.data.Dataset):
     params
         Populates the parameters of this class with the instance. If unset, a new
         `SpectDataParams` instance is initialized.
-        
+    feat_mean
+        If specified and ``params.do_mvn`` is :obj:`True`, this tensor will be used
+        as the mean in mean-variance normalization.
+    feat_std
+        If specified and ``params.do_mvn`` is :obj:`True`, this tensor will be used
+        as the standard deviation in mean-variance normalization.
+    suppress_alis : bool
+        If :obj:`True`, `ali` will not be yielded, nor will alignment information
+        be counted towards the list of utterance ids if available.
+    suppress_uttids : bool
+        If :obj:`True`, `uttid` will not be yielded.
+    tokens_only : bool
+        If :obj:`True`, `ref` will drop the segment information if present, always
+        yielding tuples of shape ``(R,)``.
+    
     Yields
     ------
-    feat : torch.Tensor
-    ali : torch.Tensor or None
-    ref : torch.Tensor or None
+    tup
+        For a given utterance, a tuple:
+
+        1. `feat`, the filter bank data.
+        2. `ali` (if `suppress_ali` is :obj:`False`), frame-level alignments or
+           :obj:`None` if not available.
+        3. `ref`, a sequence of reference tokens or :obj:`None` if not available.
+        4. `uttid` (if `suppress_uttid` is :obj:`False`), the string representing the
+           utterance id.
 
     Examples
     --------
@@ -169,6 +369,21 @@ class SpectDataSet(torch.utils.data.Dataset):
     >>> data.write_hyp('special', hyp)  # custom name
     """
 
+    data_dir: str
+    file_prefix: str
+    file_suffix: str
+    feat_subdir: str
+    ali_subdir: Optional[str]
+    ref_subdir: Optional[str]
+    params: SpectDataParams
+    has_ali: bool
+    has_ref: bool
+    suppress_alis: bool
+    suppress_uttids: bool
+    tokens_only: bool
+    utt_ids: Tuple[str, ...]
+    transform: Optional[torch.nn.Module]
+
     def __init__(
         self,
         data_dir: str,
@@ -179,17 +394,41 @@ class SpectDataSet(torch.utils.data.Dataset):
         sos: Optional[int] = None,
         eos: Optional[int] = None,
         feat_subdir: str = "feat",
-        ali_subdir: str = "ali",
-        ref_subdir: str = "ref",
+        ali_subdir: Optional[str] = "ali",
+        ref_subdir: Optional[str] = "ref",
         params: Optional[SpectDataParams] = None,
+        feat_mean: Optional[torch.Tensor] = None,
+        feat_std: Optional[torch.Tensor] = None,
+        suppress_alis: bool = None,
+        suppress_uttids: bool = True,
+        tokens_only: bool = None,
     ):
-        super(SpectDataSet, self).__init__()
+        super().__init__()
+        if suppress_alis is None:
+            warnings.warn(
+                "A future version of pydrobert-pytorch will set suppress_alis=True by "
+                "default. To ensure future compatibility, set suppress_alis=False",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            suppress_alis = False
+        if tokens_only is None:
+            warnings.warn(
+                "A future version of pydrobert-pytorch will set tokens_only=True by "
+                "default. To ensure future compatibility, set tokens_only=False",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            tokens_only = False
         self.data_dir = data_dir
         self.feat_subdir = feat_subdir
         self.ali_subdir = ali_subdir
         self.ref_subdir = ref_subdir
         self.file_prefix = file_prefix
         self.file_suffix = file_suffix
+        self.suppress_alis = suppress_alis
+        self.suppress_uttids = suppress_uttids
+        self.tokens_only = tokens_only
         if params is None:
             params = SpectDataParams()
         self.params = params
@@ -207,7 +446,7 @@ class SpectDataSet(torch.utils.data.Dataset):
                 DeprecationWarning,
             )
             self.eos = eos
-        if ali_subdir:
+        if ali_subdir and not suppress_alis:
             self.has_ali = os.path.isdir(os.path.join(data_dir, ali_subdir))
         else:
             self.has_ali = False
@@ -225,40 +464,59 @@ class SpectDataSet(torch.utils.data.Dataset):
                 x.startswith(file_prefix) and x.endswith(file_suffix)
                 for x in os.listdir(os.path.join(data_dir, ref_subdir))
             )
+        if subset_ids is None:
+            subset_ids = set(params.subset_ids)
+        else:
+            warnings.warn(
+                "passing subset_ids to the dataset directly is deprecated. Set "
+                "params.subset_ids instead.",
+                DeprecationWarning,
+                2,
+            )
         self.utt_ids = tuple(
             sorted(self.find_utt_ids(warn_on_missing, subset_ids=subset_ids))
         )
+        transforms = []
+        if params.do_mvn:
+            transforms.append(MeanVarianceNormalization(mean=feat_mean, std=feat_std))
+        if params.delta_order:
+            transforms.append(FeatureDeltas(order=params.delta_order))
+        if len(transforms):
+            transform = torch.nn.Sequential(*transforms)
+            if config.USE_JIT:
+                transform = torch.jit.script(transform)
+            self.transform = transform
+        else:
+            self.transform = None
 
     def __len__(self) -> int:
         return len(self.utt_ids)
 
-    def __getitem__(
-        self, idx: int
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    def __getitem__(self, idx: int) -> Tuple[Union[torch.Tensor, str, None], ...]:
         return self.get_utterance_tuple(idx)
 
     def find_utt_ids(
-        self, warn_on_missing: bool, subset_ids: Optional[Set[str]] = None
+        self, warn_on_missing: bool, subset_ids: Set[str] = set()
     ) -> Set[str]:
         """Returns a set of all utterance ids from data_dir"""
         neg_fsl = -len(self.file_suffix)
         if not neg_fsl:
             neg_fsl = None
         fpl = len(self.file_prefix)
-        utt_ids = set(
-            x[fpl:neg_fsl]
-            for x in os.listdir(os.path.join(self.data_dir, self.feat_subdir))
-            if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
+        utt_ids = _utts_in_dir(
+            os.path.join(self.data_dir, self.feat_subdir),
+            self.file_prefix,
+            self.file_suffix,
         )
-        if subset_ids is not None:
+        if subset_ids:
             utt_ids &= subset_ids
         if self.has_ali:
-            ali_utt_ids = set(
-                x[fpl:neg_fsl]
-                for x in os.listdir(os.path.join(self.data_dir, self.ali_subdir))
-                if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
+            ali_utt_ids = _utts_in_dir(
+                os.path.join(self.data_dir, self.ali_subdir),
+                self.file_prefix,
+                self.file_suffix,
             )
-            if subset_ids is not None:
+            if subset_ids:
                 ali_utt_ids &= subset_ids
             if warn_on_missing:
                 for utt_id in utt_ids.difference(ali_utt_ids):
@@ -266,12 +524,12 @@ class SpectDataSet(torch.utils.data.Dataset):
                 for utt_id in ali_utt_ids.difference(utt_ids):
                     warnings.warn("Missing feat for uttid: '{}'".format(utt_id))
         if self.has_ref:
-            ref_utt_ids = set(
-                x[fpl:neg_fsl]
-                for x in os.listdir(os.path.join(self.data_dir, self.ref_subdir))
-                if x.startswith(self.file_prefix) and x.endswith(self.file_suffix)
+            ref_utt_ids = _utts_in_dir(
+                os.path.join(self.data_dir, self.ref_subdir),
+                self.file_prefix,
+                self.file_suffix,
             )
-            if subset_ids is not None:
+            if subset_ids:
                 ref_utt_ids &= subset_ids
             if warn_on_missing:
                 for utt_id in utt_ids.difference(ref_utt_ids):
@@ -286,8 +544,7 @@ class SpectDataSet(torch.utils.data.Dataset):
 
     def get_utterance_tuple(
         self, idx: int
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
-        """Get a tuple of features, alignments, and references"""
+    ) -> Tuple[Union[torch.Tensor, str, None], ...]:
         utt_id = self.utt_ids[idx]
         feat = torch.load(
             os.path.join(
@@ -296,6 +553,8 @@ class SpectDataSet(torch.utils.data.Dataset):
                 self.file_prefix + utt_id + self.file_suffix,
             )
         )
+        if self.transform is not None:
+            feat = self.transform(feat)
         if self.has_ali:
             ali = torch.load(
                 os.path.join(
@@ -307,38 +566,35 @@ class SpectDataSet(torch.utils.data.Dataset):
         else:
             ali = None
         if self.has_ref:
-            ref = torch.load(
+            ref = _load_ref(
                 os.path.join(
                     self.data_dir,
                     self.ref_subdir,
                     self.file_prefix + utt_id + self.file_suffix,
-                )
+                ),
+                self.tokens_only,
+                self.sos,
+                self.eos,
             )
-            if self.sos is not None:
-                if ref.dim() == 2:
-                    sos_sym = torch.full_like(ref[0], -1)
-                    sos_sym[0] = self.sos
-                    ref = torch.cat([sos_sym.unsqueeze(0), ref], 0)
-                else:
-                    ref = torch.cat([torch.full_like(ref[:1], self.sos), ref], 0)
-            if self.eos is not None:
-                if ref.dim() == 2:
-                    eos_sym = torch.full_like(ref[0], -1)
-                    eos_sym[0] = self.eos
-                    ref = torch.cat([ref, eos_sym.unsqueeze(0)], 0)
-                else:
-                    ref = torch.cat([ref, torch.full_like(ref[:1], self.eos)], 0)
         else:
             ref = None
-        return feat, ali, ref
+        if self.suppress_alis:
+            if self.suppress_uttids:
+                return feat, ref
+            else:
+                return feat, ref, utt_id
+        elif self.suppress_uttids:
+            return feat, ali, ref
+        else:
+            return feat, ali, ref, utt_id
 
     def write_pdf(
         self, utt: Union[str, int], pdf: torch.Tensor, pdfs_dir: Optional[str] = None
     ) -> None:
         """Write a pdf tensor to the data directory
 
-        This method writes a pdf matrix to the directory `pdfs_dir`
-        with the name ``<file_prefix><utt><file_suffix>``
+        This method writes a pdf matrix to the directory `pdfs_dir` with the name
+        ``<file_prefix><utt><file_suffix>``
 
         Parameters
         ----------
@@ -357,8 +613,7 @@ class SpectDataSet(torch.utils.data.Dataset):
             utt = self.utt_ids[utt]
         if pdfs_dir is None:
             pdfs_dir = os.path.join(self.data_dir, "pdfs")
-        if not os.path.isdir(pdfs_dir):
-            os.makedirs(pdfs_dir)
+        os.makedirs(pdfs_dir, exist_ok=True)
         torch.save(
             pdf.cpu().float(),
             os.path.join(pdfs_dir, self.file_prefix + utt + self.file_suffix),
@@ -392,7 +647,7 @@ class SpectDataSet(torch.utils.data.Dataset):
             The tensor to write. Either of shape ``(R,)`` or ``(R, 3)``. It will be
             converted to a long tensor using the command ``hyp.cpu().long()``
         hyp_dir
-            The directory pdfs are written to. If :obj:`None`, it will be set to
+            The directory sequence is written to. If :obj:`None`, it will be set to
             ``self.data_dir + '/hyp'``
         """
         if isinstance(utt, int):
@@ -401,27 +656,8 @@ class SpectDataSet(torch.utils.data.Dataset):
             hyp_dir = os.path.join(self.data_dir, "hyp")
         if not os.path.isdir(hyp_dir):
             os.makedirs(hyp_dir)
-        hyp = hyp.cpu().long()
-        if self.sos is not None:
-            if hyp.dim() == 1:
-                sos_idxs = torch.nonzero(hyp.eq(self.sos), as_tuple=False)
-            else:
-                sos_idxs = torch.nonzero(hyp[:, 0].eq(self.sos), as_tuple=False)
-            if sos_idxs.numel():
-                sos_idx = sos_idxs[-1].item()
-                hyp = hyp[sos_idx + 1 :]
-        if self.eos is not None:
-            if hyp.dim() == 1:
-                eos_idxs = torch.nonzero(hyp.eq(self.eos), as_tuple=False)
-            else:
-                eos_idxs = torch.nonzero(hyp[:, 0].eq(self.eos), as_tuple=False)
-            if eos_idxs.numel():
-                eos_idx = eos_idxs[0].item()
-                hyp = hyp[:eos_idx]
-        torch.save(
-            hyp.cpu().long(),
-            os.path.join(hyp_dir, self.file_prefix + utt + self.file_suffix),
-        )
+        pth = os.path.join(hyp_dir, self.file_prefix + utt + self.file_suffix)
+        _write_hyp(hyp, pth, self.sos, self.eos)
 
 
 def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
@@ -695,12 +931,13 @@ class ContextWindowDataParams(SpectDataParams):
     @classmethod
     def get_tunable(cls):
         """Returns a set of tunable parameters"""
-        return {"context_left", "context_right", "reverse"}
+        return super().get_tunable() | {"context_left", "context_right", "reverse"}
 
     @classmethod
     def suggest_params(cls, trial, base=None, only=None, prefix=""):
         """Populate a parameterized instance with values from trial"""
         params = cls() if base is None else base
+        super().suggest_params(trial, params, only, prefix)
         if only is None:
             only = cls._tunable
         pdict = params.param.params()
@@ -718,46 +955,43 @@ class ContextWindowDataParams(SpectDataParams):
 class ContextWindowDataSet(SpectDataSet):
     """SpectDataSet, extracting fixed-width windows over the utterance
 
-    Like a :class:`SpectDataSet`, :class:`ContextWindowDataSet` indexes tuples of
-    features and alignments. Instead of returning features of shape ``(T, F)``,
-    instances return features of shape ``(T, 1 + left + right, F)``, where the ``T``
-    axis indexes the so-called center frame and the ``1 + left + right`` axis contains
-    frame vectors (size ``F``) including the center frame, ``left`` frames in time
-    before the center frame, and ``right`` frames after.
-
-    :class:`ContextWindowDataSet` does not have support for reference token
-    subdirectories as it is unclear how to always pair tokens with context windows. If
-    tokens are one-to-one with frames, it is suggested that ``ali/`` be re-used for this
-    purpose.
+    Like a :class:`SpectDataSet`, but replaces the `feat` tensor with `window`, which
+    runs a sliding window over the frame dimension of `feat`.
 
     Parameters
     ----------
     data_dir
     left
-        The number of frames to the left of the center frame to be extracted in the
-        window. If unset, uses whatever is in ``params.context_left``. Specifying
-        `left` by argument is deprecated; use ``params.context_left``.
+        Deprecated
     right
-        The number of frames to the right of the center frame to be extracted in the
-        window. If unset, uses whatever is in ``params.context_right``. Specifying
-        `right` by argument is deprecated; use ``params.context_right``.
+        Deprecated
     file_prefix
     file_suffix
     warn_on_missing
+    subset_ids
+        Deprecated
     feat_subdir, ali_subdir
     reverse
-        If :obj:`True`, context windows will be reversed along the time dimension. If
-        unset, uses whatever is in ``params.reverse``. Specifying `reverse` by argument
-        is deprecated; use ``params.reverse``.
+        Deprecated
+    params
+    suppress_uttids
+        If :obj:`True`, `uttid` will not be yielded.
 
     Yields
     ------
-    window : torch.Tensor
-    ali : torch.Tensor
+    tup
+        For a given utterance, a tuple:
 
+        1. `window`, windowed spectral features of shape ``(T, 1 + left + right, F)``,
+           where the ``T`` axis indexes the so-called center frame and the ``1 + left +
+           right`` axis contains frame vectors (size ``F``) including the center frame
+           and the those to the `left` and `right`.
+        2. `ali`, window-level alignments, or :obj:`None` if not available.
+        3. `uttid` (if `suppress_uttid` is :obj:`False`), the string representing the
+           utterance id.
+        
     Examples
     --------
-
     >>> # see 'SpectDataSet' to set up data directory
     >>> data = ContextWindowDataSet('data')
     >>> data[0]  # random access returns (window, ali) pairs
@@ -765,6 +999,8 @@ class ContextWindowDataSet(SpectDataSet):
     >>>     pass  # so does the iterator
     >>> data.get_utterance_tuple(3)  # gets the original (feat, ali) pair
     """
+
+    params: ContextWindowDataParams
 
     def __init__(
         self,
@@ -776,26 +1012,15 @@ class ContextWindowDataSet(SpectDataSet):
         warn_on_missing: bool = True,
         subset_ids: Optional[Set[str]] = None,
         feat_subdir: str = "feat",
-        ali_subdir: str = "ali",
+        ali_subdir: Optional[str] = "ali",
         reverse: Optional[bool] = None,
         params: Optional[ContextWindowDataParams] = None,
+        feat_mean: Optional[torch.Tensor] = None,
+        feat_std: Optional[torch.Tensor] = None,
+        suppress_uttids: bool = True,
     ):
         if params is None:
             params = ContextWindowDataParams()
-        super(ContextWindowDataSet, self).__init__(
-            data_dir,
-            file_prefix=file_prefix,
-            file_suffix=file_suffix,
-            warn_on_missing=warn_on_missing,
-            subset_ids=subset_ids,
-            feat_subdir=feat_subdir,
-            ali_subdir=ali_subdir,
-            ref_subdir=None,
-            params=params,
-        )
-        self.left = self.params.context_left
-        self.right = self.params.context_right
-        self.reverse = self.params.reverse
         if left is not None:
             warnings.warn(
                 "Specifying left by argument is deprecated. Please use "
@@ -803,6 +1028,8 @@ class ContextWindowDataSet(SpectDataSet):
                 DeprecationWarning,
             )
             self.left = left
+        else:
+            self.left = params.context_left
         if right is not None:
             warnings.warn(
                 "Specifying right by argument is deprecated. Please use "
@@ -810,30 +1037,57 @@ class ContextWindowDataSet(SpectDataSet):
                 DeprecationWarning,
             )
             self.right = right
+        else:
+            self.right = params.context_right
         if reverse is not None:
             warnings.warn(
                 "Specifying reverse by argument is deprecated. Please use "
                 "params.reverse"
             )
             self.reverse = reverse
+        else:
+            self.reverse = params.reverse
+        super().__init__(
+            data_dir,
+            file_prefix,
+            file_suffix,
+            warn_on_missing,
+            subset_ids,
+            None,
+            None,
+            feat_subdir,
+            ali_subdir,
+            "ref",
+            params,
+            feat_mean,
+            feat_std,
+            False,
+            suppress_uttids,
+            False,
+        )
 
-    def get_utterance_tuple(self, idx) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Get a tuple of features and alignments"""
-        return super(ContextWindowDataSet, self).get_utterance_tuple(idx)[:2]
+    def get_utterance_tuple(self, idx) -> Tuple[Union[torch.Tensor, str, None], ...]:
+        tup = super().get_utterance_tuple(idx)
+        if self.suppress_uttids:
+            return tup[:2]
+        else:
+            return tup[:2] + tup[-1:]
 
     def get_windowed_utterance(
         self, idx: int
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Get pair of features (w/ context windows) and alignments"""
-        feat, ali = self.get_utterance_tuple(idx)
+    ) -> Tuple[Union[torch.Tensor, str, None], ...]:
+        feat, ali = super().get_utterance_tuple(idx)[:2]
         num_frames, num_filts = feat.shape
         window = torch.empty(num_frames, 1 + self.left + self.right, num_filts)
         for center_frame in range(num_frames):
             window[center_frame] = extract_window(
                 feat, center_frame, self.left, self.right, reverse=self.reverse
             )
-        return window, ali
+        if self.suppress_uttids:
+            return window, ali
+        else:
+            return window, ali, self.utt_ids[idx]
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def __getitem__(self, idx: int):
         return self.get_windowed_utterance(idx)
 

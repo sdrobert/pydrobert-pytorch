@@ -43,6 +43,41 @@ def test_binomial_coefficient(device, jit_type, tmax):
             assert binom[length, count] == N_exp, (length, count)
 
 
+def test_enumerate_binary_sequences(device, jit_type):
+    tmax = 10
+    enumerate_binary_sequences = functional.enumerate_binary_sequences
+    if jit_type == "script":
+        enumerate_binary_sequences = torch.jit.script(enumerate_binary_sequences)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for enumerate_binary_sequences")
+    support = enumerate_binary_sequences(tmax, device)
+    assert support.shape == (2 ** tmax, tmax)
+    assert (support.sum(0) == 2 ** (tmax - 1)).all()
+    half = tmax // 2
+    assert (support[: 2 ** half, half:] == 0).all()
+    assert (support[: 2 ** half, :half].sum(0) == 2 ** (half - 1)).all()
+
+
+def test_enumerate_vocab_sequences(device, jit_type):
+    tmax, vmax = 5, 4
+    enumerate_vocab_sequences = functional.enumerate_vocab_sequences
+    if jit_type == "script":
+        enumerate_vocab_sequences = torch.jit.script(enumerate_vocab_sequences)
+    elif jit_type == "trace":
+        pytest.xfail("trace unsupported for enumerate_vocab_sequences")
+    support = enumerate_vocab_sequences(tmax, vmax, device=device)
+    assert support.shape == (vmax ** tmax, tmax)
+    support_ = torch.unique(support, sorted=True, dim=0)
+    assert support.shape == support_.shape
+    nrange_exp = torch.arange(vmax, device=device)
+    nrange_act, counts = support.flatten().unique(sorted=True, return_counts=True)
+    assert counts.sum() == support.numel()
+    assert (nrange_exp == nrange_act).all()
+    assert (counts == support.numel() // vmax).all()
+    for t in range(tmax):
+        assert (support[: vmax ** t, t:] == 0).all()
+
+
 def test_enumerate_binary_sequences_with_cardinality(device, jit_type):
     tmax = 10
     T = torch.arange(tmax - 1, -1, -1, device=device)
@@ -101,12 +136,12 @@ def test_simple_random_sampling_without_replacement(device, jit_type):
         b = srswor_(tmax.expand(mmax, nmax), lmax.expand(mmax, nmax))
     else:
         b = srswor.sample([mmax])
-    assert ((b == 0.0) | (b == 1.0)).all()
+    assert ((b == 0) | (b == 1)).all()
     assert (b.sum(-1) == lmax).all()
     tmax_mask = tmax.unsqueeze(1) > torch.arange(tmax_max, device=device)
     b = b * tmax_mask
     assert (b.sum(-1) == lmax).all()
-    assert torch.allclose(b.mean(0), srswor.mean, atol=1e-2)
+    assert torch.allclose(b.float().mean(0), srswor.mean, atol=1e-2)
 
     lp_exp = []
     for n in range(nmax):

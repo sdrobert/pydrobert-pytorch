@@ -33,6 +33,7 @@ from pydrobert.torch.functional import (
     ctc_prefix_search_advance,
     fill_after_eos,
 )
+from pydrobert.torch.distributions import SequentialLanguageModelDistribution
 
 
 class RNNLM(MixableSequentialLanguageModel):
@@ -273,13 +274,11 @@ def test_beam_search_batch(device, jit_type, finish_all_paths):
         lm = torch.jit.script(lm)
     elif jit_type == "trace":
         pytest.xfail("trace unsupported for BeamSearch")
-    search = BeamSearch(
-        lm, K, eos=0, max_iters=T, pad_value=-1, finish_all_paths=finish_all_paths,
-    )
+    search = BeamSearch(lm, K, eos=0, pad_value=-1, finish_all_paths=finish_all_paths,)
     if jit_type == "script":
         search = torch.jit.script(search)
 
-    y_exp, y_lens_exp, log_probs_exp = search(initial_state, N)
+    y_exp, y_lens_exp, log_probs_exp = search(initial_state, N, T)
     y_exp = fill_after_eos(y_exp, 0, fill=-1)
     assert y_exp.device == y_lens_exp.device == log_probs_exp.device == device
     assert y_exp.shape[1:] == y_lens_exp.shape == log_probs_exp.shape == (N, K)
@@ -289,7 +288,7 @@ def test_beam_search_batch(device, jit_type, finish_all_paths):
         y_exp_n, y_lens_exp_n = y_exp[:, n], y_lens_exp[n]
         log_probs_exp_n = log_probs_exp[n]
         initial_state_n = dict((k, v[n : n + 1]) for (k, v) in initial_state.items())
-        y_act_n, y_lens_act_n, log_probs_act_n = search(initial_state_n)
+        y_act_n, y_lens_act_n, log_probs_act_n = search(initial_state_n, max_iters=T)
         assert y_act_n.shape[1:] == y_lens_act_n.shape == log_probs_act_n.shape == (K,)
         assert (y_lens_exp_n == y_lens_act_n).all(), n
         assert torch.allclose(log_probs_exp_n, log_probs_act_n), n
@@ -741,8 +740,8 @@ def test_random_walk(device):
         stationary[0] * torch.arange(V, device=device, dtype=stationary.dtype)
     ).sum()
 
-    random_walk = RandomWalk(lm, max_iters=T)
-    sample, lens, exp_lprobs = random_walk()
+    random_walk = RandomWalk(lm)
+    sample, lens, exp_lprobs = random_walk(max_iters=T)
     assert sample.shape == (T,)
     assert lens == T
     lm_sample = lm(sample[:-1].unsqueeze(1)).log_softmax(-1)
@@ -881,3 +880,64 @@ def test_sequence_log_probs(device, dim, jit_type):
     log_probs_2 = sequence_log_probs(logits, hyp)
     assert log_probs_1.shape == log_probs_2.shape
     assert torch.allclose(log_probs_1, log_probs_2)
+
+
+@pytest.mark.parametrize("eos", [None, 0], ids=["w/o eos", "eos=0"])
+@pytest.mark.parametrize("batch_size", [None, 4], ids=["w/o batch", "batch=4"])
+def test_sequential_language_model_distribution(device, eos, batch_size):
+    T, V, M = 4, 5, 3
+    N = 1 if batch_size is None else batch_size
+    lm = RNNLM(V)
+    random_walk = RandomWalk(lm, eos).to(device)
+
+    dist = SequentialLanguageModelDistribution(
+        random_walk, batch_size, max_iters=T, cache_samples=True, validate_args=True,
+    )
+
+    assert dist.has_enumerate_support
+    support = dist.enumerate_support()
+    if eos is None:
+        total = V ** T
+    else:
+        total = 0
+        for eos_pos in range(T + 1):
+            total += (V - 1) ** eos_pos
+    assert support.shape == (total,) + dist.batch_shape + (T,)
+    support_lprobs = dist.log_prob(support)
+    assert torch.allclose(
+        support_lprobs.logsumexp(0), torch.tensor(0.0, device=device), atol=1e-5,
+    )
+
+    sample = dist.sample([M])
+    assert sample.shape[:-1] == (M,) + dist.batch_shape
+    if eos is None:
+        assert sample.shape[-1] == T
+    else:
+        assert sample.shape[-1] <= T
+        sample = torch.nn.functional.pad(sample, (0, T - sample.shape[-1]), value=eos)
+    match = (sample.unsqueeze(1) == support.unsqueeze(0)).all(-1)
+    assert match.any(1).all()
+    exp_lprobs = (support_lprobs.unsqueeze(0).expand(match.shape) * match).sum(1)
+    act_lprobs = dist.log_prob(sample)
+    assert act_lprobs.shape == sample.shape[:-1]
+    assert torch.allclose(exp_lprobs, act_lprobs)
+    dist.clear_cache()
+    act_lprobs = dist.log_prob(sample)
+    assert torch.allclose(exp_lprobs, act_lprobs)
+
+    sample = torch.randint(0, V, (M,) + dist.batch_shape + (T,), device=device)
+    dist.log_prob(sample)  # in support
+    if eos is not None:
+        assert T >= 3
+        sample[..., 1] = eos
+        exp_lprobs = dist.log_prob(sample)
+        sample[..., 2] = V + 1
+        act_lprobs = dist.log_prob(sample)  # since invalid entry comes after eos
+        assert torch.allclose(exp_lprobs, act_lprobs)
+    sample[..., 0] = V + 1
+    with pytest.raises(ValueError):
+        dist.log_prob(sample)  # invalid entry comes before any eos
+
+    sample = dist.sample()
+    assert 0 < sample.numel() <= T * N
+

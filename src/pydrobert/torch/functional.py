@@ -14,8 +14,10 @@
 
 """Pytorch functions"""
 
-from ._conditional_bernoulli import (
+from ._combinatorics import (
     binomial_coefficient,
+    enumerate_vocab_sequences,
+    enumerate_binary_sequences,
     enumerate_binary_sequences_with_cardinality,
     simple_random_sampling_without_replacement,
 )
@@ -26,9 +28,9 @@ from ._decoding import (
     random_walk_advance,
     sequence_log_probs,
 )
+from ._feats import feat_deltas, mean_var_norm
 from ._img import (
     dense_image_warp,
-    pad_variable,
     polyharmonic_spline,
     random_shift,
     sparse_image_warp,
@@ -37,6 +39,7 @@ from ._img import (
     spec_augment,
     warp_1d_grid,
 )
+from ._pad import pad_masked_sequence, pad_variable
 from ._rl import time_distributed_return
 from ._string import (
     edit_distance,
@@ -49,7 +52,6 @@ from ._string import (
     prefix_error_rates,
 )
 
-
 __all__ = [
     "beam_search_advance",
     "binomial_coefficient",
@@ -58,11 +60,16 @@ __all__ = [
     "dense_image_warp",
     "edit_distance",
     "enumerate_binary_sequences_with_cardinality",
+    "enumerate_binary_sequences",
+    "enumerate_vocab_sequences",
     "error_rate",
+    "feat_deltas",
     "fill_after_eos",
     "hard_optimal_completion_distillation_loss",
+    "mean_var_norm",
     "minimum_error_rate_loss",
     "optimal_completion",
+    "pad_masked_sequence",
     "pad_variable",
     "polyharmonic_spline",
     "prefix_edit_distances",

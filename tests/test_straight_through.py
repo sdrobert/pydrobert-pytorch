@@ -13,8 +13,117 @@
 # limitations under the License.
 
 import torch
+import pytest
 
-from pydrobert.torch.distributions import GumbelOneHotCategorical, LogisticBernoulli
+from pydrobert.torch.distributions import (
+    GumbelOneHotCategorical,
+    LogisticBernoulli,
+    StraightThrough,
+    ConditionalStraightThrough,
+    Density,
+)
+
+
+@pytest.mark.cpu
+def test_interfaces():
+    class GoodST1(StraightThrough):
+        pass
+
+    class GoodST2(torch.distributions.RelaxedBernoulli):
+        def rsample(self):
+            ...
+
+        def threshold(self):
+            ...
+
+        def tlog_prob(self):
+            ...
+
+    class BadST1(torch.distributions.RelaxedBernoulli):  # missing a method
+        def rsample(self):
+            ...
+
+        def threshold(self):
+            ...
+
+    class BadST2(object):  # not a distribution
+        def rsample(self):
+            ...
+
+        def threshold(self):
+            ...
+
+        def tlog_prob(self):
+            ...
+
+    class BadST3(torch.distributions.Bernoulli):  # not a relaxed distribution
+        def rsample(self):
+            ...
+
+        def threshold(self):
+            ...
+
+        def tlog_prob(self):
+            ...
+
+    class GoodCT1(ConditionalStraightThrough):
+        pass
+
+    class GoodCT2(GoodST1):
+        def clog_prob(self):
+            ...
+
+        def csample(self):
+            ...
+
+    class BadCT1(BadST1):
+        def clog_prob(self):
+            ...
+
+        def csample(self):
+            ...
+
+    class BadCT2(BadST2):
+        def clog_prob(self):
+            ...
+
+        def csample(self):
+            ...
+
+    class BadCT3(BadST3):
+        def clog_prob(self):
+            ...
+
+        def csample(self):
+            ...
+
+    class BadCT4(GoodST1):  # missing methods
+        def clog_prob(self):
+            ...
+
+    class GoodD1(Density):
+        pass
+
+    class GoodD2(torch.distributions.Bernoulli):
+        pass
+
+    class BadD1(object):  # missing methods
+        pass
+
+    assert issubclass(GoodST1, StraightThrough)
+    assert issubclass(GoodST2, StraightThrough)
+    assert not issubclass(BadST1, StraightThrough)
+    assert not issubclass(BadST2, StraightThrough)
+    assert not issubclass(BadST3, StraightThrough)
+    assert issubclass(GoodCT1, ConditionalStraightThrough)
+    assert issubclass(GoodCT2, ConditionalStraightThrough)
+    assert not issubclass(BadCT1, ConditionalStraightThrough)
+    assert not issubclass(BadCT2, ConditionalStraightThrough)
+    assert not issubclass(BadCT3, ConditionalStraightThrough)
+    assert not issubclass(BadCT4, ConditionalStraightThrough)
+    assert issubclass(GoodD1, Density)
+    assert issubclass(GoodD2, Density)
+    assert not issubclass(BadD1, Density)
 
 
 def test_logistic_bernoulli(device):

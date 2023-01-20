@@ -35,6 +35,7 @@ __all__ = [
     "EditDistance",
     "ErrorRate",
     "ExtractableSequentialLanguageModel",
+    "FeatureDeltas",
     "FillAfterEndOfSequence",
     "GeneralizedDotProductSoftAttention",
     "GlobalSoftAttention",
@@ -42,10 +43,12 @@ __all__ = [
     "HardOptimalCompletionDistillationLoss",
     "LogisticBernoulliRebarControlVariate",
     "LookupLanguageModel",
+    "MeanVarianceNormalization",
     "MinimumErrorRateLoss",
     "MixableSequentialLanguageModel",
     "MultiHeadedAttention",
     "OptimalCompletion",
+    "PadMaskedSequence",
     "PadVariable",
     "PolyharmonicSpline",
     "PrefixEditDistances",
@@ -74,12 +77,12 @@ from ._decoding import (
     RandomWalk,
     SequenceLogProbabilities,
 )
+from ._feats import FeatureDeltas, MeanVarianceNormalization
 from ._img import (
     DenseImageWarp,
     PolyharmonicSpline,
     Warp1DGrid,
     SparseImageWarp,
-    PadVariable,
     RandomShift,
     SpecAugment,
 )
@@ -93,6 +96,7 @@ from ._mc import (
     LogisticBernoulliRebarControlVariate,
     GumbelOneHotCategoricalRebarControlVariate,
 )
+from ._pad import PadVariable, PadMaskedSequence
 from ._rl import TimeDistributedReturn
 from ._string import (
     EditDistance,

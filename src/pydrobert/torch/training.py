@@ -18,6 +18,7 @@ import os
 import math
 from typing import Optional
 import warnings
+import tempfile
 
 from csv import DictReader, writer
 from string import Formatter
@@ -293,6 +294,9 @@ class TrainingStateController(object):
     warn
         Whether to warn using :mod:`warnings` module when a format string does
         not contain the "epoch" field.
+    reduce_op
+        The op to combine metrics and other reducable ops in a distributed environment.
+        See the note below for more details.
     
     Examples
     --------
@@ -311,6 +315,37 @@ class TrainingStateController(object):
     >>>     if not controller.update_for_epoch(
     ...             model, optimizer, train_loss, val_loss):
     >>>         break  # early stopping
+
+    Notes
+    -----
+    :class:`TrainingStateController` has rudimentary support for distributed training
+    via :class:`torch.nn.parallel.DistributedDataParallel`. Please read the `tutorial
+    <https://pytorch.org/tutorials/intermediate/ddp_tutorial.html>`_ to understand the
+    basics of the environment before continuing.
+
+    Simple training loops involving a :class:`TrainingStateController`, like in the
+    example above, should work with only the usual distributed boilerplate (spawning the
+    pool, initializing process group, and wrapping the model with
+    :class:`DistributedDataParallel`). The controller should be created and
+    :func:`update_for_epoch` called in each worker.
+    
+    Each worker maintains its own separate cache of state history, only synchronizing
+    the training and validation metrics across workers via a reduction operation in
+    :func:`update_for_epoch`. No other default state information needs synchronization.
+    If a custom entry in the state history needs to be synchronized (i.e. it depends
+    directly on the data seen over the epoch, not on the training or validation
+    metrics), the `reduce` flag of :func:`add_entry` can be set to :obj:`True` and that
+    value will likewise be synchronized on the call to :func:`update_for_epoch`.
+
+    `reduce_op` determines how the relevant values are synchronized. An average is taken
+    by default by first dividing each copy of the value by the world size and then
+    summing the copies together via :obj:`torch.distributed.ReduceOp.SUM`. See
+    :class:`torch.distributed.ReduceOp` for other options.
+
+    Writing or deleting from disk is performed by only one worker (rank 0). Workers are
+    synchronized prior to a load. Reading from disk (e.g. setting up the initial cache
+    from the state csv or loading model parameters) is performed by all workers in
+    parallel. This paradigm is safe if all workers have access to the same disk.
     """
 
     def __init__(
@@ -319,6 +354,7 @@ class TrainingStateController(object):
         state_csv_path: Optional[str] = None,
         state_dir: Optional[str] = None,
         warn: bool = True,
+        reduce_op: Optional[torch.distributed.ReduceOp] = None,
     ):
         super(TrainingStateController, self).__init__()
         self.params = params
@@ -336,6 +372,7 @@ class TrainingStateController(object):
         self.cache_hist = dict()
         self.user_entry_types = OrderedDict()
         self.fmt_dict = dict()
+        self.reduce_op = reduce_op
         if params.num_epochs is None:
             self.fmt_dict["epoch"] = "{:010d}"
         else:
@@ -358,6 +395,11 @@ class TrainingStateController(object):
         self.fmt_dict["lr"] = "{{:.{}e}}".format(self.SCIENTIFIC_PRECISION - 1)
         self.fmt_dict["train_met"] = self.fmt_dict["lr"]
         self.fmt_dict["val_met"] = self.fmt_dict["lr"]
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            self._rank = torch.distributed.get_rank()
+        else:
+            self._rank = -1
+        self.reduced_entries = {"train_met", "val_met"}
 
     """The number of digits in significand of scientific notation
 
@@ -367,7 +409,9 @@ class TrainingStateController(object):
     """
     SCIENTIFIC_PRECISION = 5
 
-    def add_entry(self, name: str, typ: type = str, fmt: str = "{}") -> None:
+    def add_entry(
+        self, name: str, typ: type = str, fmt: str = "{}", reduce: bool = False
+    ) -> None:
         """Add an entry to to be stored and retrieved at every epoch
 
         This method is useful when training loops need specialized, persistent
@@ -387,6 +431,11 @@ class TrainingStateController(object):
             serialized to a string via ``fmt.format(obj)``.
         fmt
             The format string used to serialize the objects into strings.
+        reduce
+            If :obj:`True` and in a distributed environment, the value will be
+            synchronized across workers via a reduction op on each call to
+            :func:`update_for_epoch` see the notes in the class documentation for
+            more information.
 
         Examples
         --------
@@ -408,7 +457,7 @@ class TrainingStateController(object):
         :func:`save_info_to_hist`, or it may corrupt the experiment history. However,
         the controller can safely ignore additional entries when loading history from a
         CSV. Thus, there is no need to call :func:`add_entry` if no new training is to
-        be done (unless those entries are needed outside of training)
+        be done (unless those entries are needed outside of training).
         """
         if name in {
             "epoch",
@@ -425,7 +474,13 @@ class TrainingStateController(object):
             raise ValueError("typ ({}) must be a type".format(typ))
         self.user_entry_types[name] = typ
         self.fmt_dict[name] = fmt
+        if reduce:
+            self.reduced_entries.add(name)
         self.update_cache()
+
+    def _barrier(self):
+        if self._rank >= 0:
+            torch.distributed.barrier()
 
     def update_cache(self) -> None:
         """Update the cache with history stored in state_csv_path"""
@@ -522,6 +577,7 @@ class TrainingStateController(object):
             Whether to strictly enforce that the keys in ``model.state_dict()`` match
             those that were saved.
         """
+        self._barrier()
         if epoch is None:
             epoch = self.get_best_epoch()
         if not epoch:
@@ -529,17 +585,20 @@ class TrainingStateController(object):
                 torch.manual_seed(self.params.seed)
             if hasattr(model, "reset_parameters"):
                 model.reset_parameters()
+            elif (
+                self._rank >= 0
+                and hasattr(model, "module")
+                and hasattr(model.module, "reset_parameters")
+            ):
+                model.module.reset_parameters()
             else:
                 warnings.warn(
                     "model has no reset_parameters() method, so cannot "
-                    "reset parameters for epoch 0"
+                    "reset parameters for epoch 0",
                 )
         elif self.state_dir is not None:
-            epoch_info = self[epoch]
-            model_basename = self.params.saved_model_fmt.format(**epoch_info)
-            model_state_dict = torch.load(
-                os.path.join(self.state_dir, model_basename), map_location="cpu",
-            )
+            model_pth = self.get_model_path_with_info(self.get_info(epoch))
+            model_state_dict = torch.load(model_pth, map_location="cpu")
             model.load_state_dict(model_state_dict, strict=strict)
         else:
             warnings.warn(
@@ -571,6 +630,7 @@ class TrainingStateController(object):
             Whether to strictly enforce that the keys in ``model.state_dict()``
             match those that were saved.
         """
+        self._barrier()
         if epoch is None:
             epoch = self.get_last_epoch()
         if not epoch:
@@ -578,6 +638,12 @@ class TrainingStateController(object):
                 torch.manual_seed(self.params.seed)
             if hasattr(model, "reset_parameters"):
                 model.reset_parameters()
+            elif (
+                self._rank >= 0
+                and hasattr(model, "module")
+                and hasattr(model.module, "reset_parameters")
+            ):
+                model.module.reset_parameters()
             else:
                 warnings.warn(
                     "model has no reset_parameters() method, so cannot "
@@ -595,29 +661,32 @@ class TrainingStateController(object):
             optimizer.load_state_dict(brand_new_optimizer.state_dict())
             del brand_new_optimizer
         elif self.state_dir is not None:
-            epoch_info = self[epoch]
-            model_basename = self.params.saved_model_fmt.format(**epoch_info)
-            optimizer_basename = self.params.saved_optimizer_fmt.format(**epoch_info)
-            model_state_dict = torch.load(
-                os.path.join(self.state_dir, model_basename), map_location="cpu",
-            )
+            info = self.get_info(epoch)
+            model_pth = self.get_model_path_with_info(info)
+            optim_pth = self.get_optimizer_path_with_info(info)
+            model_state_dict = torch.load(model_pth, map_location="cpu")
             model.load_state_dict(model_state_dict, strict=strict)
-            optimizer_state_dict = torch.load(
-                os.path.join(self.state_dir, optimizer_basename), map_location="cpu",
-            )
+            optimizer_state_dict = torch.load(optim_pth, map_location="cpu")
             optimizer.load_state_dict(optimizer_state_dict)
         else:
             warnings.warn(
-                "Unable to load model and optimizer for epoch {}. No state"
-                "directory!".format(epoch)
+                f"Unable to load model and optimizer for epoch {epoch}. No state_dir!"
             )
+
+    def _clean_up_files(self, *pths):
+        if self._rank <= 0:
+            for pth in pths:
+                if not os.path.exists(pth):
+                    continue
+                try:
+                    os.remove(pth)
+                except OSError:
+                    warnings.warn(f"Failed to delete file '{pth}'")
 
     def delete_model_and_optimizer_for_epoch(self, epoch: int) -> None:
         """Delete state dicts for model and epoch off of disk, if they exist
 
-        This method does nothing if the epoch records or the files do not exist. It is
-        called during :func:`update_for_epoch` if the parameter
-        ``keep_last_and_best_only`` is :obj:`True`
+        This method does nothing if the epoch records or the files do not exist.
 
         Parameters
         ----------
@@ -625,19 +694,12 @@ class TrainingStateController(object):
         """
         if self.state_dir is None:
             return
-        epoch_info = self.get_info(epoch, None)
-        if epoch_info is None:
+        info = self.get_info(epoch, None)
+        if info is None:
             return
-        model_basename = self.params.saved_model_fmt.format(**epoch_info)
-        optimizer_basename = self.params.saved_optimizer_fmt.format(**epoch_info)
-        try:
-            os.remove(os.path.join(self.state_dir, model_basename))
-        except OSError:
-            pass
-        try:
-            os.remove(os.path.join(self.state_dir, optimizer_basename))
-        except OSError:
-            pass
+        model_pth = self.get_model_path_with_info(info)
+        optim_pth = self.get_optimizer_path_with_info(info)
+        self._clean_up_files(model_pth, optim_pth)
 
     def get_info(self, epoch: int, *default) -> dict:
         """Get history entries for a specific epoch
@@ -661,6 +723,23 @@ class TrainingStateController(object):
     def __getitem__(self, epoch: int) -> dict:
         return self.get_info(epoch)
 
+    def _safe_write(self, obj, pth: str):
+        assert self._rank <= 0
+        dir_ = os.path.dirname(pth)
+        os.makedirs(dir_, exist_ok=True)
+        with tempfile.NamedTemporaryFile("wb", dir=dir_, delete=False) as f:
+            torch.save(obj, f)
+            fname = f.name
+        os.replace(fname, pth)
+
+    def get_model_path_with_info(self, info: dict) -> str:
+        return os.path.join(self.state_dir, self.params.saved_model_fmt.format(**info))
+
+    def get_optimizer_path_with_info(self, info: dict) -> str:
+        return os.path.join(
+            self.state_dir, self.params.saved_optimizer_fmt.format(**info)
+        )
+
     def save_model_and_optimizer_with_info(
         self, model: torch.nn.Module, optimizer: torch.optim.Optimizer, info: dict
     ) -> None:
@@ -683,16 +762,13 @@ class TrainingStateController(object):
         """
         if self.state_dir is None:
             return
-        if not os.path.isdir(self.state_dir):
-            os.makedirs(self.state_dir)
-        model_basename = self.params.saved_model_fmt.format(**info)
-        optimizer_basename = self.params.saved_optimizer_fmt.format(**info)
-        torch.save(
-            model.state_dict(), os.path.join(self.state_dir, model_basename),
-        )
-        torch.save(
-            optimizer.state_dict(), os.path.join(self.state_dir, optimizer_basename),
-        )
+        if self._rank <= 0:
+            # FIXME(sdrobert): figure out a means to ensure these only commit at the
+            # same time
+            self._safe_write(model.state_dict(), self.get_model_path_with_info(info))
+            self._safe_write(
+                optimizer.state_dict(), self.get_optimizer_path_with_info(info)
+            )
 
     def save_info_to_hist(self, info: dict) -> None:
         """Append history entries to the history csv
@@ -709,23 +785,24 @@ class TrainingStateController(object):
         self.cache_hist[info["epoch"]] = info
         if self.state_csv_path is None:
             return
-        names = [
-            "epoch",
-            "es_resume_cd",
-            "es_patience_cd",
-            "rlr_resume_cd",
-            "rlr_patience_cd",
-            "lr",
-            "train_met",
-            "val_met",
-        ]
-        names += list(self.user_entry_types)
-        write_header = not os.path.exists(self.state_csv_path)
-        with open(self.state_csv_path, "a") as f:
-            wr = writer(f)
-            if write_header:
-                wr.writerow(names)
-            wr.writerow([self.fmt_dict[k].format(info[k]) for k in names])
+        if self._rank <= 0:
+            names = [
+                "epoch",
+                "es_resume_cd",
+                "es_patience_cd",
+                "rlr_resume_cd",
+                "rlr_patience_cd",
+                "lr",
+                "train_met",
+                "val_met",
+            ]
+            names += list(self.user_entry_types)
+            write_header = not os.path.exists(self.state_csv_path)
+            with open(self.state_csv_path, "a") as f:
+                wr = writer(f)
+                if write_header:
+                    wr.writerow(names)
+                wr.writerow([self.fmt_dict[k].format(info[k]) for k in names])
 
     def continue_training(self, epoch: Optional[int] = None) -> bool:
         """Return a boolean on whether to continue training
@@ -764,7 +841,7 @@ class TrainingStateController(object):
         train_met: float,
         val_met: float,
         epoch: Optional[int] = None,
-        **kwargs
+        **kwargs,
     ) -> bool:
         """Update history, model, and optimizer after latest epoch results
 
@@ -791,6 +868,34 @@ class TrainingStateController(object):
             Whether to continue training. This can be set to :obj:`False` either by
             hitting the max number of epochs or by early stopping.
         """
+        if self._rank >= 0:
+            # synchronize to make sure that the buffers we're getting are the buffers
+            # we want, not buffers from training (not sure if this is necessary)
+            torch.distributed.barrier()
+            kwargs["train_met"] = train_met
+            kwargs["val_met"] = val_met
+            handles = []
+            reduced_entries = sorted(self.reduced_entries)
+            W = torch.distributed.get_world_size()
+            to_gpu = torch.distributed.get_backend() == torch.distributed.Backend.NCCL
+            for name in reduced_entries:
+                val = torch.as_tensor(kwargs[name])
+                if to_gpu and val.device.type != "cuda":
+                    val = val.cuda()
+                reduce_op = self.reduce_op
+                if reduce_op is None:
+                    val = val / W
+                    reduce_op = torch.distributed.ReduceOp.SUM
+                handles.append(
+                    torch.distributed.all_reduce(val, reduce_op, async_op=True)
+                )
+                kwargs[name] = val
+            for handle in handles:
+                handle.wait()
+            for name in reduced_entries:
+                kwargs[name] = kwargs[name].item()
+            train_met = kwargs.pop("train_met")
+            val_met = kwargs.pop("val_met")
         if epoch is None:
             epoch = self.get_last_epoch() + 1
         last_best = self.get_best_epoch()
@@ -847,8 +952,8 @@ class TrainingStateController(object):
                 info["es_patience_cd"] = 0
         else:
             info["es_patience_cd"] = self.params.early_stopping_patience
-        # we do it this way in case someone continues training after early
-        # stopping has been reached
+        # we do it this way in case someone continues training after early stopping has
+        # been reached
         if self.params.early_stopping_threshold and not info["es_patience_cd"]:
             cont = False
         rlr_epoch = epoch - self.params.reduce_lr_patience + info["rlr_patience_cd"] - 1
@@ -874,17 +979,83 @@ class TrainingStateController(object):
         info["epoch"] = epoch
         info["val_met"] = val_met
         info["train_met"] = train_met
-        # in the unlikely event that there's a SIGTERM here, this block tries
-        # its best to maintain a valid history on exit. We have to delete the
-        # old states first in case the file names match the new states
-        self.cache_hist[info["epoch"]] = info
-        cur_best = self.get_best_epoch()
-        try:
-            if self.params.keep_last_and_best_only and cur_best != epoch - 1:
-                self.delete_model_and_optimizer_for_epoch(epoch - 1)
-            if self.params.keep_last_and_best_only and cur_best != last_best:
-                self.delete_model_and_optimizer_for_epoch(last_best)
-        finally:
-            self.save_model_and_optimizer_with_info(model, optimizer, info)
+        if self.state_dir is not None:
+            model_pth = self.get_model_path_with_info(info)
+            optim_pth = self.get_optimizer_path_with_info(info)
+            wrote_info_warn = (
+                f"Saving epoch {epoch} model and optimizer failed but write to "
+                f"'{self.state_csv_path}' succeeded. You should delete that entry."
+            )
+            if self.params.keep_last_and_best_only:
+                self.cache_hist[epoch] = info
+                cur_best = self.get_best_epoch()
+
+                if cur_best != epoch:
+                    best_info = self.get_info(cur_best)
+                    best_model_pth = self.get_model_path_with_info(best_info)
+                    best_optim_pth = self.get_optimizer_path_with_info(best_info)
+                    if model_pth == best_model_pth:
+                        raise ValueError(
+                            f"New model checkpoint '{model_pth}' would overwrite best "
+                            "model checkpoint, so we raised instead. Either change the "
+                            "model format string or set keep_last_and_best_only to "
+                            "False"
+                        )
+                    elif optim_pth == best_optim_pth:
+                        raise ValueError(
+                            f"New optimizer checkpoint '{optim_pth}' would overwrite "
+                            "best optimizer checkpoint, so we raised instead. Either "
+                            "change the optimizer format string or set "
+                            "keep_last_and_best_only to False"
+                        )
+                if cur_best == epoch - 1:
+                    # no conflict. Keep everything. Save model and optimizer first so
+                    # that user doesn't have to muck with history
+                    self.save_model_and_optimizer_with_info(model, optimizer, info)
+                    self.save_info_to_hist(info)
+                else:
+                    last_info = self.get_info(epoch - 1)
+                    last_model_pth = self.get_model_path_with_info(last_info)
+                    last_optim_pth = self.get_optimizer_path_with_info(last_info)
+                    last_best_info = self.get_info(last_best)
+                    last_best_model_pth = self.get_model_path_with_info(last_best_info)
+                    last_best_optim_pth = self.get_optimizer_path_with_info(
+                        last_best_info
+                    )
+                    save_info_first = {model_pth, optim_pth} & {
+                        last_model_pth,
+                        last_best_model_pth,
+                        last_optim_pth,
+                        last_best_optim_pth,
+                    }
+                    if save_info_first:
+                        self.save_info_to_hist(info)
+                    try:
+                        self.save_model_and_optimizer_with_info(model, optimizer, info)
+                    except:
+                        if self._rank <= 0 and save_info_first and self.state_csv_path:
+                            warnings.warn(wrote_info_warn)
+                        raise
+                    if not save_info_first:
+                        self.save_info_to_hist(info)
+
+                    clean_up = {last_model_pth, last_optim_pth}
+                    if last_best != cur_best:
+                        clean_up |= {last_best_model_pth, last_best_optim_pth}
+                    clean_up -= {model_pth, optim_pth}
+                    self._clean_up_files(*tuple(clean_up))
+            else:
+                save_info_first = os.path.exists(model_pth) or os.path.exists(optim_pth)
+                if save_info_first:
+                    self.save_info_to_hist(info)
+                try:
+                    self.save_model_and_optimizer_with_info(model, optimizer, info)
+                except:
+                    if self._rank <= 0 and save_info_first and self.state_csv_path:
+                        warnings.warn(wrote_info_warn)
+                    raise
+                if not save_info_first:
+                    self.save_info_to_hist(info)
+        else:
             self.save_info_to_hist(info)
         return cont

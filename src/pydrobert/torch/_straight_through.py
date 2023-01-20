@@ -42,7 +42,9 @@ from torch.distributions.utils import (
 from ._compat import check_methods, euler_constant, one_hot
 
 
-class StraightThrough(metaclass=abc.ABCMeta):
+class StraightThrough(
+    torch.distributions.distribution.Distribution, metaclass=abc.ABCMeta
+):
     """Interface for distributions for which a straight through estimate is possible
 
     Classes implementing this interface supply both a method for drawing a relaxed
@@ -50,9 +52,11 @@ class StraightThrough(metaclass=abc.ABCMeta):
     it into a discrete sample :func:`threshold`.
     """
 
+    has_rsample = True
+
     @abc.abstractmethod
     def rsample(self, sample_shape: Sequence = torch.Size()) -> torch.Tensor:
-        raise NotImplementedError
+        ...
 
     @abc.abstractmethod
     def threshold(
@@ -72,7 +76,7 @@ class StraightThrough(metaclass=abc.ABCMeta):
         b : torch.Tensor
             The discrete sample acquired by applying a threshold function to `z`.
         """
-        raise NotImplementedError
+        ...
 
     @abc.abstractmethod
     def tlog_prob(self, b: torch.Tensor) -> torch.Tensor:
@@ -90,7 +94,7 @@ class StraightThrough(metaclass=abc.ABCMeta):
         lp : torch.Tensor
             The log probability of the sample. Of shape ``sample_size + batch_size``.
         """
-        raise NotImplementedError
+        ...
 
     def _validate_thresholded_sample(self, value: torch.Tensor):
         """Argument validation for methods with a thresholded (discrete) sample arg
@@ -137,10 +141,12 @@ class StraightThrough(metaclass=abc.ABCMeta):
             )
 
     @classmethod
-    def __subclasscheck__(cls, C) -> bool:
+    def __subclasshook__(cls, C) -> bool:
         if cls is StraightThrough:
-            has_rsample = getattr(C, "has_rsample", False)
-            if not has_rsample:
+            if (
+                not issubclass(C, torch.distributions.distribution.Distribution)
+                or not C.has_rsample
+            ):
                 return NotImplemented
             return check_methods(C, "rsample", "threshold", "tlog_prob")
         return NotImplemented
@@ -171,7 +177,7 @@ class ConditionalStraightThrough(StraightThrough, metaclass=abc.ABCMeta):
         zcond : torch.Tensor
             A relaxed sample such that ``threshold(zcond) == b``.
         """
-        raise NotImplementedError
+        ...
 
     @abc.abstractmethod
     def clog_prob(self, zcond: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -205,12 +211,12 @@ class ConditionalStraightThrough(StraightThrough, metaclass=abc.ABCMeta):
         lp : torch.Tensor
             The log probabilities of shape ``sample_shape + batch_shape``.
         """
-        raise NotImplementedError
+        ...
 
     @classmethod
-    def __subclasscheck__(cls, C) -> bool:
+    def __subclasshook__(cls, C) -> bool:
         if cls is ConditionalStraightThrough:
-            if not issubclass(C, ConditionalStraightThrough):
+            if StraightThrough.__subclasshook__(C) is NotImplemented:
                 return NotImplemented
             return check_methods(C, "csample", "clog_prob")
         return NotImplemented
@@ -232,10 +238,16 @@ class Density(metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError
+        ...
+    
+    @classmethod
+    def __subclasshook__(cls, C) -> bool:
+        if cls is Density:
+            return check_methods(C, 'log_prob')
+        return NotImplemented
 
 
-class LogisticBernoulli(torch.distributions.Distribution, ConditionalStraightThrough):
+class LogisticBernoulli(ConditionalStraightThrough):
     r"""A Logistic distribution which can be thresholded to Bernoulli samples
     
     This distribution should be treated as a (normalized) `Logistic distribution
@@ -399,9 +411,7 @@ class LogisticBernoulli(torch.distributions.Distribution, ConditionalStraightThr
         ).expand(self.batch_shape)
 
 
-class GumbelOneHotCategorical(
-    torch.distributions.Distribution, ConditionalStraightThrough
-):
+class GumbelOneHotCategorical(ConditionalStraightThrough):
     r"""Gumbel distributions with a categorical relaxation
 
     This distribution should be treated as a series of independent `Gumbel distributions

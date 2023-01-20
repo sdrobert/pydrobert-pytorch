@@ -12,22 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__author__ = "Sean Robertson"
-__email__ = "sdrobert@cs.toronto.edu"
-__license__ = "Apache 2.0"
-__copyright__ = "Copyright 2022 Sean Robertson"
+"""Functions and classes which interface with :mod:`pytorch_lightning`
 
-try:
-    from ._version import version as __version__  # type: ignore
-except ImportError:
-    __version__ = "inplace"
+Raises
+------
+ImportError
+    If :mod:`pytorch_lightning` is not installed.
+"""
+
+from ._pl_data import LitSpectDataModuleParams, LitSpectDataModule
 
 __all__ = [
-    "config",
-    "data",
-    "distributions",
-    "estimators",
-    "functional",
-    "modules",
-    "training",
+    "LitSpectDataModule",
+    "LitSpectDataModuleParams",
 ]

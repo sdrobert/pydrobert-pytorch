@@ -16,11 +16,7 @@ import abc
 import warnings
 
 from typing import Optional, overload
-
-try:
-    from typing import Literal
-except ImportError:
-    from typing_extensions import Literal
+from typing_extensions import Literal
 
 import torch
 
@@ -439,8 +435,8 @@ def edit_distance(
     )
 
 
-@functional_wrapper("OptimalCompletion")
 @script
+@functional_wrapper("OptimalCompletion")
 def optimal_completion(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -1405,8 +1401,8 @@ def hard_optimal_completion_distillation_loss(
     ...
 
 
-@functional_wrapper("HardOptimalCompletionDistillationLoss")
 @script
+@functional_wrapper("HardOptimalCompletionDistillationLoss")
 def hard_optimal_completion_distillation_loss(
     logits: torch.Tensor,
     ref: torch.Tensor,
@@ -1613,8 +1609,8 @@ def minimum_error_rate_loss(
     ...
 
 
-@functional_wrapper("MinimumErrorRateLoss")
 @script
+@functional_wrapper("MinimumErrorRateLoss")
 def minimum_error_rate_loss(
     log_probs: torch.Tensor,
     ref: torch.Tensor,

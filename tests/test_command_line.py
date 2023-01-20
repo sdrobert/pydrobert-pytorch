@@ -14,6 +14,7 @@
 
 import os
 import warnings
+import glob
 
 import pytest
 import torch
@@ -26,7 +27,11 @@ def test_get_torch_spect_data_dir_info(
     temp_dir, populate_torch_dir, include_frame_shift
 ):
     _, alis, _, feat_sizes, _, _ = populate_torch_dir(
-        temp_dir, 19, num_filts=5, max_class=10, include_frame_shift=include_frame_shift
+        temp_dir,
+        19,
+        num_filts=5,
+        max_ali_class=10,
+        include_frame_shift=include_frame_shift,
     )
     # add one with class idx 10 to ensure all classes are accounted for
     torch.save(torch.rand(1, 5), os.path.join(temp_dir, "feat", "utt19.pt"))
@@ -497,3 +502,92 @@ def test_error_rates_match_sclite_with_flag(temp_dir):
     with open(total_act_file) as file_:
         total_act = "{:.03f}".format(float(file_.read().strip()))
     assert total_exp == total_act
+
+
+@pytest.mark.cpu
+def test_torch_spect_data_dir_to_wds(temp_dir, populate_torch_dir):
+    wds = pytest.importorskip("webdataset")
+
+    NN, N = 100, 10
+    torch_dir = os.path.join(temp_dir, "foo")
+    tar = os.path.join(temp_dir, "foo.tar")
+
+    feats, alis, refs, _, _, utt_ids = populate_torch_dir(torch_dir, NN)
+    assert not command_line.torch_spect_data_dir_to_wds([torch_dir, tar])
+
+    ds = (
+        wds.WebDataset("file:" + tar.replace("\\", "/"))
+        .decode(wds.handle_extension(".pth", torch.load))
+        .to_tuple("feat.pth", "ali.pth", "ref.pth", "__key__")
+    )
+
+    for idx, (feat, ali, ref, utt_id) in enumerate(ds):
+        assert (feat == feats[idx]).all()
+        assert (ali == alis[idx]).all()
+        assert (ref == refs[idx]).all()
+        assert utt_id == utt_ids[idx]
+    assert idx == NN - 1
+
+    assert not command_line.torch_spect_data_dir_to_wds(
+        [torch_dir, tar, "--shard", "--max-samples-per-shard", str(N)]
+    )
+
+    shards = glob.glob(f"{glob.escape(temp_dir)}/foo.tar.*")
+    assert len(shards) == (NN - 1) // N + 1
+    ds = wds.DataPipeline(
+        wds.SimpleShardList(sorted("file:" + x for x in shards)),
+        wds.tarfile_to_samples(),
+        wds.decode(wds.handle_extension(".pth", torch.load)),
+        wds.to_tuple("feat.pth", "ali.pth", "ref.pth", "__key__"),
+    )
+
+    for idx, (feat, ali, ref, utt_id) in enumerate(ds):
+        assert (feat == feats[idx]).all()
+        assert (ali == alis[idx]).all()
+        assert (ref == refs[idx]).all()
+        assert utt_id == utt_ids[idx]
+    assert idx == NN - 1
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("groups", [True, False])
+def test_compute_mvn_stats_for_torch_feat_data_dir(
+    temp_dir, populate_torch_dir, groups
+):
+    N, G = 100, 4
+    feats, _, _, _, _, utt_ids = populate_torch_dir(temp_dir, N)
+    feat_dir = os.path.join(temp_dir, "feat")
+    assert os.path.exists(feat_dir)
+    out_file = os.path.join(temp_dir, "out.pt")
+    id2gid_path = os.path.join(temp_dir, "id2gid.map")
+    args = [feat_dir, out_file]
+    if groups:
+        args += ["--id2gid", id2gid_path]
+        gids = tuple(chr(g + ord("a")) for g in range(G))
+        feats_ = dict((g, []) for g in gids)
+        with open(id2gid_path, "w") as id2gid:
+            for i, (feat, utt_id) in enumerate(zip(feats, utt_ids)):
+                gid = gids[i % G]
+                id2gid.write(f"{utt_id} {gid}\n")
+                feats_[gid].append(feat)
+        exp = dict()
+        for gid, feat in feats_.items():
+            feat = torch.cat(feat, 0).double()
+            exp[gid] = {"mean": feat.mean(0), "std": feat.std(0, False)}
+    else:
+        feats = torch.cat(feats, 0).double()
+        exp = {None: {"mean": feats.mean(0), "std": feats.std(0, False)}}
+
+    assert not command_line.compute_mvn_stats_for_torch_feat_data_dir(args)
+
+    act = torch.load(out_file)
+    if not groups:
+        act = {None: act}
+
+    assert set(act) == set(exp)
+
+    for gid in act:
+        stats_exp, stats_act = exp[gid], act[gid]
+        assert set(stats_exp) == set(stats_act) == {"mean", "std"}, gid
+        for stat in stats_act:
+            assert torch.allclose(stats_exp[stat], stats_act[stat]), (gid, stat)

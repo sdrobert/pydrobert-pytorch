@@ -18,8 +18,8 @@ from ._compat import script
 from ._wrappers import functional_wrapper, proxy
 
 
-@functional_wrapper("TimeDistributedReturn")
 @script
+@functional_wrapper("TimeDistributedReturn")
 def time_distributed_return(
     r: torch.Tensor, gamma: float, batch_first: bool = False
 ) -> torch.Tensor:

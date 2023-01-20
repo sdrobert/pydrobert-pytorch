@@ -19,12 +19,16 @@ import math
 from typing import Optional, Sequence
 import warnings
 import itertools
+import tarfile
+import io
 
+from pathlib import Path
 from collections import defaultdict, OrderedDict
 
 import torch
 
 import pydrobert.torch.data as data
+import pydrobert.torch.modules as modules
 from ._string import error_rate
 
 
@@ -127,53 +131,53 @@ def _get_torch_spect_data_dir_info_parse_args(args):
     return parser.parse_args(args)
 
 
-def get_torch_spect_data_dir_info(args: Optional[Sequence[str]] = None) -> None:
+def get_torch_spect_data_dir_info(args: Optional[Sequence[str]] = None):
     """Write info about the specified SpectDataSet data dir
 
-    A torch SpectDataSet data dir is of the form
+A torch SpectDataSet data dir is of the form
 
-        dir/
-            feat/
-                <file_prefix><utt1><file_suffix>
-                <file_prefix><utt2><file_suffix>
-                ...
-            [ali/
-                <file_prefix><utt1><file_suffix>
-                <file_prefix><utt1><file_suffix>
-                ...
-            ]
-            [ref/
-                <file_prefix><utt1><file_suffix>
-                <file_prefix><utt1><file_suffix>
-                ...
-            ]
+    dir/
+        feat/
+            <file_prefix><utt1><file_suffix>
+            <file_prefix><utt2><file_suffix>
+            ...
+        [ali/
+            <file_prefix><utt1><file_suffix>
+            <file_prefix><utt1><file_suffix>
+            ...
+        ]
+        [ref/
+            <file_prefix><utt1><file_suffix>
+            <file_prefix><utt1><file_suffix>
+            ...
+        ]
 
-    Where "feat/" contains float tensors of shape (N, F), where N is the number of
-    frames (variable) and F is the number of filters (fixed). "ali/" if there, contains
-    long tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids
-    for discriminative training in an DNN-HMM). "ref/", if there, contains long tensors
-    of shape (R, 3) indicating a sequence of reference tokens where element indexed by
-    "[i, 0]" is a token id, "[i, 1]" is the inclusive start frame of the token (or a
-    negative value if unknown), and "[i, 2]" is the exclusive end frame of the token.
+Where "feat/" contains float tensors of shape (N, F), where N is the number of frames
+(variable) and F is the number of filters (fixed). "ali/" if there, contains long
+tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids for
+discriminative training in an DNN-HMM). "ref/", if there, contains long tensors of shape
+(R, 3) indicating a sequence of reference tokens where element indexed by "[i, 0]" is a
+token id, "[i, 1]" is the inclusive start frame of the token (or a negative value if
+unknown), and "[i, 2]" is the exclusive end frame of the token.
 
-    This command writes the following space-delimited key-value pairs to an
-    output file in sorted order:
+This command writes the following space-delimited key-value pairs to an output file in
+sorted order:
 
-    1. "max_ali_class", the maximum inclusive class id found over "ali/"
-       (if available, -1 if not)
-    2. "max_ref_class", the maximum inclussive class id found over "ref/"
-       (if available, -1 if not)
-    3. "num_utterances", the total number of listed utterances
-    4. "num_filts", F
-    5. "total_frames", the sum of N over the data dir
-    6. "count_<i>", the number of instances of the class "<i>" that appear in "ali/"
-       (if available). If "count_<i>" is a valid key, then so are "count_<0 to i>".
-       "count_<i>" is left-padded with zeros to ensure that the keys remain in the same
-       order in the table as the class indices.  The maximum i will be equal to
-       the value of "max_ali_class"
+1. "max_ali_class", the maximum inclusive class id found over "ali/"
+    (if available, -1 if not)
+2. "max_ref_class", the maximum inclussive class id found over "ref/"
+    (if available, -1 if not)
+3. "num_utterances", the total number of listed utterances
+4. "num_filts", F
+5. "total_frames", the sum of N over the data dir
+6. "count_<i>", the number of instances of the class "<i>" that appear in "ali/"
+   (if available). If "count_<i>" is a valid key, then so are "count_<0 to i>".
+   "count_<i>" is left-padded with zeros to ensure that the keys remain in the same
+   order in the table as the class indices.  The maximum i will be equal to the value
+   of "max_ali_class"
 
-    Note that the output can be parsed as a Kaldi (http://kaldi-asr.org/) text table of
-    integers.
+Note that the output can be parsed as a Kaldi (http://kaldi-asr.org/) text table of
+integers.
     """
     try:
         options = _get_torch_spect_data_dir_info_parse_args(args)
@@ -189,6 +193,8 @@ def get_torch_spect_data_dir_info(args: Optional[Sequence[str]] = None) -> None:
         feat_subdir=options.feat_subdir,
         ali_subdir=options.ali_subdir,
         ref_subdir=options.ref_subdir,
+        suppress_alis=False,
+        tokens_only=False,
     )
     if options.strict or options.fix:
         data.validate_spect_data_set(data_set, options.fix)
@@ -426,20 +432,19 @@ def _save_transcripts_to_dir(
             torch.save(tok, path)
 
 
-def trn_to_torch_token_data_dir(args: Optional[Sequence[str]] = None) -> None:
+def trn_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
     """Convert a NIST "trn" file to the specified SpectDataSet data dir
 
-    A "trn" file is the standard transcription file without alignment information used
-    in the sclite (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm)
-    toolkit. It has the format
+A "trn" file is the standard transcription file without alignment information used in
+the sclite (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm) toolkit. It
+has the format
 
-        here is a transcription (utterance_a)
-        here is another (utterance_b)
+    here is a transcription (utterance_a)
+    here is another (utterance_b)
 
-    This command reads in a "trn" file and writes its contents as token sequences
-    compatible with the "ref/" directory of a SpectDataSet. See the command
-    "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory
-    """
+This command reads in a "trn" file and writes its contents as token sequences compatible
+with the "ref/" directory of a SpectDataSet. See the command
+"get-torch-spect-data-dir-info" for more info about a SpectDataSet directory."""
     try:
         options = _trn_to_torch_token_data_dir_parse_args(args)
     except SystemExit as ex:
@@ -506,11 +511,9 @@ def _torch_token_data_dir_to_trn_parse_args(args):
     return parser.parse_args(args)
 
 
-class _TranscriptDataSet(torch.utils.data.Dataset):
-    def __init__(
-        self, dir_, id2token, file_prefix, file_suffix, frame_shift_ms, strip_timing
-    ):
-        super(_TranscriptDataSet, self).__init__()
+class _DirectoryDataset(torch.utils.data.Dataset):
+    def __init__(self, dir_, file_prefix, file_suffix):
+        super().__init__()
         fpl = len(file_prefix)
         neg_fsl = -len(file_suffix)
         self.utt_ids = sorted(
@@ -521,15 +524,29 @@ class _TranscriptDataSet(torch.utils.data.Dataset):
         self.dir_ = dir_
         self.file_prefix = file_prefix
         self.file_suffix = file_suffix
+
+    def __getitem__(self, index):
+        utt_id = self.utt_ids[index]
+        value = torch.load(
+            os.path.join(self.dir_, self.file_prefix + utt_id + self.file_suffix)
+        )
+        return utt_id, value
+
+    def __len__(self):
+        return len(self.utt_ids)
+
+
+class _TranscriptDataSet(_DirectoryDataset):
+    def __init__(
+        self, dir_, id2token, file_prefix, file_suffix, frame_shift_ms, strip_timing
+    ):
+        super().__init__(dir_, file_prefix, file_suffix)
         self.id2token = id2token
         self.frame_shift_ms = frame_shift_ms
         self.strip_timing = strip_timing
 
     def __getitem__(self, index):
-        utt_id = self.utt_ids[index]
-        tok = torch.load(
-            os.path.join(self.dir_, self.file_prefix + utt_id + self.file_suffix)
-        )
+        utt_id, tok = super().__getitem__(index)
         transcript = data.token_to_transcript(tok, self.id2token, self.frame_shift_ms)
         for idx in range(len(transcript)):
             token = transcript[idx]
@@ -544,9 +561,6 @@ class _TranscriptDataSet(torch.utils.data.Dataset):
                     "".format(utt_id, token)
                 )
         return utt_id, transcript
-
-    def __len__(self):
-        return len(self.utt_ids)
 
 
 def _noop_collate(x):
@@ -573,21 +587,20 @@ def _load_transcripts_from_data_dir(
     del dl, ds
 
 
-def torch_token_data_dir_to_trn(args: Optional[Sequence[str]] = None) -> None:
+def torch_token_data_dir_to_trn(args: Optional[Sequence[str]] = None):
     """Convert a SpectDataSet token data dir to a NIST trn file
 
-    A "trn" file is the standard transcription file without alignment information used
-    in the sclite (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm)
-    toolkit. It has the format
+A "trn" file is the standard transcription file without alignment information used
+in the sclite (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm)
+toolkit. It has the format
 
-        here is a transcription (utterance_a)
-        here is another (utterance_b)
+    here is a transcription (utterance_a)
+    here is another (utterance_b)
 
-    This command scans the contents of a directory like "ref/" in a SpectDataSeet and
-    converts each such file into a transcription. Each such transcription is then
-    written to a "trn" file. See the command "get-torch-spect-data-dir-info" for more
-    info about a SpectDataSet directory.
-    """
+This command scans the contents of a directory like "ref/" in a SpectDataSeet and
+converts each such file into a transcription. Each such transcription is then
+written to a "trn" file. See the command "get-torch-spect-data-dir-info" for more
+info about a SpectDataSet directory."""
     try:
         options = _torch_token_data_dir_to_trn_parse_args(args)
     except SystemExit as ex:
@@ -689,26 +702,25 @@ def _parse_wc2utt(file, swap, return_swap):
     return ret_swapped if return_swap else ret
 
 
-def ctm_to_torch_token_data_dir(args: Optional[Sequence[str]] = None) -> None:
+def ctm_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
     """Convert a NIST "ctm" file to a SpectDataSet token data dir
 
-    A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
-    conversation file) used in the sclite
-    (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>) toolkit. Here is
-    the format
+A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
+conversation file) used in the sclite
+(http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm>) toolkit. Here is the
+format
 
-        utt_1 A 0.2 0.1 hi
-        utt_1 A 0.3 1.0 there  ;; comment
-        utt_2 A 0.0 1.0 next
-        utt_3 A 0.1 0.4 utterance
+    utt_1 A 0.2 0.1 hi
+    utt_1 A 0.3 1.0 there  ;; comment
+    utt_2 A 0.0 1.0 next
+    utt_3 A 0.1 0.4 utterance
 
-    Where the first number specifies the token start time (in seconds) and the second
-    the duration.
+Where the first number specifies the token start time (in seconds) and the second the
+duration.
 
-    This command reads in a "ctm" file and writes its contents as token sequences
-    compatible with the "ref/" directory of a SpectDataSet. See the command
-    "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory.
-    """
+This command reads in a "ctm" file and writes its contents as token sequences compatible
+with the "ref/" directory of a SpectDataSet. See the command
+"get-torch-spect-data-dir-info" for more info about a SpectDataSet directory."""
     try:
         options = _ctm_to_torch_token_data_dir_parse_args(args)
     except SystemExit as ex:
@@ -789,28 +801,27 @@ def _torch_token_data_dir_to_ctm_parse_args(args):
     return parser.parse_args(args)
 
 
-def torch_token_data_dir_to_ctm(args: Optional[Sequence[str]] = None) -> None:
+def torch_token_data_dir_to_ctm(args: Optional[Sequence[str]] = None):
     """Convert a SpectDataSet token data directory to a NIST "ctm" file
 
-    A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
-    conversation file) used in the sclite
-    (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm) toolkit. Here is the
-    format::
+A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
+conversation file) used in the sclite
+(http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm) toolkit. Here is the
+format::
 
-        utt_1 A 0.2 0.1 hi
-        utt_1 A 0.3 1.0 there  ;; comment
-        utt_2 A 0.0 1.0 next
-        utt_3 A 0.1 0.4 utterance
+    utt_1 A 0.2 0.1 hi
+    utt_1 A 0.3 1.0 there  ;; comment
+    utt_2 A 0.0 1.0 next
+    utt_3 A 0.1 0.4 utterance
 
-    Where the first number specifies the token start time (in seconds) and the second
-    the duration.
+Where the first number specifies the token start time (in seconds) and the second the
+duration.
 
-    This command scans the contents of a directory like "ref/" in a SpectDataSete and
-    converts each such file into a transcription. Every token in a given transcription
-    must have information about its duration. Each such transcription is then written to
-    the "ctm" file. See the command "get-torch-spect-data-dir-info" for more info about
-    a SpectDataSet directory.
-    """
+This command scans the contents of a directory like "ref/" in a SpectDataSete and
+converts each such file into a transcription. Every token in a given transcription must
+have information about its duration. Each such transcription is then written to the
+"ctm" file. See the command "get-torch-spect-data-dir-info" for more info about a
+SpectDataSet directory."""
     try:
         options = _torch_token_data_dir_to_ctm_parse_args(args)
     except SystemExit as ex:
@@ -938,35 +949,32 @@ def _compute_torch_token_data_dir_parse_args(args):
     return parser.parse_args(args)
 
 
-def compute_torch_token_data_dir_error_rates(
-    args: Optional[Sequence[str]] = None,
-) -> None:
+def compute_torch_token_data_dir_error_rates(args: Optional[Sequence[str]] = None,):
     """Compute error rates between reference and hypothesis token data dirs
 
-    WARNING!!!!
-    The error rates reported by this command have changed since version v0.3.0 of
-    pydrobert-pytorch when the insertion, deletion, and substitution costs do not all
-    equal 1. Consult the documentation of "pydrobert.torch.functional.error_rate" for
-    more information.
+WARNING!!!!
+The error rates reported by this command have changed since version v0.3.0 of
+pydrobert-pytorch when the insertion, deletion, and substitution costs do not all equal
+1. Consult the documentation of "pydrobert.torch.functional.error_rate" for more
+information.
 
-    This is a very simple script that computes and prints the error rates between the
-    "ref/" (reference/gold standard) token sequences and "hyp/" (hypothesis/generated)
-    token sequences in a SpectDataSet directory. Consult the Wikipedia article on the
-    Levenshtein distance (https://en.wikipedia.org/wiki/Levenshtein_distance>) for more
-    info on error rates. The error rate for the entire partition will be calculated as
-    the total number of insertions, deletions, and substitutions made in all
-    transcriptions divided by the sum of lengths of reference transcriptions.
+This is a very simple script that computes and prints the error rates between the "ref/"
+(reference/gold standard) token sequences and "hyp/" (hypothesis/generated) token
+sequences in a SpectDataSet directory. Consult the Wikipedia article on the Levenshtein
+distance (https://en.wikipedia.org/wiki/Levenshtein_distance>) for more info on error
+rates. The error rate for the entire partition will be calculated as the total number of
+insertions, deletions, and substitutions made in all transcriptions divided by the sum
+of lengths of reference transcriptions.
 
-    Error rates are printed as ratios, not by "percentage."
+Error rates are printed as ratios, not by "percentage."
 
-    While convenient and accurate, this script has very few features. Consider pairing
-    the command "torch-token-data-dir-to-trn" with sclite
-    (http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm) instead.
+While convenient and accurate, this script has very few features. Consider pairing the
+command "torch-token-data-dir-to-trn" with sclite
+(http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm) instead.
 
-    Many tasks will ignore some tokens (e.g. silences) or collapse others (e.g. phones).
-    Please consult a standard recipe (such as those in Kaldi http://kaldi-asr.org/)
-    before performing these computations.
-    """
+Many tasks will ignore some tokens (e.g. silences) or collapse others (e.g. phones).
+Please consult a standard recipe (such as those in Kaldi http://kaldi-asr.org/) before
+performing these computations."""
     try:
         options = _compute_torch_token_data_dir_parse_args(args)
     except SystemExit as ex:
@@ -1136,3 +1144,295 @@ def compute_torch_token_data_dir_error_rates(
                 tot_errs / (len(error_rates) if options.distances else total_ref_tokens)
             )
         )
+
+
+def _torch_spect_data_dir_to_wds_parse_args(args):
+    parser = argparse.ArgumentParser(
+        description=torch_spect_data_dir_to_wds.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("dir", help="The torch data directory")
+    parser.add_argument("tar_path", help="The path to store files to")
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    parser.add_argument(
+        "--feat-subdir", default="feat", help="Subdirectory where features are stored."
+    )
+    parser.add_argument(
+        "--ali-subdir", default="ali", help="Subdirectory where alignments are stored."
+    )
+    parser.add_argument(
+        "--ref-subdir",
+        default="ref",
+        help="Subdirectory where reference token sequences are stored.",
+    )
+    parser.add_argument(
+        "--is-uri",
+        action="store_true",
+        default=False,
+        help="If set, tar_pattern will be treated as a URI rather than a path/",
+    )
+    parser.add_argument(
+        "--shard",
+        action="store_true",
+        default=False,
+        help="Split samples among multiple tar files. 'tar_path' will be extended with "
+        "a suffix '.x', where x is the shard number.",
+    )
+    parser.add_argument(
+        "--max-samples-per-shard",
+        type=int,
+        default=1e5,
+        help="If sharding ('--shard' is specified), dictates the number of samples in "
+        "each file.",
+    )
+    parser.add_argument(
+        "--max-size-per-shard",
+        type=int,
+        default=3e9,
+        help="If sharding ('--shard' is specified), dictates the maximum size in bytes "
+        "of each file.",
+    )
+
+    return parser.parse_args(args)
+
+
+def torch_spect_data_dir_to_wds(args: Optional[Sequence[str]] = None):
+    """Convert a SpectDataSet to a WebDataset
+    
+A torch SpectDataSet data dir is of the form
+
+    dir/
+        feat/
+            <file_prefix><utt1><file_suffix>
+            <file_prefix><utt2><file_suffix>
+            ...
+        [ali/
+            <file_prefix><utt1><file_suffix>
+            <file_prefix><utt1><file_suffix>
+            ...
+        ]
+        [ref/
+            <file_prefix><utt1><file_suffix>
+            <file_prefix><utt1><file_suffix>
+            ...
+        ]
+
+Where "feat/" contains float tensors of shape (N, F), where N is the number of
+frames (variable) and F is the number of filters (fixed). "ali/" if there, contains
+long tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids
+for discriminative training in an DNN-HMM). "ref/", if there, contains long tensors
+of shape (R, 3) indicating a sequence of reference tokens where element indexed by
+"[i, 0]" is a token id, "[i, 1]" is the inclusive start frame of the token (or a
+negative value if unknown), and "[i, 2]" is the exclusive end frame of the token.
+
+This command converts the data directory into a tar file to be used as a
+WebDataset (https://github.com/webdataset/webdataset), whose contents are files
+
+    <utt1>.feat.pth
+    [<utt1>.ali.pth]
+    [<utt1>.ref.pth]
+    <utt2>.feat.pth
+    [<utt2>.ali.pth]
+    [<utt2>.ref.pth]
+    ...
+
+holding tensors with the same interpretation as above.
+
+This command does not require WebDataset to be installed."""
+    try:
+        options = _torch_spect_data_dir_to_wds_parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+    if not os.path.isdir(options.dir):
+        print(f"'{options.dir}' is not a directory", file=sys.stderr)
+        return 1
+    data_set = data.SpectDataSet(
+        options.dir,
+        file_prefix=options.file_prefix,
+        file_suffix=options.file_suffix,
+        feat_subdir=options.feat_subdir,
+        ali_subdir=options.ali_subdir,
+        ref_subdir=options.ref_subdir,
+        suppress_alis=False,
+        tokens_only=False,
+    )
+    pattern = Path(options.tar_path)
+    os.makedirs(pattern.parent, exist_ok=True)
+    if pattern.suffix in {".tgz", ".gz"}:
+        compression = "gz"
+    elif pattern.suffix == ".bz2":
+        compression = "bz2"
+    elif pattern.suffix == ".xz":
+        compression = "xz"
+    else:
+        compression = ""
+    pattern = str(pattern.resolve())
+    NN = len(data_set)
+    if options.shard:
+        max_bytes = options.max_size_per_shard
+        max_count = options.max_samples_per_shard
+        if max_bytes <= 0:
+            raise argparse.ArgumentTypeError("--max-size-per-shard must be positive")
+        if max_count <= 0:
+            raise argparse.ArgumentTypeError("--max-samples-per-shard must be positive")
+        max_num_shards = (NN - 1) // max_count + 1
+        max_shard = max(max_num_shards - 1, 1)
+        pattern += f".{{shard:0{int(math.ceil(math.log(max_shard)))}d}}"
+    else:
+        max_bytes = float("inf")
+        max_count = NN
+    cur_count = cur_bytes = shard = 0
+    cur_tar = tarfile.open(pattern.format(shard=shard), f"w|{compression}")
+    for idx in range(NN):
+        feat, ali, ref = data_set[idx]
+        utt_id = data_set.utt_ids[idx]
+        if cur_count >= max_count or cur_bytes >= max_bytes:
+            cur_tar.close()
+            shard += 1
+            cur_count = cur_bytes = 0
+            cur_tar = tarfile.open(pattern.format(shard=shard), f"w|{compression}")
+        for name, tensor in (("ali", ali), ("feat", feat), ("ref", ref)):
+            if tensor is None:
+                continue
+            buf = io.BytesIO()
+            torch.save(tensor, buf)
+            buf.read()
+            member = tarfile.TarInfo(f"{utt_id}.{name}.pth")
+            member.size = buf.tell()
+            cur_bytes += member.size
+            member.mode = 0o0444
+            buf.seek(0)
+            cur_tar.addfile(member, buf)
+            del buf
+        cur_count += 1
+    cur_tar.close()
+    return
+
+
+def _compute_mvn_stats_for_torch_feat_data_dir_parse_args(args):
+    parser = argparse.ArgumentParser(
+        description=compute_mvn_stats_for_torch_feat_data_dir.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=r"""
+If --id2gid is specified, it points to a file which maps file ids to groups. Each group
+gets its own statistics which are estimated using only the feature vectors from the
+files assigned to them. With <id_1>, <id_2>, etc. part of the file names in the feature
+directory as above and <gid_1>, <gid_2>, etc. strings without spaces representing group
+ids, then the argument passed to --id2gid is a file with lines
+
+    <id_x> <gid_y>
+
+defining a surjective mapping from file ids to group ids. 'out' will then store a
+pickled, nested dictionary
+
+    {
+        <gid_1>: {'mean': ..., 'var': ...},
+        <gid_2>: {'mean': ..., 'var': ...},
+        ...
+    }
+
+of the statistics of all groups.
+""",
+    )
+    parser.add_argument("dir", help="The feature directory")
+    parser.add_argument("out", help="Output path")
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--num-workers")
+    parser.add_argument(
+        "--dim", type=int, default=-1, help="The dimension of the feature vector"
+    )
+    parser.add_argument(
+        "--id2gid",
+        type=argparse.FileType("r"),
+        default=None,
+        help="Path to a file mapping feature tensors to groups. See below for more info",
+    )
+    parser.add_argument(
+        "--bessel",
+        action="store_true",
+        default=False,
+        help="Apply Bessel's correction "
+        "(https://en.wikipedia.org/wiki/Bessel's_correction) to estimates.",
+    )
+    return parser.parse_args(args)
+
+
+def compute_mvn_stats_for_torch_feat_data_dir(args: Optional[Sequence[str]] = None,):
+    """Compute mean and standard deviation over a torch feature directory
+
+A feature directory is of the form
+
+dir/
+    <file_prefix><id_1><file_suffix>
+    <file_prefix><id_2><file_suffix>
+    ...
+
+where each file contains a dynamically-sized tensor whose last dimension (by default) is
+a feature vector. Letting F be a feature vector, this command computes the mean and
+standard deviation of the features in the directory, storing them as a pickled
+dictionary of tensors (with keys 'mean' and 'std') to the file 'out'. Those statistics
+may be used with a pydrobert.torch.modules.MeanVarianceNormalization layer."""
+    options = _compute_mvn_stats_for_torch_feat_data_dir_parse_args(args)
+
+    if options.id2gid is not None:
+        id2gid = dict()
+        for ln, line in enumerate(options.id2gid):
+            line = line.strip().split()
+            if not len(line):
+                continue
+            if len(line) != 2:
+                print(
+                    f"{options.id2gid.name} line {ln + 1}: expected two ids, got "
+                    f"{len(line)}",
+                    file=sys.stderr,
+                )
+                return 1
+            id_, gid = line
+            if id_ in id2gid:
+                print(
+                    f"{options.id2gid.name} line {ln + 1}: duplicate entry for id '{id_}'",
+                    file=sys.stderr,
+                )
+                return 1
+            id2gid[id_] = gid
+        gid2mvn = dict((x, None) for x in id2gid.values())
+    else:
+        id2gid = defaultdict(lambda: None)
+        gid2mvn = {None: None}
+
+    ds = _DirectoryDataset(options.dir, options.file_prefix, options.file_suffix)
+    dl = torch.utils.data.DataLoader(
+        ds, batch_size=1, num_workers=options.num_workers, collate_fn=_noop_collate
+    )
+
+    for id_, x in dl:
+        try:
+            gid = id2gid[id_]
+        except KeyError:
+            print(
+                f"'{options.dir}' id '{id_}' was not listed in '{options.id2gid.name}'",
+                file=sys.stderr,
+            )
+            return 1
+        mvn = gid2mvn[gid]
+        if mvn is None:
+            gid2mvn[gid] = mvn = modules.MeanVarianceNormalization(options.dim)
+        mvn.accumulate(x)
+
+    gid2stats = dict()
+    for gid, mvn in gid2mvn.items():
+        if mvn is None:
+            if gid is None:
+                print("No features - no stats!", file=sys.stderr)
+                return 1
+            print(f"Gid '{gid}' had no accumulated stats - not saving", file=sys.stderr)
+            continue
+        mvn.store(bessel=options.bessel)
+        gid2stats[gid] = {"mean": mvn.mean, "std": mvn.std}
+
+    if set(gid2stats) == {None}:
+        gid2stats = gid2stats[None]
+
+    torch.save(gid2stats, options.out)

@@ -58,13 +58,7 @@ __all__ = [
     "script",
     "SpoofPackedSequence",
     "trunc_divide",
-    "TypeAlias",
 ]
-
-try:
-    from typing import TypeAlias
-except ImportError:
-    from typing_extensions import TypeAlias
 
 
 def check_methods(C, *methods):
@@ -198,14 +192,31 @@ else:
             return obj
 
 
+if _v < "1.10.0":
+    meshgrid = torch.meshgrid
+
+    trunc_divide = torch.floor_divide
+else:
+
+    def trunc_divide(input: torch.Tensor, other: Any) -> torch.Tensor:
+        if not torch.jit.is_scripting():
+            return input.div(other, rounding_mode="trunc")
+        elif torch.jit.isinstance(other, float):
+            return input.div(other, rounding_mode="trunc")
+        elif torch.jit.isinstance(other, int):
+            return input.div(other, rounding_mode="trunc")
+        elif torch.jit.isinstance(other, torch.Tensor):
+            return input.div(other, rounding_mode="trunc")
+        else:
+            assert False
+
+    def meshgrid(a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        x = torch.meshgrid(a, b, indexing="ij")
+        return x[0], x[1]
+
+
 if _v < "1.8.0":
     from torch.distributions.gumbel import euler_constant
-
-    if config.USE_JIT:
-        script = torch.jit.script
-    else:
-
-        script = lambda x: x
 
     @script
     def pad_sequence(
@@ -292,6 +303,49 @@ else:
     jit_isinstance = torch.jit.isinstance
 
 
+if _v < "1.7.0":
+
+    @script
+    def movedim(a: torch.Tensor, source: int, dest: int) -> torch.Tensor:
+        D = a.ndim
+        if source < -D or source >= D:
+            raise RuntimeError(
+                f"Dimension 'source' expected to be in the range [{-D},{D - 1}], "
+                f"got {source}"
+            )
+        source = (source + D) % D
+        if dest < -D or dest >= D:
+            raise RuntimeError(
+                f"Dimension 'dest' expected to be in the range [{-D},{D - 1}], "
+                f"got {dest}"
+            )
+        dest = (dest + D) % D
+        if source < dest:
+            for s in range(source, dest):
+                a = a.transpose(s, s + 1)
+        elif source > dest:
+            for s in range(source, dest, -1):
+                a = a.transpose(s - 1, s)
+        return a
+
+
+else:
+    movedim = torch.movedim
+
+
+if _v < "1.6.0":
+
+    def logaddexp(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        max_, min_ = torch.max(a, b), torch.min(a, b)
+        return torch.where(
+            torch.isfinite(max_), (min_ - max_).exp().log1p() + max_, max_
+        )
+
+
+else:
+    logaddexp = torch.logaddexp
+
+
 @torch.no_grad()
 def broadcast_shapes(a: List[int], b: List[int]) -> List[int]:
     scalar = torch.zeros((), device="cpu")
@@ -299,29 +353,6 @@ def broadcast_shapes(a: List[int], b: List[int]) -> List[int]:
     tensor_b = scalar.expand(b)
     tensor_a, tensor_b = torch.broadcast_tensors(tensor_a, tensor_b)
     return tensor_a.shape
-
-
-if _v < "1.10.0":
-    meshgrid = torch.meshgrid
-
-    trunc_divide = torch.floor_divide
-else:
-
-    def trunc_divide(input: torch.Tensor, other: Any) -> torch.Tensor:
-        if not torch.jit.is_scripting():
-            return input.div(other, rounding_mode="trunc")
-        elif torch.jit.isinstance(other, float):
-            return input.div(other, rounding_mode="trunc")
-        elif torch.jit.isinstance(other, int):
-            return input.div(other, rounding_mode="trunc")
-        elif torch.jit.isinstance(other, torch.Tensor):
-            return input.div(other, rounding_mode="trunc")
-        else:
-            assert False
-
-    def meshgrid(a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        x = torch.meshgrid(a, b, indexing="ij")
-        return x[0], x[1]
 
 
 @script
