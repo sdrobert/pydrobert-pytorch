@@ -13,8 +13,8 @@ environment:
       ONLY_SCRIPT: "1"
     - TOXENV: py39
       PYTHON: "3.9"
-    # - TOXENV: py310
-    #   PYTHON: "3.10"
+    - TOXENV: py310
+      PYTHON: "3.10"
 
 stack: python %PYTHON%
 
@@ -27,7 +27,7 @@ for:
     matrix:
       only:
         - PYTHON: "3.8"
-        # - PYTHON: "3.9"
+        - PYTHON: "3.9"
     skip_non_tags: true
 
 build: off
