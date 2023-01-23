@@ -51,12 +51,14 @@ from ._dataloaders import (
 from ._parsing import (
     parse_arpa_lm,
     read_ctm,
+    read_textgrid,
     read_trn_iter,
     read_trn,
-    write_ctm,
-    write_trn,
-    transcript_to_token,
     token_to_transcript,
+    transcript_to_token,
+    write_ctm,
+    write_textgrid,
+    write_trn,
 )
 
 __all__ = [
@@ -79,6 +81,7 @@ __all__ = [
     "LangDataSet",
     "parse_arpa_lm",
     "read_ctm",
+    "read_textgrid",
     "read_trn_iter",
     "read_trn",
     "spect_seq_to_batch",
@@ -90,6 +93,7 @@ __all__ = [
     "transcript_to_token",
     "validate_spect_data_set",
     "write_ctm",
+    "write_textgrid",
     "write_trn",
 ]
 

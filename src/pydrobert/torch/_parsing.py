@@ -21,6 +21,8 @@ from collections import OrderedDict
 import torch
 import numpy as np
 
+from ._textgrid import TextGrid, TEXTTIER
+
 
 def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) -> list:
     r"""Parse an ARPA statistical language model
@@ -405,10 +407,10 @@ def read_ctm(
 
     Parameters
     ----------
-    ctm : file or str
+    ctm
         The time-marked conversation file pointer. Will open if `ctm` is a
         path
-    wc2utt : dict, optional
+    wc2utt
         "ctm" files identify utterances by waveform file name and channel. If
         specified, `wc2utt` consists of keys ``wfn, chan`` (e.g.
         ``'940328', 'A'``) to unique utterance IDs. If `wc2utt` is
@@ -518,6 +520,165 @@ def write_ctm(
         ctm.write("{} {} {} {} {}\n".format(*segment))
 
 
+def read_textgrid(
+    tg: Union[TextIO, str],
+    tier_id: Union[str, int] = 0,
+    fill_token: Optional[str] = None,
+) -> Tuple[Union[List[str], List[Tuple[str, float, float]]], float, float]:
+    """Read TextGrid file as a transcription
+    
+    TextGrid is the transcription format of `Praat
+    <https://www.fon.hum.uva.nl/praat/>`__.
+
+    Parameters
+    ----------
+    tg 
+        The TextGrid file. Will open if `tg` is a path.
+    tier_id 
+        Either the name of the tier (first occurence) or the index of the tier to
+        extract.
+    fill_token
+        If the tier is an IntervalTier and `fill_token` is set, any intervals missing
+        from the tier will be filled with an interval of this token before being
+        returned.
+
+    Returns
+    -------
+    transcript : list
+        If the tier is a PointTier, `transcript` will be just a list of the tokens in
+        the tier. If an IntervalTier, `transcripts` will contain triples of triples
+        ``token, start, end``, `token` being the token (a string), `start` being a float
+        of the start time of the token (in seconds), and `end` being the end time of the
+        token.
+    start_time : float
+        The start time of the tier (in seconds)
+    end_time : float
+        The end time of the tier (in seconds)
+
+    Notes
+    -----
+    This function does not check for whitespace in or around token labels. This may
+    cause issues if writing as another file type, like :func:`write_trn`.
+
+    Start and end times (including any filled intervals) are determined from the tier's
+    values, not necessarily those of the top-level container. This is most likely a
+    technicality, however: they should not differ normally.
+    """
+
+    if isinstance(tg, str):
+        with open(tg) as f:
+            return read_textgrid(f, tier_id, fill_token)
+
+    tg_ = TextGrid(tg.read())
+    if isinstance(tier_id, str):
+        tier = None
+        for tier_ in tg_.tiers:
+            if tier_.nameid == tier_id:
+                tier = tier_
+                break
+        if tier is None:
+            raise ValueError(f"Could not find tier '{tier_id}'")
+    else:
+        tier = tg_.tiers[tier_id]
+
+    if tier.classid == TEXTTIER:
+        transcript = [x[1] for x in tier.simple_transcript]
+    else:
+        transcript = [(x[2], float(x[0]), float(x[1])) for x in tier.simple_transcript]
+        i = 0
+        start_time = tier.xmin
+        while i < len(transcript):
+            _, next_start, end_time = transcript[i]
+            if fill_token is not None and start_time < next_start:
+                transcript.insert(i, (fill_token, start_time, next_start))
+                i += 1
+            i += 1
+            start_time = end_time
+        if fill_token is not None and tier.xmax is not None and start_time < tier.xmax:
+            transcript.append((fill_token, start_time, tier.xmax))
+    return transcript, tier.xmin, tier.xmax
+
+
+def write_textgrid(
+    transcript: Sequence[Tuple[str, float, float]],
+    tg: Union[TextIO, str],
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
+    tier_name: str = "transcript",
+    precision: int = 3,
+) -> None:
+    """Write a transcription as a TextGrid file
+    
+    TextGrid is the transcription format of `Praat
+    <https://www.fon.hum.uva.nl/praat/>`__.
+
+    This function saves `transcript` as an IntervalTier within a TextGrid file.
+
+    Parameters
+    ----------
+    transcript
+        The transcription to write. Contains triples ``tok, start, end``, where `tok` is
+        the token, `start` is its start time, and `end` is its end time. Must be
+        non-empty.
+    tg
+        The file to write. Will open if `tg` is a path.
+    start_time
+        The start time of the recording (in seconds). If not specified, it will be
+        inferred from the minimum start time of the intervals in `transcript`.
+    end_time
+        The end time of the recording (in seconds). If not specified, it will be
+        inferred from the maximum end time of the intervals in `transcript`.
+    tier_name
+        What name to save the tier with.
+    precision
+        The precision of floating-point values to save times with.
+    
+    Warnings
+    --------
+    This function only writes IntervalTier transcripts, i.e. tokens with alignments.
+    It cannot round-trip with :func:`read_textgrid` if the transcripts were originally
+    stored as a PointTier.
+    """
+    if isinstance(tg, str):
+        with open(tg, "w") as tg:
+            return write_textgrid(transcript, tg, start_time, end_time, tier_name)
+    transcript = list(transcript)
+    if not len(transcript):
+        raise ValueError(f"Will not write an empty transcript")
+    tier_start_time = min(x[1] for x in transcript)
+    tier_end_time = max(x[2] for x in transcript)
+    if start_time is None:
+        start_time = tier_start_time
+    elif start_time > tier_start_time:
+        raise ValueError(
+            f"gave start_time={start_time} but an interval starts at "
+            f"{tier_start_time}"
+        )
+    if end_time is None:
+        end_time = tier_end_time
+    elif end_time < tier_end_time:
+        raise ValueError(
+            f"gave end_time={end_time} but an interval ends at {tier_end_time}"
+        )
+    # fmt: off
+    tg.write(
+        'File type = "ooTextFile"\n'
+        'Object class = "TextGrid"\n'
+        f"{start_time:0.{precision}f}\n"
+        f"{end_time:0.{precision}f}\n"
+        "<exists>\n"
+        "1\n"
+        '"IntervalTier"\n'
+        f'"{tier_name}"\n'
+        f"{tier_start_time:0.{precision}f}\n"
+        f"{tier_end_time:0.{precision}f}\n"
+        f"{len(transcript)}\n"
+    )
+    # fmt: on
+    for tok, start, end in transcript:
+        tg.write(f'{start:0.{precision}f}\n{end:0.{precision}f}\n"{tok}"\n')
+
+
 def transcript_to_token(
     transcript: Sequence,
     token2id: Optional[dict] = None,
@@ -527,7 +688,7 @@ def transcript_to_token(
 ) -> torch.Tensor:
     r"""Convert a transcript to a token sequence
 
-    This method converts `transcript` of length ``R`` to a long tensor `tok` of shape
+    This function converts `transcript` of length ``R`` to a long tensor `tok` of shape
     ``(R, 3)``, the latter suitable as a reference or hypothesis token sequence for an
     utterance of :class:`SpectDataSet`. An element of `transcript` can either be a
     ``token`` or a 3-tuple of ``(token, start, end)``. If `token2id` is not :obj:`None`,

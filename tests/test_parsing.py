@@ -414,3 +414,140 @@ def test_token_to_transcript_frame_shift():
         (2, 1000 / 8000, 2000 / 8000),
         (3, 12345 / 8000, 678910 / 8000),
     ]
+
+
+@pytest.mark.cpu
+def test_read_textgrid():
+    tg = StringIO()
+    tg.write(
+        """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+
+xmin = 0.1
+xmax = 1
+tiers? <exists>
+size = 3
+item []:
+    item [1]:
+       class = "IntervalTier"
+       name = "a"
+       xmin = 0.3
+       xmax = 0.7
+       intervals: size = 2
+       intervals [1]:
+          xmin = 0.3
+          xmax = 0.4
+          text = "paul"
+       intervals [2]:
+          xmin = 0.4
+          xmax = 0.7
+          text = "blart"
+    item [2]:
+       class = "TextTier"
+       name = "b"
+       xmin = 0.1
+       xmax = 1
+       points: size = 2
+       points [1]:
+          number = 0.3
+          mark = "mall"
+       points [2]:
+          number = 0.9
+          mark = "cop"
+    item [3]:
+       class = "IntervalTier"
+       name = "c"
+       xmin = 0.1
+       xmax = 0.9
+       intervals: size = 3
+       intervals [1]:
+          xmin = 0.2
+          xmax = 0.3
+          text = "paul"
+       intervals [2]:
+          xmin = 0.4
+          xmax = 0.5
+          text = "mall"
+       intervals [3]:
+          xmin = 0.5
+          xmax = 0.8
+          text = "cop"
+"""
+    )
+    tg.seek(0)
+    transcript, start, end = data.read_textgrid(tg)
+    assert start == pytest.approx(0.3)
+    assert end == pytest.approx(0.7)
+    assert transcript == [
+        ("paul", pytest.approx(0.3), pytest.approx(0.4)),
+        ("blart", pytest.approx(0.4), pytest.approx(0.7)),
+    ]
+    tg.seek(0)
+    transcript, start, end = data.read_textgrid(tg, 1)
+    assert start == pytest.approx(0.1)
+    assert end == pytest.approx(1)
+    assert transcript == ["mall", "cop"]
+    tg.seek(0)
+    transcript, start, end = data.read_textgrid(tg, 2)
+    assert start == pytest.approx(0.1)
+    assert end == pytest.approx(0.9)
+    assert transcript == [
+        ("paul", pytest.approx(0.2), pytest.approx(0.3)),
+        ("mall", pytest.approx(0.4), pytest.approx(0.5)),
+        ("cop", pytest.approx(0.5), pytest.approx(0.8)),
+    ]
+    tg.seek(0)
+    transcript, start, end = data.read_textgrid(tg, "c", "blart")
+    assert start == pytest.approx(0.1)
+    assert end == pytest.approx(0.9)
+    assert transcript == [
+        ("blart", pytest.approx(0.1), pytest.approx(0.2)),
+        ("paul", pytest.approx(0.2), pytest.approx(0.3)),
+        ("blart", pytest.approx(0.3), pytest.approx(0.4)),
+        ("mall", pytest.approx(0.4), pytest.approx(0.5)),
+        ("cop", pytest.approx(0.5), pytest.approx(0.8)),
+        ("blart", pytest.approx(0.8), pytest.approx(0.9)),
+    ]
+
+
+@pytest.mark.cpu
+def test_write_textgrid():
+    tg = StringIO()
+    transcript_exp = [("cool", 0.1234, 0.1237), ("beans", 0.35, 0.4444)]
+    data.write_textgrid(transcript_exp, tg)
+    tg.seek(0)
+    assert (
+        """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.123
+0.444
+<exists>
+1
+"IntervalTier"
+"transcript"
+0.123
+0.444
+2
+0.123
+0.124
+"cool"
+0.350
+0.444
+"beans"
+"""
+        == tg.read()
+    )
+    tg.seek(0)
+    transcript_act, start, end = data.read_textgrid(tg)
+    assert start == pytest.approx(transcript_exp[0][1], abs=1e-3)
+    assert end == pytest.approx(transcript_exp[-1][2], abs=1e-3)
+    assert len(transcript_exp) == len(transcript_act)
+    for (tok_exp, min_exp, max_exp), (tok_act, min_act, max_act) in zip(
+        transcript_exp, transcript_act
+    ):
+        assert tok_exp == tok_act
+        assert min_act == pytest.approx(min_exp, abs=1e-3)
+        assert max_act == pytest.approx(max_exp, abs=1e-3)
+
