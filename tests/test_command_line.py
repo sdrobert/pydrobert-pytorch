@@ -591,3 +591,95 @@ def test_compute_mvn_stats_for_torch_feat_data_dir(
         assert set(stats_exp) == set(stats_act) == {"mean", "std"}, gid
         for stat in stats_act:
             assert torch.allclose(stats_exp[stat], stats_act[stat]), (gid, stat)
+
+
+@pytest.mark.cpu
+def test_textgrids_to_torch_token_data_dir(temp_dir):
+    ref_dir = os.path.join(temp_dir, "ref")
+    token2id = os.path.join(temp_dir, "token2id")
+    _write_token2id(token2id, False)
+    with open(os.path.join(temp_dir, "utt_1.TextGrid"), "w") as f:
+        f.write(
+            """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0
+1
+<exists>
+1
+"IntervalTier"
+"pup"
+0
+1
+3
+0
+0.1
+"a"
+0.1
+0.2
+"b"
+0.2
+1
+"Z"
+"""
+        )
+    with open(os.path.join(temp_dir, "utt_2.TextGrid"), "w") as f:
+        f.write(
+            """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0
+2
+<exists>
+1
+"IntervalTier"
+"pupper"
+0
+2
+1
+0
+1
+"a"
+"""
+        )
+    with open(os.path.join(temp_dir, "utt_3.TextGrid"), "w") as f:
+        f.write(
+            """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0
+3
+<exists>
+1
+"TextTier"
+"doggo"
+0
+3
+2
+1
+"c"
+2
+"a"
+"""
+        )
+
+    assert not command_line.textgrids_to_torch_token_data_dir(
+        [temp_dir, token2id, ref_dir, "--unk-symbol=d", "--fill-symbol=e"]
+    )
+    act_utt1 = torch.load(os.path.join(ref_dir, "utt_1.pt"))
+    assert torch.all(act_utt1 == torch.tensor([[0, 0, 10], [1, 10, 20], [3, 20, 100]]))
+    act_utt2 = torch.load(os.path.join(ref_dir, "utt_2.pt"))
+    assert torch.all(act_utt2 == torch.tensor([[0, 0, 100], [4, 100, 200]]))
+    act_utt3 = torch.load(os.path.join(ref_dir, "utt_3.pt"))
+    assert torch.all(act_utt3 == torch.tensor([[2, -1, -1], [0, -1, -1]]))
+
+    assert not command_line.textgrids_to_torch_token_data_dir(
+        [temp_dir, token2id, ref_dir, "--unk-symbol=d", "--skip-frame-times"]
+    )
+    act_utt1 = torch.load(os.path.join(ref_dir, "utt_1.pt"))
+    assert torch.all(act_utt1 == torch.tensor([0, 1, 3]))
+    act_utt2 = torch.load(os.path.join(ref_dir, "utt_2.pt"))
+    assert torch.all(act_utt2 == torch.tensor([0]))
+    act_utt3 = torch.load(os.path.join(ref_dir, "utt_3.pt"))
+    assert torch.all(act_utt3 == torch.tensor([2, 0]))
+

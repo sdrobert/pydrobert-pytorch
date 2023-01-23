@@ -75,6 +75,26 @@ _COMMON_ARGS = {
         "frames. Used to convert between time in seconds and frame index. If your "
         "features are the raw samples, set this to 1000 / sample_rate_hz",
     },
+    "--skip-frame-times": {
+        "action": "store_true",
+        "default": False,
+        "help": "If true, will store token tensors of shape (R,) instead of "
+        "(R, 3), foregoing segment start and end times.",
+    },
+    "--feat-sizing": {
+        "action": "store_true",
+        "default": False,
+        "help": "If true, will store token tensors of shape (R, 1) instead of "
+        "(R, 3), foregoing segment start and end times (which trn does not "
+        "have). The extra dimension will allow data in this directory to be "
+        "loaded as features in a SpectDataSet.",
+    },
+    "--chunk-size": {
+        "type": int,
+        "default": 1000,
+        "help": "The number of utterances that a worker will process at once. Impacts "
+        "speed and memory consumption.",
+    },
 }
 
 
@@ -263,31 +283,10 @@ def _trn_to_torch_token_data_dir_parse_args(args):
     _add_common_arg(parser, "--swap")
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
-    parser.add_argument(
-        "--chunk-size",
-        type=int,
-        default=1000,
-        help="The number of lines that a worker will process at once. Impacts "
-        "speed and memory consumption.",
-    )
+    _add_common_arg(parser, "--chunk-size")
     size_group = parser.add_mutually_exclusive_group()
-    size_group.add_argument(
-        "--skip-frame-times",
-        action="store_true",
-        default=False,
-        help="If true, will store token tensors of shape (R,) instead of "
-        "(R, 3), foregoing segment start and end times (which trn does not "
-        "have).",
-    )
-    size_group.add_argument(
-        "--feat-sizing",
-        action="store_true",
-        default=False,
-        help="If true, will store token tensors of shape (R, 1) instead of "
-        "(R, 3), foregoing segment start and end times (which trn does not "
-        "have). The extra dimension will allow data in this directory to be "
-        "loaded as features in a SpectDataSet.",
-    )
+    _add_common_arg(size_group, "--skip-frame-times")
+    _add_common_arg(size_group, "--feat-sizing")
     return parser.parse_args(args)
 
 
@@ -367,56 +366,30 @@ def _save_transcripts_to_dir(
         os.makedirs(dir_)
     if num_workers:
         queue = torch.multiprocessing.Queue(num_workers)
-        try:
-            with torch.multiprocessing.Pool(
-                num_workers,
-                _save_transcripts_to_dir_worker,
-                (
-                    token2id,
-                    file_prefix,
-                    file_suffix,
-                    dir_,
-                    frame_shift_ms,
-                    unk,
-                    skip_frame_times,
-                    feat_sizing,
-                    queue,
-                ),
-            ) as pool:
+        with torch.multiprocessing.Pool(
+            num_workers,
+            _save_transcripts_to_dir_worker,
+            (
+                token2id,
+                file_prefix,
+                file_suffix,
+                dir_,
+                frame_shift_ms,
+                unk,
+                skip_frame_times,
+                feat_sizing,
+                queue,
+            ),
+        ) as pool:
+            chunk = tuple(itertools.islice(transcripts, chunk_size))
+            while len(chunk):
+                queue.put(chunk)
                 chunk = tuple(itertools.islice(transcripts, chunk_size))
-                while len(chunk):
-                    queue.put(chunk)
-                    chunk = tuple(itertools.islice(transcripts, chunk_size))
-                for _ in range(num_workers):
-                    queue.put(None)
-                pool.close()
-                pool.join()
-        except AttributeError:  # 2.7
-            pool = torch.multiprocessing.Pool(
-                num_workers,
-                _save_transcripts_to_dir_worker,
-                (
-                    token2id,
-                    file_prefix,
-                    file_suffix,
-                    dir_,
-                    frame_shift_ms,
-                    unk,
-                    skip_frame_times,
-                    queue,
-                ),
-            )
-            try:
-                chunk = tuple(itertools.islice(transcripts, chunk_size))
-                while len(chunk):
-                    queue.put(chunk)
-                    chunk = tuple(itertools.islice(transcripts, chunk_size))
-                for _ in range(num_workers):
-                    queue.put(None)
-                pool.close()
-                pool.join()
-            finally:
-                pool.terminate()
+            for _ in range(num_workers):
+                queue.put(None)
+            pool.close()
+            pool.join()
+
     else:
         for utt_id, transcript in transcripts:
             tok = data.transcript_to_token(
@@ -640,14 +613,13 @@ def _ctm_to_torch_token_data_dir_parse_args(args):
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--swap")
-    parser.add_argument(
-        "--frame-shift-ms",
-        type=float,
-        default=10.0,
-        help="The number of milliseconds that have passed between consecutive "
-        "frames. Used to convert between time in seconds and frame index. If your "
-        "features are the raw sample, set this to 1000 / sample_rate_hz",
-    )
+    _add_common_arg(parser, "--unk-symbol")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--chunk-size")
+    size_group = parser.add_mutually_exclusive_group()
+    _add_common_arg(size_group, "--skip-frame-times")
+    _add_common_arg(size_group, "--feat-sizing")
+    _add_common_arg(size_group, "--frame-shift-ms")
     utt_group = parser.add_mutually_exclusive_group()
     utt_group.add_argument(
         "--wc2utt",
@@ -669,7 +641,6 @@ def _ctm_to_torch_token_data_dir_parse_args(args):
         "nor '--utt2wc' has been specied, the wavefile name will be treated "
         "as the utterance ID",
     )
-    _add_common_arg(parser, "--unk-symbol")
     return parser.parse_args(args)
 
 
@@ -740,13 +711,120 @@ with the "ref/" directory of a SpectDataSet. See the command
         wc2utt = None
     transcripts = data.read_ctm(options.ctm, wc2utt)
     _save_transcripts_to_dir(
-        transcripts,
+        iter(transcripts),
         token2id,
         options.file_prefix,
         options.file_suffix,
         options.dir,
         options.frame_shift_ms,
         options.unk_symbol,
+        options.skip_frame_times,
+        options.feat_sizing,
+        options.num_workers,
+        options.chunk_size,
+    )
+    return 0
+
+
+def _textgrids_to_torch_token_data_dir_parse_args(args):
+    parser = argparse.ArgumentParser(
+        description=textgrids_to_torch_token_data_dir.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("tg_dir", help="The directory containing the TextGrid files")
+    _add_common_arg(parser, "token2id")
+    parser.add_argument(
+        "dir",
+        help="The directory to store token sequences to. If the "
+        "directory does not exist, it will be created",
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--swap")
+    _add_common_arg(parser, "--unk-symbol")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--chunk-size")
+    size_group = parser.add_mutually_exclusive_group()
+    _add_common_arg(size_group, "--skip-frame-times")
+    _add_common_arg(size_group, "--feat-sizing")
+    _add_common_arg(size_group, "--frame-shift-ms")
+    parser.add_argument(
+        "--fill-symbol",
+        default=None,
+        help="If set, unlabelled intervals in the TextGrid files will be "
+        "assigned this symbol. Relevant only if a point grid.",
+    )
+    tier_grp = parser.add_mutually_exclusive_group()
+    tier_grp.add_argument(
+        "--tier-name", dest="tier_id", help="The name of the tier to extract."
+    )
+    tier_grp.add_argument(
+        "--tier-idx",
+        dest="tier_id",
+        type=int,
+        help="The index of the tier to extract.",
+    )
+    return parser.parse_args(args)
+
+
+def textgrids_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
+    """Convert a directory of TextGrid files into a SpectDataSet token data dir
+
+A "TextGrid" file is a transcription file for a single utterance used by the Praat
+software (https://www.fon.hum.uva.nl/praat/).
+
+This command accepts a directory "tg_dir" of TextGrid files
+
+    tg_dir/
+        utt_1.TextGrid
+        utt_2.TextGrid
+        ...
+
+and writes each file as a separate token sequence compatible with the "ref/" directory
+of a SpectDataSet. If the extracted tier is an IntervalTier, the start and end points
+will be saved with each token. Otherwise, only the token sequence will be saved. See the
+command "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory."""
+    try:
+        options = _textgrids_to_torch_token_data_dir_parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+    if not os.path.isdir(options.tg_dir):
+        raise ValueError(f"'{options.tg_dir}' is not a directory")
+    token2id = _parse_token2id(options.token2id, options.swap, options.swap)
+    if options.unk_symbol is not None and options.unk_symbol not in token2id:
+        print(f"Unk symbol '{options.unk_symbol}' is not in token2id", file=sys.stderr)
+        return 1
+    if options.fill_symbol is not None and options.fill_symbol not in token2id:
+        print(
+            f"Fill symbol '{options.fill_symbol}' is not in token2id", file=sys.stderr
+        )
+        return 1
+    if options.tier_id is None:
+        options.tier_id = 0
+
+    def textgrid_iter():
+        for file_name in os.listdir(options.tg_dir):
+            if not file_name.endswith(".TextGrid"):
+                continue
+            utt_id = file_name.rsplit(".", maxsplit=1)[0]
+            yield utt_id, data.read_textgrid(
+                os.path.join(options.tg_dir, file_name),
+                options.tier_id,
+                options.fill_symbol,
+            )[0]
+
+    _save_transcripts_to_dir(
+        textgrid_iter(),
+        token2id,
+        options.file_prefix,
+        options.file_suffix,
+        options.dir,
+        options.frame_shift_ms,
+        options.unk_symbol,
+        options.skip_frame_times,
+        options.feat_sizing,
+        options.num_workers,
+        options.chunk_size,
     )
     return 0
 
@@ -766,14 +844,7 @@ def _torch_token_data_dir_to_ctm_parse_args(args):
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--swap")
-    parser.add_argument(
-        "--frame-shift-ms",
-        type=float,
-        default=10.0,
-        help="The number of milliseconds that have passed between consecutive "
-        "frames. Used to convert between time in seconds and frame index. If your "
-        "features are the raw samples, set this to 1000 / sample_rate_hz",
-    )
+    _add_common_arg(parser, "--frame-shift-ms")
     utt_group = parser.add_mutually_exclusive_group()
     utt_group.add_argument(
         "--wc2utt",

@@ -170,9 +170,11 @@ ctm-to-torch-token-data-dir
 
   usage: ctm-to-torch-token-data-dir [-h] [--file-prefix FILE_PREFIX]
                                      [--file-suffix FILE_SUFFIX] [--swap]
-                                     [--frame-shift-ms FRAME_SHIFT_MS]
-                                     [--wc2utt WC2UTT | --utt2wc UTT2WC]
                                      [--unk-symbol UNK_SYMBOL]
+                                     [--num-workers NUM_WORKERS]
+                                     [--chunk-size CHUNK_SIZE]
+                                     [--skip-frame-times | --feat-sizing | --frame-shift-ms FRAME_SHIFT_MS]
+                                     [--wc2utt WC2UTT | --utt2wc UTT2WC]
                                      ctm token2id dir
   
   Convert a NIST "ctm" file to a SpectDataSet token data dir
@@ -211,11 +213,28 @@ ctm-to-torch-token-data-dir
                           The file suffix indicating a torch data file
     --swap                If set, swaps the order of the key and value in
                           token/id mapping
+    --unk-symbol UNK_SYMBOL
+                          If set, will map out-of-vocabulary tokens to this
+                          symbol
+    --num-workers NUM_WORKERS
+                          The number of workers to spawn to process the data. 0
+                          is serial. Defaults to the CPU count
+    --chunk-size CHUNK_SIZE
+                          The number of utterances that a worker will process at
+                          once. Impacts speed and memory consumption.
+    --skip-frame-times    If true, will store token tensors of shape (R,)
+                          instead of (R, 3), foregoing segment start and end
+                          times.
+    --feat-sizing         If true, will store token tensors of shape (R, 1)
+                          instead of (R, 3), foregoing segment start and end
+                          times (which trn does not have). The extra dimension
+                          will allow data in this directory to be loaded as
+                          features in a SpectDataSet.
     --frame-shift-ms FRAME_SHIFT_MS
                           The number of milliseconds that have passed between
                           consecutive frames. Used to convert between time in
                           seconds and frame index. If your features are the raw
-                          sample, set this to 1000 / sample_rate_hz
+                          samples, set this to 1000 / sample_rate_hz
     --wc2utt WC2UTT       A file mapping wavefile name and channel combinations
                           (e.g. 'utt_1 A') to utterance IDs. Each line of the
                           file has the format '<wavefile_name> <channel>
@@ -228,9 +247,6 @@ ctm-to-torch-token-data-dir
                           <channel>'. If neither '--wc2utt' nor '--utt2wc' has
                           been specied, the wavefile name will be treated as the
                           utterance ID
-    --unk-symbol UNK_SYMBOL
-                          If set, will map out-of-vocabulary tokens to this
-                          symbol
 
 get-torch-spect-data-dir-info
 -----------------------------
@@ -317,6 +333,84 @@ get-torch-spect-data-dir-info
                           info, potentially fixing small errors in the
                           directory. The process is described in
                           pydrobert.torch.validate_spect_data_set
+
+textgrids-to-torch-token-data-dir
+---------------------------------
+
+::
+
+  usage: textgrids-to-torch-token-data-dir [-h] [--file-prefix FILE_PREFIX]
+                                           [--file-suffix FILE_SUFFIX] [--swap]
+                                           [--unk-symbol UNK_SYMBOL]
+                                           [--num-workers NUM_WORKERS]
+                                           [--chunk-size CHUNK_SIZE]
+                                           [--skip-frame-times | --feat-sizing | --frame-shift-ms FRAME_SHIFT_MS]
+                                           [--fill-symbol FILL_SYMBOL]
+                                           [--tier-name TIER_ID | --tier-idx TIER_ID]
+                                           tg_dir token2id dir
+  
+  Convert a directory of TextGrid files into a SpectDataSet token data dir
+  
+  A "TextGrid" file is a transcription file for a single utterance used by the Praat
+  software (https://www.fon.hum.uva.nl/praat/).
+  
+  This command accepts a directory "tg_dir" of TextGrid files
+  
+      tg_dir/
+          utt_1.TextGrid
+          utt_2.TextGrid
+          ...
+  
+  and writes each file as a separate token sequence compatible with the "ref/" directory
+  of a SpectDataSet. If the extracted tier is an IntervalTier, the start and end points
+  will be saved with each token. Otherwise, only the token sequence will be saved. See the
+  command "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory.
+  
+  positional arguments:
+    tg_dir                The directory containing the TextGrid files
+    token2id              A file containing mappings from tokens (e.g. words or
+                          phones) to unique IDs. Each line has the format
+                          "<token> <id>". The flag "--swap" can be used to swap
+                          the expected ordering (i.e. to "<id> <token>")
+    dir                   The directory to store token sequences to. If the
+                          directory does not exist, it will be created
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --swap                If set, swaps the order of the key and value in
+                          token/id mapping
+    --unk-symbol UNK_SYMBOL
+                          If set, will map out-of-vocabulary tokens to this
+                          symbol
+    --num-workers NUM_WORKERS
+                          The number of workers to spawn to process the data. 0
+                          is serial. Defaults to the CPU count
+    --chunk-size CHUNK_SIZE
+                          The number of utterances that a worker will process at
+                          once. Impacts speed and memory consumption.
+    --skip-frame-times    If true, will store token tensors of shape (R,)
+                          instead of (R, 3), foregoing segment start and end
+                          times.
+    --feat-sizing         If true, will store token tensors of shape (R, 1)
+                          instead of (R, 3), foregoing segment start and end
+                          times (which trn does not have). The extra dimension
+                          will allow data in this directory to be loaded as
+                          features in a SpectDataSet.
+    --frame-shift-ms FRAME_SHIFT_MS
+                          The number of milliseconds that have passed between
+                          consecutive frames. Used to convert between time in
+                          seconds and frame index. If your features are the raw
+                          samples, set this to 1000 / sample_rate_hz
+    --fill-symbol FILL_SYMBOL
+                          If set, unlabelled intervals in the TextGrid files
+                          will be assigned this symbol. Relevant only if a point
+                          grid.
+    --tier-name TIER_ID   The name of the tier to extract.
+    --tier-idx TIER_ID    The index of the tier to extract.
 
 torch-spect-data-dir-to-wds
 ---------------------------
@@ -569,11 +663,11 @@ trn-to-torch-token-data-dir
                           The number of workers to spawn to process the data. 0
                           is serial. Defaults to the CPU count
     --chunk-size CHUNK_SIZE
-                          The number of lines that a worker will process at
+                          The number of utterances that a worker will process at
                           once. Impacts speed and memory consumption.
     --skip-frame-times    If true, will store token tensors of shape (R,)
                           instead of (R, 3), foregoing segment start and end
-                          times (which trn does not have).
+                          times.
     --feat-sizing         If true, will store token tensors of shape (R, 1)
                           instead of (R, 3), foregoing segment start and end
                           times (which trn does not have). The extra dimension

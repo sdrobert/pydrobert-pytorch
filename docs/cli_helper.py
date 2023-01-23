@@ -35,6 +35,7 @@ for cmd_name in (
     "compute-torch-token-data-dir-error-rates",
     "ctm-to-torch-token-data-dir",
     "get-torch-spect-data-dir-info",
+    "textgrids-to-torch-token-data-dir",
     "torch-spect-data-dir-to-wds",
     "torch-token-data-dir-to-ctm",
     "torch-token-data-dir-to-trn",

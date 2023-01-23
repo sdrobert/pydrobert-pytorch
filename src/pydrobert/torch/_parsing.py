@@ -582,9 +582,11 @@ def read_textgrid(
         tier = tg_.tiers[tier_id]
 
     if tier.classid == TEXTTIER:
-        transcript = [x[1] for x in tier.simple_transcript]
+        transcript = [x[1] for x in sorted(tier.simple_transcript)]
     else:
-        transcript = [(x[2], float(x[0]), float(x[1])) for x in tier.simple_transcript]
+        transcript = [
+            (x[2], float(x[0]), float(x[1])) for x in sorted(tier.simple_transcript)
+        ]
         i = 0
         start_time = tier.xmin
         while i < len(transcript):
