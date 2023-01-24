@@ -706,7 +706,7 @@ def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
         R = torch.randint(1, max_R, (1,)).item()
         ref = torch.zeros((R, 3), dtype=torch.long)
         ref[:, 0] = torch.randint(V, (R,))
-        ends = torch.randint(1, max_seg, (R,)).cumsum_(0)
+        ends = torch.randint(1, max_seg, (R,)).cumsum(0)
         ref[:, 2] = ends
         ref[1:, 1] = ends[:-1]
         torch.save(ref, f"{ref_dir}/utt_{n}.pt")
