@@ -683,3 +683,48 @@ Object class = "TextGrid"
     act_utt3 = torch.load(os.path.join(ref_dir, "utt_3.pt"))
     assert torch.all(act_utt3 == torch.tensor([2, 0]))
 
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("with_feats", [True, False])
+def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
+    N = 100
+    V = 10
+    max_R = 10
+    max_seg = 5
+    ref_dir = os.path.join(temp_dir, "ref")
+    ali_dir = os.path.join(temp_dir, "ali")
+    os.makedirs(ref_dir)
+    args = [ref_dir, ali_dir]
+    if with_feats:
+        feat_dir = os.path.join(temp_dir, "feats")
+        os.makedirs(feat_dir)
+        args += ["--feat-dir", feat_dir]
+    else:
+        feat_dir = None
+    refs = []
+    for n in range(N):
+        R = torch.randint(1, max_R, (1,)).item()
+        ref = torch.zeros((R, 3), dtype=torch.long)
+        ref[:, 0] = torch.randint(V, (R,))
+        ends = torch.randint(1, max_seg, (R,)).cumsum_(0)
+        ref[:, 2] = ends
+        ref[1:, 1] = ends[:-1]
+        torch.save(ref, f"{ref_dir}/utt_{n}.pt")
+        refs.append(ref)
+        if with_feats:
+            torch.save(torch.randn((ends[-1].item(), 1)), f"{feat_dir}/utt_{n}.pt")
+    assert not command_line.torch_token_data_dir_to_torch_ali_data_dir(args)
+    assert len(os.listdir(ali_dir)) == N
+    for n, ref in enumerate(refs):
+        ali = torch.load(f"{ali_dir}/utt_{n}.pt")
+        assert ali.ndim == 1
+        T = ali.size(0)
+        assert ref[-1, 2] == T
+        r = 0
+        R = ref.size(0)
+        for t in range(T):
+            if ref[r, 2] <= t:
+                r += 1
+            assert ref[r, 1] <= t < ref[r, 2]
+            assert ali[t] == ref[r, 0]
+        assert r == R - 1

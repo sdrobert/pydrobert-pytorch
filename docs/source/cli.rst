@@ -281,13 +281,14 @@ get-torch-spect-data-dir-info
               ...
           ]
   
-  Where "feat/" contains float tensors of shape (N, F), where N is the number of frames
+  Where "feat/" contains float tensors of shape (T, F), where T is the number of frames
   (variable) and F is the number of filters (fixed). "ali/" if there, contains long
-  tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids for
-  discriminative training in an DNN-HMM). "ref/", if there, contains long tensors of shape
-  (R, 3) indicating a sequence of reference tokens where element indexed by "[i, 0]" is a
-  token id, "[i, 1]" is the inclusive start frame of the token (or a negative value if
-  unknown), and "[i, 2]" is the exclusive end frame of the token.
+  tensors of shape (T,) indicating the appropriate per-frame class labels (likely pdf-ids
+  for discriminative training in an DNN-HMM). "ref/", if there, contains long tensors of
+  shape (R, 3) indicating a sequence of reference tokens where element indexed by "[i, 0]"
+  is a token id, "[i, 1]" is the inclusive start frame of the token (or a negative value
+  if unknown), and "[i, 2]" is the exclusive end frame of the token. Token sequences may
+  instead be of shape (R,) if no segment times are available in the corpus.
   
   This command writes the following space-delimited key-value pairs to an output file in
   sorted order:
@@ -525,7 +526,7 @@ torch-token-data-dir-to-ctm
   Where the first number specifies the token start time (in seconds) and the second the
   duration.
   
-  This command scans the contents of a directory like "ref/" in a SpectDataSete and
+  This command scans the contents of a directory like "ref/" in a SpectDataSet and
   converts each such file into a transcription. Every token in a given transcription must
   have information about its duration. Each such transcription is then written to the
   "ctm" file. See the command "get-torch-spect-data-dir-info" for more info about a
@@ -563,6 +564,61 @@ torch-token-data-dir-to-ctm
     --channel CHANNEL     If neither "--wc2utt" nor "--utt2wc" is specified,
                           utterance IDs are treated as wavefile names and are
                           given the value of this flag as a channel
+
+torch-token-data-dir-to-torch-ali-data-dir
+------------------------------------------
+
+::
+
+  usage: torch-token-data-dir-to-torch-ali-data-dir [-h] [--feat-dir FEAT_DIR]
+                                                    [--file-prefix FILE_PREFIX]
+                                                    [--file-suffix FILE_SUFFIX]
+                                                    [--num-workers NUM_WORKERS]
+                                                    [--chunk-size CHUNK_SIZE]
+                                                    ref_dir ali_dir
+  
+  Convert a ref/ dir to an ali/ dir
+  
+  See the command "get-torch-spect-data-dir-info" for more info on token sequences and
+  alignments.
+  
+  A reference token sequence "tok" partitions a frame sequence of length T if
+  
+  1. tok is of shape (R, 3), with R > 1 and all tok[r, 1:] >= 0 (it contains segment
+     boundaries).
+  2. tok[0, 1] = 0 (it starts at frame 0).
+  3. for all 0 <= r < R - 1, tok[r, 2] = tok[r + 1, 1] (boundaries contiguous).
+  4. tok[R - 1, 2] = T (it ends after T frames).
+  
+  When tok partitions the frame sequence, it can be converted into a per-frame alignment
+  tensor "ali" of shape (T,), where tok[r, 1] <= t < tok[r, 2] implies ali[t] = tok[r, 0].
+  
+  This command applies the above reasoning to convert all tensors in a token sequence
+  directory into a frame alignment directory.
+  
+  WARNING! This operation is potentially destructive: a per-frame alignment cannot
+  distinguish between two of the same token next to one another and one larger token.
+  
+  positional arguments:
+    ref_dir               The token sequence data directory (input)
+    ali_dir               The frame alignment data directory (output)
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --feat-dir FEAT_DIR   The feature data directory. While not necessary for
+                          the conversion, specifying this directory will allow
+                          the total number of frames in each utterance to be
+                          checked by loading the associated feature matrix.
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --num-workers NUM_WORKERS
+                          The number of workers to spawn to process the data. 0
+                          is serial. Defaults to the CPU count
+    --chunk-size CHUNK_SIZE
+                          The number of utterances that a worker will process at
+                          once. Impacts speed and memory consumption.
 
 torch-token-data-dir-to-trn
 ---------------------------

@@ -16,7 +16,6 @@ import os
 import sys
 import argparse
 import math
-from typing import Optional, Sequence
 import warnings
 import itertools
 import tarfile
@@ -24,6 +23,7 @@ import io
 
 from pathlib import Path
 from collections import defaultdict, OrderedDict
+from typing import Optional, Sequence
 
 import torch
 
@@ -172,13 +172,14 @@ A torch SpectDataSet data dir is of the form
             ...
         ]
 
-Where "feat/" contains float tensors of shape (N, F), where N is the number of frames
+Where "feat/" contains float tensors of shape (T, F), where T is the number of frames
 (variable) and F is the number of filters (fixed). "ali/" if there, contains long
-tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids for
-discriminative training in an DNN-HMM). "ref/", if there, contains long tensors of shape
-(R, 3) indicating a sequence of reference tokens where element indexed by "[i, 0]" is a
-token id, "[i, 1]" is the inclusive start frame of the token (or a negative value if
-unknown), and "[i, 2]" is the exclusive end frame of the token.
+tensors of shape (T,) indicating the appropriate per-frame class labels (likely pdf-ids
+for discriminative training in an DNN-HMM). "ref/", if there, contains long tensors of
+shape (R, 3) indicating a sequence of reference tokens where element indexed by "[i, 0]"
+is a token id, "[i, 1]" is the inclusive start frame of the token (or a negative value
+if unknown), and "[i, 2]" is the exclusive end frame of the token. Token sequences may
+instead be of shape (R,) if no segment times are available in the corpus.
 
 This command writes the following space-delimited key-value pairs to an output file in
 sorted order:
@@ -888,7 +889,7 @@ format::
 Where the first number specifies the token start time (in seconds) and the second the
 duration.
 
-This command scans the contents of a directory like "ref/" in a SpectDataSete and
+This command scans the contents of a directory like "ref/" in a SpectDataSet and
 converts each such file into a transcription. Every token in a given transcription must
 have information about its duration. Each such transcription is then written to the
 "ctm" file. See the command "get-torch-spect-data-dir-info" for more info about a
@@ -1020,7 +1021,7 @@ def _compute_torch_token_data_dir_parse_args(args):
     return parser.parse_args(args)
 
 
-def compute_torch_token_data_dir_error_rates(args: Optional[Sequence[str]] = None,):
+def compute_torch_token_data_dir_error_rates(args: Optional[Sequence[str]] = None):
     """Compute error rates between reference and hypothesis token data dirs
 
 WARNING!!!!
@@ -1430,7 +1431,7 @@ of the statistics of all groups.
     return parser.parse_args(args)
 
 
-def compute_mvn_stats_for_torch_feat_data_dir(args: Optional[Sequence[str]] = None,):
+def compute_mvn_stats_for_torch_feat_data_dir(args: Optional[Sequence[str]] = None):
     """Compute mean and standard deviation over a torch feature directory
 
 A feature directory is of the form
@@ -1445,7 +1446,10 @@ a feature vector. Letting F be a feature vector, this command computes the mean 
 standard deviation of the features in the directory, storing them as a pickled
 dictionary of tensors (with keys 'mean' and 'std') to the file 'out'. Those statistics
 may be used with a pydrobert.torch.modules.MeanVarianceNormalization layer."""
-    options = _compute_mvn_stats_for_torch_feat_data_dir_parse_args(args)
+    try:
+        options = _compute_mvn_stats_for_torch_feat_data_dir_parse_args(args)
+    except SystemExit as ex:
+        return ex.code
 
     if options.id2gid is not None:
         id2gid = dict()
@@ -1507,3 +1511,133 @@ may be used with a pydrobert.torch.modules.MeanVarianceNormalization layer."""
         gid2stats = gid2stats[None]
 
     torch.save(gid2stats, options.out)
+
+
+def _torch_token_data_dir_to_torch_ali_data_dir_parse_args(args):
+    parser = argparse.ArgumentParser(
+        description=torch_token_data_dir_to_torch_ali_data_dir.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "ref_dir", help="The token sequence data directory (input)",
+    )
+    parser.add_argument(
+        "ali_dir", help="The frame alignment data directory (output)",
+    )
+    parser.add_argument(
+        "--feat-dir",
+        default=None,
+        help="The feature data directory. While not necessary for the conversion, "
+        "specifying this directory will allow the total number of frames in each "
+        "utterance to be checked by loading the associated feature matrix.",
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--chunk-size")
+    return parser.parse_args(args)
+
+
+def _torch_token_data_dir_to_torch_ali_dir_do_work(
+    basenames: Sequence[str],
+    ref_dir: str,
+    ali_dir: str,
+    feat_dir: Optional[str] = None,
+):
+    for basename in basenames:
+        ref_path = os.path.join(ref_dir, basename)
+        ref = torch.load(ref_path)
+        err_msg = f"Error converting '{ref_path}' to ali:"
+        if ref.ndim != 2 or ref.size(0) == 0 or ref.size(1) != 3:
+            raise ValueError(f"{err_msg} invalid size '{ref.shape}'")
+        if (ref[:, 1:] < 0).any():
+            raise ValueError(f"{err_msg} some token boundaries missing")
+        if ref[0, 1] != 0:
+            raise ValueError(f"{err_msg} starts at frame {ref[0, 1].item()}, not 0")
+        if (ref[:-1, 2] != ref[1:, 1]).any():
+            raise ValueError(f"{err_msg} not all boundaries are contiguous")
+        if feat_dir is not None:
+            feat_path = os.path.join(feat_dir, basename)
+            T = torch.load(feat_path).size(0)
+            if ref[-1, 2] != T:
+                raise ValueError(
+                    f"{err_msg} feats at '{feat_path}' report {T} frames. ref "
+                    f"ends with {ref[-1, 2].item()}"
+                )
+        print(basename)
+        ali = torch.repeat_interleave(ref[:, 0], ref[:, 2] - ref[:, 1])
+        torch.save(ali, os.path.join(ali_dir, basename))
+
+
+def _torch_token_data_dir_to_torch_ali_dir_worker(
+    queue: torch.multiprocessing.Queue,
+    ref_dir: str,
+    ali_dir: str,
+    feat_dir: Optional[str] = None,
+    first_timeout=30,
+    rest_timeout=10,
+):
+    basenames = queue.get(True, first_timeout)
+    while basenames is not None:
+        _torch_token_data_dir_to_torch_ali_dir_do_work(
+            basenames, ref_dir, ali_dir, feat_dir
+        )
+        basenames = queue.get(True, rest_timeout)
+
+
+def torch_token_data_dir_to_torch_ali_data_dir(args: Optional[Sequence[str]] = None):
+    """Convert a ref/ dir to an ali/ dir
+
+See the command "get-torch-spect-data-dir-info" for more info on token sequences and
+alignments.
+
+A reference token sequence "tok" partitions a frame sequence of length T if
+
+1. tok is of shape (R, 3), with R > 1 and all tok[r, 1:] >= 0 (it contains segment
+   boundaries).
+2. tok[0, 1] = 0 (it starts at frame 0).
+3. for all 0 <= r < R - 1, tok[r, 2] = tok[r + 1, 1] (boundaries contiguous).
+4. tok[R - 1, 2] = T (it ends after T frames).
+
+When tok partitions the frame sequence, it can be converted into a per-frame alignment
+tensor "ali" of shape (T,), where tok[r, 1] <= t < tok[r, 2] implies ali[t] = tok[r, 0].
+
+This command applies the above reasoning to convert all tensors in a token sequence
+directory into a frame alignment directory.
+
+WARNING! This operation is potentially destructive: a per-frame alignment cannot
+distinguish between two of the same token next to one another and one larger token.
+"""
+    try:
+        options = _torch_token_data_dir_to_torch_ali_data_dir_parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+    if not os.path.isdir(options.ref_dir):
+        print(f"'{options.ref_dir}' is not a directory", file=sys.stderr)
+        return 1
+    basenames = (
+        x
+        for x in os.listdir(options.ref_dir)
+        if x.startswith(options.file_prefix) and x.endswith(options.file_prefix)
+    )
+    os.makedirs(options.ali_dir, exist_ok=True)
+    if options.num_workers:
+        queue = torch.multiprocessing.Queue(options.num_workers)
+        with torch.multiprocessing.Pool(
+            options.num_workers,
+            _torch_token_data_dir_to_torch_ali_dir_worker,
+            (queue, options.ref_dir, options.ali_dir, options.feat_dir,),
+        ) as pool:
+            chunk = tuple(itertools.islice(basenames, options.chunk_size))
+            while len(chunk):
+                queue.put(chunk)
+                chunk = tuple(itertools.islice(basenames, options.chunk_size))
+            for _ in range(options.num_workers):
+                queue.put(None)
+            pool.close()
+            pool.join()
+    else:
+        _torch_token_data_dir_to_torch_ali_dir_do_work(
+            basenames, options.ref_dir, options.ali_dir, options.feat_dir,
+        )
+    return 0
