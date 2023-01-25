@@ -25,6 +25,7 @@ from ._wrappers import functional_wrapper, proxy
 def extract_chunk_slices(
     in_: torch.Tensor,
     in_lens: Optional[torch.Tensor] = None,
+    other_lens: Optional[torch.Tensor] = None,
     policy: Literal["fixed", "ali", "ref"] = None,
     window_type: Literal["symmmetric", "causal", "future", "valid"] = "symmetric",
     lobe_size: int = 0,
@@ -37,16 +38,25 @@ def extract_chunk_slices(
 def extract_chunk_slices(
     in_: torch.Tensor,
     in_lens: Optional[torch.Tensor] = None,
+    other_lens: Optional[torch.Tensor] = None,
     policy: str = "fixed",
     window_type: str = "symmetric",
     lobe_size: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     N, T = in_.shape[:2]
     device = in_.device
+    if not T:
+        return (
+            torch.empty(0, 2, dtype=torch.long, device=device),
+            torch.empty(0, dtype=torch.long, device=device),
+        )
     if lobe_size < 0:
         raise RuntimeError(f"Expected non-negative lobe_size, got {lobe_size}")
     if window_type not in ("symmetric", "causal", "future", "valid"):
-        raise NotImplementedError
+        raise RuntimeError(
+            "expected window_type to be one of 'symmetric', 'casual', 'future', or "
+            f"'valid'; got '{window_type}'"
+        )
     if policy == "fixed":
         shift = lobe_size + 1
         if window_type == "symmetric":
@@ -117,13 +127,71 @@ def extract_chunk_slices(
             ends = ends[lobe_size:][is_same]
             sources = sources[: NN - lobe_size][is_same]
         slices = torch.stack([starts, ends], 1)
+    elif policy == "ref":
+        if in_.ndim != 3:
+            raise RuntimeError(f"Expected in_ to be 3-dimensional, got {in_.ndim}")
+        if in_.size(2) != 3:
+            raise RuntimeError(
+                f"Expected 3rd dimension of in_ to be of size 3, got {in_.size(2)}"
+            )
+        starts = in_[..., 1]
+        ends = in_[..., 2]
+        if in_lens is None:
+            in_lens = torch.full((N,), T, device=device)
+        if other_lens is None:
+            # the final segment's end time
+            other_lens = (
+                ends[..., 1]
+                .gather(1, (in_lens - 1).clamp_min_(0).view(N, 1))
+                .squeeze(1)
+                .masked_fill_(in_lens == 0, 0)
+            )
+        mask = in_lens.view(N, 1) > torch.arange(T, device=device)
+        mask &= ends > 0
+        if window_type == "valid":
+            mask &= (starts >= lobe_size) & (ends + lobe_size <= other_lens.view(N, 1))
+        else:
+            mask &= (starts >= 0) & (ends <= other_lens.view(N, 1))
+        if window_type in ("symmetric", "causal", "valid"):
+            starts = (starts - lobe_size).clamp_min_(0)
+        if window_type in ("symmetric", "future", "valid"):
+            ends = torch.min(ends + lobe_size, other_lens.unsqueeze(1))
+        mask &= starts < ends
+        starts, ends, mask = starts.flatten(), ends.flatten(), mask.flatten()
+        sources = torch.arange(N, device=device).view(N, 1).expand(N, T).flatten()
+        starts = starts[mask]
+        ends = ends[mask]
+        sources = sources[mask]
+        slices = torch.stack([starts, ends], 1)
     else:
-        raise NotImplementedError
+        raise RuntimeError(
+            f"Expected policy to be one of 'fixed', 'ali', or 'ref'; got {policy}"
+        )
     return slices, sources
 
 
 class ExtractChunkSlices(torch.nn.Module):
-    """Determine slices of feature chunks according to a variety of policies"""
+    """Determine slices of feature chunks according to a variety of policies
+    
+    This module extracts
+
+    Call Parameters
+    ---------------
+    in_ : torch.Tensor
+    in_lens : torch.Tensor, optional
+    other_lens : torch.Tensor, optional
+
+    Returns
+    -------
+    slices : torch.Tensor
+        A long tensor of shape ``(M, 2)`` storing the slices of all batch elements.
+        ``M`` is the total number of slices. ``slices[m, 0]`` is the ``m``-th slice's
+        start index (inclusive), while ``slices[m, 1]`` is the ``m``-th slice's end
+        index (exclusive).
+    sources : torch.Tensor
+        A long tensor of shape ``(M,)`` where ``sources[m]`` is the batch index of the
+        ``m``-th slice.
+    """
 
     __constants__ = ["policy", "window_type", "lobe_size"]
 
@@ -133,14 +201,14 @@ class ExtractChunkSlices(torch.nn.Module):
 
     def __init__(
         self,
-        policy: Literal["fixed", "ali"] = "fixed",
+        policy: Literal["fixed", "ali", "ref"] = "fixed",
         window_type: Literal["symmetric", "causal", "future", "valid"] = "symmetric",
         lobe_size: int = 0,
     ) -> None:
         super().__init__()
-        if policy not in {"fixed", "ali"}:
+        if policy not in {"fixed", "ali", "ref"}:
             raise ValueError(
-                f"policy should be one of 'fixed' or 'ali'. Got '{policy}'"
+                f"policy should be one of 'fixed', 'ali', or 'ref'. Got '{policy}'"
             )
         if window_type not in {"symmetric", "causal", "future", "valid"}:
             raise ValueError(
@@ -158,10 +226,13 @@ class ExtractChunkSlices(torch.nn.Module):
         )
 
     def forward(
-        self, in_: torch.Tensor, in_lens: Optional[torch.Tensor] = None
+        self,
+        in_: torch.Tensor,
+        in_lens: Optional[torch.Tensor] = None,
+        other_lens: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         return extract_chunk_slices(
-            in_, in_lens, self.policy, self.window_type, self.lobe_size
+            in_, in_lens, other_lens, self.policy, self.window_type, self.lobe_size
         )
 
     __call__ = proxy(forward)

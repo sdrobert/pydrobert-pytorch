@@ -17,12 +17,12 @@ import pytest
 from pydrobert.torch.modules import ExtractChunkSlices
 
 
-@pytest.mark.parametrize("policy", ["fixed", "ali"])
+@pytest.mark.parametrize("policy", ["fixed", "ali", "ref"])
 @pytest.mark.parametrize("window_type", ["symmetric", "causal", "future", "valid"])
 @pytest.mark.parametrize("lobe_size", [0, 2])
 def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
     if policy == "fixed":
-        in_lens = torch.tensor([0, 8, 5], device=device)
+        in_lens = other_lens = torch.tensor([0, 8, 5], device=device)
         in_ = torch.empty((3, 11), device=device)
         if lobe_size == 0:
             # fmt: off
@@ -69,7 +69,7 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
                 # fmt: on
                 sources_exp = torch.tensor([1, 1, 2], device=device)
     elif policy == "ali":
-        in_lens = torch.tensor([7, 5, 9, 0], device=device)
+        in_lens = other_lens = torch.tensor([7, 5, 9, 0], device=device)
         # fmt: off
         in_ = torch.tensor([
             [0, 0, 0, 1, 1, 0, 0, 5, 5, 5],  # n=0 t=7
@@ -131,15 +131,65 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
                 # fmt: on
                 sources_exp = torch.tensor([0, 2, 2, 2], device=device)
     else:
-        assert False
+        assert policy == "ref"
+        in_lens = torch.tensor([3, 0, 3], device=device)
+        other_lens = torch.tensor([3, 10, 4], device=device)
+        # fmt: off
+        in_ = torch.tensor([
+            [[0, 0, 1], [0, 0, 2], [1, 1, 3]],  # n=0 r=3 t=3
+            [[1, 2, 3], [4, 5, 6], [7, 8, 9]],  # n=1 r=0 t=10
+            [[1, 2, 2], [1, 2, 5], [1, 2, -1]],  # n=2 r=3 t=4
+        ], device=device)
+        # fmt: on
+        if lobe_size == 0:
+            # fmt: off
+            slices_exp = torch.tensor([
+                [0, 1], [0, 2], [1, 3],  # n=0
+            ], device=device)
+            # fmt: on
+            sources_exp = torch.tensor([0, 0, 0], device=device)
+        else:
+            assert lobe_size == 2
+            if window_type == "symmetric":
+                # fmt: off
+                slices_exp = torch.tensor([
+                    [0, 3], [0, 3], [0, 3],  # n=0
+                    [0, 4],  # n=2
+                ], device=device)
+                # fmt: on
+                sources_exp = torch.tensor([0, 0, 0, 2], device=device)
+            elif window_type == "causal":
+                # fmt: off
+                slices_exp = torch.tensor([
+                    [0, 1], [0, 2], [0, 3],  # n=0
+                    [0, 2],  # n=2
+                ], device=device)
+                # fmt: on
+                sources_exp = torch.tensor([0, 0, 0, 2], device=device)
+            elif window_type == "future":
+                # fmt: off
+                slices_exp = torch.tensor([
+                    [0, 3], [0, 3], [1, 3],  # n=2
+                    [2, 4],  # n=2
+                ], device=device)
+                # fmt: on
+                sources_exp = torch.tensor([0, 0, 0, 2], device=device)
+            else:  # valid
+                slices_exp = torch.tensor([[0, 4]], device=device)
+                sources_exp = torch.tensor([2], device=device)
     extract_chunk_slices = ExtractChunkSlices(policy, window_type, lobe_size)
     if jit_type == "script":
         extract_chunk_slices = torch.jit.script(extract_chunk_slices)
     elif jit_type == "trace":
         extract_chunk_slices = torch.jit.trace(
-            extract_chunk_slices, (torch.zeros_like(in_), torch.zeros_like(in_lens))
+            extract_chunk_slices,
+            (
+                torch.zeros_like(in_),
+                torch.zeros_like(in_lens),
+                torch.zeros_like(other_lens),
+            ),
         )
-    slices_act, sources_act = extract_chunk_slices(in_, in_lens)
+    slices_act, sources_act = extract_chunk_slices(in_, in_lens, other_lens)
     assert slices_exp.shape == slices_act.shape
     assert sources_exp.shape == sources_act.shape
     assert (slices_exp == slices_act).all()
