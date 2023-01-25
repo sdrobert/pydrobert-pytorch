@@ -163,7 +163,7 @@ class PadVariable(torch.nn.Module):
     Returns
     -------
     padded : torch.Tensor
-        A tensor of shape ``(N, *', *)`` such that, for a given batch index ``n``::
+        A tensor of shape ``(N, T', *)`` such that, for a given batch index ``n``::
 
             padded[n, :pad[0, n]] = left padding
             padded[n, pad[0,n]:pad[0,n] + lens[n]] = x[n, :lens[n]]

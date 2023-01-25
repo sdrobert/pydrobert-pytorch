@@ -1,4 +1,4 @@
-# Copyright 2022 Sean Robertson
+# Copyright 2023 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@ __all__ = [
     "EditDistance",
     "ErrorRate",
     "ExtractableSequentialLanguageModel",
+    "ExtractChunkSlices",
     "FeatureDeltas",
     "FillAfterEndOfSequence",
     "GeneralizedDotProductSoftAttention",
@@ -70,6 +71,7 @@ from ._attn import (
     GlobalSoftAttention,
     MultiHeadedAttention,
 )
+from ._chunk import ExtractChunkSlices
 from ._decoding import (
     BeamSearch,
     CTCGreedySearch,

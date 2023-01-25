@@ -1,4 +1,4 @@
-# Copyright 2022 Sean Robertson
+# Copyright 2023 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ from ._combinatorics import (
     enumerate_binary_sequences_with_cardinality,
     simple_random_sampling_without_replacement,
 )
+from ._chunk import extract_chunk_slices
 from ._decoding import (
     beam_search_advance,
     ctc_greedy_search,
@@ -63,6 +64,7 @@ __all__ = [
     "enumerate_binary_sequences",
     "enumerate_vocab_sequences",
     "error_rate",
+    "extract_chunk_slices",
     "feat_deltas",
     "fill_after_eos",
     "hard_optimal_completion_distillation_loss",
