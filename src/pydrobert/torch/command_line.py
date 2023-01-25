@@ -95,6 +95,12 @@ _COMMON_ARGS = {
         "help": "The number of utterances that a worker will process at once. Impacts "
         "speed and memory consumption.",
     },
+    "--timeout": {
+        "type": int,
+        "default": None,
+        "help": "When using multiple workers, how long (in seconds) without new data "
+        "before terminating. The default is to wait indefinitely.",
+    },
 }
 
 
@@ -285,6 +291,7 @@ def _trn_to_torch_token_data_dir_parse_args(args):
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
     _add_common_arg(parser, "--chunk-size")
+    _add_common_arg(parser, "--timeout")
     size_group = parser.add_mutually_exclusive_group()
     _add_common_arg(size_group, "--skip-frame-times")
     _add_common_arg(size_group, "--feat-sizing")
@@ -320,41 +327,40 @@ def _parse_token2id(file, swap, return_swap):
     return ret_swapped if return_swap else ret
 
 
-def _save_transcripts_to_dir_worker(
-    token2id,
-    file_prefix,
-    file_suffix,
-    dir_,
-    frame_shift_ms,
-    unk,
-    skip_frame_times,
-    feat_sizing,
-    queue,
-    first_timeout=30,
-    rest_timeout=10,
+def _save_transcripts_to_dir_do_work(
+    transcripts, token2id, dir_, frame_shift_ms, unk, skip_frame_times, feat_sizing,
 ):
-    transcripts = queue.get(True, first_timeout)
+    for basename, transcript in transcripts:
+        tok = data.transcript_to_token(
+            transcript, token2id, frame_shift_ms, unk, skip_frame_times or feat_sizing,
+        )
+        if feat_sizing:
+            tok = tok.unsqueeze(-1)
+        path = os.path.join(dir_, basename)
+        torch.save(tok, path)
+
+
+def _save_transcripts_to_dir_worker(
+    queue, token2id, dir_, frame_shift_ms, unk, skip_frame_times, feat_sizing, timeout,
+):
+    transcripts = queue.get(True, timeout)
     while transcripts is not None:
-        for utt_id, transcript in transcripts:
-            tok = data.transcript_to_token(
-                transcript,
-                token2id,
-                frame_shift_ms,
-                unk,
-                skip_frame_times or feat_sizing,
-            )
-            if feat_sizing:
-                tok = tok.unsqueeze(-1)
-            path = os.path.join(dir_, file_prefix + utt_id + file_suffix)
-            torch.save(tok, path)
-        transcripts = queue.get(True, rest_timeout)
+        _save_transcripts_to_dir_do_work(
+            transcripts,
+            token2id,
+            dir_,
+            frame_shift_ms,
+            unk,
+            skip_frame_times,
+            feat_sizing,
+        )
+        del transcripts
+        transcripts = queue.get(True, timeout)
 
 
 def _save_transcripts_to_dir(
     transcripts,
     token2id,
-    file_prefix,
-    file_suffix,
     dir_,
     frame_shift_ms=None,
     unk=None,
@@ -362,6 +368,7 @@ def _save_transcripts_to_dir(
     feat_sizing=False,
     num_workers=0,
     chunk_size=1000,
+    timeout=None,
 ):
     if not os.path.isdir(dir_):
         os.makedirs(dir_)
@@ -371,15 +378,14 @@ def _save_transcripts_to_dir(
             num_workers,
             _save_transcripts_to_dir_worker,
             (
+                queue,
                 token2id,
-                file_prefix,
-                file_suffix,
                 dir_,
                 frame_shift_ms,
                 unk,
                 skip_frame_times,
                 feat_sizing,
-                queue,
+                timeout,
             ),
         ) as pool:
             chunk = tuple(itertools.islice(transcripts, chunk_size))
@@ -392,18 +398,15 @@ def _save_transcripts_to_dir(
             pool.join()
 
     else:
-        for utt_id, transcript in transcripts:
-            tok = data.transcript_to_token(
-                transcript,
-                token2id,
-                frame_shift_ms,
-                unk,
-                skip_frame_times or feat_sizing,
-            )
-            if feat_sizing:
-                tok = tok.unsqueeze(-1)
-            path = os.path.join(dir_, file_prefix + utt_id + file_suffix)
-            torch.save(tok, path)
+        _save_transcripts_to_dir_do_work(
+            transcripts,
+            token2id,
+            dir_,
+            frame_shift_ms,
+            unk,
+            skip_frame_times,
+            feat_sizing,
+        )
 
 
 def trn_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
@@ -449,19 +452,18 @@ with the "ref/" directory of a SpectDataSet. See the command
                 else:  # first
                     x[0].extend(old_transcript)
                     old_transcript = x[0]
-            yield utt_id, transcript
+            yield options.file_prefix + utt_id + options.file_suffix, transcript
 
     _save_transcripts_to_dir(
         error_handling_iter(),
         token2id,
-        options.file_prefix,
-        options.file_suffix,
         options.dir,
         unk=options.unk_symbol,
         skip_frame_times=options.skip_frame_times,
         feat_sizing=options.feat_sizing,
         num_workers=options.num_workers,
         chunk_size=options.chunk_size,
+        timeout=options.timeout,
     )
     return 0
 
@@ -617,6 +619,7 @@ def _ctm_to_torch_token_data_dir_parse_args(args):
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
     _add_common_arg(parser, "--chunk-size")
+    _add_common_arg(parser, "--timeout")
     size_group = parser.add_mutually_exclusive_group()
     _add_common_arg(size_group, "--skip-frame-times")
     _add_common_arg(size_group, "--feat-sizing")
@@ -712,10 +715,8 @@ with the "ref/" directory of a SpectDataSet. See the command
         wc2utt = None
     transcripts = data.read_ctm(options.ctm, wc2utt)
     _save_transcripts_to_dir(
-        iter(transcripts),
+        ((options.file_prefix + x[0] + options.file_suffix, x[1]) for x in transcripts),
         token2id,
-        options.file_prefix,
-        options.file_suffix,
         options.dir,
         options.frame_shift_ms,
         options.unk_symbol,
@@ -723,6 +724,7 @@ with the "ref/" directory of a SpectDataSet. See the command
         options.feat_sizing,
         options.num_workers,
         options.chunk_size,
+        options.timeout,
     )
     return 0
 
@@ -745,10 +747,16 @@ def _textgrids_to_torch_token_data_dir_parse_args(args):
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
     _add_common_arg(parser, "--chunk-size")
+    _add_common_arg(parser, "--timeout")
     size_group = parser.add_mutually_exclusive_group()
     _add_common_arg(size_group, "--skip-frame-times")
     _add_common_arg(size_group, "--feat-sizing")
     _add_common_arg(size_group, "--frame-shift-ms")
+    parser.add_argument(
+        "--textgrid-suffix",
+        default=".TextGrid",
+        help="The file suffix in tg_dir indicating a TextGrid file",
+    )
     parser.add_argument(
         "--fill-symbol",
         default=None,
@@ -777,8 +785,8 @@ software (https://www.fon.hum.uva.nl/praat/).
 This command accepts a directory "tg_dir" of TextGrid files
 
     tg_dir/
-        utt_1.TextGrid
-        utt_2.TextGrid
+        <file-prefix>utt_1.TextGrid
+        <file-prefix>utt_2.TextGrid
         ...
 
 and writes each file as a separate token sequence compatible with the "ref/" directory
@@ -805,9 +813,14 @@ command "get-torch-spect-data-dir-info" for more info about a SpectDataSet direc
 
     def textgrid_iter():
         for file_name in os.listdir(options.tg_dir):
-            if not file_name.endswith(".TextGrid"):
+            if not file_name.endswith(
+                options.textgrid_suffix
+            ) or not file_name.startswith(options.file_prefix):
                 continue
-            utt_id = file_name.rsplit(".", maxsplit=1)[0]
+            utt_id = (
+                file_name[: len(file_name) - len(options.textgrid_suffix)]
+                + options.file_suffix
+            )
             yield utt_id, data.read_textgrid(
                 os.path.join(options.tg_dir, file_name),
                 options.tier_id,
@@ -817,8 +830,6 @@ command "get-torch-spect-data-dir-info" for more info about a SpectDataSet direc
     _save_transcripts_to_dir(
         textgrid_iter(),
         token2id,
-        options.file_prefix,
-        options.file_suffix,
         options.dir,
         options.frame_shift_ms,
         options.unk_symbol,
@@ -826,6 +837,7 @@ command "get-torch-spect-data-dir-info" for more info about a SpectDataSet direc
         options.feat_sizing,
         options.num_workers,
         options.chunk_size,
+        options.timeout,
     )
     return 0
 
@@ -1574,8 +1586,8 @@ def _torch_token_data_dir_to_torch_ali_dir_worker(
     ref_dir: str,
     ali_dir: str,
     feat_dir: Optional[str] = None,
-    first_timeout=30,
-    rest_timeout=10,
+    first_timeout=None,
+    rest_timeout=None,
 ):
     basenames = queue.get(True, first_timeout)
     while basenames is not None:
