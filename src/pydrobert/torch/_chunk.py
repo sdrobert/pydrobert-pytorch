@@ -83,14 +83,17 @@ def extract_chunk_slices(
         if in_.ndim != 2:
             raise RuntimeError(f"expected tensor of dimension 2 with policy 'ali'")
         mask = in_[:, :-1] != in_[:, 1:]
+        arange = torch.arange(T, device=device)
         if in_lens is not None:
-            mask = mask & (in_lens > torch.arange(1, T, device=device).view(1, T))
+            mask = mask & (in_lens.view(N, 1) > arange[1:])
         else:
             in_lens = torch.full((N,), T, device=device)
-        edge_mask = (in_lens > 0).view(N, 1)
-        starts = torch.nonzero(torch.cat([edge_mask, mask], 1))
-        ends = torch.nonzero(torch.cat([mask, edge_mask], 1))
-        assert (starts[:, 0] == ends[:, 0]).all()
+        nonempty = (in_lens > 0).view(N, 1)
+        starts = torch.nonzero(torch.cat([nonempty, mask], 1))
+        mask = torch.cat([torch.zeros_like(nonempty), mask], 1)
+        mask |= nonempty & (in_lens.view(N, 1) == arange)
+        ends = torch.nonzero(mask)
+        # assert (starts[:, 0] == ends[:, 0]).all()
         sources = starts[:, 0]
         starts, ends = starts[:, 1], ends[:, 1]
         if lobe_size and window_type != "valid":
@@ -109,10 +112,10 @@ def extract_chunk_slices(
             ends = ends[end_idx]
         elif lobe_size:
             NN = starts.size(0)
-            is_same = sources[: NN - 2 * lobe_size] == sources[2 * lobe_size :]
-            starts = starts[2 * lobe_size :][is_same]
-            ends = ends[: NN - 2 * lobe_size][is_same]
-            sources = sources[: NN - 2 * lobe_size][is_same]
+            is_same = sources[: NN - lobe_size] == sources[lobe_size:]
+            starts = starts[: NN - lobe_size][is_same]
+            ends = ends[lobe_size:][is_same]
+            sources = sources[: NN - lobe_size][is_same]
         slices = torch.stack([starts, ends], 1)
     else:
         raise NotImplementedError

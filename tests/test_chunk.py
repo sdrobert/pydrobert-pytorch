@@ -17,7 +17,7 @@ import pytest
 from pydrobert.torch.modules import ExtractChunkSlices
 
 
-@pytest.mark.parametrize("policy", ["fixed"])
+@pytest.mark.parametrize("policy", ["fixed", "ali"])
 @pytest.mark.parametrize("window_type", ["symmetric", "causal", "future", "valid"])
 @pytest.mark.parametrize("lobe_size", [0, 2])
 def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
@@ -68,6 +68,68 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
                 ], device=device)
                 # fmt: on
                 sources_exp = torch.tensor([1, 1, 2], device=device)
+    elif policy == "ali":
+        in_lens = torch.tensor([7, 5, 9, 0], device=device)
+        # fmt: off
+        in_ = torch.tensor([
+            [0, 0, 0, 1, 1, 0, 0, 5, 5, 5],  # n=0 t=7
+            [1, 2, 2, 2, 2, 6, 6, 6, 6, 6],  # n=1 t=5
+            [3, 3, 3, 3, 1, 2, 3, 4, 4, 4],  # n=2 t=9
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 1],  # n=3 t=0
+        ], device=device)
+        # fmt: on
+        if lobe_size == 0:
+            # fmt: off
+            slices_exp = torch.tensor([
+                [0, 3], [3, 5], [5, 7],  # n=0
+                [0, 1], [1, 5],  # n=1
+                [0, 4], [4, 5], [5, 6], [6, 7], [7, 9],  # n=2
+            ], device=device)
+            # fmt: on
+            sources_exp = torch.tensor([0, 0, 0, 1, 1, 2, 2, 2, 2, 2], device=device)
+        else:
+            assert lobe_size == 2
+            if window_type == "symmetric":
+                # fmt: off
+                slices_exp = torch.tensor([
+                    [0, 7], [0, 7], [0, 7],  # n=0
+                    [0, 5], [0, 5],  # n=1
+                    [0, 6], [0, 7], [0, 9], [4, 9], [5, 9],  # n=2
+                ], device=device)
+                # fmt: on
+                sources_exp = torch.tensor(
+                    [0, 0, 0, 1, 1, 2, 2, 2, 2, 2], device=device
+                )
+            elif window_type == "causal":
+                # fmt: off
+                slices_exp = torch.tensor([
+                    [0, 3], [0, 5], [0, 7],  # n=0
+                    [0, 1], [0, 5],  # n=1
+                    [0, 4], [0, 5], [0, 6], [4, 7], [5, 9],  # n=2
+                ], device=device)
+                # fmt: on
+                sources_exp = torch.tensor(
+                    [0, 0, 0, 1, 1, 2, 2, 2, 2, 2], device=device
+                )
+            elif window_type == "future":
+                # fmt: off
+                slices_exp = torch.tensor([
+                    [0, 7], [3, 7], [5, 7],  # n=0
+                    [0, 5], [1, 5],  # n=1
+                    [0, 6], [4, 7], [5, 9], [6, 9], [7, 9],  # n=2
+                ], device=device)
+                # fmt: on
+                sources_exp = torch.tensor(
+                    [0, 0, 0, 1, 1, 2, 2, 2, 2, 2], device=device
+                )
+            else:
+                # fmt: off
+                slices_exp = torch.tensor([
+                    [0, 7],  # n=0
+                    [0, 6], [4, 7], [5, 9],  # n=2
+                ])
+                # fmt: on
+                sources_exp = torch.tensor([0, 2, 2, 2], device=device)
     else:
         assert False
     extract_chunk_slices = ExtractChunkSlices(policy, window_type, lobe_size)
@@ -78,7 +140,6 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
             extract_chunk_slices, (torch.zeros_like(in_), torch.zeros_like(in_lens))
         )
     slices_act, sources_act = extract_chunk_slices(in_, in_lens)
-    print(slices_act, sources_act)
     assert slices_exp.shape == slices_act.shape
     assert sources_exp.shape == sources_act.shape
     assert (slices_exp == slices_act).all()
