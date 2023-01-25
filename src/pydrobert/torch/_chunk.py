@@ -27,7 +27,8 @@ def extract_chunk_slices(
     in_lens: Optional[torch.Tensor] = None,
     other_lens: Optional[torch.Tensor] = None,
     policy: Literal["fixed", "ali", "ref"] = None,
-    window_type: Literal["symmmetric", "causal", "future", "valid"] = "symmetric",
+    window_type: Literal["symmmetric", "causal", "future"] = "symmetric",
+    valid_only: bool = True,
     lobe_size: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     ...
@@ -41,6 +42,7 @@ def extract_chunk_slices(
     other_lens: Optional[torch.Tensor] = None,
     policy: str = "fixed",
     window_type: str = "symmetric",
+    valid_only: bool = True,
     lobe_size: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     N, T = in_.shape[:2]
@@ -52,31 +54,37 @@ def extract_chunk_slices(
         )
     if lobe_size < 0:
         raise RuntimeError(f"Expected non-negative lobe_size, got {lobe_size}")
-    if window_type not in ("symmetric", "causal", "future", "valid"):
+    if window_type not in ("symmetric", "causal", "future"):
         raise RuntimeError(
-            "expected window_type to be one of 'symmetric', 'casual', 'future', or "
-            f"'valid'; got '{window_type}'"
+            "expected window_type to be one of 'symmetric', 'casual', or 'future'"
+            f"got '{window_type}'"
         )
     if policy == "fixed":
         shift = lobe_size + 1
-        if window_type == "symmetric":
+        if valid_only and window_type == "symmetric":
+            window_size = 2 * lobe_size + 1
+            starts = torch.arange(0, T - window_size, shift, device=device)
+            ends = starts + window_size
+            mids = ends - 1
+        elif window_type == "symmetric":
             window_size = 2 * lobe_size + 1
             half_shift = shift // 2
             TT = (T + half_shift) // shift
             mids = torch.arange(TT, device=device) * shift + half_shift
             starts = mids - window_size // 2
             ends = starts + window_size
+        elif valid_only:
+            # the behaviour doesn't change with "causal" or "future" when valid_only
+            starts = torch.arange(0, T - shift, shift, device=device)
+            ends = starts + shift
+            mids = ends - 1
         elif window_type == "causal":
             starts = torch.arange(-lobe_size, T - lobe_size, shift, device=device)
             ends = starts + shift
             mids = ends - 1
-        elif window_type == "future":
+        else:  # future
             starts = mids = torch.arange(0, T, shift, device=device)
             ends = starts + shift
-        else:
-            starts = torch.arange(0, T - shift, shift, device=device)
-            ends = starts + shift
-            mids = ends - 1
         starts = starts.clamp_min_(0).expand(N, -1)
         if in_lens is None:
             ends = ends.clamp_max_(T).expand(N, -1)
@@ -103,29 +111,29 @@ def extract_chunk_slices(
         mask = torch.cat([torch.zeros_like(nonempty), mask], 1)
         mask |= nonempty & (in_lens.view(N, 1) == arange)
         ends = torch.nonzero(mask)
-        # assert (starts[:, 0] == ends[:, 0]).all()
         sources = starts[:, 0]
         starts, ends = starts[:, 1], ends[:, 1]
-        if lobe_size and window_type != "valid":
+        if lobe_size:
             NN = starts.size(0)
-            start_idx = torch.arange(NN, device=device)
-            end_idx = start_idx.clone()
             do_left = window_type in ("symmetric", "causal")
             do_right = window_type in ("symmetric", "future")
-            for n in range(1, lobe_size + 1):
-                offs = (sources[n:] == sources[: NN - n]).long()
-                if do_left:
-                    start_idx[n:] -= offs
-                if do_right:
-                    end_idx[: NN - n] += offs
-            starts = starts[start_idx]
-            ends = ends[end_idx]
-        elif lobe_size:
-            NN = starts.size(0)
-            is_same = sources[: NN - lobe_size] == sources[lobe_size:]
-            starts = starts[: NN - lobe_size][is_same]
-            ends = ends[lobe_size:][is_same]
-            sources = sources[: NN - lobe_size][is_same]
+            if valid_only:
+                offs = (int(do_left) + int(do_right)) * lobe_size
+                is_same = sources[: NN - offs] == sources[offs:]
+                starts = starts[: NN - offs][is_same]
+                ends = ends[offs:][is_same]
+                sources = sources[: NN - offs][is_same]
+            else:
+                start_idx = torch.arange(NN, device=device)
+                end_idx = start_idx.clone()
+                for n in range(1, lobe_size + 1):
+                    offs = (sources[n:] == sources[: NN - n]).long()
+                    if do_left:
+                        start_idx[n:] -= offs
+                    if do_right:
+                        end_idx[: NN - n] += offs
+                starts = starts[start_idx]
+                ends = ends[end_idx]
         slices = torch.stack([starts, ends], 1)
     elif policy == "ref":
         if in_.ndim != 3:
@@ -147,15 +155,16 @@ def extract_chunk_slices(
                 .masked_fill_(in_lens == 0, 0)
             )
         mask = in_lens.view(N, 1) > torch.arange(T, device=device)
-        mask &= ends > 0
-        if window_type == "valid":
-            mask &= (starts >= lobe_size) & (ends + lobe_size <= other_lens.view(N, 1))
-        else:
-            mask &= (starts >= 0) & (ends <= other_lens.view(N, 1))
-        if window_type in ("symmetric", "causal", "valid"):
+        mask &= (in_[..., 1:] >= 0).all(2)
+        do_left = int(window_type in ("symmetric", "causal"))
+        do_right = int(window_type in ("symmetric", "future"))
+        if valid_only:
+            mask &= (starts >= do_left * lobe_size) & (
+                ends + do_right * lobe_size <= other_lens.view(N, 1)
+            )
+        if do_left:
             starts = (starts - lobe_size).clamp_min_(0)
-        if window_type in ("symmetric", "future", "valid"):
-            ends = torch.min(ends + lobe_size, other_lens.unsqueeze(1))
+        ends = torch.min(ends + do_right * lobe_size, other_lens.unsqueeze(1))
         mask &= starts < ends
         starts, ends, mask = starts.flatten(), ends.flatten(), mask.flatten()
         sources = torch.arange(N, device=device).view(N, 1).expand(N, T).flatten()
@@ -173,13 +182,53 @@ def extract_chunk_slices(
 class ExtractChunkSlices(torch.nn.Module):
     """Determine slices of feature chunks according to a variety of policies
     
-    This module extracts
+    This module helps to chunk :class:`pydrobert.data.SpectDataLoader` data (or other
+    similarly-structured tensors) into smaller units by returning slices of that data.
+    The input to this module and the means of determining those slices varies according
+    to the `policy` specified (see below). The return values can then be used
+    to slice the data. For example, feature chunks can be stored in a list as
+    follows
+
+    >>> feats = ...  # an (N, T, F)-sized feature tensor
+    >>> slices, sources = extract_chunk_slices(...)
+    >>> chunks = []  # a number of 
+    >>> for slice_, feat in zip(slices, feats[sources]):
+    ...     chunks.append(feat[slice_[0]:slice_[1]])
+
+    All slices will be non-empty and within any required lengths
+
+    Parameters
+    ----------
+    policy
+        Specifies how to slice the data. If :obj:`'fixed'`, extract windows of fixed
+        length at fixed intervals. If :obj:`'ali'`, use changes in frame-level
+        alignments to determine segment boundaries and slice along those. If
+        :obj:`'ref'`, use token segmentations as slices. See above for more info.
+    window_type
+        Specifies how the window will be constructed around the "middle unit" in the
+        policy. In general :obj:`'symmetric'` adds lobes to either side of the middle
+        unit, :obj:`'causal'` to the left (towards :obj:`0`), :obj:`'future'` to the
+        right. See above for differences by policy.
+    valid_only
+        Whether to include only 
+    lobe_size
+        Specifies the number of units to each side of the middle unit will be
+        added to the chunk. Non-negative.
 
     Call Parameters
     ---------------
     in_ : torch.Tensor
+        A tensor of shape ``(N, T, *)``, where ``N`` is the batch dimension and ``T`` is
+        the (maximum) sequence dimension. What `in_` contains depends on `policy`. See
+        above.
     in_lens : torch.Tensor, optional
+        A long tensor of shape ``(N,)`` specifying the lengths of sequences in `in_`.
+        For the ``n``-th batch element, only the elements ``in_[n, :in_lens[n]]`` are
+        considered. If unspecified, all sequences are assumed to be of length ``T``.
     other_lens : torch.Tensor, optional
+        An additional long tensor of shape ``(N,)`` specifying some other lengths,
+        depending on the policy. It is currently only used in the :obj:`'ref'` policy
+        (see above).
 
     Returns
     -------
@@ -193,16 +242,18 @@ class ExtractChunkSlices(torch.nn.Module):
         ``m``-th slice.
     """
 
-    __constants__ = ["policy", "window_type", "lobe_size"]
+    __constants__ = ["policy", "window_type", "valid_only", "lobe_size"]
 
     policy: str
     window_type: str
+    valid_only: bool
     lobe_size: int
 
     def __init__(
         self,
         policy: Literal["fixed", "ali", "ref"] = "fixed",
-        window_type: Literal["symmetric", "causal", "future", "valid"] = "symmetric",
+        window_type: Literal["symmetric", "causal", "future"] = "symmetric",
+        valid_only: bool = True,
         lobe_size: int = 0,
     ) -> None:
         super().__init__()
@@ -210,19 +261,20 @@ class ExtractChunkSlices(torch.nn.Module):
             raise ValueError(
                 f"policy should be one of 'fixed', 'ali', or 'ref'. Got '{policy}'"
             )
-        if window_type not in {"symmetric", "causal", "future", "valid"}:
+        if window_type not in {"symmetric", "causal", "future"}:
             raise ValueError(
-                "window_type should be one of 'symmetric', 'causal', 'future', or "
-                f"'valid'. Got '{window_type}'"
+                "window_type should be one of 'symmetric', 'causal', or 'future'. "
+                f"Got '{window_type}'"
             )
         if lobe_size < 0:
             raise ValueError(f"lobe_size should be non-negative, got {lobe_size}")
         self.policy, self.window_type, self.lobe_size = policy, window_type, lobe_size
+        self.valid_only = valid_only
 
     def extra_repr(self) -> str:
         return (
             f"policy={self.policy}, window_type={self.window_type}, "
-            f"lobe_size={self.lobe_size}"
+            f"lobe_size={self.lobe_size}, valid_only={self.valid_only}"
         )
 
     def forward(
@@ -232,7 +284,13 @@ class ExtractChunkSlices(torch.nn.Module):
         other_lens: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         return extract_chunk_slices(
-            in_, in_lens, other_lens, self.policy, self.window_type, self.lobe_size
+            in_,
+            in_lens,
+            other_lens,
+            self.policy,
+            self.window_type,
+            self.valid_only,
+            self.lobe_size,
         )
 
     __call__ = proxy(forward)

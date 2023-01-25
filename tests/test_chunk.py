@@ -18,9 +18,12 @@ from pydrobert.torch.modules import ExtractChunkSlices
 
 
 @pytest.mark.parametrize("policy", ["fixed", "ali", "ref"])
-@pytest.mark.parametrize("window_type", ["symmetric", "causal", "future", "valid"])
+@pytest.mark.parametrize("window_type", ["symmetric", "causal", "future"])
+@pytest.mark.parametrize("valid_only", [True, False], ids=["valid", "clamped"])
 @pytest.mark.parametrize("lobe_size", [0, 2])
-def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
+def test_extract_chunk_sizes(
+    device, policy, window_type, valid_only, jit_type, lobe_size
+):
     if policy == "fixed":
         in_lens = other_lens = torch.tensor([0, 8, 5], device=device)
         in_ = torch.empty((3, 11), device=device)
@@ -36,7 +39,15 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
             )
         else:
             assert lobe_size == 2
-            if window_type == "symmetric":
+            if valid_only and window_type == "symmetric":
+                # fmt: on
+                slices_exp = torch.tensor([
+                    [0, 5], [3, 8],  # n=1
+                    [0, 5],  # n=2
+                ], device=device)
+                # fmt: off
+                sources_exp = torch.tensor([1, 1, 2], device=device)
+            elif window_type == "symmetric":
                 # fmt: off
                 slices_exp = torch.tensor([
                     [0, 4], [2, 7], [5, 8],  # n=1
@@ -44,6 +55,14 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
                 ], device=device)
                 # fmt: on
                 sources_exp = torch.tensor([1, 1, 1, 2, 2], device=device)
+            elif valid_only:
+                # fmt: off
+                slices_exp = torch.tensor([
+                    [0, 3], [3, 6],  # n=1
+                    [0, 3],  # n=2
+                ], device=device)
+                # fmt: on
+                sources_exp = torch.tensor([1, 1, 2], device=device)
             elif window_type == "causal":
                 # fmt: off
                 slices_exp = torch.tensor([
@@ -52,7 +71,7 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
                 ], device=device)
                 # fmt: on
                 sources_exp = torch.tensor([1, 1, 1, 2, 2], device=device)
-            elif window_type == "future":
+            else:  # future
                 # fmt: off
                 slices_exp = torch.tensor([
                     [0, 3], [3, 6], [6, 8],  # n=1
@@ -60,14 +79,6 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
                 ], device=device)
                 # fmt: on
                 sources_exp = torch.tensor([1, 1, 1, 2, 2], device=device)
-            else:
-                # fmt: off
-                slices_exp = torch.tensor([
-                    [0, 3], [3, 6],  # n=1
-                    [0, 3],  # n=2
-                ], device=device)
-                # fmt: on
-                sources_exp = torch.tensor([1, 1, 2], device=device)
     elif policy == "ali":
         in_lens = other_lens = torch.tensor([7, 5, 9, 0], device=device)
         # fmt: off
@@ -89,7 +100,10 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
             sources_exp = torch.tensor([0, 0, 0, 1, 1, 2, 2, 2, 2, 2], device=device)
         else:
             assert lobe_size == 2
-            if window_type == "symmetric":
+            if valid_only and window_type == "symmetric":
+                slices_exp = torch.tensor([[0, 9]], device=device)
+                sources_exp = torch.tensor([2], device=device)
+            elif window_type == "symmetric":
                 # fmt: off
                 slices_exp = torch.tensor([
                     [0, 7], [0, 7], [0, 7],  # n=0
@@ -100,6 +114,14 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
                 sources_exp = torch.tensor(
                     [0, 0, 0, 1, 1, 2, 2, 2, 2, 2], device=device
                 )
+            elif valid_only:
+                # fmt: off
+                slices_exp = torch.tensor([
+                    [0, 7],  # n=0
+                    [0, 6], [4, 7], [5, 9],  # n=2
+                ])
+                # fmt: on
+                sources_exp = torch.tensor([0, 2, 2, 2], device=device)
             elif window_type == "causal":
                 # fmt: off
                 slices_exp = torch.tensor([
@@ -111,7 +133,7 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
                 sources_exp = torch.tensor(
                     [0, 0, 0, 1, 1, 2, 2, 2, 2, 2], device=device
                 )
-            elif window_type == "future":
+            else:
                 # fmt: off
                 slices_exp = torch.tensor([
                     [0, 7], [3, 7], [5, 7],  # n=0
@@ -122,14 +144,6 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
                 sources_exp = torch.tensor(
                     [0, 0, 0, 1, 1, 2, 2, 2, 2, 2], device=device
                 )
-            else:
-                # fmt: off
-                slices_exp = torch.tensor([
-                    [0, 7],  # n=0
-                    [0, 6], [4, 7], [5, 9],  # n=2
-                ])
-                # fmt: on
-                sources_exp = torch.tensor([0, 2, 2, 2], device=device)
     else:
         assert policy == "ref"
         in_lens = torch.tensor([3, 0, 3], device=device)
@@ -141,43 +155,64 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
             [[1, 2, 2], [1, 2, 5], [1, 2, -1]],  # n=2 r=3 t=4
         ], device=device)
         # fmt: on
-        if lobe_size == 0:
+        if lobe_size == 0 and valid_only:
             # fmt: off
             slices_exp = torch.tensor([
                 [0, 1], [0, 2], [1, 3],  # n=0
             ], device=device)
             # fmt: on
             sources_exp = torch.tensor([0, 0, 0], device=device)
+        elif lobe_size == 0:
+            # fmt: off
+            slices_exp = torch.tensor([
+                [0, 1], [0, 2], [1, 3],  # n=0
+                [2, 4],  # n=2
+            ], device=device)
+            # fmt: on
+            sources_exp = torch.tensor([0, 0, 0, 2], device=device)
         else:
             assert lobe_size == 2
-            if window_type == "symmetric":
+            if valid_only and window_type == "symmetric":
+                slices_exp = torch.tensor([[0, 4]], device=device)
+                sources_exp = torch.tensor([2], device=device)
+            elif window_type == "symmetric":
                 # fmt: off
                 slices_exp = torch.tensor([
                     [0, 3], [0, 3], [0, 3],  # n=0
-                    [0, 4],  # n=2
+                    [0, 4], [0, 4],  # n=2
                 ], device=device)
                 # fmt: on
-                sources_exp = torch.tensor([0, 0, 0, 2], device=device)
+                sources_exp = torch.tensor([0, 0, 0, 2, 2], device=device)
+            elif valid_only and window_type == "causal":
+                slices_exp = torch.tensor([[0, 2]], device=device)
+                sources_exp = torch.tensor([2], device=device)
             elif window_type == "causal":
                 # fmt: off
                 slices_exp = torch.tensor([
                     [0, 1], [0, 2], [0, 3],  # n=0
-                    [0, 2],  # n=2
+                    [0, 2], [0, 4],  # n=2
                 ], device=device)
                 # fmt: on
-                sources_exp = torch.tensor([0, 0, 0, 2], device=device)
-            elif window_type == "future":
+                sources_exp = torch.tensor([0, 0, 0, 2, 2], device=device)
+            elif valid_only:
                 # fmt: off
                 slices_exp = torch.tensor([
-                    [0, 3], [0, 3], [1, 3],  # n=2
+                    [0, 3],  # n=0
                     [2, 4],  # n=2
                 ], device=device)
                 # fmt: on
-                sources_exp = torch.tensor([0, 0, 0, 2], device=device)
-            else:  # valid
-                slices_exp = torch.tensor([[0, 4]], device=device)
-                sources_exp = torch.tensor([2], device=device)
-    extract_chunk_slices = ExtractChunkSlices(policy, window_type, lobe_size)
+                sources_exp = torch.tensor([0, 2], device=device)
+            else:
+                # fmt: off
+                slices_exp = torch.tensor([
+                    [0, 3], [0, 3], [1, 3],  # n=2
+                    [2, 4], [2, 4], # n=2
+                ], device=device)
+                # fmt: on
+                sources_exp = torch.tensor([0, 0, 0, 2, 2], device=device)
+    extract_chunk_slices = ExtractChunkSlices(
+        policy, window_type, valid_only, lobe_size
+    )
     if jit_type == "script":
         extract_chunk_slices = torch.jit.script(extract_chunk_slices)
     elif jit_type == "trace":
@@ -190,6 +225,8 @@ def test_extract_chunk_sizes(device, policy, window_type, jit_type, lobe_size):
             ),
         )
     slices_act, sources_act = extract_chunk_slices(in_, in_lens, other_lens)
+    print(slices_act)
+    print(sources_act)
     assert slices_exp.shape == slices_act.shape
     assert sources_exp.shape == sources_act.shape
     assert (slices_exp == slices_act).all()
