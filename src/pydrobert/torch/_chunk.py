@@ -22,7 +22,7 @@ from ._wrappers import functional_wrapper, proxy
 
 
 @overload
-def extract_chunk_slices(
+def slice_spect_data(
     in_: torch.Tensor,
     in_lens: Optional[torch.Tensor] = None,
     other_lens: Optional[torch.Tensor] = None,
@@ -35,8 +35,9 @@ def extract_chunk_slices(
 
 
 @script
-@functional_wrapper("ExtractChunkSlices")
-def extract_chunk_slices(
+@torch.no_grad()
+@functional_wrapper("SliceSpectData")
+def slice_spect_data(
     in_: torch.Tensor,
     in_lens: Optional[torch.Tensor] = None,
     other_lens: Optional[torch.Tensor] = None,
@@ -85,11 +86,12 @@ def extract_chunk_slices(
         else:  # future
             starts = mids = torch.arange(0, T, shift, device=device)
             ends = starts + shift
-        starts = starts.clamp_min_(0).expand(N, -1)
-        if in_lens is None:
-            ends = ends.clamp_max_(T).expand(N, -1)
-        else:
-            ends = torch.min(ends.unsqueeze(0), in_lens.unsqueeze(1))
+        starts, ends = starts.expand(N, -1), ends.expand(N, -1)
+        # starts = starts.clamp_min_(0).expand(N, -1)
+        # if in_lens is None:
+        #     ends = ends.clamp_max_(T).expand(N, -1)
+        # else:
+        #     ends = torch.min(ends.unsqueeze(0), in_lens.unsqueeze(1))
         TT = starts.size(1)
         slices = torch.stack([starts, ends], 2).flatten(end_dim=1)
         sources = torch.arange(N, device=device).view(N, 1).expand(N, TT).flatten()
@@ -107,10 +109,10 @@ def extract_chunk_slices(
         else:
             in_lens = torch.full((N,), T, device=device)
         nonempty = (in_lens > 0).view(N, 1)
-        starts = torch.nonzero(torch.cat([nonempty, mask], 1))
+        starts = torch.cat([nonempty, mask], 1).nonzero()
         mask = torch.cat([torch.zeros_like(nonempty), mask], 1)
         mask |= nonempty & (in_lens.view(N, 1) == arange)
-        ends = torch.nonzero(mask)
+        ends = mask.nonzero()
         sources = starts[:, 0]
         starts, ends = starts[:, 1], ends[:, 1]
         if lobe_size:
@@ -156,15 +158,12 @@ def extract_chunk_slices(
             )
         mask = in_lens.view(N, 1) > torch.arange(T, device=device)
         mask &= (in_[..., 1:] >= 0).all(2)
-        do_left = int(window_type in ("symmetric", "causal"))
-        do_right = int(window_type in ("symmetric", "future"))
+        if window_type in ("symmetric", "causal"):
+            starts = starts - lobe_size
+        if window_type in ("symmetric", "future"):
+            ends = ends + lobe_size
         if valid_only:
-            mask &= (starts >= do_left * lobe_size) & (
-                ends + do_right * lobe_size <= other_lens.view(N, 1)
-            )
-        if do_left:
-            starts = (starts - lobe_size).clamp_min_(0)
-        ends = torch.min(ends + do_right * lobe_size, other_lens.unsqueeze(1))
+            mask &= (starts >= 0) & (ends <= other_lens.view(N, 1))
         mask &= starts < ends
         starts, ends, mask = starts.flatten(), ends.flatten(), mask.flatten()
         sources = torch.arange(N, device=device).view(N, 1).expand(N, T).flatten()
@@ -179,7 +178,7 @@ def extract_chunk_slices(
     return slices, sources
 
 
-class ExtractChunkSlices(torch.nn.Module):
+class SliceSpectData(torch.nn.Module):
     """Determine slices of feature chunks according to a variety of policies
     
     This module helps to chunk :class:`pydrobert.data.SpectDataLoader` data (or other
@@ -189,13 +188,31 @@ class ExtractChunkSlices(torch.nn.Module):
     to slice the data. For example, feature chunks can be stored in a list as
     follows
 
-    >>> feats = ...  # an (N, T, F)-sized feature tensor
-    >>> slices, sources = extract_chunk_slices(...)
-    >>> chunks = []  # a number of 
-    >>> for slice_, feat in zip(slices, feats[sources]):
-    ...     chunks.append(feat[slice_[0]:slice_[1]])
 
-    All slices will be non-empty and within any required lengths
+    If `policy` is :obj:`'fixed'`, slices are extracted at fixed intervals (``lobe_size
+    + 1``) along the length of the data. `in_` is assumed to be the data in question,
+    e.g. the `feats` tensor in a :class:`pydrobert.data.SpectDataLoader`, in batch-first
+    order (although any tensor which matches its first two dimensions will do).
+    `in_lens` may be used to specify the actual lengths of the input sequences if they
+    were padded to fit in the same batch element. If `window_type` is
+    :obj:`'symmetric'`, windows are of size ``1 + 2 * lobe_size``; otherwise, windows
+    are of size ``1 + lobe_size``. When `valid_only` is :obj:`True`, slices start at
+    index :obj:`0` and as many slices as can be fit fully within the sequences are
+    returned. When `valid_only` is :obj:`False` slices are kept if their "middle" index
+    lies before the end of the sequence with lobes clamped within the sequence. The
+    "middle" index for the symmetric window is at ``slice[0] + window_size // 2``; for
+    the causal window it's the last index of the window, ``slice[1] - 1``; for the
+    future window it's the first, ``slice[0]``. When `valid_only` is :obj:`False`, the
+    initial slice's offsets differ as well: for the symmetric case, it's ``(lobe_size +
+    1) // 2 - window_size // 2``; for the causal case, it's :obj:`-lobe_size`; and the
+    future case it's still :obj:`0`. As an example, given a sequence of length :obj:`8`,
+    the following are slices under different configurations of the :obj:`'fixed'`
+    policy with a `lobe_size` of :obj:`2`::
+
+        [[0, 5], [3, 8]]          # symmetric, valid_only
+        [[0, 3], [3, 6]]          # not symmetric, valid_only
+        [[0, 4], [2, 7], [5, 9]]  # symmetric, not valid_only
+        [[0, 1], [1, 4]]
 
     Parameters
     ----------
@@ -210,7 +227,9 @@ class ExtractChunkSlices(torch.nn.Module):
         unit, :obj:`'causal'` to the left (towards :obj:`0`), :obj:`'future'` to the
         right. See above for differences by policy.
     valid_only
-        Whether to include only 
+        Dictates what to do when a would-be slice passes over the boundaries of a
+        segment. If :obj:`True`, any such slices are thrown out. If :obj:`False`, slice
+        boundaries are limited to the boundaries of the sequence.
     lobe_size
         Specifies the number of units to each side of the middle unit will be
         added to the chunk. Non-negative.
@@ -283,7 +302,7 @@ class ExtractChunkSlices(torch.nn.Module):
         in_lens: Optional[torch.Tensor] = None,
         other_lens: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return extract_chunk_slices(
+        return slice_spect_data(
             in_,
             in_lens,
             other_lens,

@@ -21,7 +21,7 @@ from ._combinatorics import (
     enumerate_binary_sequences_with_cardinality,
     simple_random_sampling_without_replacement,
 )
-from ._chunk import extract_chunk_slices
+from ._chunk import slice_spect_data
 from ._decoding import (
     beam_search_advance,
     ctc_greedy_search,
@@ -64,7 +64,6 @@ __all__ = [
     "enumerate_binary_sequences",
     "enumerate_vocab_sequences",
     "error_rate",
-    "extract_chunk_slices",
     "feat_deltas",
     "fill_after_eos",
     "hard_optimal_completion_distillation_loss",
@@ -80,6 +79,7 @@ __all__ = [
     "random_walk_advance",
     "sequence_log_probs",
     "simple_random_sampling_without_replacement",
+    "slice_spect_data",
     "sparse_image_warp",
     "spec_augment_apply_parameters",
     "spec_augment_draw_parameters",

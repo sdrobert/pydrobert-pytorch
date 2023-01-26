@@ -35,7 +35,6 @@ __all__ = [
     "EditDistance",
     "ErrorRate",
     "ExtractableSequentialLanguageModel",
-    "ExtractChunkSlices",
     "FeatureDeltas",
     "FillAfterEndOfSequence",
     "GeneralizedDotProductSoftAttention",
@@ -58,6 +57,7 @@ __all__ = [
     "RandomWalk",
     "SequenceLogProbabilities",
     "SequentialLanguageModel",
+    "SliceSpectData",
     "SparseImageWarp",
     "SpecAugment",
     "TimeDistributedReturn",
@@ -71,7 +71,7 @@ from ._attn import (
     GlobalSoftAttention,
     MultiHeadedAttention,
 )
-from ._chunk import ExtractChunkSlices
+from ._chunk import SliceSpectData
 from ._decoding import (
     BeamSearch,
     CTCGreedySearch,
