@@ -1683,7 +1683,7 @@ def _torch_ali_dir_to_torch_token_dir_do_work(
         ali_path = os.path.join(ali_dir, basename)
         ali = torch.load(ali_path)
         tok, c = ali.unique_consecutive(return_counts=True)
-        c = torch.cat([zeros_, c]).cumsum_(0)
+        c = torch.cat([zeros_, c]).cumsum(0)
         start, end = c[:-1], c[1:]
         ref = torch.stack([tok, start, end], -1)
         torch.save(ref, os.path.join(ref_dir, basename))
