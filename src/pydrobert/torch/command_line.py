@@ -110,53 +110,6 @@ def _add_common_arg(parser: argparse.ArgumentParser, flag: str):
     parser.add_argument(flag, **kwargs)
 
 
-def _get_torch_spect_data_dir_info_parse_args(args):
-    parser = argparse.ArgumentParser(
-        description=get_torch_spect_data_dir_info.__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("dir", type=str, help="The torch data directory")
-    parser.add_argument(
-        "out_file",
-        nargs="?",
-        type=argparse.FileType("w"),
-        default=sys.stdout,
-        help="The file to write to. If unspecified, stdout",
-    )
-    _add_common_arg(parser, "--file-prefix")
-    _add_common_arg(parser, "--file-suffix")
-    parser.add_argument(
-        "--feat-subdir", default="feat", help="Subdirectory where features are stored"
-    )
-    parser.add_argument(
-        "--ali-subdir", default="ali", help="Subdirectory where alignments are stored"
-    )
-    parser.add_argument(
-        "--ref-subdir",
-        default="ref",
-        help="Subdirectory where reference token sequences are stored",
-    )
-
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument(
-        "--strict",
-        action="store_true",
-        default=False,
-        help="If set, validate the data directory before collecting info. The "
-        "process is described in pydrobert.torch.data.validate_spect_data_set",
-    )
-    group.add_argument(
-        "--fix",
-        action="store_true",
-        default=False,
-        help="If set, validate the data directory before collecting info, potentially "
-        "fixing small errors in the directory. The process is described in "
-        "pydrobert.torch.validate_spect_data_set",
-    )
-
-    return parser.parse_args(args)
-
-
 def get_torch_spect_data_dir_info(args: Optional[Sequence[str]] = None):
     """Write info about the specified SpectDataSet data dir
 
@@ -206,10 +159,53 @@ sorted order:
 Note that the output can be parsed as a Kaldi (http://kaldi-asr.org/) text table of
 integers.
     """
+    parser = argparse.ArgumentParser(
+        description=get_torch_spect_data_dir_info.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("dir", type=str, help="The torch data directory")
+    parser.add_argument(
+        "out_file",
+        nargs="?",
+        type=argparse.FileType("w"),
+        default=sys.stdout,
+        help="The file to write to. If unspecified, stdout",
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    parser.add_argument(
+        "--feat-subdir", default="feat", help="Subdirectory where features are stored"
+    )
+    parser.add_argument(
+        "--ali-subdir", default="ali", help="Subdirectory where alignments are stored"
+    )
+    parser.add_argument(
+        "--ref-subdir",
+        default="ref",
+        help="Subdirectory where reference token sequences are stored",
+    )
+
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--strict",
+        action="store_true",
+        default=False,
+        help="If set, validate the data directory before collecting info. The "
+        "process is described in pydrobert.torch.data.validate_spect_data_set",
+    )
+    group.add_argument(
+        "--fix",
+        action="store_true",
+        default=False,
+        help="If set, validate the data directory before collecting info, potentially "
+        "fixing small errors in the directory. The process is described in "
+        "pydrobert.torch.validate_spect_data_set",
+    )
     try:
-        options = _get_torch_spect_data_dir_info_parse_args(args)
+        options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
+
     if not os.path.isdir(options.dir):
         print("'{}' is not a directory".format(options.dir), file=sys.stderr)
         return 1
@@ -265,39 +261,6 @@ integers.
     return 0
 
 
-def _trn_to_torch_token_data_dir_parse_args(args):
-    parser = argparse.ArgumentParser(
-        description=trn_to_torch_token_data_dir.__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("trn", type=argparse.FileType("r"), help="The input trn file")
-    _add_common_arg(parser, "token2id")
-    parser.add_argument(
-        "dir",
-        help="The directory to store token sequences to. If the directory "
-        "does not exist, it will be created",
-    )
-    parser.add_argument(
-        "--alt-handler",
-        default="error",
-        choices=("error", "first"),
-        help='How to handle transcription alternates. If "error", error if '
-        'the "trn" file contains alternates. If "first", always treat the '
-        "alternate as canon",
-    )
-    _add_common_arg(parser, "--file-prefix")
-    _add_common_arg(parser, "--file-suffix")
-    _add_common_arg(parser, "--swap")
-    _add_common_arg(parser, "--unk-symbol")
-    _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
-    _add_common_arg(parser, "--timeout")
-    size_group = parser.add_mutually_exclusive_group()
-    _add_common_arg(size_group, "--skip-frame-times")
-    _add_common_arg(size_group, "--feat-sizing")
-    return parser.parse_args(args)
-
-
 def _parse_token2id(file, swap, return_swap):
     ret = dict()
     ret_swapped = dict()
@@ -340,75 +303,6 @@ def _save_transcripts_to_dir_do_work(
         torch.save(tok, path)
 
 
-def _save_transcripts_to_dir_worker(
-    queue, token2id, dir_, frame_shift_ms, unk, skip_frame_times, feat_sizing, timeout,
-):
-    transcripts = queue.get(True, timeout)
-    while transcripts is not None:
-        _save_transcripts_to_dir_do_work(
-            transcripts,
-            token2id,
-            dir_,
-            frame_shift_ms,
-            unk,
-            skip_frame_times,
-            feat_sizing,
-        )
-        del transcripts
-        transcripts = queue.get(True, timeout)
-
-
-def _save_transcripts_to_dir(
-    transcripts,
-    token2id,
-    dir_,
-    frame_shift_ms=None,
-    unk=None,
-    skip_frame_times=False,
-    feat_sizing=False,
-    num_workers=0,
-    chunk_size=1000,
-    timeout=None,
-):
-    if not os.path.isdir(dir_):
-        os.makedirs(dir_)
-    if num_workers:
-        queue = torch.multiprocessing.Queue(num_workers)
-        with torch.multiprocessing.Pool(
-            num_workers,
-            _save_transcripts_to_dir_worker,
-            (
-                queue,
-                token2id,
-                dir_,
-                frame_shift_ms,
-                unk,
-                skip_frame_times,
-                feat_sizing,
-                timeout,
-            ),
-        ) as pool:
-            chunk = tuple(itertools.islice(transcripts, chunk_size))
-            while len(chunk):
-                queue.put(chunk)
-                chunk = tuple(itertools.islice(transcripts, chunk_size))
-            for _ in range(num_workers):
-                queue.put(None)
-            pool.close()
-            pool.join()
-
-    else:
-        _save_transcripts_to_dir_do_work(
-            transcripts,
-            token2id,
-            dir_,
-            frame_shift_ms,
-            unk,
-            skip_frame_times,
-            feat_sizing,
-        )
-
-
 def trn_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
     """Convert a NIST "trn" file to the specified SpectDataSet data dir
 
@@ -422,10 +316,40 @@ has the format
 This command reads in a "trn" file and writes its contents as token sequences compatible
 with the "ref/" directory of a SpectDataSet. See the command
 "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory."""
+    parser = argparse.ArgumentParser(
+        description=trn_to_torch_token_data_dir.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("trn", type=argparse.FileType("r"), help="The input trn file")
+    _add_common_arg(parser, "token2id")
+    parser.add_argument(
+        "dir",
+        help="The directory to store token sequences to. If the directory "
+        "does not exist, it will be created",
+    )
+    parser.add_argument(
+        "--alt-handler",
+        default="error",
+        choices=("error", "first"),
+        help='How to handle transcription alternates. If "error", error if '
+        'the "trn" file contains alternates. If "first", always treat the '
+        "alternate as canon",
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--swap")
+    _add_common_arg(parser, "--unk-symbol")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--chunk-size")
+    _add_common_arg(parser, "--timeout")
+    size_group = parser.add_mutually_exclusive_group()
+    _add_common_arg(size_group, "--skip-frame-times")
+    _add_common_arg(size_group, "--feat-sizing")
     try:
-        options = _trn_to_torch_token_data_dir_parse_args(args)
+        options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
+
     token2id = _parse_token2id(options.token2id, options.swap, options.swap)
     if options.unk_symbol is not None and options.unk_symbol not in token2id:
         print(
@@ -454,37 +378,19 @@ with the "ref/" directory of a SpectDataSet. See the command
                     old_transcript = x[0]
             yield options.file_prefix + utt_id + options.file_suffix, transcript
 
-    _save_transcripts_to_dir(
+    os.makedirs(options.dir, exist_ok=True)
+    _multiprocessor_pattern(
         error_handling_iter(),
+        options,
+        _save_transcripts_to_dir_do_work,
         token2id,
         options.dir,
-        unk=options.unk_symbol,
-        skip_frame_times=options.skip_frame_times,
-        feat_sizing=options.feat_sizing,
-        num_workers=options.num_workers,
-        chunk_size=options.chunk_size,
-        timeout=options.timeout,
+        None,  # frame_shift_ms
+        options.unk_symbol,
+        options.skip_frame_times,
+        options.feat_sizing,
     )
     return 0
-
-
-def _torch_token_data_dir_to_trn_parse_args(args):
-    parser = argparse.ArgumentParser(
-        description=torch_token_data_dir_to_trn.__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("dir", help="The directory to read token sequences from")
-    _add_common_arg(parser, "id2token")
-    parser.add_argument(
-        "trn",
-        type=argparse.FileType("w"),
-        help='The "trn" file to write transcriptions to',
-    )
-    _add_common_arg(parser, "--file-prefix")
-    _add_common_arg(parser, "--file-suffix")
-    _add_common_arg(parser, "--swap")
-    _add_common_arg(parser, "--num-workers")
-    return parser.parse_args(args)
 
 
 class _DirectoryDataset(torch.utils.data.Dataset):
@@ -577,8 +483,24 @@ This command scans the contents of a directory like "ref/" in a SpectDataSeet an
 converts each such file into a transcription. Each such transcription is then
 written to a "trn" file. See the command "get-torch-spect-data-dir-info" for more
 info about a SpectDataSet directory."""
+    parser = argparse.ArgumentParser(
+        description=torch_token_data_dir_to_trn.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("dir", help="The directory to read token sequences from")
+    _add_common_arg(parser, "id2token")
+    parser.add_argument(
+        "trn",
+        type=argparse.FileType("w"),
+        help='The "trn" file to write transcriptions to',
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--swap")
+    _add_common_arg(parser, "--num-workers")
+
     try:
-        options = _torch_token_data_dir_to_trn_parse_args(args)
+        options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
     if not os.path.isdir(options.dir):
@@ -595,57 +517,6 @@ info about a SpectDataSet directory."""
     )
     data.write_trn(transcripts, options.trn)
     return 0
-
-
-def _ctm_to_torch_token_data_dir_parse_args(args):
-    parser = argparse.ArgumentParser(
-        description=ctm_to_torch_token_data_dir.__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "ctm",
-        type=argparse.FileType("r"),
-        help='The "ctm" file to read token segments from',
-    )
-    _add_common_arg(parser, "token2id")
-    parser.add_argument(
-        "dir",
-        help="The directory to store token sequences to. If the "
-        "directory does not exist, it will be created",
-    )
-    _add_common_arg(parser, "--file-prefix")
-    _add_common_arg(parser, "--file-suffix")
-    _add_common_arg(parser, "--swap")
-    _add_common_arg(parser, "--unk-symbol")
-    _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
-    _add_common_arg(parser, "--timeout")
-    size_group = parser.add_mutually_exclusive_group()
-    _add_common_arg(size_group, "--skip-frame-times")
-    _add_common_arg(size_group, "--feat-sizing")
-    _add_common_arg(size_group, "--frame-shift-ms")
-    utt_group = parser.add_mutually_exclusive_group()
-    utt_group.add_argument(
-        "--wc2utt",
-        type=argparse.FileType("r"),
-        default=None,
-        help="A file mapping wavefile name and channel combinations (e.g. "
-        "'utt_1 A') to utterance IDs. Each line of the file has the format "
-        "'<wavefile_name> <channel> <utt_id>'. If neither '--wc2utt' nor "
-        "'--utt2wc' has been specied, the wavefile name will be treated as "
-        "the utterance ID",
-    )
-    utt_group.add_argument(
-        "--utt2wc",
-        type=argparse.FileType("r"),
-        default=None,
-        help="A file mapping utterance IDs to wavefile name and channel "
-        "combinations (e.g. 'utt_1 A'). Each line of the file has the "
-        "format '<utt_id> <wavefile_name> <channel>'. If neither '--wc2utt' "
-        "nor '--utt2wc' has been specied, the wavefile name will be treated "
-        "as the utterance ID",
-    )
-    return parser.parse_args(args)
 
 
 def _parse_wc2utt(file, swap, return_swap):
@@ -696,10 +567,59 @@ duration.
 This command reads in a "ctm" file and writes its contents as token sequences compatible
 with the "ref/" directory of a SpectDataSet. See the command
 "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory."""
+    parser = argparse.ArgumentParser(
+        description=ctm_to_torch_token_data_dir.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "ctm",
+        type=argparse.FileType("r"),
+        help='The "ctm" file to read token segments from',
+    )
+    _add_common_arg(parser, "token2id")
+    parser.add_argument(
+        "dir",
+        help="The directory to store token sequences to. If the "
+        "directory does not exist, it will be created",
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--swap")
+    _add_common_arg(parser, "--unk-symbol")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--chunk-size")
+    _add_common_arg(parser, "--timeout")
+    size_group = parser.add_mutually_exclusive_group()
+    _add_common_arg(size_group, "--skip-frame-times")
+    _add_common_arg(size_group, "--feat-sizing")
+    _add_common_arg(size_group, "--frame-shift-ms")
+    utt_group = parser.add_mutually_exclusive_group()
+    utt_group.add_argument(
+        "--wc2utt",
+        type=argparse.FileType("r"),
+        default=None,
+        help="A file mapping wavefile name and channel combinations (e.g. "
+        "'utt_1 A') to utterance IDs. Each line of the file has the format "
+        "'<wavefile_name> <channel> <utt_id>'. If neither '--wc2utt' nor "
+        "'--utt2wc' has been specied, the wavefile name will be treated as "
+        "the utterance ID",
+    )
+    utt_group.add_argument(
+        "--utt2wc",
+        type=argparse.FileType("r"),
+        default=None,
+        help="A file mapping utterance IDs to wavefile name and channel "
+        "combinations (e.g. 'utt_1 A'). Each line of the file has the "
+        "format '<utt_id> <wavefile_name> <channel>'. If neither '--wc2utt' "
+        "nor '--utt2wc' has been specied, the wavefile name will be treated "
+        "as the utterance ID",
+    )
+
     try:
-        options = _ctm_to_torch_token_data_dir_parse_args(args)
+        options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
+
     token2id = _parse_token2id(options.token2id, options.swap, options.swap)
     if options.unk_symbol is not None and options.unk_symbol not in token2id:
         print(
@@ -713,23 +633,45 @@ with the "ref/" directory of a SpectDataSet. See the command
         wc2utt = _parse_wc2utt(options.utt2wc, True, False)
     else:
         wc2utt = None
-    transcripts = data.read_ctm(options.ctm, wc2utt)
-    _save_transcripts_to_dir(
-        ((options.file_prefix + x[0] + options.file_suffix, x[1]) for x in transcripts),
+
+    transcripts = (
+        (options.file_prefix + x[0] + options.file_suffix, x[1])
+        for x in data.read_ctm(options.ctm, wc2utt)
+    )
+
+    os.makedirs(options.dir, exist_ok=True)
+    _multiprocessor_pattern(
+        transcripts,
+        options,
+        _save_transcripts_to_dir_do_work,
         token2id,
         options.dir,
         options.frame_shift_ms,
         options.unk_symbol,
         options.skip_frame_times,
         options.feat_sizing,
-        options.num_workers,
-        options.chunk_size,
-        options.timeout,
     )
     return 0
 
 
-def _textgrids_to_torch_token_data_dir_parse_args(args):
+def textgrids_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
+    """Convert a directory of TextGrid files into a SpectDataSet token data dir
+
+A "TextGrid" file is a transcription file for a single utterance used by the Praat
+software (https://www.fon.hum.uva.nl/praat/).
+
+This command accepts a directory "tg_dir" of TextGrid files
+
+    tg_dir/
+        <file-prefix>utt_1.<textgrid_suffix>
+        <file-prefix>utt_2.<textgrid_suffix>
+        ...
+
+and writes each file as a separate token sequence compatible with the "ref/" directory
+of a SpectDataSet. If the extracted tier is an IntervalTier, the start and end points
+will be saved with each token. If a TextTier (PointTier), the start and end points of
+each segment will be identified with the point. See the command
+"get-torch-spect-data-dir-info" for more info about a SpectDataSet directory."""
     parser = argparse.ArgumentParser(
         description=textgrids_to_torch_token_data_dir.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -773,29 +715,9 @@ def _textgrids_to_torch_token_data_dir_parse_args(args):
         type=int,
         help="The index of the tier to extract.",
     )
-    return parser.parse_args(args)
 
-
-def textgrids_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
-    """Convert a directory of TextGrid files into a SpectDataSet token data dir
-
-A "TextGrid" file is a transcription file for a single utterance used by the Praat
-software (https://www.fon.hum.uva.nl/praat/).
-
-This command accepts a directory "tg_dir" of TextGrid files
-
-    tg_dir/
-        <file-prefix>utt_1.<textgrid_suffix>
-        <file-prefix>utt_2.<textgrid_suffix>
-        ...
-
-and writes each file as a separate token sequence compatible with the "ref/" directory
-of a SpectDataSet. If the extracted tier is an IntervalTier, the start and end points
-will be saved with each token. If a TextTier (PointTier), the start and end points of
-each segment will be identified with the point. See the command
-"get-torch-spect-data-dir-info" for more info about a SpectDataSet directory."""
     try:
-        options = _textgrids_to_torch_token_data_dir_parse_args(args)
+        options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
     if not os.path.isdir(options.tg_dir):
@@ -828,22 +750,42 @@ each segment will be identified with the point. See the command
                 options.fill_symbol,
             )[0]
 
-    _save_transcripts_to_dir(
+    os.makedirs(options.dir, exist_ok=True)
+    _multiprocessor_pattern(
         textgrid_iter(),
+        options,
+        _save_transcripts_to_dir_do_work,
         token2id,
         options.dir,
         options.frame_shift_ms,
         options.unk_symbol,
         options.skip_frame_times,
         options.feat_sizing,
-        options.num_workers,
-        options.chunk_size,
-        options.timeout,
     )
     return 0
 
 
-def _torch_token_data_dir_to_ctm_parse_args(args):
+def torch_token_data_dir_to_ctm(args: Optional[Sequence[str]] = None):
+    """Convert a SpectDataSet token data directory to a NIST "ctm" file
+
+A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
+conversation file) used in the sclite
+(http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm) toolkit. Here is the
+format::
+
+    utt_1 A 0.2 0.1 hi
+    utt_1 A 0.3 1.0 there  ;; comment
+    utt_2 A 0.0 1.0 next
+    utt_3 A 0.1 0.4 utterance
+
+Where the first number specifies the token start time (in seconds) and the second the
+duration.
+
+This command scans the contents of a directory like "ref/" in a SpectDataSet and
+converts each such file into a transcription. Every token in a given transcription must
+have information about its duration. Each such transcription is then written to the
+"ctm" file. See the command "get-torch-spect-data-dir-info" for more info about a
+SpectDataSet directory."""
     parser = argparse.ArgumentParser(
         description=torch_token_data_dir_to_ctm.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -883,32 +825,9 @@ def _torch_token_data_dir_to_ctm_parse_args(args):
         "IDs are treated as wavefile names and are given the value of this "
         "flag as a channel",
     )
-    return parser.parse_args(args)
 
-
-def torch_token_data_dir_to_ctm(args: Optional[Sequence[str]] = None):
-    """Convert a SpectDataSet token data directory to a NIST "ctm" file
-
-A "ctm" file is a transcription file with token alignments (a.k.a. a time-marked
-conversation file) used in the sclite
-(http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm) toolkit. Here is the
-format::
-
-    utt_1 A 0.2 0.1 hi
-    utt_1 A 0.3 1.0 there  ;; comment
-    utt_2 A 0.0 1.0 next
-    utt_3 A 0.1 0.4 utterance
-
-Where the first number specifies the token start time (in seconds) and the second the
-duration.
-
-This command scans the contents of a directory like "ref/" in a SpectDataSet and
-converts each such file into a transcription. Every token in a given transcription must
-have information about its duration. Each such transcription is then written to the
-"ctm" file. See the command "get-torch-spect-data-dir-info" for more info about a
-SpectDataSet directory."""
     try:
-        options = _torch_token_data_dir_to_ctm_parse_args(args)
+        options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
     id2token = _parse_token2id(options.id2token, not options.swap, options.swap)
@@ -929,7 +848,32 @@ SpectDataSet directory."""
     return 0
 
 
-def _compute_torch_token_data_dir_parse_args(args):
+def compute_torch_token_data_dir_error_rates(args: Optional[Sequence[str]] = None):
+    """Compute error rates between reference and hypothesis token data dirs
+
+WARNING!!!!
+The error rates reported by this command have changed since version v0.3.0 of
+pydrobert-pytorch when the insertion, deletion, and substitution costs do not all equal
+1. Consult the documentation of "pydrobert.torch.functional.error_rate" for more
+information.
+
+This is a very simple script that computes and prints the error rates between the "ref/"
+(reference/gold standard) token sequences and "hyp/" (hypothesis/generated) token
+sequences in a SpectDataSet directory. Consult the Wikipedia article on the Levenshtein
+distance (https://en.wikipedia.org/wiki/Levenshtein_distance>) for more info on error
+rates. The error rate for the entire partition will be calculated as the total number of
+insertions, deletions, and substitutions made in all transcriptions divided by the sum
+of lengths of reference transcriptions.
+
+Error rates are printed as ratios, not by "percentage."
+
+While convenient and accurate, this script has very few features. Consider pairing the
+command "torch-token-data-dir-to-trn" with sclite
+(http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm) instead.
+
+Many tasks will ignore some tokens (e.g. silences) or collapse others (e.g. phones).
+Please consult a standard recipe (such as those in Kaldi http://kaldi-asr.org/) before
+performing these computations."""
     parser = argparse.ArgumentParser(
         description=compute_torch_token_data_dir_error_rates.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1031,37 +975,9 @@ def _compute_torch_token_data_dir_parse_args(args):
         help="Use NIST (sclite, score) default costs for insertions, deletions, and "
         "substitutions (3/3/4)",
     )
-    return parser.parse_args(args)
 
-
-def compute_torch_token_data_dir_error_rates(args: Optional[Sequence[str]] = None):
-    """Compute error rates between reference and hypothesis token data dirs
-
-WARNING!!!!
-The error rates reported by this command have changed since version v0.3.0 of
-pydrobert-pytorch when the insertion, deletion, and substitution costs do not all equal
-1. Consult the documentation of "pydrobert.torch.functional.error_rate" for more
-information.
-
-This is a very simple script that computes and prints the error rates between the "ref/"
-(reference/gold standard) token sequences and "hyp/" (hypothesis/generated) token
-sequences in a SpectDataSet directory. Consult the Wikipedia article on the Levenshtein
-distance (https://en.wikipedia.org/wiki/Levenshtein_distance>) for more info on error
-rates. The error rate for the entire partition will be calculated as the total number of
-insertions, deletions, and substitutions made in all transcriptions divided by the sum
-of lengths of reference transcriptions.
-
-Error rates are printed as ratios, not by "percentage."
-
-While convenient and accurate, this script has very few features. Consider pairing the
-command "torch-token-data-dir-to-trn" with sclite
-(http://www1.icsi.berkeley.edu/Speech/docs/sctk-1.2/sclite.htm) instead.
-
-Many tasks will ignore some tokens (e.g. silences) or collapse others (e.g. phones).
-Please consult a standard recipe (such as those in Kaldi http://kaldi-asr.org/) before
-performing these computations."""
     try:
-        options = _compute_torch_token_data_dir_parse_args(args)
+        options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
     if options.nist_costs:
@@ -1231,7 +1147,49 @@ performing these computations."""
         )
 
 
-def _torch_spect_data_dir_to_wds_parse_args(args):
+def torch_spect_data_dir_to_wds(args: Optional[Sequence[str]] = None):
+    """Convert a SpectDataSet to a WebDataset
+    
+A torch SpectDataSet data dir is of the form
+
+    dir/
+        feat/
+            <file_prefix><utt1><file_suffix>
+            <file_prefix><utt2><file_suffix>
+            ...
+        [ali/
+            <file_prefix><utt1><file_suffix>
+            <file_prefix><utt1><file_suffix>
+            ...
+        ]
+        [ref/
+            <file_prefix><utt1><file_suffix>
+            <file_prefix><utt1><file_suffix>
+            ...
+        ]
+
+Where "feat/" contains float tensors of shape (N, F), where N is the number of
+frames (variable) and F is the number of filters (fixed). "ali/" if there, contains
+long tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids
+for discriminative training in an DNN-HMM). "ref/", if there, contains long tensors
+of shape (R, 3) indicating a sequence of reference tokens where element indexed by
+"[i, 0]" is a token id, "[i, 1]" is the inclusive start frame of the token (or a
+negative value if unknown), and "[i, 2]" is the exclusive end frame of the token.
+
+This command converts the data directory into a tar file to be used as a
+WebDataset (https://github.com/webdataset/webdataset), whose contents are files
+
+    <utt1>.feat.pth
+    [<utt1>.ali.pth]
+    [<utt1>.ref.pth]
+    <utt2>.feat.pth
+    [<utt2>.ali.pth]
+    [<utt2>.ref.pth]
+    ...
+
+holding tensors with the same interpretation as above.
+
+This command does not require WebDataset to be installed."""
     parser = argparse.ArgumentParser(
         description=torch_spect_data_dir_to_wds.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1278,57 +1236,11 @@ def _torch_spect_data_dir_to_wds_parse_args(args):
         help="If sharding ('--shard' is specified), dictates the maximum size in bytes "
         "of each file.",
     )
-
-    return parser.parse_args(args)
-
-
-def torch_spect_data_dir_to_wds(args: Optional[Sequence[str]] = None):
-    """Convert a SpectDataSet to a WebDataset
-    
-A torch SpectDataSet data dir is of the form
-
-    dir/
-        feat/
-            <file_prefix><utt1><file_suffix>
-            <file_prefix><utt2><file_suffix>
-            ...
-        [ali/
-            <file_prefix><utt1><file_suffix>
-            <file_prefix><utt1><file_suffix>
-            ...
-        ]
-        [ref/
-            <file_prefix><utt1><file_suffix>
-            <file_prefix><utt1><file_suffix>
-            ...
-        ]
-
-Where "feat/" contains float tensors of shape (N, F), where N is the number of
-frames (variable) and F is the number of filters (fixed). "ali/" if there, contains
-long tensors of shape (N,) indicating the appropriate class labels (likely pdf-ids
-for discriminative training in an DNN-HMM). "ref/", if there, contains long tensors
-of shape (R, 3) indicating a sequence of reference tokens where element indexed by
-"[i, 0]" is a token id, "[i, 1]" is the inclusive start frame of the token (or a
-negative value if unknown), and "[i, 2]" is the exclusive end frame of the token.
-
-This command converts the data directory into a tar file to be used as a
-WebDataset (https://github.com/webdataset/webdataset), whose contents are files
-
-    <utt1>.feat.pth
-    [<utt1>.ali.pth]
-    [<utt1>.ref.pth]
-    <utt2>.feat.pth
-    [<utt2>.ali.pth]
-    [<utt2>.ref.pth]
-    ...
-
-holding tensors with the same interpretation as above.
-
-This command does not require WebDataset to be installed."""
     try:
-        options = _torch_spect_data_dir_to_wds_parse_args(args)
+        options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
+
     if not os.path.isdir(options.dir):
         print(f"'{options.dir}' is not a directory", file=sys.stderr)
         return 1
@@ -1395,11 +1307,25 @@ This command does not require WebDataset to be installed."""
     return
 
 
-def _compute_mvn_stats_for_torch_feat_data_dir_parse_args(args):
+def compute_mvn_stats_for_torch_feat_data_dir(args: Optional[Sequence[str]] = None):
+    """Compute mean and standard deviation over a torch feature directory
+
+A feature directory is of the form
+
+dir/
+    <file_prefix><id_1><file_suffix>
+    <file_prefix><id_2><file_suffix>
+    ...
+
+where each file contains a dynamically-sized tensor whose last dimension (by default) is
+a feature vector. Letting F be a feature vector, this command computes the mean and
+standard deviation of the features in the directory, storing them as a pickled
+dictionary of tensors (with keys 'mean' and 'std') to the file 'out'. Those statistics
+may be used with a pydrobert.torch.modules.MeanVarianceNormalization layer."""
     parser = argparse.ArgumentParser(
         description=compute_mvn_stats_for_torch_feat_data_dir.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=r"""
+        epilog="""
 If --id2gid is specified, it points to a file which maps file ids to groups. Each group
 gets its own statistics which are estimated using only the feature vectors from the
 files assigned to them. With <id_1>, <id_2>, etc. part of the file names in the feature
@@ -1441,26 +1367,8 @@ of the statistics of all groups.
         help="Apply Bessel's correction "
         "(https://en.wikipedia.org/wiki/Bessel's_correction) to estimates.",
     )
-    return parser.parse_args(args)
-
-
-def compute_mvn_stats_for_torch_feat_data_dir(args: Optional[Sequence[str]] = None):
-    """Compute mean and standard deviation over a torch feature directory
-
-A feature directory is of the form
-
-dir/
-    <file_prefix><id_1><file_suffix>
-    <file_prefix><id_2><file_suffix>
-    ...
-
-where each file contains a dynamically-sized tensor whose last dimension (by default) is
-a feature vector. Letting F be a feature vector, this command computes the mean and
-standard deviation of the features in the directory, storing them as a pickled
-dictionary of tensors (with keys 'mean' and 'std') to the file 'out'. Those statistics
-may be used with a pydrobert.torch.modules.MeanVarianceNormalization layer."""
     try:
-        options = _compute_mvn_stats_for_torch_feat_data_dir_parse_args(args)
+        options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
 
@@ -1526,32 +1434,6 @@ may be used with a pydrobert.torch.modules.MeanVarianceNormalization layer."""
     torch.save(gid2stats, options.out)
 
 
-def _torch_token_data_dir_to_torch_ali_data_dir_parse_args(args):
-    parser = argparse.ArgumentParser(
-        description=torch_token_data_dir_to_torch_ali_data_dir.__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "ref_dir", help="The token sequence data directory (input)",
-    )
-    parser.add_argument(
-        "ali_dir", help="The frame alignment data directory (output)",
-    )
-    parser.add_argument(
-        "--feat-dir",
-        default=None,
-        help="The feature data directory. While not necessary for the conversion, "
-        "specifying this directory will allow the total number of frames in each "
-        "utterance to be checked by loading the associated feature matrix.",
-    )
-    _add_common_arg(parser, "--file-prefix")
-    _add_common_arg(parser, "--file-suffix")
-    _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
-    _add_common_arg(parser, "--timeout")
-    return parser.parse_args(args)
-
-
 def _torch_token_data_dir_to_torch_ali_dir_do_work(
     basenames: Sequence[str],
     ref_dir: str,
@@ -1582,22 +1464,6 @@ def _torch_token_data_dir_to_torch_ali_dir_do_work(
         torch.save(ali, os.path.join(ali_dir, basename))
 
 
-def _torch_token_data_dir_to_torch_ali_dir_worker(
-    queue: torch.multiprocessing.Queue,
-    ref_dir: str,
-    ali_dir: str,
-    feat_dir: Optional[str] = None,
-    timeout=None,
-):
-    basenames = queue.get(True, timeout)
-    while basenames is not None:
-        _torch_token_data_dir_to_torch_ali_dir_do_work(
-            basenames, ref_dir, ali_dir, feat_dir
-        )
-        del basenames
-        basenames = queue.get(True, timeout)
-
-
 def torch_token_data_dir_to_torch_ali_data_dir(args: Optional[Sequence[str]] = None):
     """Convert a ref/ dir to an ali/ dir
 
@@ -1621,10 +1487,33 @@ distinguish between two of the same token next to one another and one larger tok
 
 See the command "get-torch-spect-data-dir-info" for more info SpectDataSet directories.
 """
+    parser = argparse.ArgumentParser(
+        description=torch_token_data_dir_to_torch_ali_data_dir.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "ref_dir", help="The token sequence data directory (input)",
+    )
+    parser.add_argument(
+        "ali_dir", help="The frame alignment data directory (output)",
+    )
+    parser.add_argument(
+        "--feat-dir",
+        default=None,
+        help="The feature data directory. While not necessary for the conversion, "
+        "specifying this directory will allow the total number of frames in each "
+        "utterance to be checked by loading the associated feature matrix.",
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--chunk-size")
+    _add_common_arg(parser, "--timeout")
     try:
-        options = _torch_token_data_dir_to_torch_ali_data_dir_parse_args(args)
+        options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
+
     if not os.path.isdir(options.ref_dir):
         print(f"'{options.ref_dir}' is not a directory", file=sys.stderr)
         return 1
@@ -1634,45 +1523,15 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         if x.startswith(options.file_prefix) and x.endswith(options.file_prefix)
     )
     os.makedirs(options.ali_dir, exist_ok=True)
-    if options.num_workers:
-        queue = torch.multiprocessing.Queue(options.num_workers)
-        with torch.multiprocessing.Pool(
-            options.num_workers,
-            _torch_token_data_dir_to_torch_ali_dir_worker,
-            (queue, options.ref_dir, options.ali_dir, options.feat_dir,),
-        ) as pool:
-            chunk = tuple(itertools.islice(basenames, options.chunk_size))
-            while len(chunk):
-                queue.put(chunk)
-                chunk = tuple(itertools.islice(basenames, options.chunk_size))
-            for _ in range(options.num_workers):
-                queue.put(None)
-            pool.close()
-            pool.join()
-    else:
-        _torch_token_data_dir_to_torch_ali_dir_do_work(
-            basenames, options.ref_dir, options.ali_dir, options.feat_dir,
-        )
+    _multiprocessor_pattern(
+        basenames,
+        options,
+        _torch_token_data_dir_to_torch_ali_dir_do_work,
+        options.ref_dir,
+        options.ali_dir,
+        options.feat_dir,
+    )
     return 0
-
-
-def _torch_ali_data_dir_to_torch_token_data_dir_parse_args(args):
-    parser = argparse.ArgumentParser(
-        description=torch_ali_data_dir_to_torch_token_data_dir.__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "ali_dir", help="The frame alignment data directory (input)",
-    )
-    parser.add_argument(
-        "ref_dir", help="The token sequence data directory (output)",
-    )
-    _add_common_arg(parser, "--file-prefix")
-    _add_common_arg(parser, "--file-suffix")
-    _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
-    _add_common_arg(parser, "--timeout")
-    return parser.parse_args(args)
 
 
 def _torch_ali_dir_to_torch_token_dir_do_work(
@@ -1689,16 +1548,6 @@ def _torch_ali_dir_to_torch_token_dir_do_work(
         torch.save(ref, os.path.join(ref_dir, basename))
 
 
-def _torch_ali_dir_to_torch_token_dir_worker(
-    queue: torch.multiprocessing.Queue, ali_dir: str, ref_dir: str, timeout=None,
-):
-    basenames = queue.get(True, timeout)
-    while basenames is not None:
-        _torch_ali_dir_to_torch_token_dir_do_work(basenames, ali_dir, ref_dir)
-        del basenames
-        basenames = queue.get(True, timeout)
-
-
 def torch_ali_data_dir_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
     """Convert an ali/ dir to a ref/ dir
 
@@ -1711,10 +1560,26 @@ each segment corresponding to the longest contiguous span of the same frame-wise
 
 See the command "get-torch-spect-data-dir-info" for more info SpectDataSet directories.
 """
+    parser = argparse.ArgumentParser(
+        description=torch_ali_data_dir_to_torch_token_data_dir.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "ali_dir", help="The frame alignment data directory (input)",
+    )
+    parser.add_argument(
+        "ref_dir", help="The token sequence data directory (output)",
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--chunk-size")
+    _add_common_arg(parser, "--timeout")
     try:
-        options = _torch_ali_data_dir_to_torch_token_data_dir_parse_args(args)
+        options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
+
     if not os.path.isdir(options.ali_dir):
         print(f"'{options.ali_dir}' is not a directory", file=sys.stderr)
         return 1
@@ -1724,12 +1589,31 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         if x.startswith(options.file_prefix) and x.endswith(options.file_prefix)
     )
     os.makedirs(options.ref_dir, exist_ok=True)
+    _multiprocessor_pattern(
+        basenames,
+        options,
+        _torch_ali_dir_to_torch_token_dir_do_work,
+        options.ali_dir,
+        options.ref_dir,
+    )
+    return 0
+
+
+def _worker_func(queue, timeout, do_work_func, *args):
+    basenames = queue.get(True, timeout)
+    while basenames is not None:
+        do_work_func(basenames, *args)
+        del basenames
+        basenames = queue.get(True, timeout)
+
+
+def _multiprocessor_pattern(basenames, options, do_work_func, *args):
     if options.num_workers:
         queue = torch.multiprocessing.Queue(options.num_workers)
         with torch.multiprocessing.Pool(
             options.num_workers,
-            _torch_ali_dir_to_torch_token_dir_worker,
-            (queue, options.ali_dir, options.ref_dir, options.timeout),
+            _worker_func,
+            (queue, options.timeout, do_work_func, *args),
         ) as pool:
             chunk = tuple(itertools.islice(basenames, options.chunk_size))
             while len(chunk):
@@ -1740,7 +1624,4 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
             pool.close()
             pool.join()
     else:
-        _torch_ali_dir_to_torch_token_dir_do_work(
-            basenames, options.ali_dir, options.ref_dir
-        )
-    return 0
+        do_work_func(basenames, *args)
