@@ -734,3 +734,35 @@ def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
             assert ref[r, 1] <= t < ref[r, 2]
             assert ali[t] == ref[r, 0]
         assert r == R - 1
+
+
+@pytest.mark.cpu
+def test_torch_ali_data_dir_to_torch_token_data_dir(temp_dir):
+    N = 100
+    V = 10
+    T = 50
+    ref_dir = os.path.join(temp_dir, "ref")
+    ali_dir = os.path.join(temp_dir, "ali")
+    os.makedirs(ali_dir)
+    alis = []
+    for n in range(N):
+        ali = torch.randint(V, (T,))
+        torch.save(ali, f"{ali_dir}/utt_{n}.pt")
+        alis.append(ali)
+    assert not command_line.torch_ali_data_dir_to_torch_token_data_dir(
+        [ali_dir, ref_dir]
+    )
+    assert len(os.listdir(ref_dir)) == N
+    for n, ali in enumerate(alis):
+        ref = torch.load(f"{ref_dir}/utt_{n}.pt")
+        assert ref.ndim == 2
+        assert ref[-1, 2] == T
+        r = 0
+        R = ref.size(0)
+        for t in range(T):
+            if ref[r, 2] <= t:
+                r += 1
+            assert ref[r, 1] <= t < ref[r, 2]
+            assert ali[t] == ref[r, 0]
+        assert r == R - 1
+

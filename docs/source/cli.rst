@@ -173,6 +173,7 @@ ctm-to-torch-token-data-dir
                                      [--unk-symbol UNK_SYMBOL]
                                      [--num-workers NUM_WORKERS]
                                      [--chunk-size CHUNK_SIZE]
+                                     [--timeout TIMEOUT]
                                      [--skip-frame-times | --feat-sizing | --frame-shift-ms FRAME_SHIFT_MS]
                                      [--wc2utt WC2UTT | --utt2wc UTT2WC]
                                      ctm token2id dir
@@ -222,6 +223,9 @@ ctm-to-torch-token-data-dir
     --chunk-size CHUNK_SIZE
                           The number of utterances that a worker will process at
                           once. Impacts speed and memory consumption.
+    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
+                          without new data before terminating. The default is to
+                          wait indefinitely.
     --skip-frame-times    If true, will store token tensors of shape (R,)
                           instead of (R, 3), foregoing segment start and end
                           times.
@@ -345,7 +349,9 @@ textgrids-to-torch-token-data-dir
                                            [--unk-symbol UNK_SYMBOL]
                                            [--num-workers NUM_WORKERS]
                                            [--chunk-size CHUNK_SIZE]
+                                           [--timeout TIMEOUT]
                                            [--skip-frame-times | --feat-sizing | --frame-shift-ms FRAME_SHIFT_MS]
+                                           [--textgrid-suffix TEXTGRID_SUFFIX]
                                            [--fill-symbol FILL_SYMBOL]
                                            [--tier-name TIER_ID | --tier-idx TIER_ID]
                                            tg_dir token2id dir
@@ -358,14 +364,15 @@ textgrids-to-torch-token-data-dir
   This command accepts a directory "tg_dir" of TextGrid files
   
       tg_dir/
-          utt_1.TextGrid
-          utt_2.TextGrid
+          <file-prefix>utt_1.<textgrid_suffix>
+          <file-prefix>utt_2.<textgrid_suffix>
           ...
   
   and writes each file as a separate token sequence compatible with the "ref/" directory
   of a SpectDataSet. If the extracted tier is an IntervalTier, the start and end points
-  will be saved with each token. Otherwise, only the token sequence will be saved. See the
-  command "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory.
+  will be saved with each token. If a TextTier (PointTier), the start and end points of
+  each segment will be identified with the point. See the command
+  "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory.
   
   positional arguments:
     tg_dir                The directory containing the TextGrid files
@@ -393,6 +400,9 @@ textgrids-to-torch-token-data-dir
     --chunk-size CHUNK_SIZE
                           The number of utterances that a worker will process at
                           once. Impacts speed and memory consumption.
+    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
+                          without new data before terminating. The default is to
+                          wait indefinitely.
     --skip-frame-times    If true, will store token tensors of shape (R,)
                           instead of (R, 3), foregoing segment start and end
                           times.
@@ -406,12 +416,58 @@ textgrids-to-torch-token-data-dir
                           consecutive frames. Used to convert between time in
                           seconds and frame index. If your features are the raw
                           samples, set this to 1000 / sample_rate_hz
+    --textgrid-suffix TEXTGRID_SUFFIX
+                          The file suffix in tg_dir indicating a TextGrid file
     --fill-symbol FILL_SYMBOL
                           If set, unlabelled intervals in the TextGrid files
                           will be assigned this symbol. Relevant only if a point
                           grid.
     --tier-name TIER_ID   The name of the tier to extract.
     --tier-idx TIER_ID    The index of the tier to extract.
+
+torch_ali_data_dir_to_torch_token_data_dir
+------------------------------------------
+
+::
+
+  usage: torch_ali_data_dir_to_torch_token_data_dir [-h]
+                                                    [--file-prefix FILE_PREFIX]
+                                                    [--file-suffix FILE_SUFFIX]
+                                                    [--num-workers NUM_WORKERS]
+                                                    [--chunk-size CHUNK_SIZE]
+                                                    [--timeout TIMEOUT]
+                                                    ali_dir ref_dir
+  
+  Convert an ali/ dir to a ref/ dir
+  
+  This command converts a "ali/" directory from a SpectDataSet to an "ref/" directory.
+  The former contains frame-wise alignments; the latter contains token sequences. The
+  frame-wise labels are set to the token ids.
+  
+  To construct the token sequence, the alignment sequence is partitioned into segments,
+  each segment corresponding to the longest contiguous span of the same frame-wise label.
+  
+  See the command "get-torch-spect-data-dir-info" for more info SpectDataSet directories.
+  
+  positional arguments:
+    ali_dir               The frame alignment data directory (input)
+    ref_dir               The token sequence data directory (output)
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --num-workers NUM_WORKERS
+                          The number of workers to spawn to process the data. 0
+                          is serial. Defaults to the CPU count
+    --chunk-size CHUNK_SIZE
+                          The number of utterances that a worker will process at
+                          once. Impacts speed and memory consumption.
+    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
+                          without new data before terminating. The default is to
+                          wait indefinitely.
 
 torch-spect-data-dir-to-wds
 ---------------------------
@@ -575,12 +631,14 @@ torch-token-data-dir-to-torch-ali-data-dir
                                                     [--file-suffix FILE_SUFFIX]
                                                     [--num-workers NUM_WORKERS]
                                                     [--chunk-size CHUNK_SIZE]
+                                                    [--timeout TIMEOUT]
                                                     ref_dir ali_dir
   
   Convert a ref/ dir to an ali/ dir
   
-  See the command "get-torch-spect-data-dir-info" for more info on token sequences and
-  alignments.
+  This command converts a "ref/" directory from a SpectDataSet to an "ali/" directory. The
+  former contains sequences of tokens; the latter contains frame-wise alignments. The
+  token ids are set to the frame-wise labels.
   
   A reference token sequence "tok" partitions a frame sequence of length T if
   
@@ -593,11 +651,10 @@ torch-token-data-dir-to-torch-ali-data-dir
   When tok partitions the frame sequence, it can be converted into a per-frame alignment
   tensor "ali" of shape (T,), where tok[r, 1] <= t < tok[r, 2] implies ali[t] = tok[r, 0].
   
-  This command applies the above reasoning to convert all tensors in a token sequence
-  directory into a frame alignment directory.
-  
   WARNING! This operation is potentially destructive: a per-frame alignment cannot
   distinguish between two of the same token next to one another and one larger token.
+  
+  See the command "get-torch-spect-data-dir-info" for more info SpectDataSet directories.
   
   positional arguments:
     ref_dir               The token sequence data directory (input)
@@ -619,6 +676,9 @@ torch-token-data-dir-to-torch-ali-data-dir
     --chunk-size CHUNK_SIZE
                           The number of utterances that a worker will process at
                           once. Impacts speed and memory consumption.
+    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
+                          without new data before terminating. The default is to
+                          wait indefinitely.
 
 torch-token-data-dir-to-trn
 ---------------------------
@@ -675,6 +735,7 @@ trn-to-torch-token-data-dir
                                      [--unk-symbol UNK_SYMBOL]
                                      [--num-workers NUM_WORKERS]
                                      [--chunk-size CHUNK_SIZE]
+                                     [--timeout TIMEOUT]
                                      [--skip-frame-times | --feat-sizing]
                                      trn token2id dir
   
@@ -721,6 +782,9 @@ trn-to-torch-token-data-dir
     --chunk-size CHUNK_SIZE
                           The number of utterances that a worker will process at
                           once. Impacts speed and memory consumption.
+    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
+                          without new data before terminating. The default is to
+                          wait indefinitely.
     --skip-frame-times    If true, will store token tensors of shape (R,)
                           instead of (R, 3), foregoing segment start and end
                           times.

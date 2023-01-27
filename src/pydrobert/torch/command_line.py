@@ -785,14 +785,15 @@ software (https://www.fon.hum.uva.nl/praat/).
 This command accepts a directory "tg_dir" of TextGrid files
 
     tg_dir/
-        <file-prefix>utt_1.TextGrid
-        <file-prefix>utt_2.TextGrid
+        <file-prefix>utt_1.<textgrid_suffix>
+        <file-prefix>utt_2.<textgrid_suffix>
         ...
 
 and writes each file as a separate token sequence compatible with the "ref/" directory
 of a SpectDataSet. If the extracted tier is an IntervalTier, the start and end points
-will be saved with each token. Otherwise, only the token sequence will be saved. See the
-command "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory."""
+will be saved with each token. If a TextTier (PointTier), the start and end points of
+each segment will be identified with the point. See the command
+"get-torch-spect-data-dir-info" for more info about a SpectDataSet directory."""
     try:
         options = _textgrids_to_torch_token_data_dir_parse_args(args)
     except SystemExit as ex:
@@ -1547,6 +1548,7 @@ def _torch_token_data_dir_to_torch_ali_data_dir_parse_args(args):
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
     _add_common_arg(parser, "--chunk-size")
+    _add_common_arg(parser, "--timeout")
     return parser.parse_args(args)
 
 
@@ -1576,7 +1578,6 @@ def _torch_token_data_dir_to_torch_ali_dir_do_work(
                     f"{err_msg} feats at '{feat_path}' report {T} frames. ref "
                     f"ends with {ref[-1, 2].item()}"
                 )
-        print(basename)
         ali = torch.repeat_interleave(ref[:, 0], ref[:, 2] - ref[:, 1])
         torch.save(ali, os.path.join(ali_dir, basename))
 
@@ -1586,22 +1587,23 @@ def _torch_token_data_dir_to_torch_ali_dir_worker(
     ref_dir: str,
     ali_dir: str,
     feat_dir: Optional[str] = None,
-    first_timeout=None,
-    rest_timeout=None,
+    timeout=None,
 ):
-    basenames = queue.get(True, first_timeout)
+    basenames = queue.get(True, timeout)
     while basenames is not None:
         _torch_token_data_dir_to_torch_ali_dir_do_work(
             basenames, ref_dir, ali_dir, feat_dir
         )
-        basenames = queue.get(True, rest_timeout)
+        del basenames
+        basenames = queue.get(True, timeout)
 
 
 def torch_token_data_dir_to_torch_ali_data_dir(args: Optional[Sequence[str]] = None):
     """Convert a ref/ dir to an ali/ dir
 
-See the command "get-torch-spect-data-dir-info" for more info on token sequences and
-alignments.
+This command converts a "ref/" directory from a SpectDataSet to an "ali/" directory. The
+former contains sequences of tokens; the latter contains frame-wise alignments. The
+token ids are set to the frame-wise labels.
 
 A reference token sequence "tok" partitions a frame sequence of length T if
 
@@ -1614,11 +1616,10 @@ A reference token sequence "tok" partitions a frame sequence of length T if
 When tok partitions the frame sequence, it can be converted into a per-frame alignment
 tensor "ali" of shape (T,), where tok[r, 1] <= t < tok[r, 2] implies ali[t] = tok[r, 0].
 
-This command applies the above reasoning to convert all tensors in a token sequence
-directory into a frame alignment directory.
-
 WARNING! This operation is potentially destructive: a per-frame alignment cannot
 distinguish between two of the same token next to one another and one larger token.
+
+See the command "get-torch-spect-data-dir-info" for more info SpectDataSet directories.
 """
     try:
         options = _torch_token_data_dir_to_torch_ali_data_dir_parse_args(args)
@@ -1651,5 +1652,95 @@ distinguish between two of the same token next to one another and one larger tok
     else:
         _torch_token_data_dir_to_torch_ali_dir_do_work(
             basenames, options.ref_dir, options.ali_dir, options.feat_dir,
+        )
+    return 0
+
+
+def _torch_ali_data_dir_to_torch_token_data_dir_parse_args(args):
+    parser = argparse.ArgumentParser(
+        description=torch_ali_data_dir_to_torch_token_data_dir.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "ali_dir", help="The frame alignment data directory (input)",
+    )
+    parser.add_argument(
+        "ref_dir", help="The token sequence data directory (output)",
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--chunk-size")
+    _add_common_arg(parser, "--timeout")
+    return parser.parse_args(args)
+
+
+def _torch_ali_dir_to_torch_token_dir_do_work(
+    basenames: Sequence[str], ali_dir: str, ref_dir: str,
+):
+    zeros_ = torch.zeros(1, dtype=torch.long)
+    for basename in basenames:
+        ali_path = os.path.join(ali_dir, basename)
+        ali = torch.load(ali_path)
+        tok, c = ali.unique_consecutive(return_counts=True)
+        c = torch.cat([zeros_, c]).cumsum_(0)
+        start, end = c[:-1], c[1:]
+        ref = torch.stack([tok, start, end], -1)
+        torch.save(ref, os.path.join(ref_dir, basename))
+
+
+def _torch_ali_dir_to_torch_token_dir_worker(
+    queue: torch.multiprocessing.Queue, ali_dir: str, ref_dir: str, timeout=None,
+):
+    basenames = queue.get(True, timeout)
+    while basenames is not None:
+        _torch_ali_dir_to_torch_token_dir_do_work(basenames, ali_dir, ref_dir)
+        del basenames
+        basenames = queue.get(True, timeout)
+
+
+def torch_ali_data_dir_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
+    """Convert an ali/ dir to a ref/ dir
+
+This command converts a "ali/" directory from a SpectDataSet to an "ref/" directory.
+The former contains frame-wise alignments; the latter contains token sequences. The
+frame-wise labels are set to the token ids.
+
+To construct the token sequence, the alignment sequence is partitioned into segments,
+each segment corresponding to the longest contiguous span of the same frame-wise label.
+
+See the command "get-torch-spect-data-dir-info" for more info SpectDataSet directories.
+"""
+    try:
+        options = _torch_ali_data_dir_to_torch_token_data_dir_parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+    if not os.path.isdir(options.ali_dir):
+        print(f"'{options.ali_dir}' is not a directory", file=sys.stderr)
+        return 1
+    basenames = (
+        x
+        for x in os.listdir(options.ali_dir)
+        if x.startswith(options.file_prefix) and x.endswith(options.file_prefix)
+    )
+    os.makedirs(options.ref_dir, exist_ok=True)
+    if options.num_workers:
+        queue = torch.multiprocessing.Queue(options.num_workers)
+        with torch.multiprocessing.Pool(
+            options.num_workers,
+            _torch_ali_dir_to_torch_token_dir_worker,
+            (queue, options.ali_dir, options.ref_dir, options.timeout),
+        ) as pool:
+            chunk = tuple(itertools.islice(basenames, options.chunk_size))
+            while len(chunk):
+                queue.put(chunk)
+                chunk = tuple(itertools.islice(basenames, options.chunk_size))
+            for _ in range(options.num_workers):
+                queue.put(None)
+            pool.close()
+            pool.join()
+    else:
+        _torch_ali_dir_to_torch_token_dir_do_work(
+            basenames, options.ali_dir, options.ref_dir
         )
     return 0
