@@ -164,6 +164,8 @@ def slice_spect_data(
             ends = ends + lobe_size
         if valid_only:
             mask &= (starts >= 0) & (ends <= other_lens.view(N, 1))
+        else:
+            mask &= (ends > 0) & (starts < other_lens.view(N, 1))
         mask &= starts < ends
         starts, ends, mask = starts.flatten(), ends.flatten(), mask.flatten()
         sources = torch.arange(N, device=device).view(N, 1).expand(N, T).flatten()
@@ -173,7 +175,7 @@ def slice_spect_data(
         slices = torch.stack([starts, ends], 1)
     else:
         raise RuntimeError(
-            f"Expected policy to be one of 'fixed', 'ali', or 'ref'; got {policy}"
+            f"Expected policy to be one of 'fixed', 'ali', or 'ref'; got '{policy}'"
         )
     return slices, sources
 
@@ -184,11 +186,64 @@ class SliceSpectData(torch.nn.Module):
     This module helps to chunk :class:`pydrobert.data.SpectDataLoader` data (or other
     similarly-structured tensors) into smaller units by returning slices of that data.
     The input to this module and the means of determining those slices varies according
-    to the `policy` specified (see below). The return values can then be used
-    to slice the data. For example, feature chunks can be stored in a list as
-    follows
+    to the `policy` specified (see the notes below for more details). The return values
+    can then be used to slice the data. 
 
 
+    Parameters
+    ----------
+    policy
+        Specifies how to slice the data. If :obj:`'fixed'`, extract windows of fixed
+        length at fixed intervals. If :obj:`'ali'`, use changes in frame-level
+        alignments to determine segment boundaries and slice along those. If
+        :obj:`'ref'`, use token segmentations as slices. See below for more info.
+    window_type
+        How the window will be constructed around the "middle unit" in the policy. In
+        general :obj:`'symmetric'` adds lobes to either side of the middle unit,
+        :obj:`'causal'` to the left (towards :obj:`0`), :obj:`'future'` to the right.
+    valid_only
+        What to do when a would-be slice passes over the length of the data. If
+        :obj:`True`, any such slices are thrown out. If :obj:`False`, do something
+        dictated by the policy which may preserve the invalid boundaries.
+    lobe_size
+        Specifies the size of a lobe in the slice's window. When the `policy` is
+        :obj:`'fixed'` or :obj:`'ref'`, the unit of `lobe_size` is a single frame. When
+        `policy` is :obj:`'ali'`, the unit of `lobe_size` is a whole segment.
+
+    Call Parameters
+    ---------------
+    in_ : torch.Tensor
+        A tensor of shape ``(N, T, *)``, where ``N`` is the batch dimension and ``T`` is
+        the (maximum) sequence dimension. When `policy` is :obj:`'fixed'`, `in_` should
+        be the batch-first feature tensor `feats` from a
+        :class:`pydrobert.data.SpectDataLoader`. When :obj:`'ali'`, `in_` should be the
+        batch-first `alis` tensor. When :obj:`'ref'`, `in_` should be the batch-first
+        `refs` tensor with segment info.
+    in_lens : torch.Tensor, optional
+        A long tensor of shape ``(N,)`` specifying the lengths of sequences in `in_`.
+        For the ``n``-th batch element, only the elements ``in_[n, :in_lens[n]]`` are
+        considered. If unspecified, all sequences are assumed to be of length ``T``.
+        For the :obj:`'fixed'` and :obj:`'ali'` policies, this is the `feat_lens`
+        tensor from a :class:`pydrobert.data.SpectDataLoader`. When :obj:`'ref'`, it
+        is the `ref_lens` tensor.
+    other_lens : torch.Tensor, optional
+        An additional long tensor of shape ``(N,)`` specifying some other lengths,
+        depending on the policy. It is currently only used in the :obj:`'ref'` policy
+        and takes the value `feat_lens` from a :class:`pydrobert.data.SpectDataLoader`.
+
+    Returns
+    -------
+    slices : torch.Tensor
+        A long tensor of shape ``(M, 2)`` storing the slices of all batch elements.
+        ``M`` is the total number of slices. ``slices[m, 0]`` is the ``m``-th slice's
+        start index (inclusive), while ``slices[m, 1]`` is the ``m``-th slice's end
+        index (exclusive).
+    sources : torch.Tensor
+        A long tensor of shape ``(M,)`` where ``sources[m]`` is the batch index of the
+        ``m``-th slice.
+    
+    Notes
+    -----
     If `policy` is :obj:`'fixed'`, slices are extracted at fixed intervals (``lobe_size
     + 1``) along the length of the data. `in_` is assumed to be the data in question,
     e.g. the `feats` tensor in a :class:`pydrobert.data.SpectDataLoader`, in batch-first
@@ -206,59 +261,69 @@ class SliceSpectData(torch.nn.Module):
     initial slice's offsets differ as well: for the symmetric case, it's ``(lobe_size +
     1) // 2 - window_size // 2``; for the causal case, it's :obj:`-lobe_size`; and the
     future case it's still :obj:`0`. As an example, given a sequence of length :obj:`8`,
-    the following are slices under different configurations of the :obj:`'fixed'`
+    the following are the slices under different configurations of the :obj:`'fixed'`
     policy with a `lobe_size` of :obj:`2`::
 
         [[0, 5], [3, 8]]          # symmetric, valid_only
         [[0, 3], [3, 6]]          # not symmetric, valid_only
-        [[0, 4], [2, 7], [5, 9]]  # symmetric, not valid_only
-        [[0, 1], [1, 4]]
+        [[-1, 4], [2, 6], [5, 9]] # symmetric, not valid_only
+        [[-2, 1], [1, 4], [4, 7]] # causal, not valid_only
+        [[0, 3], [3, 6], [6, 9]]  # future, not valid_only
+    
+    If `policy` is :obj:`'ali'`, slices are extracted from the partition of the sequence
+    induced by per-frame alignments. `in_` is assumed to be the alignments in question,
+    i.e. the batch-first `alis` tensor in a :class:`pydrobert.data.SpectDataLoader`.
+    `in_lens` may be used to specify the actual lengths of the input sequences if they
+    were padded to fit in the same batch element. The segments are induced by `ali` as
+    follows: a segment starts at index `t` whenever ``t == 0`` or ``alis[n, t - 1] !=
+    alis[n, t]``. Slice ``m`` is built from segment ``m`` by starting with the segment
+    boundaries and possibly extending the start to the left (towards :obj:`0`) or the
+    end to the right (away from :obj:`0`). If `window_type` is :obj:`'symmetric'` or
+    :obj:`'causal'`, the ``m``-th segment's start is set to the start of the ``(m -
+    lobe_size)``-th. If `window_type` is :obj:`'symmetric'` or :obj:`'future'`, the
+    segment's end is set to the end of the ``(m + lobe_size)``-th. Since there are a
+    finite number of segments, sometimes either ``(m - lobe_size)`` or ``(m +
+    lobe_size)`` will not exist. In that case and if `only_valid` is :obj:`True`, the
+    slice is thrown out. If `only_valid` is :obj:`False`, the furthest segment from
+    ``m`` in the same direction which also exists will be used. For example, with
+    ``in_[n] = [1] * 4 + [2] * 3 + [1] + [5] * 2``, the following are the slices under
+    different configurations of the :obj:`'ali'` policy with a `lobe_size` of :obj:`1`::
 
-    Parameters
-    ----------
-    policy
-        Specifies how to slice the data. If :obj:`'fixed'`, extract windows of fixed
-        length at fixed intervals. If :obj:`'ali'`, use changes in frame-level
-        alignments to determine segment boundaries and slice along those. If
-        :obj:`'ref'`, use token segmentations as slices. See above for more info.
-    window_type
-        Specifies how the window will be constructed around the "middle unit" in the
-        policy. In general :obj:`'symmetric'` adds lobes to either side of the middle
-        unit, :obj:`'causal'` to the left (towards :obj:`0`), :obj:`'future'` to the
-        right. See above for differences by policy.
-    valid_only
-        Dictates what to do when a would-be slice passes over the boundaries of a
-        segment. If :obj:`True`, any such slices are thrown out. If :obj:`False`, slice
-        boundaries are limited to the boundaries of the sequence.
-    lobe_size
-        Specifies the number of units to each side of the middle unit will be
-        added to the chunk. Non-negative.
+        [[0, 8], [4, 10]]                   # symmetric, valid_only
+        [[0, 7], [4, 8], [7, 10]]           # not symmetric, valid_only
+        [[0, 7], [0, 8], [4, 10], [7, 10]]  # symmetric, not valid_only
+        [[0, 4], [0, 7], [4, 8], [7, 10]]   # causal, not valid_only
+        [[0, 7], [4, 8], [7, 10], [8, 10]]  # future, not valid_only
+    
+    Finally, if `policy` is :obj:`'ref'`, slices are extracted from a transcription's
+    segment boundaries. `in_` is assumed to be the token sequences in question, i.e. the
+    batch-first `refs` tensor in a :class:`pydrobert.data.SpectDataLoader`. `in_` should
+    be 3-dimensional with the third dimension of size 3: ``in_[..., 0]`` the token
+    sequence (ignored), ``in_[..., 1]`` the segment starts (in frames), and ``in_[...,
+    2]`` their ends. `in_lens` may be specified to give the length of the token
+    sequences (i.e. `ref_lens`). In addition, the lengths of the sequences `in_` is
+    segmenting (in frames) may be passed via `other_lens` (i.e. `feat_lens`). The slices
+    are built off the available segments. If `window_type` is :obj:`'causal'`,
+    `lobe_size` is subtracted from all segments if :obj:`'future'`, `lobe_size` is added
+    to all ends; if :obj:`'symmetric'`, both are applied. A segment may be discarded a
+    few ways: if either the start or end frame is less than 0 (indicating missing
+    segment information); if `in_lens` is set and the token segment is indexed past that
+    length (``in_[n, t]`` for any ``t >= in_lens[n]``); the starting frame of a segment
+    (after padding) matches or exceeds the ending frame after padding (no empty or
+    invalid slices); if :obj:`valid_only` is :obj:`True` and the padded start begins
+    before index :obj:`0` or the padded end ends after `other_lens`; and if
+    :obj:`valid_only` is :obj:`False` and the padded start begins after `other_lens` or
+    ends at or before :obj:`0`. For example, with ``in_[n] = [[1, 0, 0], [2, 2, 3], [3,
+    -1, 1], [4, 0, -1], [5, 3, 5], [6, 4, 4]``, `in_lens[n] = 5``, ``other_lens[n] =
+    6``, and `lobe_size` of :obj:`2`, the following are the slices under different
+    configurations of the :obj:`'ref'` policy::
 
-    Call Parameters
-    ---------------
-    in_ : torch.Tensor
-        A tensor of shape ``(N, T, *)``, where ``N`` is the batch dimension and ``T`` is
-        the (maximum) sequence dimension. What `in_` contains depends on `policy`. See
-        above.
-    in_lens : torch.Tensor, optional
-        A long tensor of shape ``(N,)`` specifying the lengths of sequences in `in_`.
-        For the ``n``-th batch element, only the elements ``in_[n, :in_lens[n]]`` are
-        considered. If unspecified, all sequences are assumed to be of length ``T``.
-    other_lens : torch.Tensor, optional
-        An additional long tensor of shape ``(N,)`` specifying some other lengths,
-        depending on the policy. It is currently only used in the :obj:`'ref'` policy
-        (see above).
-
-    Returns
-    -------
-    slices : torch.Tensor
-        A long tensor of shape ``(M, 2)`` storing the slices of all batch elements.
-        ``M`` is the total number of slices. ``slices[m, 0]`` is the ``m``-th slice's
-        start index (inclusive), while ``slices[m, 1]`` is the ``m``-th slice's end
-        index (exclusive).
-    sources : torch.Tensor
-        A long tensor of shape ``(M,)`` where ``sources[m]`` is the batch index of the
-        ``m``-th slice.
+        [[0, 5]]                  # symmetric, valid_only
+        [[0, 3], [1, 5]]          # causal, valid_only
+        [[0, 2], [2, 5]]          # future, valid_only
+        [[-2, 2], [0, 5], [1, 7]] # symmetric, not valid_only
+        [[0, 3], [1, 5]]          # causal, not valid_only
+        [[0, 2], [2, 5], [3, 7]]  # future, not valid_only
     """
 
     __constants__ = ["policy", "window_type", "valid_only", "lobe_size"]
