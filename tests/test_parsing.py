@@ -487,7 +487,7 @@ item []:
     transcript, start, end = data.read_textgrid(tg, 1)
     assert start == pytest.approx(0.1)
     assert end == pytest.approx(1)
-    assert transcript == ["mall", "cop"]
+    assert transcript == [("mall", 0.3, 0.3), ("cop", 0.9, 0.9)]
     tg.seek(0)
     transcript, start, end = data.read_textgrid(tg, 2)
     assert start == pytest.approx(0.1)
@@ -551,3 +551,47 @@ Object class = "TextGrid"
         assert min_act == pytest.approx(min_exp, abs=1e-3)
         assert max_act == pytest.approx(max_exp, abs=1e-3)
 
+    tg = StringIO()
+    transcript_exp = [
+        ("never", 0.1001, 0.1),
+        ("in", 0.2, 0.2),
+        ("the", 0.3, 0.3),
+        ("history", 0.4, 0.4),
+    ]
+    data.write_textgrid(transcript_exp, tg)
+    tg.seek(0)
+    assert (
+        """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.100
+0.400
+<exists>
+1
+"TextTier"
+"transcript"
+0.100
+0.400
+4
+0.100
+"never"
+0.200
+"in"
+0.300
+"the"
+0.400
+"history"
+"""
+        == tg.read()
+    )
+    tg.seek(0)
+    transcript_act, start, end = data.read_textgrid(tg)
+    assert start == pytest.approx(transcript_exp[0][1], abs=1e-3)
+    assert end == pytest.approx(transcript_exp[-1][2], abs=1e-3)
+    assert len(transcript_exp) == len(transcript_act)
+    for (tok_exp, min_exp, max_exp), (tok_act, min_act, max_act) in zip(
+        transcript_exp, transcript_act
+    ):
+        assert tok_exp == tok_act
+        assert min_act == pytest.approx(min_exp, abs=1e-3)
+        assert max_act == pytest.approx(max_exp, abs=1e-3)

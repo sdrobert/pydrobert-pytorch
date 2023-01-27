@@ -524,7 +524,7 @@ def read_textgrid(
     tg: Union[TextIO, str],
     tier_id: Union[str, int] = 0,
     fill_token: Optional[str] = None,
-) -> Tuple[Union[List[str], List[Tuple[str, float, float]]], float, float]:
+) -> Tuple[List[Tuple[str, float, float]], float, float]:
     """Read TextGrid file as a transcription
     
     TextGrid is the transcription format of `Praat
@@ -538,18 +538,16 @@ def read_textgrid(
         Either the name of the tier (first occurence) or the index of the tier to
         extract.
     fill_token
-        If the tier is an IntervalTier and `fill_token` is set, any intervals missing
-        from the tier will be filled with an interval of this token before being
-        returned.
+        If :obj:`True`, any intervals missing from the tier will be filled with an
+        interval of this token before being returned.
 
     Returns
     -------
     transcript : list
-        If the tier is a PointTier, `transcript` will be just a list of the tokens in
-        the tier. If an IntervalTier, `transcripts` will contain triples of triples
-        ``token, start, end``, `token` being the token (a string), `start` being a float
-        of the start time of the token (in seconds), and `end` being the end time of the
-        token.
+        A list of triples of ``token, start, end``, token` being the token (a string),
+        `start` being a float of the start time of the token (in seconds), and `end`
+        being the end time of the token. If the tier is a PointTier, `the start and
+        end times will be the same.
     start_time : float
         The start time of the tier (in seconds)
     end_time : float
@@ -582,22 +580,24 @@ def read_textgrid(
         tier = tg_.tiers[tier_id]
 
     if tier.classid == TEXTTIER:
-        transcript = [x[1] for x in sorted(tier.simple_transcript)]
+        transcript = [
+            (x[1], float(x[0]), float(x[0])) for x in sorted(tier.simple_transcript)
+        ]
     else:
         transcript = [
             (x[2], float(x[0]), float(x[1])) for x in sorted(tier.simple_transcript)
         ]
-        i = 0
-        start_time = tier.xmin
-        while i < len(transcript):
-            _, next_start, end_time = transcript[i]
-            if fill_token is not None and start_time < next_start:
-                transcript.insert(i, (fill_token, start_time, next_start))
-                i += 1
+    i = 0
+    start_time = tier.xmin
+    while i < len(transcript):
+        _, next_start, end_time = transcript[i]
+        if fill_token is not None and start_time < next_start:
+            transcript.insert(i, (fill_token, start_time, next_start))
             i += 1
-            start_time = end_time
-        if fill_token is not None and tier.xmax is not None and start_time < tier.xmax:
-            transcript.append((fill_token, start_time, tier.xmax))
+        i += 1
+        start_time = end_time
+    if fill_token is not None and tier.xmax is not None and start_time < tier.xmax:
+        transcript.append((fill_token, start_time, tier.xmax))
     return transcript, tier.xmin, tier.xmax
 
 
@@ -607,6 +607,7 @@ def write_textgrid(
     start_time: Optional[float] = None,
     end_time: Optional[float] = None,
     tier_name: str = "transcript",
+    point_tier: Optional[bool] = None,
     precision: int = 3,
 ) -> None:
     """Write a transcription as a TextGrid file
@@ -614,14 +615,14 @@ def write_textgrid(
     TextGrid is the transcription format of `Praat
     <https://www.fon.hum.uva.nl/praat/>`__.
 
-    This function saves `transcript` as an IntervalTier within a TextGrid file.
+    This function saves `transcript` as a tier within a TextGrid file.
 
     Parameters
     ----------
     transcript
         The transcription to write. Contains triples ``tok, start, end``, where `tok` is
-        the token, `start` is its start time, and `end` is its end time. Must be
-        non-empty.
+        the token, `start` is its start time, and `end` is its end time. `transcript`
+        must be non-empty.
     tg
         The file to write. Will open if `tg` is a path.
     start_time
@@ -632,14 +633,12 @@ def write_textgrid(
         inferred from the maximum end time of the intervals in `transcript`.
     tier_name
         What name to save the tier with.
+    point_tier
+        Whether to save as a point tier (:obj:`True`) or an interval tier. If unset, the
+        value is inferred to be a point tier if all segments are length 0 (within
+        precision `precision`); an interval tier otherwise.
     precision
         The precision of floating-point values to save times with.
-    
-    Warnings
-    --------
-    This function only writes IntervalTier transcripts, i.e. tokens with alignments.
-    It cannot round-trip with :func:`read_textgrid` if the transcripts were originally
-    stored as a PointTier.
     """
     if isinstance(tg, str):
         with open(tg, "w") as tg:
@@ -662,6 +661,11 @@ def write_textgrid(
         raise ValueError(
             f"gave end_time={end_time} but an interval ends at {tier_end_time}"
         )
+    if point_tier is None:
+        point_tier = all(
+            f"{x[1]:0.{precision}f}" == f"{x[2]:0.{precision}f}" for x in transcript
+        )
+    tier_type = "TextTier" if point_tier else "IntervalTier"
     # fmt: off
     tg.write(
         'File type = "ooTextFile"\n'
@@ -670,7 +674,7 @@ def write_textgrid(
         f"{end_time:0.{precision}f}\n"
         "<exists>\n"
         "1\n"
-        '"IntervalTier"\n'
+        f'"{tier_type}"\n'
         f'"{tier_name}"\n'
         f"{tier_start_time:0.{precision}f}\n"
         f"{tier_end_time:0.{precision}f}\n"
@@ -678,7 +682,10 @@ def write_textgrid(
     )
     # fmt: on
     for tok, start, end in transcript:
-        tg.write(f'{start:0.{precision}f}\n{end:0.{precision}f}\n"{tok}"\n')
+        if point_tier:
+            tg.write(f'{start:0.{precision}f}\n"{tok}"\n')
+        else:
+            tg.write(f'{start:0.{precision}f}\n{end:0.{precision}f}\n"{tok}"\n')
 
 
 def transcript_to_token(
