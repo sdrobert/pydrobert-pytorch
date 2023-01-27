@@ -671,7 +671,13 @@ Object class = "TextGrid"
     act_utt2 = torch.load(os.path.join(ref_dir, "utt_2.pt"))
     assert torch.all(act_utt2 == torch.tensor([[0, 0, 100], [4, 100, 200]]))
     act_utt3 = torch.load(os.path.join(ref_dir, "utt_3.pt"))
-    assert torch.all(act_utt3 == torch.tensor([[2, -1, -1], [0, -1, -1]]))
+    # it's filling in the gaps between points
+    assert torch.all(
+        act_utt3
+        == torch.tensor(
+            [[4, 0, 100], [2, 100, 100], [4, 100, 200], [0, 200, 200], [4, 200, 300]]
+        )
+    )
 
     assert not command_line.textgrids_to_torch_token_data_dir(
         [temp_dir, token2id, ref_dir, "--unk-symbol=d", "--skip-frame-times"]

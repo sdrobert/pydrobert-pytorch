@@ -817,11 +817,11 @@ command "get-torch-spect-data-dir-info" for more info about a SpectDataSet direc
                 options.textgrid_suffix
             ) or not file_name.startswith(options.file_prefix):
                 continue
-            utt_id = (
+            basename = (
                 file_name[: len(file_name) - len(options.textgrid_suffix)]
                 + options.file_suffix
             )
-            yield utt_id, data.read_textgrid(
+            yield basename, data.read_textgrid(
                 os.path.join(options.tg_dir, file_name),
                 options.tier_id,
                 options.fill_symbol,
