@@ -36,7 +36,7 @@ for cmd_name in (
     "ctm-to-torch-token-data-dir",
     "get-torch-spect-data-dir-info",
     "textgrids-to-torch-token-data-dir",
-    "torch_ali_data_dir_to_torch_token_data_dir",
+    "torch-ali-data-dir-to-torch-token-data-dir",
     "torch-spect-data-dir-to-wds",
     "torch-token-data-dir-to-ctm",
     "torch-token-data-dir-to-torch-ali-data-dir",

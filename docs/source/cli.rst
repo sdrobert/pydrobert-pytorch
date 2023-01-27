@@ -425,12 +425,12 @@ textgrids-to-torch-token-data-dir
     --tier-name TIER_ID   The name of the tier to extract.
     --tier-idx TIER_ID    The index of the tier to extract.
 
-torch_ali_data_dir_to_torch_token_data_dir
+torch-ali-data-dir-to-torch-token-data-dir
 ------------------------------------------
 
 ::
 
-  usage: torch_ali_data_dir_to_torch_token_data_dir [-h]
+  usage: torch-ali-data-dir-to-torch-token-data-dir [-h]
                                                     [--file-prefix FILE_PREFIX]
                                                     [--file-suffix FILE_SUFFIX]
                                                     [--num-workers NUM_WORKERS]
