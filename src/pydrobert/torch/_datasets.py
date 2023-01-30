@@ -1,4 +1,4 @@
-# Copyright 2022 Sean Robertson
+# Copyright 2023 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from multiprocessing.sharedctypes import Value
 import os
 import warnings
 
@@ -21,8 +20,7 @@ from typing import Container, Optional, Set, Tuple, Union
 import torch
 import param
 
-import pydrobert.torch.config as config
-
+from . import config
 from ._feats import MeanVarianceNormalization, FeatureDeltas
 
 
@@ -108,7 +106,7 @@ def _write_hyp(hyp: torch.Tensor, pth: str, sos: Optional[int], eos: Optional[in
 
 
 class LangDataSet(torch.utils.data.Dataset):
-    """Accesses token sequences stored in a data directory
+    f"""Accesses token sequences stored in a data directory
     
     A stripped-down version of :class:`SpectDataSet` containing only the reference
     token sequences `ref`. Suitable for language model training.
@@ -116,8 +114,9 @@ class LangDataSet(torch.utils.data.Dataset):
     Parameters
     ----------
     data_dir
-        A path to the data directory. If using the ``ref/`` directory of a
-        :class:`SpectDataSet`, `data_dir` should include ``ref/``.
+        A path to the data directory. If using the ``{config.DEFT_REF_SUBDIR}/``
+        directory of a :class:`SpectDataSet`, `data_dir` should include
+        ``{config.DEFT_REF_SUBDIR}/``.
     file_prefix
         The prefix that indicates that the file counts toward the data set
     file_suffix
@@ -156,8 +155,8 @@ class LangDataSet(torch.utils.data.Dataset):
         self,
         data_dir: str,
         params: Optional[LangDataParams] = None,
-        file_prefix: str = "",
-        file_suffix: str = ".pt",
+        file_prefix: str = config.DEFT_FILE_PREFIX,
+        file_suffix: str = config.DEFT_FILE_SUFFIX,
         suppress_uttids: bool = True,
         tokens_only: bool = True,
     ):
@@ -387,15 +386,15 @@ class SpectDataSet(torch.utils.data.Dataset):
     def __init__(
         self,
         data_dir: str,
-        file_prefix: str = "",
-        file_suffix: str = ".pt",
+        file_prefix: str = config.DEFT_FILE_PREFIX,
+        file_suffix: str = config.DEFT_FILE_SUFFIX,
         warn_on_missing: bool = True,
         subset_ids: Optional[Set[str]] = None,
         sos: Optional[int] = None,
         eos: Optional[int] = None,
-        feat_subdir: str = "feat",
-        ali_subdir: Optional[str] = "ali",
-        ref_subdir: Optional[str] = "ref",
+        feat_subdir: str = config.DEFT_FEAT_SUBDIR,
+        ali_subdir: Optional[str] = config.DEFT_ALI_SUBDIR,
+        ref_subdir: Optional[str] = config.DEFT_REF_SUBDIR,
         params: Optional[SpectDataParams] = None,
         feat_mean: Optional[torch.Tensor] = None,
         feat_std: Optional[torch.Tensor] = None,
@@ -591,7 +590,7 @@ class SpectDataSet(torch.utils.data.Dataset):
     def write_pdf(
         self, utt: Union[str, int], pdf: torch.Tensor, pdfs_dir: Optional[str] = None
     ) -> None:
-        """Write a pdf tensor to the data directory
+        f"""Write a pdf tensor to the data directory
 
         This method writes a pdf matrix to the directory `pdfs_dir` with the name
         ``<file_prefix><utt><file_suffix>``
@@ -607,12 +606,12 @@ class SpectDataSet(torch.utils.data.Dataset):
             command ``pdf.cpu().float()``
         pdfs_dir
             The directory pdfs are written to. If :obj:`None`, it will be set to
-            ``self.data_dir + '/pdfs'``
+            ``self.data_dir + '/{config.DEFT_PDFS_SUBDIR}'``
         """
         if isinstance(utt, int):
             utt = self.utt_ids[utt]
         if pdfs_dir is None:
-            pdfs_dir = os.path.join(self.data_dir, "pdfs")
+            pdfs_dir = os.path.join(self.data_dir, config.DEFT_PDFS_SUBDIR)
         os.makedirs(pdfs_dir, exist_ok=True)
         torch.save(
             pdf.cpu().float(),
@@ -622,7 +621,7 @@ class SpectDataSet(torch.utils.data.Dataset):
     def write_hyp(
         self, utt: Union[str, int], hyp: torch.Tensor, hyp_dir: Optional[str] = None
     ) -> None:
-        """Write hypothesis tensor to the data directory
+        f"""Write hypothesis tensor to the data directory
 
         This method writes a sequence of hypothesis tokens to the directory `hyp_dir`
         with the name ``<file_prefix><utt><file_suffix>``
@@ -648,12 +647,12 @@ class SpectDataSet(torch.utils.data.Dataset):
             converted to a long tensor using the command ``hyp.cpu().long()``
         hyp_dir
             The directory sequence is written to. If :obj:`None`, it will be set to
-            ``self.data_dir + '/hyp'``
+            ``self.data_dir + '/{config.DEFT_HYP_SUBDIR}'``
         """
         if isinstance(utt, int):
             utt = self.utt_ids[utt]
         if hyp_dir is None:
-            hyp_dir = os.path.join(self.data_dir, "hyp")
+            hyp_dir = os.path.join(self.data_dir, config.DEFT_HYP_SUBDIR)
         if not os.path.isdir(hyp_dir):
             os.makedirs(hyp_dir)
         pth = os.path.join(hyp_dir, self.file_prefix + utt + self.file_suffix)
@@ -1007,12 +1006,12 @@ class ContextWindowDataSet(SpectDataSet):
         data_dir: str,
         left: Optional[int] = None,
         right: Optional[int] = None,
-        file_prefix: str = "",
-        file_suffix: str = ".pt",
+        file_prefix: str = config.DEFT_FILE_PREFIX,
+        file_suffix: str = config.DEFT_FILE_SUFFIX,
         warn_on_missing: bool = True,
         subset_ids: Optional[Set[str]] = None,
-        feat_subdir: str = "feat",
-        ali_subdir: Optional[str] = "ali",
+        feat_subdir: str = config.DEFT_FEAT_SUBDIR,
+        ali_subdir: Optional[str] = config.DEFT_ALI_SUBDIR,
         reverse: Optional[bool] = None,
         params: Optional[ContextWindowDataParams] = None,
         feat_mean: Optional[torch.Tensor] = None,
@@ -1057,7 +1056,7 @@ class ContextWindowDataSet(SpectDataSet):
             None,
             feat_subdir,
             ali_subdir,
-            "ref",
+            config.DEFT_REF_SUBDIR,
             params,
             feat_mean,
             feat_std,

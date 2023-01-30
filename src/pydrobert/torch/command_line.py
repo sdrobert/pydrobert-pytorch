@@ -27,18 +27,17 @@ from typing import Optional, Sequence
 
 import torch
 
-import pydrobert.torch.data as data
-import pydrobert.torch.modules as modules
+from . import data, modules, config
 from ._string import error_rate
 
 
 _COMMON_ARGS = {
     "--file-prefix": {
-        "default": "",
+        "default": config.DEFT_FILE_PREFIX,
         "help": "The file prefix indicating a torch data file",
     },
     "--file-suffix": {
-        "default": ".pt",
+        "default": config.DEFT_FILE_SUFFIX,
         "help": "The file suffix indicating a torch data file",
     },
     "token2id": {
@@ -70,7 +69,7 @@ _COMMON_ARGS = {
     },
     "--frame-shift-ms": {
         "type": float,
-        "default": 10.0,
+        "default": config.DEFT_FRAME_SHIFT_MS,
         "help": "The number of milliseconds that have passed between consecutive "
         "frames. Used to convert between time in seconds and frame index. If your "
         "features are the raw samples, set this to 1000 / sample_rate_hz",
@@ -91,7 +90,7 @@ _COMMON_ARGS = {
     },
     "--chunk-size": {
         "type": int,
-        "default": 1000,
+        "default": config.DEFT_CHUNK_SIZE,
         "help": "The number of utterances that a worker will process at once. Impacts "
         "speed and memory consumption.",
     },
@@ -100,6 +99,10 @@ _COMMON_ARGS = {
         "default": None,
         "help": "When using multiple workers, how long (in seconds) without new data "
         "before terminating. The default is to wait indefinitely.",
+    },
+    "--textgrid-suffix": {
+        "default": config.DEFT_TEXTGRID_SUFFIX,
+        "help": "The file suffix in tg_dir indicating a TextGrid file",
     },
 }
 
@@ -504,7 +507,7 @@ info about a SpectDataSet directory."""
     except SystemExit as ex:
         return ex.code
     if not os.path.isdir(options.dir):
-        print('"{}" is not a directory'.format(options.dir), file=sys.stderr)
+        print(f"'{options.dir}' is not a directory", file=sys.stderr)
         return 1
     id2token = _parse_token2id(options.id2token, not options.swap, options.swap)
     transcripts = _load_transcripts_from_data_dir(
@@ -655,12 +658,12 @@ with the "ref/" directory of a SpectDataSet. See the command
 
 
 def textgrids_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
-    """Convert a directory of TextGrid files into a SpectDataSet token data dir
+    """Convert a directory of TextGrid files into a SpectDataSet ref/ dir
 
 A "TextGrid" file is a transcription file for a single utterance used by the Praat
 software (https://www.fon.hum.uva.nl/praat/).
 
-This command accepts a directory "tg_dir" of TextGrid files
+This command accepts a directory of TextGrid files
 
     tg_dir/
         <file-prefix>utt_1.<textgrid_suffix>
@@ -670,8 +673,10 @@ This command accepts a directory "tg_dir" of TextGrid files
 and writes each file as a separate token sequence compatible with the "ref/" directory
 of a SpectDataSet. If the extracted tier is an IntervalTier, the start and end points
 will be saved with each token. If a TextTier (PointTier), the start and end points of
-each segment will be identified with the point. See the command
-"get-torch-spect-data-dir-info" for more info about a SpectDataSet directory."""
+each segment will be identified with the point.
+
+See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
+directory."""
     parser = argparse.ArgumentParser(
         description=textgrids_to_torch_token_data_dir.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -690,21 +695,17 @@ each segment will be identified with the point. See the command
     _add_common_arg(parser, "--num-workers")
     _add_common_arg(parser, "--chunk-size")
     _add_common_arg(parser, "--timeout")
-    size_group = parser.add_mutually_exclusive_group()
-    _add_common_arg(size_group, "--skip-frame-times")
-    _add_common_arg(size_group, "--feat-sizing")
-    _add_common_arg(size_group, "--frame-shift-ms")
-    parser.add_argument(
-        "--textgrid-suffix",
-        default=".TextGrid",
-        help="The file suffix in tg_dir indicating a TextGrid file",
-    )
+    _add_common_arg(parser, "--textgrid-suffix")
     parser.add_argument(
         "--fill-symbol",
         default=None,
         help="If set, unlabelled intervals in the TextGrid files will be "
         "assigned this symbol. Relevant only if a point grid.",
     )
+    size_group = parser.add_mutually_exclusive_group()
+    _add_common_arg(size_group, "--skip-frame-times")
+    _add_common_arg(size_group, "--feat-sizing")
+    _add_common_arg(size_group, "--frame-shift-ms")
     tier_grp = parser.add_mutually_exclusive_group()
     tier_grp.add_argument(
         "--tier-name", dest="tier_id", help="The name of the tier to extract."
@@ -732,7 +733,7 @@ each segment will be identified with the point. See the command
         )
         return 1
     if options.tier_id is None:
-        options.tier_id = 0
+        options.tier_id = config.DEFT_TEXTGRID_TIER_ID
 
     def textgrid_iter():
         for file_name in os.listdir(options.tg_dir):
@@ -820,7 +821,7 @@ SpectDataSet directory."""
     )
     utt_group.add_argument(
         "--channel",
-        default="A",
+        default=config.DEFT_CTM_CHANNEL,
         help='If neither "--wc2utt" nor "--utt2wc" is specified, utterance '
         "IDs are treated as wavefile names and are given the value of this "
         "flag as a channel",
@@ -965,7 +966,7 @@ performing these computations."""
         nargs=3,
         type=float,
         metavar=("INS", "DEL", "SUB"),
-        default=(1.0, 1.0, 1.0),
+        default=(config.DEFT_INS_COST, config.DEFT_DEL_COST, config.DEFT_SUB_COST),
         help="The costs of an insertion, deletion, and substitution, respectively",
     )
     group.add_argument(
@@ -1471,16 +1472,16 @@ This command converts a "ref/" directory from a SpectDataSet to an "ali/" direct
 former contains sequences of tokens; the latter contains frame-wise alignments. The
 token ids are set to the frame-wise labels.
 
-A reference token sequence "tok" partitions a frame sequence of length T if
+A reference token sequence "ref" partitions a frame sequence of length T if
 
-1. tok is of shape (R, 3), with R > 1 and all tok[r, 1:] >= 0 (it contains segment
+1. ref is of shape (R, 3), with R > 1 and all ref[r, 1:] >= 0 (it contains segment
    boundaries).
-2. tok[0, 1] = 0 (it starts at frame 0).
-3. for all 0 <= r < R - 1, tok[r, 2] = tok[r + 1, 1] (boundaries contiguous).
-4. tok[R - 1, 2] = T (it ends after T frames).
+2. ref[0, 1] = 0 (it starts at frame 0).
+3. for all 0 <= r < R - 1, ref[r, 2] = ref[r + 1, 1] (boundaries contiguous).
+4. ref[R - 1, 2] = T (it ends after T frames).
 
-When tok partitions the frame sequence, it can be converted into a per-frame alignment
-tensor "ali" of shape (T,), where tok[r, 1] <= t < tok[r, 2] implies ali[t] = tok[r, 0].
+When ref partitions the frame sequence, it can be converted into a per-frame alignment
+tensor "ali" of shape (T,), where ref[r, 1] <= t < ref[r, 2] implies ali[t] = ref[r, 0].
 
 WARNING! This operation is potentially destructive: a per-frame alignment cannot
 distinguish between two of the same token next to one another and one larger token.
@@ -1579,10 +1580,10 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
-
     if not os.path.isdir(options.ali_dir):
         print(f"'{options.ali_dir}' is not a directory", file=sys.stderr)
         return 1
+
     basenames = (
         x
         for x in os.listdir(options.ali_dir)

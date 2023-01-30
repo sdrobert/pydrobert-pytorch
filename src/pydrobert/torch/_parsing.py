@@ -21,6 +21,8 @@ from collections import OrderedDict
 import torch
 import numpy as np
 
+import pydrobert.torch.config as config
+
 from ._textgrid import TextGrid, TEXTTIER
 
 
@@ -235,7 +237,7 @@ def read_trn_iter(
     trn: Union[TextIO, str],
     warn: bool = True,
     processes: int = 0,
-    chunk_size: int = 1000,
+    chunk_size: int = config.DEFT_CHUNK_SIZE,
 ) -> Tuple[str, List[str]]:
     """Read a NIST sclite transcript file, yielding individual transcripts
 
@@ -291,7 +293,7 @@ def read_trn(
     trn: Union[TextIO, str],
     warn: bool = True,
     processes: int = 0,
-    chunk_size: int = 1000,
+    chunk_size: int = config.DEFT_CHUNK_SIZE,
 ) -> List[Tuple[str, List[str]]]:
     """Read a NIST sclite transcript file into a list of transcripts
 
@@ -473,9 +475,9 @@ def read_ctm(
 def write_ctm(
     transcripts: Sequence[Tuple[str, Sequence[Tuple[str, float, float]]]],
     ctm: Union[TextIO, str],
-    utt2wc: Union[Mapping[str, Tuple[str, str]], str] = "A",
+    utt2wc: Union[Mapping[str, Tuple[str, str]], str] = config.DEFT_CTM_CHANNEL,
 ) -> None:
-    """From a list of transcripts, write to a NIST "ctm" file
+    f"""From a list of transcripts, write to a NIST "ctm" file
 
     This is the inverse operation of :func:`read_ctm`. For each element of
     ``transcript`` within the ``utt_id, transcript`` pairs of elements in `transcripts`,
@@ -488,9 +490,9 @@ def write_ctm(
     utt2wc
         "ctm" files identify utterances by waveform file name and channel. If specified
         as a dict, `utt2wc` consists of utterance IDs as keys, and wavefile name and
-        channels as values ``wfn, chan`` (e.g. ``'940328', 'A'``). If `utt2wc` is a
-        string, each utterance IDs will be mapped to ``wfn`` and `utt2wc` as the
-        channel.
+        channels as values ``wfn, chan`` (e.g. ``'940328',
+        '{config.DEFT_CTM_CHANNEL}'``). If `utt2wc` is a string, each utterance IDs will
+        be mapped to ``wfn`` and `utt2wc` as the channel.
     """
     if isinstance(ctm, str):
         with open(ctm, "w") as ctm:
@@ -522,7 +524,7 @@ def write_ctm(
 
 def read_textgrid(
     tg: Union[TextIO, str],
-    tier_id: Union[str, int] = 0,
+    tier_id: Union[str, int] = config.DEFT_TEXTGRID_TIER_ID,
     fill_token: Optional[str] = None,
 ) -> Tuple[List[Tuple[str, float, float]], float, float]:
     """Read TextGrid file as a transcription
@@ -606,9 +608,9 @@ def write_textgrid(
     tg: Union[TextIO, str],
     start_time: Optional[float] = None,
     end_time: Optional[float] = None,
-    tier_name: str = "transcript",
+    tier_name: str = config.DEFT_TEXTGRID_TIER_NAME,
     point_tier: Optional[bool] = None,
-    precision: int = 3,
+    precision: int = config.DEFT_TEXTGRID_PRECISION,
 ) -> None:
     """Write a transcription as a TextGrid file
     

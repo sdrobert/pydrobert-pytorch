@@ -17,6 +17,7 @@ from typing_extensions import Literal
 
 import torch
 
+from . import config
 from ._compat import script, movedim
 from ._wrappers import functional_wrapper, proxy
 
@@ -30,7 +31,7 @@ def mean_var_norm(
     dim: int = -1,
     mean: Optional[torch.Tensor] = None,
     std: Optional[torch.Tensor] = None,
-    eps: float = 1e-12,
+    eps: float = config.TINY,
 ):
     D = x.ndim
     if dim < -D or dim > D - 1:
@@ -132,7 +133,7 @@ class MeanVarianceNormalization(torch.nn.Module):
         dim: int = -1,
         mean: Optional[torch.Tensor] = None,
         std: Optional[torch.Tensor] = None,
-        eps: float = 1e-12,
+        eps: float = config.TINY,
     ):
         if mean is not None:
             if mean.ndim != 1 or not mean.numel():
@@ -256,7 +257,7 @@ def feat_deltas(
     order: int = 2,
     width: int = 2,
     pad_mode: str = "replicate",
-    value: float = 0,
+    value: float = config.DEFT_PAD_VALUE,
     _filters: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     if _filters is None:
@@ -368,7 +369,7 @@ class FeatureDeltas(torch.nn.Module):
         order: int = 2,
         width: int = 2,
         pad_mode: Literal["replicate", "constant", "reflect", "circular"] = "replicate",
-        value: float = 0.0,
+        value: float = config.DEFT_PAD_VALUE,
     ):
         if pad_mode not in {"replicate", "constant", "reflect", "circular"}:
             raise ValueError(

@@ -17,6 +17,7 @@ from typing_extensions import Literal
 
 import torch
 
+from . import config
 from ._compat import script
 from ._wrappers import functional_wrapper, proxy
 
@@ -27,7 +28,7 @@ def pad_variable(
     lens: torch.Tensor,
     pad: torch.Tensor,
     mode: Literal["constant", "reflect", "replicate"] = "constant",
-    value: float = 0.0,
+    value: float = config.DEFT_PAD_VALUE,
 ) -> torch.Tensor:
     ...
 
@@ -39,7 +40,7 @@ def pad_variable(
     lens: torch.Tensor,
     pad: torch.Tensor,
     mode: str = "constant",
-    value: float = 0.0,
+    value: float = config.DEFT_PAD_VALUE,
 ) -> torch.Tensor:
     old_shape = x.shape
     ndim = len(old_shape)
@@ -214,7 +215,7 @@ class PadVariable(torch.nn.Module):
     def __init__(
         self,
         mode: Literal["constant", "reflect", "replicate"] = "constant",
-        value: float = 0.0,
+        value: float = config.DEFT_PAD_VALUE,
     ):
         super().__init__()
         if mode not in {"constant", "reflect", "replicate"}:
@@ -245,7 +246,7 @@ def pad_masked_sequence(
     x: torch.Tensor,
     mask: torch.Tensor,
     batch_first: bool = False,
-    padding_value: float = 0.0,
+    padding_value: float = config.DEFT_PAD_VALUE,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if x.ndim < 2:
         raise RuntimeError(f"expected x to be at least two-dimensional, got {x.ndim}")
@@ -335,7 +336,9 @@ class PadMaskedSequence(torch.nn.Module):
     batch_first: bool
     padding_value: float
 
-    def __init__(self, batch_first: bool = False, padding_value: float = 0.0):
+    def __init__(
+        self, batch_first: bool = False, padding_value: float = config.DEFT_PAD_VALUE
+    ):
         super().__init__()
         self.batch_first = batch_first
         self.padding_value = padding_value
