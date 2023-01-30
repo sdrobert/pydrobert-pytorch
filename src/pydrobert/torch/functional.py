@@ -21,7 +21,6 @@ from ._combinatorics import (
     enumerate_binary_sequences_with_cardinality,
     simple_random_sampling_without_replacement,
 )
-from ._chunk import slice_spect_data
 from ._decoding import (
     beam_search_advance,
     ctc_greedy_search,
@@ -29,7 +28,7 @@ from ._decoding import (
     random_walk_advance,
     sequence_log_probs,
 )
-from ._feats import feat_deltas, mean_var_norm
+from ._feats import feat_deltas, mean_var_norm, slice_spect_data
 from ._img import (
     dense_image_warp,
     polyharmonic_spline,

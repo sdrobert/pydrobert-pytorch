@@ -71,7 +71,6 @@ from ._attn import (
     GlobalSoftAttention,
     MultiHeadedAttention,
 )
-from ._chunk import SliceSpectData
 from ._decoding import (
     BeamSearch,
     CTCGreedySearch,
@@ -79,7 +78,7 @@ from ._decoding import (
     RandomWalk,
     SequenceLogProbabilities,
 )
-from ._feats import FeatureDeltas, MeanVarianceNormalization
+from ._feats import FeatureDeltas, MeanVarianceNormalization, SliceSpectData
 from ._img import (
     DenseImageWarp,
     PolyharmonicSpline,
