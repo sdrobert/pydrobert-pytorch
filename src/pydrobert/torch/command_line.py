@@ -16,6 +16,7 @@ import os
 import sys
 import argparse
 import math
+from typing_extensions import Literal
 import warnings
 import itertools
 import tarfile
@@ -23,7 +24,7 @@ import io
 
 from pathlib import Path
 from collections import defaultdict, OrderedDict
-from typing import Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 import torch
 
@@ -1600,6 +1601,223 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     return 0
 
 
+def _torch_token_data_dir_to_textgrids_do_work(
+    utt_ids: Sequence[str],
+    ref_dir: str,
+    id2token: Dict[int, str],
+    feat_dir: Optional[str],
+    tg_dir: str,
+    in_suffix: str,
+    out_suffix: str,
+    frame_shift_ms: float,
+    tier_name: str,
+    precision: int,
+    quiet: bool,
+    force_method: Optional[Literal[1, 2, 3]],
+):
+    for utt_id in utt_ids:
+        in_name = utt_id + in_suffix
+        ref_name = os.path.join(ref_dir, in_name)
+        ref = torch.load(ref_name)
+        err_msg = f"Failure converting '{ref_name}' to TextGrid:"
+        T = -1
+        has_segment_index = ref.ndim == 2 and ref.size(1) == 3
+        if not has_segment_index and ref.ndim != 1:
+            raise ValueError(f"{err_msg} tensor is an invalid size")
+        if feat_dir is not None:
+            feat_name = os.path.join(feat_dir, in_name)
+            if not os.path.isfile(feat_name):
+                raise ValueError(
+                    f"{err_msg} corresponding feature file '{feat_name}' does not exist"
+                )
+            feat = torch.load(feat_name)
+            if feat.ndim != 2:
+                raise ValueError(f"{err_msg} feature tensor is an invalid size")
+            T = feat.size(0)
+        elif has_segment_index:
+            T = ref[..., 1:].max()
+        else:
+            if not quiet:
+                warnings.warn(
+                    f"Could not determine length of '{ref_name}'. Setting to 0"
+                )
+            T = 0
+        T = (T * frame_shift_ms) / 1000
+        try_method = force_method if force_method else 1
+        if try_method == 1:
+            if (
+                has_segment_index
+                and ((ref[..., 2] > ref[..., 1]) & (ref[..., 1] >= 0)).all()
+            ):
+                point_tier = False
+            elif force_method:
+                raise ValueError(f"{err_msg} does not have enough info for method 1")
+            else:
+                try_method += 1
+        if try_method == 2:
+            if has_segment_index:
+                maxes = ref[..., 1:].max(1)[0]
+            else:
+                maxes = torch.tensor(-1)
+            if (maxes >= 0).all():
+                ref[..., 1:] = maxes.unsqueeze(1)
+                point_tier = True
+            elif force_method:
+                raise ValueError(f"{err_msg} does not have enough info for method 2")
+            else:
+                try_method += 1
+        if try_method == 3:
+            if ref.ndim != 1:
+                ref = ref[..., 0]
+            transcript = [
+                (" ".join(id2token.get(x.item(), x.item()) for x in ref), 0.0, T)
+            ]
+            point_tier = False
+        else:
+            transcript = data.token_to_transcript(ref, id2token, frame_shift_ms)
+        if any(isinstance(x[0], int) for x in transcript):
+            raise ValueError(f"{err_msg} not all ids exist in '{id2token.name}'")
+        try:
+            data.write_textgrid(
+                transcript,
+                os.path.join(tg_dir, utt_id + out_suffix),
+                0.0,
+                T,
+                tier_name,
+                point_tier,
+                precision,
+            )
+        except Exception as e:
+            raise ValueError(f"{err_msg} could not write textgrid") from e
+
+
+def torch_token_data_dir_to_textgrids(args: Optional[Sequence[str]] = None):
+    """Convert a SpectDataSet ref/ dir into a directory of TextGrid files
+
+A "TextGrid" file is a transcription file for a single utterance used by the Praat
+software (https://www.fon.hum.uva.nl/praat/).
+
+This command accepts a directory of token sequences compatible with the "ref/"
+directory of a SpectDataSet and outputs a directory of TextGrid files
+
+    tg_dir/
+        <file-prefix>utt_1.<textgrid_suffix>
+        <file-prefix>utt_2.<textgrid_suffix>
+        ...
+
+A token sequence ref is a tensor of shape either (R, 3) or just (R,). The latter has no
+segment information and is just the tokens. The former contains triples "tok, start,
+end", where "tok" is the token id, "start" is the starting frame inclusive, and "end" is
+the ending frame exclusive. A negative value for either boundary means the information
+is not available.
+
+By default, this command tries to save the sequence as a tier preserving as much
+information in the token sequence as possible in a consistent way. The following methods
+are attempted in order:
+
+1. If ref is of shape (R, 3), all segments boundaries are available, and all segments
+   are of nonzero length, the sequence will be saved as an IntervalTier containing
+   segment boundaries.
+2. If ref is of shape (R, 3) and either the start or end boundary is available for every
+   token, the sequence will be saved as a TextTier (PointTier) with points set to the
+   available boundary (with precedence going to the greater).
+3. Otherwise, the token sequence is written as an interval tier with a single segment
+   spanning the recording and containing all tokens.
+
+In addition, the total length of the features in frames must be determined. Either the
+flag "--feat-dir" must be specified in order to get the length directly from the feature
+sequences, or "--infer" must be specified. The latter guesses the length to be the
+maximum end boundary of the token sequence available, or 0 (with a warning if "--quiet"
+unset) if none are.
+
+Note that Praat usually works either with point data or with intervals which
+collectively partition the audio. It can parse TextGrid files with non-contiguous
+intervals, but they are rendered strangely.
+
+See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
+directory."""
+    parser = argparse.ArgumentParser(
+        description=torch_token_data_dir_to_textgrids.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("ref_dir", help="The token sequence data directory (input)")
+    _add_common_arg(parser, "id2token")
+    parser.add_argument("tg_dir", help="The TextGrid directory (output)")
+    len_opt = parser.add_mutually_exclusive_group(required=True)
+    len_opt.add_argument("--feat-dir", default=None, help="Path to features")
+    len_opt.add_argument(
+        "--infer",
+        action="store_true",
+        default=False,
+        help="Infer lengths based on maximum segment boundaries",
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--swap")
+    _add_common_arg(parser, "--frame-shift-ms")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--chunk-size")
+    _add_common_arg(parser, "--timeout")
+    _add_common_arg(parser, "--textgrid-suffix")
+    parser.add_argument(
+        "--tier-name", default="transcript", help="The name to save the tier with"
+    )
+    parser.add_argument(
+        "--precision",
+        type=int,
+        default=config.DEFT_TEXTGRID_PRECISION,
+        help="Default precision with which to save floating point values in "
+        "TextGrid files",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        default=False,
+        help="If set, suppresses warnings when lengths cannot be determined",
+    )
+    parser.add_argument(
+        "--force-method",
+        default=None,
+        type=int,
+        choices=[1, 2, 3],
+        help="Force a specific method of writing to TextGrid (1-3 above). Not enough "
+        "information will lead to an error.",
+    )
+
+    try:
+        options = parser.parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+    if not os.path.isdir(options.ref_dir):
+        raise ValueError(f"'{options.ref_dir}' is not a directory")
+    if options.feat_dir is not None and not os.path.isdir(options.feat_dir):
+        raise ValueError(f"'{options.feat_dir}' is not a directory")
+
+    id2token = _parse_token2id(options.id2token, not options.swap, options.swap)
+    utt_ids = (
+        x[: len(x) - len(options.file_suffix)]
+        for x in os.listdir(options.ref_dir)
+        if x.startswith(options.file_prefix) and x.endswith(options.file_suffix)
+    )
+    os.makedirs(options.tg_dir, exist_ok=True)
+    _multiprocessor_pattern(
+        utt_ids,
+        options,
+        _torch_token_data_dir_to_textgrids_do_work,
+        options.ref_dir,
+        id2token,
+        options.feat_dir,
+        options.tg_dir,
+        options.file_suffix,
+        options.textgrid_suffix,
+        options.frame_shift_ms,
+        options.tier_name,
+        options.precision,
+        options.quiet,
+        options.force_method,
+    )
+
+
 def _worker_func(queue, timeout, do_work_func, *args):
     basenames = queue.get(True, timeout)
     while basenames is not None:
@@ -1626,3 +1844,4 @@ def _multiprocessor_pattern(basenames, options, do_work_func, *args):
             pool.join()
     else:
         do_work_func(basenames, *args)
+

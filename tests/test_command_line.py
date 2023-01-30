@@ -766,3 +766,164 @@ def test_torch_ali_data_dir_to_torch_token_data_dir(temp_dir):
             assert ali[t] == ref[r, 0]
         assert r == R - 1
 
+
+@pytest.mark.cpu
+def test_torch_token_data_dir_to_textgrids(temp_dir):
+    ref_dir = os.path.join(temp_dir, "ref")
+    feat_dir = os.path.join(temp_dir, "feat")
+    tg_dir = os.path.join(temp_dir, "tg_dir")
+    id2token = os.path.join(temp_dir, "id2token.txt")
+    _write_token2id(id2token, True)
+    os.makedirs(ref_dir)
+    os.makedirs(feat_dir)
+    feat = torch.empty(600, 5)
+    ref_1 = torch.tensor([[0, 100, 200], [3, 400, 500]])
+    torch.save(ref_1, f"{ref_dir}/utt_1.pt")
+    torch.save(feat, f"{feat_dir}/utt_1.pt")
+    ref_2 = torch.tensor([[1, 100, 200], [0, 300, -1], [4, 500, 600]])
+    torch.save(ref_2, f"{ref_dir}/utt_2.pt")
+    torch.save(feat, f"{feat_dir}/utt_2.pt")
+    ref_3 = torch.tensor([1, 2, 3, 4])
+    torch.save(ref_3, f"{ref_dir}/utt_3.pt")
+    torch.save(feat, f"{feat_dir}/utt_3.pt")
+    args = [ref_dir, id2token, tg_dir]
+
+    assert not command_line.torch_token_data_dir_to_textgrids(
+        args + ["--feat-dir", feat_dir]
+    )
+    assert sorted(os.listdir(tg_dir)) == [
+        "utt_1.TextGrid",
+        "utt_2.TextGrid",
+        "utt_3.TextGrid",
+    ]
+    with open(f"{tg_dir}/utt_1.TextGrid") as f:
+        assert (
+            f.read()
+            == """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.000
+6.000
+<exists>
+1
+"IntervalTier"
+"transcript"
+1.000
+5.000
+2
+1.000
+2.000
+"a"
+4.000
+5.000
+"d"
+"""
+        )
+    with open(f"{tg_dir}/utt_2.TextGrid") as f:
+        assert (
+            f.read()
+            == """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.000
+6.000
+<exists>
+1
+"TextTier"
+"transcript"
+2.000
+6.000
+3
+2.000
+"b"
+3.000
+"a"
+6.000
+"e"
+"""
+        )
+    with open(f"{tg_dir}/utt_3.TextGrid") as f:
+        assert (
+            f.read()
+            == """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.000
+6.000
+<exists>
+1
+"IntervalTier"
+"transcript"
+0.000
+6.000
+1
+0.000
+6.000
+"b c d e"
+"""
+        )
+
+    assert not command_line.torch_token_data_dir_to_textgrids(
+        args + ["--infer", "--quiet", "--force-method=3"]
+    )
+    assert len(os.listdir(tg_dir)) == 3
+    with open(f"{tg_dir}/utt_1.TextGrid") as f:
+        assert (
+            f.read()
+            == """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.000
+5.000
+<exists>
+1
+"IntervalTier"
+"transcript"
+0.000
+5.000
+1
+0.000
+5.000
+"a d"
+"""
+        )
+    with open(f"{tg_dir}/utt_2.TextGrid") as f:
+        assert (
+            f.read()
+            == """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.000
+6.000
+<exists>
+1
+"IntervalTier"
+"transcript"
+0.000
+6.000
+1
+0.000
+6.000
+"b a e"
+"""
+        )
+    with open(f"{tg_dir}/utt_3.TextGrid") as f:
+        assert (
+            f.read()
+            == """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.000
+0.000
+<exists>
+1
+"TextTier"
+"transcript"
+0.000
+0.000
+1
+0.000
+"b c d e"
+"""
+        )
+

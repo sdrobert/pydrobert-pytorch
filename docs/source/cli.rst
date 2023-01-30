@@ -350,18 +350,18 @@ textgrids-to-torch-token-data-dir
                                            [--num-workers NUM_WORKERS]
                                            [--chunk-size CHUNK_SIZE]
                                            [--timeout TIMEOUT]
-                                           [--skip-frame-times | --feat-sizing | --frame-shift-ms FRAME_SHIFT_MS]
                                            [--textgrid-suffix TEXTGRID_SUFFIX]
                                            [--fill-symbol FILL_SYMBOL]
+                                           [--skip-frame-times | --feat-sizing | --frame-shift-ms FRAME_SHIFT_MS]
                                            [--tier-name TIER_ID | --tier-idx TIER_ID]
                                            tg_dir token2id dir
   
-  Convert a directory of TextGrid files into a SpectDataSet token data dir
+  Convert a directory of TextGrid files into a SpectDataSet ref/ dir
   
   A "TextGrid" file is a transcription file for a single utterance used by the Praat
   software (https://www.fon.hum.uva.nl/praat/).
   
-  This command accepts a directory "tg_dir" of TextGrid files
+  This command accepts a directory of TextGrid files
   
       tg_dir/
           <file-prefix>utt_1.<textgrid_suffix>
@@ -371,8 +371,10 @@ textgrids-to-torch-token-data-dir
   and writes each file as a separate token sequence compatible with the "ref/" directory
   of a SpectDataSet. If the extracted tier is an IntervalTier, the start and end points
   will be saved with each token. If a TextTier (PointTier), the start and end points of
-  each segment will be identified with the point. See the command
-  "get-torch-spect-data-dir-info" for more info about a SpectDataSet directory.
+  each segment will be identified with the point.
+  
+  See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
+  directory.
   
   positional arguments:
     tg_dir                The directory containing the TextGrid files
@@ -403,6 +405,12 @@ textgrids-to-torch-token-data-dir
     --timeout TIMEOUT     When using multiple workers, how long (in seconds)
                           without new data before terminating. The default is to
                           wait indefinitely.
+    --textgrid-suffix TEXTGRID_SUFFIX
+                          The file suffix in tg_dir indicating a TextGrid file
+    --fill-symbol FILL_SYMBOL
+                          If set, unlabelled intervals in the TextGrid files
+                          will be assigned this symbol. Relevant only if a point
+                          grid.
     --skip-frame-times    If true, will store token tensors of shape (R,)
                           instead of (R, 3), foregoing segment start and end
                           times.
@@ -416,12 +424,6 @@ textgrids-to-torch-token-data-dir
                           consecutive frames. Used to convert between time in
                           seconds and frame index. If your features are the raw
                           samples, set this to 1000 / sample_rate_hz
-    --textgrid-suffix TEXTGRID_SUFFIX
-                          The file suffix in tg_dir indicating a TextGrid file
-    --fill-symbol FILL_SYMBOL
-                          If set, unlabelled intervals in the TextGrid files
-                          will be assigned this symbol. Relevant only if a point
-                          grid.
     --tier-name TIER_ID   The name of the tier to extract.
     --tier-idx TIER_ID    The index of the tier to extract.
 
@@ -621,6 +623,114 @@ torch-token-data-dir-to-ctm
                           utterance IDs are treated as wavefile names and are
                           given the value of this flag as a channel
 
+torch-token-data-dir-to-textgrids
+---------------------------------
+
+::
+
+  usage: torch-token-data-dir-to-textgrids [-h] (--feat-dir FEAT_DIR | --infer)
+                                           [--file-prefix FILE_PREFIX]
+                                           [--file-suffix FILE_SUFFIX] [--swap]
+                                           [--frame-shift-ms FRAME_SHIFT_MS]
+                                           [--num-workers NUM_WORKERS]
+                                           [--chunk-size CHUNK_SIZE]
+                                           [--timeout TIMEOUT]
+                                           [--textgrid-suffix TEXTGRID_SUFFIX]
+                                           [--tier-name TIER_NAME]
+                                           [--precision PRECISION] [--quiet]
+                                           [--force-method {1,2,3}]
+                                           ref_dir id2token tg_dir
+  
+  Convert a SpectDataSet ref/ dir into a directory of TextGrid files
+  
+  A "TextGrid" file is a transcription file for a single utterance used by the Praat
+  software (https://www.fon.hum.uva.nl/praat/).
+  
+  This command accepts a directory of token sequences compatible with the "ref/"
+  directory of a SpectDataSet and outputs a directory of TextGrid files
+  
+      tg_dir/
+          <file-prefix>utt_1.<textgrid_suffix>
+          <file-prefix>utt_2.<textgrid_suffix>
+          ...
+  
+  A token sequence ref is a tensor of shape either (R, 3) or just (R,). The latter has no
+  segment information and is just the tokens. The former contains triples "tok, start,
+  end", where "tok" is the token id, "start" is the starting frame inclusive, and "end" is
+  the ending frame exclusive. A negative value for either boundary means the information
+  is not available.
+  
+  By default, this command tries to save the sequence as a tier preserving as much
+  information in the token sequence as possible in a consistent way. The following methods
+  are attempted in order:
+  
+  1. If ref is of shape (R, 3), all segments boundaries are available, and all segments
+     are of nonzero length, the sequence will be saved as an IntervalTier containing
+     segment boundaries.
+  2. If ref is of shape (R, 3) and either the start or end boundary is available for every
+     token, the sequence will be saved as a TextTier (PointTier) with points set to the
+     available boundary (with precedence going to the greater).
+  3. Otherwise, the token sequence is written as an interval tier with a single segment
+     spanning the recording and containing all tokens.
+  
+  In addition, the total length of the features in frames must be determined. Either the
+  flag "--feat-dir" must be specified in order to get the length directly from the feature
+  sequences, or "--infer" must be specified. The latter guesses the length to be the
+  maximum end boundary of the token sequence available, or 0 (with a warning if "--quiet"
+  unset) if none are.
+  
+  Note that Praat usually works either with point data or with intervals which
+  collectively partition the audio. It can parse TextGrid files with non-contiguous
+  intervals, but they are rendered strangely.
+  
+  See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
+  directory.
+  
+  positional arguments:
+    ref_dir               The token sequence data directory (input)
+    id2token              A file containing mappings from unique IDs to tokens
+                          (e.g. words or phones). Each line has the format "<id>
+                          <token>". The flag "--swap" can be used to swap the
+                          expected ordering (i.e. to "<token> <id>")
+    tg_dir                The TextGrid directory (output)
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --feat-dir FEAT_DIR   Path to features
+    --infer               Infer lengths based on maximum segment boundaries
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --swap                If set, swaps the order of the key and value in
+                          token/id mapping
+    --frame-shift-ms FRAME_SHIFT_MS
+                          The number of milliseconds that have passed between
+                          consecutive frames. Used to convert between time in
+                          seconds and frame index. If your features are the raw
+                          samples, set this to 1000 / sample_rate_hz
+    --num-workers NUM_WORKERS
+                          The number of workers to spawn to process the data. 0
+                          is serial. Defaults to the CPU count
+    --chunk-size CHUNK_SIZE
+                          The number of utterances that a worker will process at
+                          once. Impacts speed and memory consumption.
+    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
+                          without new data before terminating. The default is to
+                          wait indefinitely.
+    --textgrid-suffix TEXTGRID_SUFFIX
+                          The file suffix in tg_dir indicating a TextGrid file
+    --tier-name TIER_NAME
+                          The name to save the tier with
+    --precision PRECISION
+                          Default precision with which to save floating point
+                          values in TextGrid files
+    --quiet               If set, suppresses warnings when lengths cannot be
+                          determined
+    --force-method {1,2,3}
+                          Force a specific method of writing to TextGrid (1-3
+                          above). Not enough information will lead to an error.
+
 torch-token-data-dir-to-torch-ali-data-dir
 ------------------------------------------
 
@@ -640,16 +750,16 @@ torch-token-data-dir-to-torch-ali-data-dir
   former contains sequences of tokens; the latter contains frame-wise alignments. The
   token ids are set to the frame-wise labels.
   
-  A reference token sequence "tok" partitions a frame sequence of length T if
+  A reference token sequence "ref" partitions a frame sequence of length T if
   
-  1. tok is of shape (R, 3), with R > 1 and all tok[r, 1:] >= 0 (it contains segment
+  1. ref is of shape (R, 3), with R > 1 and all ref[r, 1:] >= 0 (it contains segment
      boundaries).
-  2. tok[0, 1] = 0 (it starts at frame 0).
-  3. for all 0 <= r < R - 1, tok[r, 2] = tok[r + 1, 1] (boundaries contiguous).
-  4. tok[R - 1, 2] = T (it ends after T frames).
+  2. ref[0, 1] = 0 (it starts at frame 0).
+  3. for all 0 <= r < R - 1, ref[r, 2] = ref[r + 1, 1] (boundaries contiguous).
+  4. ref[R - 1, 2] = T (it ends after T frames).
   
-  When tok partitions the frame sequence, it can be converted into a per-frame alignment
-  tensor "ali" of shape (T,), where tok[r, 1] <= t < tok[r, 2] implies ali[t] = tok[r, 0].
+  When ref partitions the frame sequence, it can be converted into a per-frame alignment
+  tensor "ali" of shape (T,), where ref[r, 1] <= t < ref[r, 2] implies ali[t] = ref[r, 0].
   
   WARNING! This operation is potentially destructive: a per-frame alignment cannot
   distinguish between two of the same token next to one another and one larger token.

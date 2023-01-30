@@ -822,7 +822,7 @@ def token_to_transcript(
     ref: torch.Tensor,
     id2token: Optional[Dict[int, str]] = None,
     frame_shift_ms: Optional[float] = None,
-) -> List[Tuple[Union[str, int], float, float]]:
+) -> List[Union[str, int, Tuple[Union[str, int], float, float]]]:
     """Convert a token sequence to a transcript
 
     The inverse operation of :func:`transcript_to_token`.
