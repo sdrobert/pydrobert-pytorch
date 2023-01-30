@@ -15,7 +15,17 @@
 import re
 import warnings
 
-from typing import Tuple, Optional, List, TextIO, Union, Iterable, Sequence, Mapping
+from typing import (
+    Dict,
+    Tuple,
+    Optional,
+    List,
+    TextIO,
+    Union,
+    Iterable,
+    Sequence,
+    Mapping,
+)
 from collections import OrderedDict
 
 import torch
@@ -691,7 +701,7 @@ def write_textgrid(
 
 
 def transcript_to_token(
-    transcript: Sequence,
+    transcript: Sequence[Union[str, Tuple[str, float, float]]],
     token2id: Optional[dict] = None,
     frame_shift_ms: Optional[float] = None,
     unk: Optional[Union[str, int]] = None,
@@ -809,17 +819,17 @@ def transcript_to_token(
 
 
 def token_to_transcript(
-    tok: torch.Tensor,
-    id2token: Optional[dict] = None,
+    ref: torch.Tensor,
+    id2token: Optional[Dict[int, str]] = None,
     frame_shift_ms: Optional[float] = None,
-) -> list:
+) -> List[Tuple[Union[str, int], float, float]]:
     """Convert a token sequence to a transcript
 
     The inverse operation of :func:`transcript_to_token`.
 
     Parameters
     ----------
-    tok
+    ref
         A long tensor either of shape ``(R, 3)`` with segmentation info or ``(R, 1)`` or
         ``(R,)`` without
     id2token
@@ -827,7 +837,7 @@ def token_to_transcript(
 
     Returns
     -------
-    transcript : list
+    transcript
 
     Warnings
     --------
@@ -836,14 +846,15 @@ def token_to_transcript(
     ambiguity in converting between seconds and frames.
     """
     transcript = []
-    for tup in tok:
-        x = tup.tolist()
-        try:
-            id_, start, end = x  # (R, 3)
-        except ValueError:
-            id_, start, end = x[0], -1, -1  # (R, 1)
-        except TypeError:
-            id_, start, end = x, -1, -1  # (R,)
+    for tup in ref:
+        start = end = -1
+        if tup.ndim:
+            id_ = tup[0].item()
+            if tup.numel() == 3:
+                start = tup[1].item()
+                end = tup[2].item()
+        else:
+            id_ = tup.item()
         token = id2token.get(id_, id_) if id2token is not None else id_
         if start == -1 or end == -1:
             transcript.append(token)
