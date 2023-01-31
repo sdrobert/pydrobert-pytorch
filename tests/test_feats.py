@@ -284,7 +284,8 @@ def test_slice_spect_data(
 
 
 @pytest.mark.parametrize("partial", [True, False], ids=['partial', 'full'])
-def test_chunk_token_sequences_by_slices(device, partial, jit_type):
+@pytest.mark.parametrize("retain", [True, False], ids=["absolute", "relative"])
+def test_chunk_token_sequences_by_slices(device, partial, jit_type, retain):
     ref_lens = torch.tensor([0, 5, 2], device=device)
     # fmt: off
     refs = torch.tensor([
@@ -306,7 +307,10 @@ def test_chunk_token_sequences_by_slices(device, partial, jit_type):
             torch.tensor([[1, 4, 6]], device=device),
             torch.tensor([[0, 2, 2]], device=device),
         ]
-    chunk_token_sequences_by_slices = ChunkTokenSequencesBySlices(partial)
+    if not retain:
+        exp_chunks[1][:, 1:] += slices[1, 0]
+        exp_chunks[2][:, 1:] += slices[2, 0]
+    chunk_token_sequences_by_slices = ChunkTokenSequencesBySlices(partial, retain)
     if jit_type == "script":
         chunk_token_sequences_by_slices = torch.jit.script(chunk_token_sequences_by_slices)
     elif jit_type == "trace":

@@ -784,12 +784,14 @@ class SliceSpectData(torch.nn.Module):
 
 
 @script
+@torch.no_grad()
 @functional_wrapper("ChunkTokenSequencesBySlices")
 def chunk_token_sequences_by_slices(
     refs: torch.Tensor,
     slices: torch.Tensor,
     ref_lens: Optional[torch.Tensor] = None,
     partial: bool = False,
+    retain: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if refs.ndim == 2:
         return refs.new_empty((0, refs.size(1),)), slices.new_empty((0,))
@@ -822,7 +824,9 @@ def chunk_token_sequences_by_slices(
     chunked_lens = mask.long().sum(1)
     refs = refs[mask.unsqueeze(2).expand_as(refs)]
     mask = (chunked_lens.unsqueeze(1) > arange).unsqueeze(2).expand(N, R, 3)
-    chunked = refs.new_empty((N, R, 3)).masked_scatter(mask, refs)
+    chunked = refs.new_empty((N, R, 3)).masked_scatter_(mask, refs)
+    if not retain:
+        chunked[..., 1:] += slices[..., 0].view(N, 1, 1)
     return chunked, chunked_lens
 
 
@@ -835,6 +839,10 @@ class ChunkTokenSequencesBySlices(torch.nn.Module):
         If :obj:`True`, a segment of `refs` whose interval partially overlaps with the
         slice will be included in `chunked`. Otherwise, segments in `ref` must fully
         overlap with slices (i.e. be contained within).
+    retain
+        If :obj:`True`, tokens kept from `refs` will retain their original boundary
+        values. Otherwise, boundaries will become relative to the start frame of
+        `slices`.
     
     Call Parameters
     ---------------
@@ -848,7 +856,6 @@ class ChunkTokenSequencesBySlices(torch.nn.Module):
     slices : torch.Tensor
         A long tensor of shape ``(N, 2)`` containing pairs ``start, end``, where `start`
         and `end` are the start (inclusive) and end (exclusive) indices, respectively.
-        Negative indices are effectively clamped to 0.
     ref_lens : torch.Tensor, optional
         An optional long tensor of shape ``(N,)`` specifying the token sequence lengths.
         Only the values in the range ``refs[n, :ref_lens[n]]`` are considered part of
@@ -868,9 +875,8 @@ class ChunkTokenSequencesBySlices(torch.nn.Module):
     Negative indices in slices in Python are usually interpreted as an offset left from
     the end of the sequence. In `slices`, however, negative indices indicate an offset
     left from the start of the sequence. In `refs`, negative indices indicate a missing
-    boundary and are thrown out. Since a segment in `refs` cannot have a negative index,
-    negative indices in `slices` are ignored. This strange behaviour is to ensure
-    compatibility with the slices extracted from :class:`SliceSpectData`.
+    boundary and are thrown out. Negative indices in `slices` can impact the returned
+    segment boundaries in `chunked`.
 
     See Also
     --------
@@ -883,16 +889,25 @@ class ChunkTokenSequencesBySlices(torch.nn.Module):
         `feats` or `alis` from :class:`SpectDataSet`.
     """
 
-    __constants__ = ["partial"]
+    __constants__ = ["partial", "retain"]
 
     partial: bool
+    retain: bool
 
-    def __init__(self, partial: bool = False) -> None:
+    def __init__(self, partial: bool = False, retain: bool = False) -> None:
         super().__init__()
         self.partial = partial
+        self.retain = retain
 
     def extra_repr(self) -> str:
-        return "partial" if self.partial else ""
+        if self.partial and self.retain:
+            return "partial, retain"
+        elif self.partial:
+            return "partial"
+        elif self.retain:
+            return "retain"
+        else:
+            return ""
 
     def forward(
         self,
@@ -900,6 +915,8 @@ class ChunkTokenSequencesBySlices(torch.nn.Module):
         slices: torch.Tensor,
         ref_lens: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return chunk_token_sequences_by_slices(ref, slices, ref_lens, self.partial)
+        return chunk_token_sequences_by_slices(
+            ref, slices, ref_lens, self.partial, self.retain
+        )
 
     __call__ = proxy(forward)
