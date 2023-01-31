@@ -15,7 +15,7 @@
 import torch
 import pytest
 
-from pydrobert.torch.modules import MeanVarianceNormalization, FeatureDeltas, SliceSpectData
+from pydrobert.torch.modules import ChunkTokenSequencesBySlices, MeanVarianceNormalization, FeatureDeltas, SliceSpectData
 
 
 @pytest.mark.parametrize("style", ["given", "sample", "accum"])
@@ -281,3 +281,46 @@ def test_slice_spect_data(
     assert sources_exp.shape == sources_act.shape
     assert (slices_exp == slices_act).all()
     assert (sources_exp == sources_act).all()
+
+
+@pytest.mark.parametrize("partial", [True, False], ids=['partial', 'full'])
+def test_chunk_token_sequences_by_slices(device, partial, jit_type):
+    ref_lens = torch.tensor([0, 5, 2], device=device)
+    # fmt: off
+    refs = torch.tensor([
+        [[0, 0, 1], [1, 0, 1], [2, 0, 1], [3, 0, 1], [4, 0, 1]],  # n=0
+        [[0, 0, 2], [-1, 2, 4], [1, 4, 6], [2, -1, 7], [3, 5, 8]],  # n=1
+        [[0, 5, 4], [0, 2, 2], [0, 2, 2], [1, 2, 2], [2, 2, 2]],  # n=2
+    ], device=device)
+    # fmt: on
+    slices = torch.tensor([[0, 1], [3, 7], [-1, 3]], device=device)
+    if partial:
+        exp_chunks = [
+            torch.empty((0, 3), device=device, dtype=torch.long),
+            torch.tensor([[-1, 2, 4], [1, 4, 6], [3, 5, 8]], device=device),
+            torch.tensor([[0, 2, 2]], device=device),
+        ]
+    else:
+        exp_chunks = [
+            torch.empty((0, 3), device=device, dtype=torch.long),
+            torch.tensor([[1, 4, 6]], device=device),
+            torch.tensor([[0, 2, 2]], device=device),
+        ]
+    chunk_token_sequences_by_slices = ChunkTokenSequencesBySlices(partial)
+    if jit_type == "script":
+        chunk_token_sequences_by_slices = torch.jit.script(chunk_token_sequences_by_slices)
+    elif jit_type == "trace":
+        chunk_token_sequences_by_slices = torch.jit.trace(
+            chunk_token_sequences_by_slices,
+            (
+                torch.empty((1, 0, 3), dtype=torch.long),
+                torch.zeros((1, 2), dtype=torch.long),
+                torch.zeros((1,), dtype=torch.long),
+            ),
+        )
+    act_chunks, act_lens = chunk_token_sequences_by_slices(refs, slices, ref_lens)
+    assert len(act_lens) == len(exp_chunks)
+    for act_chunk_n, act_lens_n, exp_chunk_n in zip(act_chunks, act_lens, exp_chunks):
+        assert act_lens_n == exp_chunk_n.size(0)
+        act_chunk_n = act_chunk_n[:act_lens_n]
+        assert (act_chunk_n == exp_chunk_n).all()

@@ -430,6 +430,8 @@ def slice_spect_data(
     valid_only: bool = True,
     lobe_size: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    if in_.ndim < 2:
+        raise RuntimeError(f"Expected in_ to be at least 2-dimensional; got {in_.ndim}")
     N, T = in_.shape[:2]
     device = in_.device
     if not T:
@@ -480,6 +482,10 @@ def slice_spect_data(
         slices = torch.stack([starts, ends], 2).flatten(end_dim=1)
         sources = torch.arange(N, device=device).view(N, 1).expand(N, TT).flatten()
         if in_lens is not None:
+            if in_lens.shape != (N,):
+                raise RuntimeError(
+                    f"Expected in_lens to be of shape ({N},); got {in_lens.shape}"
+                )
             mask = (in_lens.unsqueeze(1) > mids).flatten()
             slices = slices[mask]
             sources = sources[mask]
@@ -489,6 +495,10 @@ def slice_spect_data(
         mask = in_[:, :-1] != in_[:, 1:]
         arange = torch.arange(T, device=device)
         if in_lens is not None:
+            if in_lens.shape != (N,):
+                raise RuntimeError(
+                    f"Expected in_lens to be of shape ({N},); got {in_lens.shape}"
+                )
             mask = mask & (in_lens.view(N, 1) > arange[1:])
         else:
             in_lens = torch.full((N,), T, device=device)
@@ -539,6 +549,10 @@ def slice_spect_data(
                 .gather(1, (in_lens - 1).clamp_min_(0).view(N, 1))
                 .squeeze(1)
                 .masked_fill_(in_lens == 0, 0)
+            )
+        elif other_lens.shape != (N,):
+            raise RuntimeError(
+                f"Expected other_lens to have shape ({N},); got {other_lens.shape}"
             )
         mask = in_lens.view(N, 1) > torch.arange(T, device=device)
         mask &= (in_[..., 1:] >= 0).all(2)
@@ -765,5 +779,127 @@ class SliceSpectData(torch.nn.Module):
             self.valid_only,
             self.lobe_size,
         )
+
+    __call__ = proxy(forward)
+
+
+@script
+@functional_wrapper("ChunkTokenSequencesBySlices")
+def chunk_token_sequences_by_slices(
+    refs: torch.Tensor,
+    slices: torch.Tensor,
+    ref_lens: Optional[torch.Tensor] = None,
+    partial: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    if refs.ndim == 2:
+        return refs.new_empty((0, refs.size(1),)), slices.new_empty((0,))
+    elif refs.ndim != 3 or refs.size(2) != 3:
+        raise RuntimeError(
+            "Expected refs to be 2-dimensional or 3-dimensional with final dimension "
+            f"size 3. Got shape '{refs.shape}'"
+        )
+    N, R = refs.size(0), refs.size(1)
+    if slices.shape != (N, 2):
+        raise RuntimeError(
+            f"Expected slices to be a tensor of shape ({N}, 2), got {slices.shape}"
+        )
+    arange = torch.arange(R, device=refs.device)
+    if ref_lens is None:
+        mask = torch.ones((N, R), device=refs.device, dtype=torch.bool)
+    elif ref_lens.shape != (N,):
+        raise RuntimeError(
+            f"Expected ref_lens to be a tensor of shape ({N},), got {ref_lens.shape}"
+        )
+    else:
+        mask = ref_lens.unsqueeze(1) > arange
+    mask &= (refs[..., 1:] >= 0).all(2) & (refs[..., 2] >= refs[..., 1])
+    if partial:
+        # slice_start < ref_end and slice_end > ref_start
+        mask &= (slices[..., :1] < refs[..., 2]) & (slices[..., 1:] > refs[..., 1])
+    else:
+        # slice_start <= ref_start and slice_end >= ref_end
+        mask &= (slices[..., :1] <= refs[..., 1]) & (slices[..., 1:] >= refs[..., 2])
+    chunked_lens = mask.long().sum(1)
+    refs = refs[mask.unsqueeze(2).expand_as(refs)]
+    mask = (chunked_lens.unsqueeze(1) > arange).unsqueeze(2).expand(N, R, 3)
+    chunked = refs.new_empty((N, R, 3)).masked_scatter(mask, refs)
+    return chunked, chunked_lens
+
+
+class ChunkTokenSequencesBySlices(torch.nn.Module):
+    """Chunk token sequences with segments in slices
+    
+    Parameters
+    ----------
+    partial
+        If :obj:`True`, a segment of `refs` whose interval partially overlaps with the
+        slice will be included in `chunked`. Otherwise, segments in `ref` must fully
+        overlap with slices (i.e. be contained within).
+    
+    Call Parameters
+    ---------------
+    refs : torch.Tensor
+        A long tensor of shape ``(N, R, 3)`` containing triples ``tok, start, end``,
+        where `tok` is the token id, `start` is the start frame (inclusive) of the
+        segment, and `end` is its end frame (exclusive). A negative `start` or `end` is
+        treated as a missing boundary and will automatically exclude the triple from the
+        chunk. `ref` may also be a 2-dimensional long tensor ``(N, R)`` of tokens,
+        excluding segment boundaried. However, the return values will always be empty.
+    slices : torch.Tensor
+        A long tensor of shape ``(N, 2)`` containing pairs ``start, end``, where `start`
+        and `end` are the start (inclusive) and end (exclusive) indices, respectively.
+        Negative indices are effectively clamped to 0.
+    ref_lens : torch.Tensor, optional
+        An optional long tensor of shape ``(N,)`` specifying the token sequence lengths.
+        Only the values in the range ``refs[n, :ref_lens[n]]`` are considered part of
+        the sequence of batch element ``n``. If unspecified, all token sequences of
+        `refs` are assumed to be of length ``R``.
+    
+    Returns
+    -------
+    chunked : torch.Tensor
+        A long tensor of shape ``(N, R', 3)`` of the chunked token sequences.
+    chunked_lens : torch.Tensor
+        A long tensor of shape ``(N,)`` with the same interpretation as `ref_lens`, but
+        for `chunked` instead.
+    
+    Warnings
+    --------
+    Negative indices in slices in Python are usually interpreted as an offset left from
+    the end of the sequence. In `slices`, however, negative indices indicate an offset
+    left from the start of the sequence. In `refs`, negative indices indicate a missing
+    boundary and are thrown out. Since a segment in `refs` cannot have a negative index,
+    negative indices in `slices` are ignored. This strange behaviour is to ensure
+    compatibility with the slices extracted from :class:`SliceSpectData`.
+
+    See Also
+    --------
+    SliceSpectData
+        Can be used to determine appropriate `slices`. In this case, ``refs =
+        refs[sources]`` and ``ref_lens = ref_lens[sources]`` should be passed to this
+        module (using the return value `sources` from :class:`SliceSpectData`).
+    ChunkBySlices
+        A similar purpose, but for input with an explicit dimension for slicing, such as
+        `feats` or `alis` from :class:`SpectDataSet`.
+    """
+
+    __constants__ = ["partial"]
+
+    partial: bool
+
+    def __init__(self, partial: bool = False) -> None:
+        super().__init__()
+        self.partial = partial
+
+    def extra_repr(self) -> str:
+        return "partial" if self.partial else ""
+
+    def forward(
+        self,
+        ref: torch.Tensor,
+        slices: torch.Tensor,
+        ref_lens: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return chunk_token_sequences_by_slices(ref, slices, ref_lens, self.partial)
 
     __call__ = proxy(forward)

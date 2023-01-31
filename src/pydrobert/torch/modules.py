@@ -28,6 +28,7 @@ module are initialized with. The general usage pattern is:
 __all__ = [
     "BeamSearch",
     "ChunkBySlices",
+    "ChunkTokenSequencesBySlices",
     "ConcatSoftAttention",
     "CTCGreedySearch",
     "CTCPrefixSearch",
@@ -79,7 +80,12 @@ from ._decoding import (
     RandomWalk,
     SequenceLogProbabilities,
 )
-from ._feats import FeatureDeltas, MeanVarianceNormalization, SliceSpectData
+from ._feats import (
+    ChunkTokenSequencesBySlices,
+    FeatureDeltas,
+    MeanVarianceNormalization,
+    SliceSpectData,
+)
 from ._img import (
     DenseImageWarp,
     PolyharmonicSpline,

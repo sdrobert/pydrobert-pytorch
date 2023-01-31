@@ -120,11 +120,11 @@ def test_chunk_by_slice(device, mode, another_dim, jit_type):
             chunk_by_slices,
             (
                 torch.ones(1, 1),
-                torch.full((1,), 2, dtype=torch.long),
                 torch.zeros(1, 2, dtype=torch.long),
+                torch.full((1,), 2, dtype=torch.long),
             ),
         )
-    act_chunks, act_chunk_lens = chunk_by_slices(x, lens, slices)
+    act_chunks, act_chunk_lens = chunk_by_slices(x, slices, lens)
     assert (exp_chunk_lens == act_chunk_lens).all()
     for n, (exp_chunks_n, act_chunks_n, chunk_lens_n) in enumerate(
         zip(exp_chunks, act_chunks, exp_chunk_lens)

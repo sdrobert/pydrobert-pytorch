@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Tuple, overload
+from typing import Optional, Tuple, overload
 from typing_extensions import Literal
 
 import torch
@@ -375,8 +375,8 @@ class PadMaskedSequence(torch.nn.Module):
 @overload
 def chunk_by_slices(
     x: torch.Tensor,
-    lens: torch.Tensor,
     slices: torch.Tensor,
+    lens: Optional[torch.Tensor] = None,
     mode: Literal["constant", "reflect", "replicate"] = "constant",
     value: float = config.DEFT_PAD_VALUE,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -387,18 +387,21 @@ def chunk_by_slices(
 @functional_wrapper("ChunkBySlices")
 def chunk_by_slices(
     x: torch.Tensor,
-    lens: torch.Tensor,
     slices: torch.Tensor,
+    lens: Optional[torch.Tensor] = None,
     mode: str = "constant",
     value: float = config.DEFT_PAD_VALUE,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    T = x.size(1)
-    device = x.device
-    if lens is None:
-        lens = torch.full(1, T, dtype=torch.long, device=device).expand(N)
-    N = x.size(0)
+    if x.ndim < 2:
+        raise RuntimeError(f"Expected x to be at least 2-dimensional; got {x.ndim}")
+    N, T = x.size(0), x.size(1)
     rest = x.shape[2:]
     x = x.view(N, T, -1)
+    device = x.device
+    if lens is None:
+        lens = torch.full((1,), T, dtype=torch.long, device=device).expand(N)
+    elif lens.shape != (N,):
+        raise RuntimeError(f"Expected lens to be of shape ({N,}); got {lens.shape}")
     F = x.size(2)
     start, end = slices[..., 0].contiguous(), slices[..., 1].contiguous()
     chunk_lens = (end - start).clamp_min_(0)
@@ -473,15 +476,16 @@ class ChunkBySlices(torch.nn.Module):
     x : torch.Tensor
         A tensor of shape ``(N, T, *)`` where ``N`` is the batch index and ``T`` is
         the sequence index.
-    lens : torch.Tensor
-        A long tensor of shape ``(N,)`` specifying the sequence lengths. Only the values
-        in the range ``x[n, :lens[n]]`` are considered part of the sequence of batch
-        element ``n``.
     slices : torch.Tensor
         A long tensor of shape ``(N, 2)`` containing pairs ``start, end``, where
         `start` and `end` are the start (inclusive) and end (exclusive) indices,
         respectively. Any slices exceeding segment boundaries will be padded according
         to the `mode` specified.
+    lens : torch.Tensor, optional
+        An optional long tensor of shape ``(N,)`` specifying the sequence lengths. Only
+        the values in the range ``x[n, :lens[n]]`` are considered part of the sequence
+        of batch element ``n``. If unspecified, all sequences of `x` are assumed to be
+        of length ``T``.
     
     Returns
     -------
@@ -504,7 +508,12 @@ class ChunkBySlices(torch.nn.Module):
     PadVariable
         For more details on how padding works.
     SliceSpectData
-        Can be used to determine slices for :class:`SpectDataSet` features.
+        Can be used to determine `slices` for :class:`SpectDataSet` features. In
+        this case, ``x = x[sources]`` and ``lens = lens[sources]`` should be passed
+        to this module (using the return value `sources` from :class:`SliceSpectData`).
+    ChunkTokenSequenceBySlices
+        A similar purpose, but specifically for token sequences from a
+        :class:`SpectDataSet`.
     """
 
     __constants__ = ["mode", "value"]
@@ -532,9 +541,12 @@ class ChunkBySlices(torch.nn.Module):
         return s
 
     def forward(
-        self, x: torch.Tensor, lens: torch.Tensor, slices: torch.Tensor,
+        self,
+        x: torch.Tensor,
+        slices: torch.Tensor,
+        lens: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return chunk_by_slices(x, lens, slices, self.mode, self.value)
+        return chunk_by_slices(x, slices, lens, self.mode, self.value)
 
     __call__ = proxy(forward)
 

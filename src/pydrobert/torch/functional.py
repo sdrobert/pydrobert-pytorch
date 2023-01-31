@@ -28,7 +28,12 @@ from ._decoding import (
     random_walk_advance,
     sequence_log_probs,
 )
-from ._feats import feat_deltas, mean_var_norm, slice_spect_data
+from ._feats import (
+    chunk_token_sequences_by_slices,
+    feat_deltas,
+    mean_var_norm,
+    slice_spect_data,
+)
 from ._img import (
     dense_image_warp,
     polyharmonic_spline,
@@ -56,6 +61,7 @@ __all__ = [
     "beam_search_advance",
     "binomial_coefficient",
     "chunk_by_slices",
+    "chunk_token_sequences_by_slices",
     "ctc_greedy_search",
     "ctc_prefix_search_advance",
     "dense_image_warp",
