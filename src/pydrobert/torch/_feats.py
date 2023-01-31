@@ -573,7 +573,6 @@ class SliceSpectData(torch.nn.Module):
     to the `policy` specified (see the notes below for more details). The return values
     can then be used to slice the data. 
 
-
     Parameters
     ----------
     policy
@@ -625,6 +624,12 @@ class SliceSpectData(torch.nn.Module):
     sources : torch.Tensor
         A long tensor of shape ``(M,)`` where ``sources[m]`` is the batch index of the
         ``m``-th slice.
+    
+    See Also
+    --------
+    ChunkBySlices
+        Can be used to chunk input using the returned `slices` (after reordering that
+        input with `sources`)
     
     Notes
     -----
@@ -762,4 +767,3 @@ class SliceSpectData(torch.nn.Module):
         )
 
     __call__ = proxy(forward)
-

@@ -39,7 +39,7 @@ from ._img import (
     spec_augment,
     warp_1d_grid,
 )
-from ._pad import pad_masked_sequence, pad_variable
+from ._pad import chunk_by_slices, pad_masked_sequence, pad_variable
 from ._rl import time_distributed_return
 from ._string import (
     edit_distance,
@@ -55,6 +55,7 @@ from ._string import (
 __all__ = [
     "beam_search_advance",
     "binomial_coefficient",
+    "chunk_by_slices",
     "ctc_greedy_search",
     "ctc_prefix_search_advance",
     "dense_image_warp",

@@ -27,6 +27,7 @@ module are initialized with. The general usage pattern is:
 
 __all__ = [
     "BeamSearch",
+    "ChunkBySlices",
     "ConcatSoftAttention",
     "CTCGreedySearch",
     "CTCPrefixSearch",
@@ -97,7 +98,7 @@ from ._mc import (
     LogisticBernoulliRebarControlVariate,
     GumbelOneHotCategoricalRebarControlVariate,
 )
-from ._pad import PadVariable, PadMaskedSequence
+from ._pad import ChunkBySlices, PadVariable, PadMaskedSequence
 from ._rl import TimeDistributedReturn
 from ._string import (
     EditDistance,

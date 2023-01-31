@@ -34,80 +34,64 @@ def pad_variable(
 
 
 @script
-@functional_wrapper("PadVariable")
-def pad_variable(
+def _get_padding_buffers(
     x: torch.Tensor,
     lens: torch.Tensor,
-    pad: torch.Tensor,
-    mode: str = "constant",
-    value: float = config.DEFT_PAD_VALUE,
-) -> torch.Tensor:
-    old_shape = x.shape
-    ndim = len(old_shape)
-    if ndim < 2:
-        raise ValueError("Expected x to be at least two dimensional")
-    N, T = old_shape[:2]
-    if lens.shape != (N,):
-        raise ValueError(
-            f"For x of shape {old_shape}, lens should have shape ({N},) but got"
-            f"{lens.shape}"
-        )
-    if pad.shape != (2, N):
-        raise ValueError(
-            f"For x of shape {old_shape}, pad should have shape (2, {N}), but got "
-            f"{pad.shape}"
-        )
-    x = x.reshape(N, T, -1)
-    F = x.size(2)
-    new_lens = lens + pad.sum(0)
-    Tp = int(new_lens.max().clamp_(min=T).item())
-    arange_ = torch.arange(Tp, device=x.device)
-    left_mask = (pad[0].unsqueeze(1) > arange_).unsqueeze(2).expand(N, Tp, F)
+    left_pad: torch.Tensor,
+    right_pad: torch.Tensor,
+    mode: str,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    assert x.ndim == 3
+    N, T, F = x.shape
+    arange = torch.arange(T, device=x.device)
     if mode == "constant":
-        buff = torch.tensor(value, device=x.device).to(x.dtype).view(1)
-        left_pad = buff.expand(pad[0].sum() * F)
-        right_pad = buff.expand(pad[1].sum() * F)
+        # don't actually do anything. It'll be faster if we just initialize
+        # with the fill value
+        left_buf = right_buf = x
+        # buff = torch.tensor(value, device=device).to(dtype).view(1)
+        # left_buf = buff.expand(left_pad.sum() * F)
+        # right_buf = buff.expand(right_pad.sum() * F)
     elif mode == "reflect":
-        if (pad >= lens.unsqueeze(0)).any():
+        if (left_pad >= lens).any() or (right_pad >= lens).any():
             raise NotImplementedError(
                 "For reflect padding, all padding lengths must be less than the "
                 "sequence length"
             )
-        max_, _ = pad.max(1)
-        left_max, right_max = max_[0], max_[1]
+        left_mask = (left_pad.unsqueeze(1) > arange).unsqueeze(2).expand_as(x)
+        left_max, right_max = left_pad.max(), right_pad.max()
         left_idxs = (
-            (pad[0].unsqueeze(1) - arange_[:left_max])
+            (left_pad.unsqueeze(1) - arange[:left_max])
             .clamp_(min=0)
             .unsqueeze(2)
             .expand(N, left_max, F)
         )
-        left_pad = x.gather(1, left_idxs).masked_select(left_mask[:, :left_max])
+        left_buf = x.gather(1, left_idxs).masked_select(left_mask[:, :left_max])
         right_idxs = (
-            (lens.unsqueeze(1) - arange_[:right_max] - 2)
+            (lens.unsqueeze(1) - arange[:right_max] - 2)
             .clamp_(min=0)
             .unsqueeze(2)
             .expand(N, right_max, F)
         )
-        right_mask_ = (
-            (pad[1].unsqueeze(1) > arange_[:right_max])
+        right_mask = (
+            (right_pad.unsqueeze(1) > arange[:right_max])
             .unsqueeze(2)
             .expand(N, right_max, F)
         )
-        right_pad = x.gather(1, right_idxs).masked_select(right_mask_)
+        right_buf = x.gather(1, right_idxs).masked_select(right_mask)
     elif mode == "replicate":
         if (lens < 1).any():
             raise RuntimeError(f"For replicate padding, all lens must be > 0")
-        max_, _ = pad.max(1)
-        left_max, right_max = max_[0], max_[1]
-        left_pad = (
+        left_mask = (left_pad.unsqueeze(1) > arange).unsqueeze(2).expand_as(x)
+        left_max, right_max = left_pad.max(), right_pad.max()
+        left_buf = (
             x[:, :1].expand(N, left_max, F).masked_select(left_mask[:, :left_max])
         )
         right_mask_ = (
-            (pad[1].unsqueeze(1) > arange_[:right_max])
+            (right_pad.unsqueeze(1) > arange[:right_max])
             .unsqueeze(2)
             .expand(N, right_max, F)
         )
-        right_pad = (
+        right_buf = (
             x.gather(1, (lens - 1).view(N, 1, 1).expand(N, right_max, F))
             .expand(N, right_max, F)
             .masked_select(right_mask_[:, :right_max])
@@ -116,17 +100,51 @@ def pad_variable(
         raise ValueError(
             f"mode must be one of 'constant', 'reflect', 'replicate', got '{mode}'"
         )
-    mid_mask = ((pad[0] + lens).unsqueeze(1) > arange_).unsqueeze(2).expand(N, Tp, F)
-    len_mask = (lens.unsqueeze(1) > arange_[:T]).unsqueeze(2).expand(N, T, F)
-    padded = torch.empty((N, Tp, F), device=x.device, dtype=x.dtype)
-    padded = padded.masked_scatter(left_mask, left_pad)
-    x = x.masked_select(len_mask)
+    return left_buf, right_buf
+
+
+@script
+@functional_wrapper("PadVariable")
+def pad_variable(
+    x: torch.Tensor,
+    lens: torch.Tensor,
+    pad: torch.Tensor,
+    mode: str = "constant",
+    value: float = config.DEFT_PAD_VALUE,
+) -> torch.Tensor:
+    if x.ndim < 2:
+        raise ValueError("Expected x to be at least two dimensional")
+    shape = x.shape
+    N, T = shape[:2]
+    if lens.shape != (N,):
+        raise ValueError(
+            f"For x of shape {shape}, lens should have shape ({N},) but got"
+            f"{lens.shape}"
+        )
+    if pad.shape != (2, N):
+        raise ValueError(
+            f"For x of shape {shape}, pad should have shape (2, {N}), but got "
+            f"{pad.shape}"
+        )
+    x = x.reshape(N, T, -1)
+    F = x.size(2)
+    left_buf, right_buf = _get_padding_buffers(x, lens, pad[0], pad[1], mode)
+    new_lens = lens + pad.sum(0)
+    Tp = int(new_lens.max().item())
+    arange = torch.arange(max(Tp, T), device=x.device)
+    left_mask = (pad[0].unsqueeze(1) > arange[:Tp]).unsqueeze(2).expand(N, Tp, F)
+    mid_mask = (
+        ((pad[0] + lens).unsqueeze(1) > arange[:Tp]).unsqueeze(2).expand(N, Tp, F)
+    )
+    right_mask = (new_lens.unsqueeze(1) > arange[:Tp]).unsqueeze(2).expand(N, Tp, F)
+    len_mask = (lens.unsqueeze(1) > arange[:T]).unsqueeze(2).expand(N, T, F)
+    padded = x.new_full((N, Tp, F), value)
+    x = x[len_mask]
     padded = padded.masked_scatter(mid_mask & ~left_mask, x)
-    right_mask = (new_lens.unsqueeze(1) > arange_).unsqueeze(2).expand(N, Tp, F)
-    padded = padded.masked_scatter(right_mask & ~mid_mask, right_pad)
-    old_shape = list(old_shape)
-    old_shape[1] = Tp
-    return padded.view(old_shape)
+    if mode != "constant":
+        padded = padded.masked_scatter(left_mask, left_buf)
+        padded = padded.masked_scatter(right_mask & ~mid_mask, right_buf)
+    return padded.view((N, Tp) + shape[2:])
 
 
 class PadVariable(torch.nn.Module):
@@ -352,3 +370,171 @@ class PadMaskedSequence(torch.nn.Module):
         return pad_masked_sequence(x, mask, self.batch_first, self.padding_value)
 
     __call__ = proxy(forward)
+
+
+@overload
+def chunk_by_slices(
+    x: torch.Tensor,
+    lens: torch.Tensor,
+    slices: torch.Tensor,
+    mode: Literal["constant", "reflect", "replicate"] = "constant",
+    value: float = config.DEFT_PAD_VALUE,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    ...
+
+
+@script
+@functional_wrapper("ChunkBySlices")
+def chunk_by_slices(
+    x: torch.Tensor,
+    lens: torch.Tensor,
+    slices: torch.Tensor,
+    mode: str = "constant",
+    value: float = config.DEFT_PAD_VALUE,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    T = x.size(1)
+    device = x.device
+    if lens is None:
+        lens = torch.full(1, T, dtype=torch.long, device=device).expand(N)
+    N = x.size(0)
+    rest = x.shape[2:]
+    x = x.view(N, T, -1)
+    F = x.size(2)
+    start, end = slices[..., 0].contiguous(), slices[..., 1].contiguous()
+    chunk_lens = (end - start).clamp_min_(0)
+    empty = chunk_lens == 0
+    left_pad = (-start).clamp_min_(0).masked_fill_(empty, 0)
+    right_pad = (end - lens).clamp_min_(0).masked_fill_(empty, 0)
+    start_ = start.clamp_min(0)
+    end_ = torch.min(end, lens)
+    slice_lens = (end_ - start_).clamp_min(0)
+    left_buf, right_buf = _get_padding_buffers(x, lens, left_pad, right_pad, mode)
+    Tp = int(
+        torch.max(torch.max(left_pad.max(), chunk_lens.max()), right_pad.max()).item()
+    )
+    arange = torch.arange(max(T, Tp), device=device)
+    slice_mask = (
+        ((start.unsqueeze(1) <= arange[:T]) & (end_.unsqueeze(1) > arange[:T]))
+        .unsqueeze(-1)
+        .expand(N, T, F)
+    )
+    x = x[slice_mask]
+    left_mask = (left_pad.unsqueeze(1) > arange[:Tp]).unsqueeze(2).expand(N, Tp, F)
+    mid_mask = (
+        ((left_pad + slice_lens).unsqueeze(1) > arange[:Tp])
+        .unsqueeze(2)
+        .expand(N, Tp, F)
+    )
+    chunks = x.new_full((N, Tp, F), value)
+    if mode != "constant":
+        chunks = chunks.masked_scatter(left_mask, left_buf)
+        right_mask = (
+            ((left_pad + slice_lens + right_pad).unsqueeze(1) > arange[:Tp])
+            .unsqueeze(2)
+            .expand(N, Tp, F)
+        )
+        right_mask = right_mask & ~mid_mask
+        chunks = chunks.masked_scatter(right_mask, right_buf)
+        if mode == "reflect":
+            # we have to do some extra work for a special case. When the start and
+            # end indices are completely contained in the right padding, the slice
+            # may start at an offset within the padding. If so, we want to move the
+            # start of the slice within the padding to the start of the sequence
+            offset = (start_ - lens).clamp_min_(0)
+            keep = (offset > 0).view(N, 1, 1)
+            right_pad -= offset
+            right_mask &= (
+                ((left_pad + slice_lens + offset).unsqueeze(1) <= arange[:Tp])
+                .unsqueeze(2)
+                .expand(N, Tp, F)
+            ) & keep
+            right_buf = chunks[right_mask]
+            right_mask = (
+                (right_pad.unsqueeze(1) > arange[:Tp]).unsqueeze(2).expand(N, Tp, F)
+            ) & keep
+            chunks = chunks.masked_scatter(right_mask & ~mid_mask, right_buf)
+    chunks = chunks.masked_scatter(mid_mask & ~left_mask, x)
+    return chunks.view((N, Tp) + rest), chunk_lens
+
+
+class ChunkBySlices(torch.nn.Module):
+    """Chunk input using slices, padding where necessary
+    
+    Parameters
+    ----------
+    mode
+        How to pad slices that go beyond the sequence lengths. See :class:`PadVariable`
+        for more information on the modes.
+    value
+        The value to pad with when ``mode == 'constant'``.
+    
+    Call Parameters
+    ---------------
+    x : torch.Tensor
+        A tensor of shape ``(N, T, *)`` where ``N`` is the batch index and ``T`` is
+        the sequence index.
+    lens : torch.Tensor
+        A long tensor of shape ``(N,)`` specifying the sequence lengths. Only the values
+        in the range ``x[n, :lens[n]]`` are considered part of the sequence of batch
+        element ``n``.
+    slices : torch.Tensor
+        A long tensor of shape ``(N, 2)`` containing pairs ``start, end``, where
+        `start` and `end` are the start (inclusive) and end (exclusive) indices,
+        respectively. Any slices exceeding segment boundaries will be padded according
+        to the `mode` specified.
+    
+    Returns
+    -------
+    chunked : torch.Tensor
+        A tensor of shape ``(N, T', *)`` of chunks of `x`. Besides, ``T'``, `chunked`
+        matches the shape of `x`.`
+    chunked_lens : torch.Tensor
+        A long tensor of shape ``(N,)`` with the same interpretation as `lens`, but
+        for `chunked` instead.
+    
+    Warnings
+    --------
+    Negative indices in slices in Python are usually interpreted as an offset left from
+    the end of the sequence. Here, however, negative indices indicate an offset left
+    from the start of the sequence. Those values will be interpreted as padding and be
+    added to the chunk.
+
+    See Also
+    --------
+    PadVariable
+        For more details on how padding works.
+    SliceSpectData
+        Can be used to determine slices for :class:`SpectDataSet` features.
+    """
+
+    __constants__ = ["mode", "value"]
+    mode: str
+    value: float
+
+    def __init__(
+        self,
+        mode: Literal["constant", "reflect", "replicate"] = "constant",
+        value: float = config.DEFT_PAD_VALUE,
+    ) -> None:
+        super().__init__()
+        if mode not in {"constant", "reflect", "replicate"}:
+            raise ValueError(
+                "mode should be one of 'constant', 'reflect', or 'replicate', got "
+                f"'{mode}'"
+            )
+        self.mode = mode
+        self.value = value
+
+    def extra_repr(self) -> str:
+        s = f"mode={self.mode}"
+        if self.mode == "constant":
+            s += f", value={self.value}"
+        return s
+
+    def forward(
+        self, x: torch.Tensor, lens: torch.Tensor, slices: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return chunk_by_slices(x, lens, slices, self.mode, self.value)
+
+    __call__ = proxy(forward)
+
