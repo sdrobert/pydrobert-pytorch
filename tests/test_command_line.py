@@ -28,30 +28,48 @@ from pydrobert.torch.functional import (
 
 
 @pytest.mark.cpu
-@pytest.mark.parametrize("include_frame_shift", [True, False])
+@pytest.mark.parametrize(
+    "include_frame_shift", [True, False], ids=["token-segments", "tokens-only"]
+)
 def test_get_torch_spect_data_dir_info(
     temp_dir, populate_torch_dir, include_frame_shift
 ):
-    _, alis, _, feat_sizes, _, _ = populate_torch_dir(
+    _, alis, refs, feat_sizes, ref_sizes, _ = populate_torch_dir(
         temp_dir,
         19,
         num_filts=5,
         max_ali_class=10,
+        max_ref_class=100,
         include_frame_shift=include_frame_shift,
     )
-    # add one with class idx 10 to ensure all classes are accounted for
+    # add add one utterance with maximum class index in ali/ and ref/ to ensure
+    # everyone's accounted for
     torch.save(torch.rand(1, 5), os.path.join(temp_dir, "feat", "utt19.pt"))
-    torch.save(torch.tensor([10]), os.path.join(temp_dir, "ali", "utt19.pt"))
-    if include_frame_shift:
-        torch.save(
-            torch.tensor([[100, 0, 1]]), os.path.join(temp_dir, "ref", "utt19.pt")
-        )
-    else:
-        torch.save(torch.tensor([100]), os.path.join(temp_dir, "ref", "utt19.pt"))
+    alis.append(torch.tensor([10]))
+    torch.save(alis[-1], os.path.join(temp_dir, "ali", "utt19.pt"))
+    refs.append(torch.tensor([[100, 0, 1] if include_frame_shift else 100]))
+    torch.save(refs[-1], os.path.join(temp_dir, "ref", "utt19.pt"))
     feat_sizes += (1,)
-    alis = torch.cat(alis + [torch.tensor([10])])
-    alis = [class_idx.item() for class_idx in alis]
-    table_path = os.path.join(temp_dir, "info")
+    ref_sizes += (1,)
+
+    counts, segs, rcounts, rsegs = dict(), dict(), dict(), dict()
+    for ali, ref in zip(alis, refs):
+        last_class = None
+        for class_idx in ali.tolist():
+            counts[class_idx] = counts.get(class_idx, 0) + 1
+            if last_class != class_idx:
+                segs[class_idx] = segs.get(class_idx, 0) + 1
+                last_class = class_idx
+        if ref.ndim == 1:
+            for tok in ref.tolist():
+                rsegs[tok] = rsegs.get(tok, 0) + 1
+        else:
+            for tok, start, end in ref.tolist():
+                rsegs[tok] = rsegs.get(tok, 0) + 1
+                if end >= start:
+                    rcounts[tok] = rcounts.get(tok, 0) + end - start
+
+    table_path = os.path.join(temp_dir, "info.ark")
     assert not command_line.get_torch_spect_data_dir_info(
         [temp_dir, table_path, "--strict"]
     )
@@ -59,19 +77,27 @@ def test_get_torch_spect_data_dir_info(
     def check():
         table = dict()
         with open(table_path) as table_file:
+            last_line = ""
             for line in table_file:
-                line = line.split()
+                assert last_line < line
+                last_line, line = line, line.split()
+                assert len(line) == 2
                 table[line[0]] = int(line[1])
         assert table["num_utterances"] == 20
         assert table["total_frames"] == sum(feat_sizes)
+        assert table["total_tokens"] == sum(ref_sizes)
         assert table["num_filts"] == 5
         assert table["max_ali_class"] == 10
         assert table["max_ref_class"] == 100
         for class_idx in range(11):
-            key = "count_{:02d}".format(class_idx)
-            assert table[key] == alis.count(class_idx)
+            assert table[f"count_{class_idx:02d}"] == counts.get(class_idx, 0)
+            assert table[f"segs_{class_idx:02d}"] == segs.get(class_idx, 0)
+        for class_idx in range(100):
+            assert table[f"rcount_{class_idx:03d}"] == rcounts.get(class_idx, -1)
+            assert table[f"rsegs_{class_idx:03d}"] == rsegs.get(class_idx, 0)
 
     check()
+
     if include_frame_shift:
         # ensure we're only looking at the ids in the recorded refs
         torch.save(

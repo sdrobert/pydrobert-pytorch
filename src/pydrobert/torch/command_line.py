@@ -131,6 +131,9 @@ def _add_common_arg(parser: argparse.ArgumentParser, flag: str):
 def get_torch_spect_data_dir_info(args: Optional[Sequence[str]] = None):
     """Write info about the specified SpectDataSet data dir
 
+NOTE: additional keys (6, 8-10) have been added since pydrobert-pytorch v0.3.0. In
+addition, validation now allows for empty reference segments.
+
 A torch SpectDataSet data dir is of the form
 
     dir/
@@ -161,22 +164,40 @@ instead be of shape (R,) if no segment times are available in the corpus.
 This command writes the following space-delimited key-value pairs to an output file in
 sorted order:
 
-1. "max_ali_class", the maximum inclusive class id found over "ali/"
-    (if available, -1 if not)
-2. "max_ref_class", the maximum inclussive class id found over "ref/"
-    (if available, -1 if not)
-3. "num_utterances", the total number of listed utterances
-4. "num_filts", F
-5. "total_frames", the sum of N over the data dir
-6. "count_<i>", the number of instances of the class "<i>" that appear in "ali/"
-   (if available). If "count_<i>" is a valid key, then so are "count_<0 to i>".
-   "count_<i>" is left-padded with zeros to ensure that the keys remain in the same
-   order in the table as the class indices.  The maximum i will be equal to the value
-   of "max_ali_class"
+1.  "max_ali_class", the maximum inclusive class id found over "ali/"
+     (if available, -1 if not).
+2.  "max_ref_class", the maximum inclussive class id found over "ref/"
+     (if available, -1 if not).
+3.  "num_utterances", the total number of listed utterances.
+4.  "num_filts", F.
+5.  "total_frames", the sum of T over the data dir.
+6.  "total_tokens", the sum of R over the data dir (if available, -1 if not).
+7.  "count_<i>", the number of instances of the class "<i>" that appear in "ali/"
+    (if available).
+8.  "segs_<i>". The number of segments of the class "<i>" that appear in "ali/"
+    (if available). A segment of "<i>" is a maximal run of instances of "<i>" which
+    appear sequentially in an alignment. For example, the alignment "0 1 0 1 1 1" would
+    have "count_0 = 2" and "count_1 = 4", but "segs_0 = segs_1 = 2".
+9.  "rcount_<i>", the total number of frames reference tokens with type index "<i>"
+    occupy according to the segment boundaries listed in the sequences in "ref/" (if
+    available). If any token sequence containing index "<i>" does not provide segment
+    boundaries (or "<i>" never occurs), "rcount_<i>" is set to "-1".
+10. "rsegs_<i>", the total number of segments (i.e. tokens) with type index "<i>"
+    that appear in "ref/" (if available).
+
+If "max_ali_class" was found (>= 0), all key/value pairs for "count_0-<max_ali_class>"
+and "segs_0-<max_ali_class>" will be specified in the file, even if they aren't found
+in the directory. Indices "<i>" will be left-padded with zeros so that keys are sorted
+in increasing index. The same holds for "max_ref_class", "rcount_<i>", and "rsegs_<i>".
+
+In an invalid data directory, the stored key/value pairs are not guaranteed to be
+correct. Passing the "--strict" flag will validate the directory first. Passing "--fix"
+instead will validate the directory and fix any small issues. See the function
+"validate_spect_data_set" in the pydrobert.torch.data Python module for more
+information on the validation process.
 
 Note that the output can be parsed as a Kaldi (http://kaldi-asr.org/) text table of
-integers.
-    """
+integers."""
     parser = argparse.ArgumentParser(
         description=get_torch_spect_data_dir_info.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -216,7 +237,7 @@ integers.
         return ex.code
 
     if not os.path.isdir(options.dir):
-        print("'{}' is not a directory".format(options.dir), file=sys.stderr)
+        print(f"'{options.dir}' is not a directory", file=sys.stderr)
         return 1
     data_set = data.SpectDataSet(
         options.dir,
@@ -230,41 +251,66 @@ integers.
     )
     if options.strict or options.fix:
         data.validate_spect_data_set(data_set, options.fix)
+
     info_dict = {
         "num_utterances": len(data_set),
         "total_frames": 0,
         "max_ali_class": -1,
         "max_ref_class": -1,
     }
-    counts = dict()
+    counts, segs, rcounts, rsegs = dict(), dict(), dict(), dict()
     for feat, ali, ref in data_set:
         info_dict["num_filts"] = feat.size()[1]
         info_dict["total_frames"] += feat.size()[0]
         if ali is not None:
-            for class_idx in ali:
-                class_idx = class_idx.item()
+            class_idxs, counts_ = ali.unique_consecutive(return_counts=True)
+            for class_idx, count in zip(class_idxs.tolist(), counts_.tolist()):
                 if class_idx < 0:
                     raise ValueError("Got a negative ali class idx")
                 info_dict["max_ali_class"] = max(class_idx, info_dict["max_ali_class"])
-                counts[class_idx] = counts.get(class_idx, 0) + 1
+                counts[class_idx] = counts.get(class_idx, 0) + count
+                segs[class_idx] = segs.get(class_idx, 0) + 1
         if ref is not None:
-            ref = ref[..., 0]
-            if ref.min().item() < 0:
-                raise ValueError("Got a negative ref class idx")
-            info_dict["max_ref_class"] = max(
-                info_dict["max_ref_class"], ref.max().item()
-            )
-    if info_dict["max_ali_class"] == 0:
-        info_dict["count_0"] = counts[0]
-    elif info_dict["max_ali_class"] > 0:
-        count_fmt_str = "count_{{:0{}d}}".format(
-            int(math.log10(info_dict["max_ali_class"])) + 1
-        )
-        for class_idx in range(info_dict["max_ali_class"] + 1):
+            if ref.ndim == 1:
+                ref = ref.unsqueeze(1)
+                ref = torch.cat(
+                    [ref, torch.full((ref.size(0), 2), -1, dtype=torch.long)], 1
+                )
+            for tok, start, end in ref.tolist():
+                if tok < 0:
+                    raise ValueError(f"Got a negative reference token index '{tok}'")
+                info_dict["total_tokens"] = info_dict.get("total_tokens", 0) + 1
+                info_dict["max_ref_class"] = max(info_dict["max_ref_class"], tok)
+                rcount = rcounts.get(tok, 0)
+                if rcount >= 0 and end > start >= 0:
+                    rcounts[tok] = rcount + end - start
+                else:
+                    rcounts[tok] = -1
+                rsegs[tok] = rsegs.get(tok, 0) + 1
+
+    info_dict.setdefault("total_tokens", -1)
+
+    max_ali_class = info_dict["max_ali_class"]
+    if max_ali_class >= 0:
+        digits = int(math.log10(max(max_ali_class, 1))) + 1
+        count_fmt_str = f"count_{{:0{digits}d}}"
+        seg_fmt_str = f"segs_{{:0{digits}d}}"
+        for class_idx in range(max_ali_class + 1):
             info_dict[count_fmt_str.format(class_idx)] = counts.get(class_idx, 0)
+            info_dict[seg_fmt_str.format(class_idx)] = segs.get(class_idx, 0)
+
+    max_ref_class = info_dict["max_ref_class"]
+    if max_ref_class >= 0:
+        digits = int(math.log10(max(max_ref_class, 1))) + 1
+        count_fmt_str = f"rcount_{{:0{digits}d}}"
+        seg_fmt_str = f"rsegs_{{:0{digits}d}}"
+        for class_idx in range(max_ref_class + 1):
+            info_dict[count_fmt_str.format(class_idx)] = rcounts.get(class_idx, -1)
+            info_dict[seg_fmt_str.format(class_idx)] = rsegs.get(class_idx, 0)
+
     info_list = sorted(info_dict.items())
     for key, value in info_list:
-        options.out_file.write("{} {}\n".format(key, value))
+        options.out_file.write(f"{key} {value}\n")
     if options.out_file != sys.stdout:
         options.out_file.close()
     return 0

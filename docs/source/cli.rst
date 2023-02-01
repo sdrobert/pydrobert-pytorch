@@ -374,6 +374,9 @@ get-torch-spect-data-dir-info
   
   Write info about the specified SpectDataSet data dir
   
+  NOTE: additional keys (6, 8-10) have been added since pydrobert-pytorch v0.3.0. In
+  addition, validation now allows for empty reference segments.
+  
   A torch SpectDataSet data dir is of the form
   
       dir/
@@ -404,22 +407,40 @@ get-torch-spect-data-dir-info
   This command writes the following space-delimited key-value pairs to an output file in
   sorted order:
   
-  1. "max_ali_class", the maximum inclusive class id found over "ali/"
-      (if available, -1 if not)
-  2. "max_ref_class", the maximum inclussive class id found over "ref/"
-      (if available, -1 if not)
-  3. "num_utterances", the total number of listed utterances
-  4. "num_filts", F
-  5. "total_frames", the sum of N over the data dir
-  6. "count_<i>", the number of instances of the class "<i>" that appear in "ali/"
-     (if available). If "count_<i>" is a valid key, then so are "count_<0 to i>".
-     "count_<i>" is left-padded with zeros to ensure that the keys remain in the same
-     order in the table as the class indices.  The maximum i will be equal to the value
-     of "max_ali_class"
+  1.  "max_ali_class", the maximum inclusive class id found over "ali/"
+       (if available, -1 if not).
+  2.  "max_ref_class", the maximum inclussive class id found over "ref/"
+       (if available, -1 if not).
+  3.  "num_utterances", the total number of listed utterances.
+  4.  "num_filts", F.
+  5.  "total_frames", the sum of T over the data dir.
+  6.  "total_tokens", the sum of R over the data dir (if available, -1 if not).
+  7.  "count_<i>", the number of instances of the class "<i>" that appear in "ali/"
+      (if available).
+  8.  "segs_<i>". The number of segments of the class "<i>" that appear in "ali/"
+      (if available). A segment of "<i>" is a maximal run of instances of "<i>" which
+      appear sequentially in an alignment. For example, the alignment "0 1 0 1 1 1" would
+      have "count_0 = 2" and "count_1 = 4", but "segs_0 = segs_1 = 2".
+  9.  "rcount_<i>", the total number of frames reference tokens with type index "<i>"
+      occupy according to the segment boundaries listed in the sequences in "ref/" (if
+      available). If any token sequence containing index "<i>" does not provide segment
+      boundaries (or "<i>" never occurs), "rcount_<i>" is set to "-1".
+  10. "rsegs_<i>", the total number of segments (i.e. tokens) with type index "<i>"
+      that appear in "ref/" (if available).
+  
+  If "max_ali_class" was found (>= 0), all key/value pairs for "count_0-<max_ali_class>"
+  and "segs_0-<max_ali_class>" will be specified in the file, even if they aren't found
+  in the directory. Indices "<i>" will be left-padded with zeros so that keys are sorted
+  in increasing index. The same holds for "max_ref_class", "rcount_<i>", and "rsegs_<i>".
+  
+  In an invalid data directory, the stored key/value pairs are not guaranteed to be
+  correct. Passing the "--strict" flag will validate the directory first. Passing "--fix"
+  instead will validate the directory and fix any small issues. See the function
+  "validate_spect_data_set" in the pydrobert.torch.data Python module for more
+  information on the validation process.
   
   Note that the output can be parsed as a Kaldi (http://kaldi-asr.org/) text table of
   integers.
-      
   
   positional arguments:
     dir                   The torch data directory
