@@ -1,4 +1,4 @@
-# Copyright 2022 Sean Robertson
+# Copyright 2023 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,7 +28,12 @@ from ._decoding import (
     random_walk_advance,
     sequence_log_probs,
 )
-from ._feats import feat_deltas, mean_var_norm
+from ._feats import (
+    chunk_token_sequences_by_slices,
+    feat_deltas,
+    mean_var_norm,
+    slice_spect_data,
+)
 from ._img import (
     dense_image_warp,
     polyharmonic_spline,
@@ -39,7 +44,7 @@ from ._img import (
     spec_augment,
     warp_1d_grid,
 )
-from ._pad import pad_masked_sequence, pad_variable
+from ._pad import chunk_by_slices, pad_masked_sequence, pad_variable
 from ._rl import time_distributed_return
 from ._string import (
     edit_distance,
@@ -55,6 +60,8 @@ from ._string import (
 __all__ = [
     "beam_search_advance",
     "binomial_coefficient",
+    "chunk_by_slices",
+    "chunk_token_sequences_by_slices",
     "ctc_greedy_search",
     "ctc_prefix_search_advance",
     "dense_image_warp",
@@ -78,6 +85,7 @@ __all__ = [
     "random_walk_advance",
     "sequence_log_probs",
     "simple_random_sampling_without_replacement",
+    "slice_spect_data",
     "sparse_image_warp",
     "spec_augment_apply_parameters",
     "spec_augment_draw_parameters",

@@ -16,7 +16,7 @@ import os
 import argparse
 import abc
 
-from typing import Optional, TypeVar, Generic, Type
+from typing import Dict, Optional, TypeVar, Generic, Type
 from typing_extensions import Literal
 
 import torch
@@ -25,9 +25,8 @@ import pytorch_lightning as pl
 import pydrobert.param.abc as pabc
 import pydrobert.param.argparse as pargparse
 
-from ._datasets import SpectDataSet, SpectDataParams
+from ._datasets import SpectDataSet
 from ._dataloaders import (
-    DynamicLengthDataLoaderParams,
     SpectDataLoader,
     SpectDataLoaderParams,
     LangDataLoaderParams,
@@ -497,8 +496,7 @@ class LitSpectDataModule(
     params: LitSpectDataModuleParams
 
     _num_filts: Optional[int]
-    _max_ref_class: Optional[int]
-    _max_ali_class: Optional[int]
+    _info_dict: Optional[Dict[str, int]]
     _mvn_mean = Optional[torch.Tensor]
     _mvn_std = Optional[torch.Tensor]
 
@@ -516,7 +514,7 @@ class LitSpectDataModule(
     ) -> None:
         super().__init__(params, num_workers, pin_memory)
 
-        self._num_filts = self._max_ref_class = self._max_ali_class = None
+        self._info_dict = None
 
         self.save_hyperparameters()
 
@@ -555,37 +553,46 @@ class LitSpectDataModule(
         """
         return self.hparams.on_uneven_distributed
 
+    def get_info_dict_value(
+        self, key: str, default: Optional[int] = None
+    ) -> Optional[int]:
+        """Get a value from the info dict
+
+        The info dict is gathered in :func:`prepare_data` if ``params.info_path`` is not
+        :obj:`None`.
+        """
+        return None if self._info_dict is None else self._info_dict.get(key, default)
+
     @property
     def vocab_size(self) -> Optional[int]:
         """int : vocabulary size
         
-        Alias of ``max_ref_class + 1``. Determined in :func:`prepare_data` if
-        `params.info_path` is not :obj:`None`.
+        Alias of ``max_ref_class + 1``.
         """
-        return None if self._max_ref_class is None else self._max_ref_class + 1
+        return None if self.max_ref_class is None else self.max_ref_class + 1
 
     @property
     def feat_size(self) -> Optional[int]:
         """int : feature vector size
         
-        Alias of `num_filts`.  Determined in :func:`prepare_data` if `params.info_path`
-        is not :obj:`None`.
+        Alias of `num_filts`.
         """
-        return self._num_filts
+        return self.num_filts
 
+    @property
     def max_ref_class(self) -> Optional[int]:
-        """int : the maximum token id in the ref/ subdirectory (usually of training)
+        """The maximum token id in the ref/ subdirectory (usually of training)
         
-        Determined in :func:`prepare_data` if `params.info_path` is not :obj:`None`.
+        Corresponds to the 
         """
-        return self._max_ref_class
+        return self.get_info_dict_value("max_ref_class")
 
     def max_ali_class(self) -> Optional[int]:
         """int: the maximum token id in the ali/ subdirectory (usually of training)
         
         Determined in :func:`prepare_data` if `params.info_path` is not :obj:`None`.
         """
-        return self._max_ali_class
+        return self.get_info_dict_value("max_ali_class")
 
     @property
     def num_filts(self) -> Optional[int]:
@@ -593,13 +600,11 @@ class LitSpectDataModule(
         
         Determined in :func:`prepare_data` if `params.info_path` is not :obj:`None`.
         """
-        return self._num_filts
+        return None if self._info_dict is None else self._info_dict["num_filts"]
 
     def prepare_data(self):
-        if self.params.info_path is not None and all(
-            x is None
-            for x in (self._num_filts, self._max_ali_class, self._max_ref_class)
-        ):
+        if self.params.info_path is not None and self._info_dict is None:
+            self._info_dict = dict()
             with open(self.params.info_path) as f:
                 for line in f:
                     line = line.strip()
@@ -607,12 +612,8 @@ class LitSpectDataModule(
                         continue
                     key, value = line.split()
                     value = int(value)
-                    if key == "num_filts":
-                        self._num_filts = value
-                    elif key == "max_ali_class" and value != -1:
-                        self._max_ali_class = value
-                    elif key == "max_ref_class" and value != -1:
-                        self._max_ref_class = value
+                    if value != -1:
+                        self._info_dict[key] = value
 
     def construct_dataset(
         self,
@@ -691,10 +692,7 @@ class LitSpectDataModule(
     def from_argparse_args(cls, namespace: argparse.Namespace, **kwargs):
         data_params: LitSpectDataModuleParams = namespace.data_params
 
-        for overload in (
-            "mvn_path",
-            "info_file",
-        ):
+        for overload in ("mvn_path", "info_file"):
             val = getattr(namespace, overload, None)
             if val is not None:
                 setattr(data_params, overload, val)

@@ -15,11 +15,25 @@
 import re
 import warnings
 
-from typing import Tuple, Optional, List, TextIO, Union, Iterable, Sequence, Mapping
+from typing import (
+    Dict,
+    Tuple,
+    Optional,
+    List,
+    TextIO,
+    Union,
+    Iterable,
+    Sequence,
+    Mapping,
+)
 from collections import OrderedDict
 
 import torch
 import numpy as np
+
+import pydrobert.torch.config as config
+
+from ._textgrid import TextGrid, TEXTTIER
 
 
 def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) -> list:
@@ -233,7 +247,7 @@ def read_trn_iter(
     trn: Union[TextIO, str],
     warn: bool = True,
     processes: int = 0,
-    chunk_size: int = 1000,
+    chunk_size: int = config.DEFT_CHUNK_SIZE,
 ) -> Tuple[str, List[str]]:
     """Read a NIST sclite transcript file, yielding individual transcripts
 
@@ -289,7 +303,7 @@ def read_trn(
     trn: Union[TextIO, str],
     warn: bool = True,
     processes: int = 0,
-    chunk_size: int = 1000,
+    chunk_size: int = config.DEFT_CHUNK_SIZE,
 ) -> List[Tuple[str, List[str]]]:
     """Read a NIST sclite transcript file into a list of transcripts
 
@@ -405,10 +419,10 @@ def read_ctm(
 
     Parameters
     ----------
-    ctm : file or str
+    ctm
         The time-marked conversation file pointer. Will open if `ctm` is a
         path
-    wc2utt : dict, optional
+    wc2utt
         "ctm" files identify utterances by waveform file name and channel. If
         specified, `wc2utt` consists of keys ``wfn, chan`` (e.g.
         ``'940328', 'A'``) to unique utterance IDs. If `wc2utt` is
@@ -471,9 +485,9 @@ def read_ctm(
 def write_ctm(
     transcripts: Sequence[Tuple[str, Sequence[Tuple[str, float, float]]]],
     ctm: Union[TextIO, str],
-    utt2wc: Union[Mapping[str, Tuple[str, str]], str] = "A",
+    utt2wc: Union[Mapping[str, Tuple[str, str]], str] = config.DEFT_CTM_CHANNEL,
 ) -> None:
-    """From a list of transcripts, write to a NIST "ctm" file
+    f"""From a list of transcripts, write to a NIST "ctm" file
 
     This is the inverse operation of :func:`read_ctm`. For each element of
     ``transcript`` within the ``utt_id, transcript`` pairs of elements in `transcripts`,
@@ -486,9 +500,9 @@ def write_ctm(
     utt2wc
         "ctm" files identify utterances by waveform file name and channel. If specified
         as a dict, `utt2wc` consists of utterance IDs as keys, and wavefile name and
-        channels as values ``wfn, chan`` (e.g. ``'940328', 'A'``). If `utt2wc` is a
-        string, each utterance IDs will be mapped to ``wfn`` and `utt2wc` as the
-        channel.
+        channels as values ``wfn, chan`` (e.g. ``'940328',
+        '{config.DEFT_CTM_CHANNEL}'``). If `utt2wc` is a string, each utterance IDs will
+        be mapped to ``wfn`` and `utt2wc` as the channel.
     """
     if isinstance(ctm, str):
         with open(ctm, "w") as ctm:
@@ -518,8 +532,176 @@ def write_ctm(
         ctm.write("{} {} {} {} {}\n".format(*segment))
 
 
+def read_textgrid(
+    tg: Union[TextIO, str],
+    tier_id: Union[str, int] = config.DEFT_TEXTGRID_TIER_ID,
+    fill_token: Optional[str] = None,
+) -> Tuple[List[Tuple[str, float, float]], float, float]:
+    """Read TextGrid file as a transcription
+    
+    TextGrid is the transcription format of `Praat
+    <https://www.fon.hum.uva.nl/praat/>`__.
+
+    Parameters
+    ----------
+    tg 
+        The TextGrid file. Will open if `tg` is a path.
+    tier_id 
+        Either the name of the tier (first occurence) or the index of the tier to
+        extract.
+    fill_token
+        If :obj:`True`, any intervals missing from the tier will be filled with an
+        interval of this token before being returned.
+
+    Returns
+    -------
+    transcript : list
+        A list of triples of ``token, start, end``, token` being the token (a string),
+        `start` being a float of the start time of the token (in seconds), and `end`
+        being the end time of the token. If the tier is a PointTier, `the start and
+        end times will be the same.
+    start_time : float
+        The start time of the tier (in seconds)
+    end_time : float
+        The end time of the tier (in seconds)
+
+    Notes
+    -----
+    This function does not check for whitespace in or around token labels. This may
+    cause issues if writing as another file type, like :func:`write_trn`.
+
+    Start and end times (including any filled intervals) are determined from the tier's
+    values, not necessarily those of the top-level container. This is most likely a
+    technicality, however: they should not differ normally.
+    """
+
+    if isinstance(tg, str):
+        with open(tg) as f:
+            return read_textgrid(f, tier_id, fill_token)
+
+    tg_ = TextGrid(tg.read())
+    if isinstance(tier_id, str):
+        tier = None
+        for tier_ in tg_.tiers:
+            if tier_.nameid == tier_id:
+                tier = tier_
+                break
+        if tier is None:
+            raise ValueError(f"Could not find tier '{tier_id}'")
+    else:
+        tier = tg_.tiers[tier_id]
+
+    if tier.classid == TEXTTIER:
+        transcript = [
+            (x[1], float(x[0]), float(x[0])) for x in sorted(tier.simple_transcript)
+        ]
+    else:
+        transcript = [
+            (x[2], float(x[0]), float(x[1])) for x in sorted(tier.simple_transcript)
+        ]
+    i = 0
+    start_time = tier.xmin
+    while i < len(transcript):
+        _, next_start, end_time = transcript[i]
+        if fill_token is not None and start_time < next_start:
+            transcript.insert(i, (fill_token, start_time, next_start))
+            i += 1
+        i += 1
+        start_time = end_time
+    if fill_token is not None and tier.xmax is not None and start_time < tier.xmax:
+        transcript.append((fill_token, start_time, tier.xmax))
+    return transcript, tier.xmin, tier.xmax
+
+
+def write_textgrid(
+    transcript: Sequence[Tuple[str, float, float]],
+    tg: Union[TextIO, str],
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
+    tier_name: str = config.DEFT_TEXTGRID_TIER_NAME,
+    point_tier: Optional[bool] = None,
+    precision: int = config.DEFT_TEXTGRID_PRECISION,
+) -> None:
+    """Write a transcription as a TextGrid file
+    
+    TextGrid is the transcription format of `Praat
+    <https://www.fon.hum.uva.nl/praat/>`__.
+
+    This function saves `transcript` as a tier within a TextGrid file.
+
+    Parameters
+    ----------
+    transcript
+        The transcription to write. Contains triples ``tok, start, end``, where `tok` is
+        the token, `start` is its start time, and `end` is its end time. `transcript`
+        must be non-empty.
+    tg
+        The file to write. Will open if `tg` is a path.
+    start_time
+        The start time of the recording (in seconds). If not specified, it will be
+        inferred from the minimum start time of the intervals in `transcript`.
+    end_time
+        The end time of the recording (in seconds). If not specified, it will be
+        inferred from the maximum end time of the intervals in `transcript`.
+    tier_name
+        What name to save the tier with.
+    point_tier
+        Whether to save as a point tier (:obj:`True`) or an interval tier. If unset, the
+        value is inferred to be a point tier if all segments are length 0 (within
+        precision `precision`); an interval tier otherwise.
+    precision
+        The precision of floating-point values to save times with.
+    """
+    if isinstance(tg, str):
+        with open(tg, "w") as tg:
+            return write_textgrid(transcript, tg, start_time, end_time, tier_name)
+    transcript = list(transcript)
+    if not len(transcript):
+        raise ValueError(f"Will not write an empty transcript")
+    tier_start_time = min(x[1] for x in transcript)
+    tier_end_time = max(x[2] for x in transcript)
+    if start_time is None:
+        start_time = tier_start_time
+    elif start_time > tier_start_time:
+        raise ValueError(
+            f"gave start_time={start_time} but an interval starts at "
+            f"{tier_start_time}"
+        )
+    if end_time is None:
+        end_time = tier_end_time
+    elif end_time < tier_end_time:
+        raise ValueError(
+            f"gave end_time={end_time} but an interval ends at {tier_end_time}"
+        )
+    if point_tier is None:
+        point_tier = all(
+            f"{x[1]:0.{precision}f}" == f"{x[2]:0.{precision}f}" for x in transcript
+        )
+    tier_type = "TextTier" if point_tier else "IntervalTier"
+    # fmt: off
+    tg.write(
+        'File type = "ooTextFile"\n'
+        'Object class = "TextGrid"\n'
+        f"{start_time:0.{precision}f}\n"
+        f"{end_time:0.{precision}f}\n"
+        "<exists>\n"
+        "1\n"
+        f'"{tier_type}"\n'
+        f'"{tier_name}"\n'
+        f"{tier_start_time:0.{precision}f}\n"
+        f"{tier_end_time:0.{precision}f}\n"
+        f"{len(transcript)}\n"
+    )
+    # fmt: on
+    for tok, start, end in transcript:
+        if point_tier:
+            tg.write(f'{start:0.{precision}f}\n"{tok}"\n')
+        else:
+            tg.write(f'{start:0.{precision}f}\n{end:0.{precision}f}\n"{tok}"\n')
+
+
 def transcript_to_token(
-    transcript: Sequence,
+    transcript: Sequence[Union[str, Tuple[str, float, float]]],
     token2id: Optional[dict] = None,
     frame_shift_ms: Optional[float] = None,
     unk: Optional[Union[str, int]] = None,
@@ -527,7 +709,7 @@ def transcript_to_token(
 ) -> torch.Tensor:
     r"""Convert a transcript to a token sequence
 
-    This method converts `transcript` of length ``R`` to a long tensor `tok` of shape
+    This function converts `transcript` of length ``R`` to a long tensor `tok` of shape
     ``(R, 3)``, the latter suitable as a reference or hypothesis token sequence for an
     utterance of :class:`SpectDataSet`. An element of `transcript` can either be a
     ``token`` or a 3-tuple of ``(token, start, end)``. If `token2id` is not :obj:`None`,
@@ -637,17 +819,17 @@ def transcript_to_token(
 
 
 def token_to_transcript(
-    tok: torch.Tensor,
-    id2token: Optional[dict] = None,
+    ref: torch.Tensor,
+    id2token: Optional[Dict[int, str]] = None,
     frame_shift_ms: Optional[float] = None,
-) -> list:
+) -> List[Union[str, int, Tuple[Union[str, int], float, float]]]:
     """Convert a token sequence to a transcript
 
     The inverse operation of :func:`transcript_to_token`.
 
     Parameters
     ----------
-    tok
+    ref
         A long tensor either of shape ``(R, 3)`` with segmentation info or ``(R, 1)`` or
         ``(R,)`` without
     id2token
@@ -655,7 +837,7 @@ def token_to_transcript(
 
     Returns
     -------
-    transcript : list
+    transcript
 
     Warnings
     --------
@@ -664,14 +846,15 @@ def token_to_transcript(
     ambiguity in converting between seconds and frames.
     """
     transcript = []
-    for tup in tok:
-        x = tup.tolist()
-        try:
-            id_, start, end = x  # (R, 3)
-        except ValueError:
-            id_, start, end = x[0], -1, -1  # (R, 1)
-        except TypeError:
-            id_, start, end = x, -1, -1  # (R,)
+    for tup in ref:
+        start = end = -1
+        if tup.ndim:
+            id_ = tup[0].item()
+            if tup.numel() == 3:
+                start = tup[1].item()
+                end = tup[2].item()
+        else:
+            id_ = tup.item()
         token = id2token.get(id_, id_) if id2token is not None else id_
         if start == -1 or end == -1:
             transcript.append(token)

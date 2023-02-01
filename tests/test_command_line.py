@@ -20,32 +20,56 @@ import pytest
 import torch
 import pydrobert.torch.command_line as command_line
 
+from pydrobert.torch.functional import (
+    slice_spect_data,
+    chunk_by_slices,
+    chunk_token_sequences_by_slices,
+)
+
 
 @pytest.mark.cpu
-@pytest.mark.parametrize("include_frame_shift", [True, False])
+@pytest.mark.parametrize(
+    "include_frame_shift", [True, False], ids=["token-segments", "tokens-only"]
+)
 def test_get_torch_spect_data_dir_info(
     temp_dir, populate_torch_dir, include_frame_shift
 ):
-    _, alis, _, feat_sizes, _, _ = populate_torch_dir(
+    _, alis, refs, feat_sizes, ref_sizes, _ = populate_torch_dir(
         temp_dir,
         19,
         num_filts=5,
         max_ali_class=10,
+        max_ref_class=100,
         include_frame_shift=include_frame_shift,
     )
-    # add one with class idx 10 to ensure all classes are accounted for
+    # add add one utterance with maximum class index in ali/ and ref/ to ensure
+    # everyone's accounted for
     torch.save(torch.rand(1, 5), os.path.join(temp_dir, "feat", "utt19.pt"))
-    torch.save(torch.tensor([10]), os.path.join(temp_dir, "ali", "utt19.pt"))
-    if include_frame_shift:
-        torch.save(
-            torch.tensor([[100, 0, 1]]), os.path.join(temp_dir, "ref", "utt19.pt")
-        )
-    else:
-        torch.save(torch.tensor([100]), os.path.join(temp_dir, "ref", "utt19.pt"))
+    alis.append(torch.tensor([10]))
+    torch.save(alis[-1], os.path.join(temp_dir, "ali", "utt19.pt"))
+    refs.append(torch.tensor([[100, 0, 1] if include_frame_shift else 100]))
+    torch.save(refs[-1], os.path.join(temp_dir, "ref", "utt19.pt"))
     feat_sizes += (1,)
-    alis = torch.cat(alis + [torch.tensor([10])])
-    alis = [class_idx.item() for class_idx in alis]
-    table_path = os.path.join(temp_dir, "info")
+    ref_sizes += (1,)
+
+    counts, segs, rcounts, rsegs = dict(), dict(), dict(), dict()
+    for ali, ref in zip(alis, refs):
+        last_class = None
+        for class_idx in ali.tolist():
+            counts[class_idx] = counts.get(class_idx, 0) + 1
+            if last_class != class_idx:
+                segs[class_idx] = segs.get(class_idx, 0) + 1
+                last_class = class_idx
+        if ref.ndim == 1:
+            for tok in ref.tolist():
+                rsegs[tok] = rsegs.get(tok, 0) + 1
+        else:
+            for tok, start, end in ref.tolist():
+                rsegs[tok] = rsegs.get(tok, 0) + 1
+                if end >= start:
+                    rcounts[tok] = rcounts.get(tok, 0) + end - start
+
+    table_path = os.path.join(temp_dir, "info.ark")
     assert not command_line.get_torch_spect_data_dir_info(
         [temp_dir, table_path, "--strict"]
     )
@@ -53,19 +77,27 @@ def test_get_torch_spect_data_dir_info(
     def check():
         table = dict()
         with open(table_path) as table_file:
+            last_line = ""
             for line in table_file:
-                line = line.split()
+                assert last_line < line
+                last_line, line = line, line.split()
+                assert len(line) == 2
                 table[line[0]] = int(line[1])
         assert table["num_utterances"] == 20
         assert table["total_frames"] == sum(feat_sizes)
+        assert table["total_tokens"] == sum(ref_sizes)
         assert table["num_filts"] == 5
         assert table["max_ali_class"] == 10
         assert table["max_ref_class"] == 100
         for class_idx in range(11):
-            key = "count_{:02d}".format(class_idx)
-            assert table[key] == alis.count(class_idx)
+            assert table[f"count_{class_idx:02d}"] == counts.get(class_idx, 0)
+            assert table[f"segs_{class_idx:02d}"] == segs.get(class_idx, 0)
+        for class_idx in range(100):
+            assert table[f"rcount_{class_idx:03d}"] == rcounts.get(class_idx, -1)
+            assert table[f"rsegs_{class_idx:03d}"] == rsegs.get(class_idx, 0)
 
     check()
+
     if include_frame_shift:
         # ensure we're only looking at the ids in the recorded refs
         torch.save(
@@ -591,3 +623,389 @@ def test_compute_mvn_stats_for_torch_feat_data_dir(
         assert set(stats_exp) == set(stats_act) == {"mean", "std"}, gid
         for stat in stats_act:
             assert torch.allclose(stats_exp[stat], stats_act[stat]), (gid, stat)
+
+
+@pytest.mark.cpu
+def test_textgrids_to_torch_token_data_dir(temp_dir):
+    ref_dir = os.path.join(temp_dir, "ref")
+    token2id = os.path.join(temp_dir, "token2id")
+    _write_token2id(token2id, False)
+    with open(os.path.join(temp_dir, "utt_1.TextGrid"), "w") as f:
+        f.write(
+            """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0
+1
+<exists>
+1
+"IntervalTier"
+"pup"
+0
+1
+3
+0
+0.1
+"a"
+0.1
+0.2
+"b"
+0.2
+1
+"Z"
+"""
+        )
+    with open(os.path.join(temp_dir, "utt_2.TextGrid"), "w") as f:
+        f.write(
+            """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0
+2
+<exists>
+1
+"IntervalTier"
+"pupper"
+0
+2
+1
+0
+1
+"a"
+"""
+        )
+    with open(os.path.join(temp_dir, "utt_3.TextGrid"), "w") as f:
+        f.write(
+            """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0
+3
+<exists>
+1
+"TextTier"
+"doggo"
+0
+3
+2
+1
+"c"
+2
+"a"
+"""
+        )
+
+    assert not command_line.textgrids_to_torch_token_data_dir(
+        [temp_dir, token2id, ref_dir, "--unk-symbol=d", "--fill-symbol=e"]
+    )
+    act_utt1 = torch.load(os.path.join(ref_dir, "utt_1.pt"))
+    assert torch.all(act_utt1 == torch.tensor([[0, 0, 10], [1, 10, 20], [3, 20, 100]]))
+    act_utt2 = torch.load(os.path.join(ref_dir, "utt_2.pt"))
+    assert torch.all(act_utt2 == torch.tensor([[0, 0, 100], [4, 100, 200]]))
+    act_utt3 = torch.load(os.path.join(ref_dir, "utt_3.pt"))
+    # it's filling in the gaps between points
+    assert torch.all(
+        act_utt3
+        == torch.tensor(
+            [[4, 0, 100], [2, 100, 100], [4, 100, 200], [0, 200, 200], [4, 200, 300]]
+        )
+    )
+
+    assert not command_line.textgrids_to_torch_token_data_dir(
+        [temp_dir, token2id, ref_dir, "--unk-symbol=d", "--skip-frame-times"]
+    )
+    act_utt1 = torch.load(os.path.join(ref_dir, "utt_1.pt"))
+    assert torch.all(act_utt1 == torch.tensor([0, 1, 3]))
+    act_utt2 = torch.load(os.path.join(ref_dir, "utt_2.pt"))
+    assert torch.all(act_utt2 == torch.tensor([0]))
+    act_utt3 = torch.load(os.path.join(ref_dir, "utt_3.pt"))
+    assert torch.all(act_utt3 == torch.tensor([2, 0]))
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("with_feats", [True, False])
+def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
+    N = 100
+    V = 10
+    max_R = 10
+    max_seg = 5
+    ref_dir = os.path.join(temp_dir, "ref")
+    ali_dir = os.path.join(temp_dir, "ali")
+    os.makedirs(ref_dir)
+    args = [ref_dir, ali_dir]
+    if with_feats:
+        feat_dir = os.path.join(temp_dir, "feats")
+        os.makedirs(feat_dir)
+        args += ["--feat-dir", feat_dir]
+    else:
+        feat_dir = None
+    refs = []
+    for n in range(N):
+        R = torch.randint(1, max_R, (1,)).item()
+        ref = torch.zeros((R, 3), dtype=torch.long)
+        ref[:, 0] = torch.randint(V, (R,))
+        ends = torch.randint(1, max_seg, (R,)).cumsum(0)
+        ref[:, 2] = ends
+        ref[1:, 1] = ends[:-1]
+        torch.save(ref, f"{ref_dir}/utt_{n}.pt")
+        refs.append(ref)
+        if with_feats:
+            torch.save(torch.randn((ends[-1].item(), 1)), f"{feat_dir}/utt_{n}.pt")
+    assert not command_line.torch_token_data_dir_to_torch_ali_data_dir(args)
+    assert len(os.listdir(ali_dir)) == N
+    for n, ref in enumerate(refs):
+        ali = torch.load(f"{ali_dir}/utt_{n}.pt")
+        assert ali.ndim == 1
+        T = ali.size(0)
+        assert ref[-1, 2] == T
+        r = 0
+        R = ref.size(0)
+        for t in range(T):
+            if ref[r, 2] <= t:
+                r += 1
+            assert ref[r, 1] <= t < ref[r, 2]
+            assert ali[t] == ref[r, 0]
+        assert r == R - 1
+
+
+@pytest.mark.cpu
+def test_torch_ali_data_dir_to_torch_token_data_dir(temp_dir):
+    N = 100
+    V = 10
+    T = 50
+    ref_dir = os.path.join(temp_dir, "ref")
+    ali_dir = os.path.join(temp_dir, "ali")
+    os.makedirs(ali_dir)
+    alis = []
+    for n in range(N):
+        ali = torch.randint(V, (T,))
+        torch.save(ali, f"{ali_dir}/utt_{n}.pt")
+        alis.append(ali)
+    assert not command_line.torch_ali_data_dir_to_torch_token_data_dir(
+        [ali_dir, ref_dir]
+    )
+    assert len(os.listdir(ref_dir)) == N
+    for n, ali in enumerate(alis):
+        ref = torch.load(f"{ref_dir}/utt_{n}.pt")
+        assert ref.ndim == 2
+        assert ref[-1, 2] == T
+        r = 0
+        R = ref.size(0)
+        for t in range(T):
+            if ref[r, 2] <= t:
+                r += 1
+            assert ref[r, 1] <= t < ref[r, 2]
+            assert ali[t] == ref[r, 0]
+        assert r == R - 1
+
+
+@pytest.mark.cpu
+def test_torch_token_data_dir_to_textgrids(temp_dir):
+    ref_dir = os.path.join(temp_dir, "ref")
+    feat_dir = os.path.join(temp_dir, "feat")
+    tg_dir = os.path.join(temp_dir, "tg_dir")
+    id2token = os.path.join(temp_dir, "id2token.txt")
+    _write_token2id(id2token, True)
+    os.makedirs(ref_dir)
+    os.makedirs(feat_dir)
+    feat = torch.empty(600, 5)
+    ref_1 = torch.tensor([[0, 100, 200], [3, 400, 500]])
+    torch.save(ref_1, f"{ref_dir}/utt_1.pt")
+    torch.save(feat, f"{feat_dir}/utt_1.pt")
+    ref_2 = torch.tensor([[1, 100, 200], [0, 300, -1], [4, 500, 600]])
+    torch.save(ref_2, f"{ref_dir}/utt_2.pt")
+    torch.save(feat, f"{feat_dir}/utt_2.pt")
+    ref_3 = torch.tensor([1, 2, 3, 4])
+    torch.save(ref_3, f"{ref_dir}/utt_3.pt")
+    torch.save(feat, f"{feat_dir}/utt_3.pt")
+    args = [ref_dir, id2token, tg_dir]
+
+    assert not command_line.torch_token_data_dir_to_textgrids(
+        args + ["--feat-dir", feat_dir]
+    )
+    assert sorted(os.listdir(tg_dir)) == [
+        "utt_1.TextGrid",
+        "utt_2.TextGrid",
+        "utt_3.TextGrid",
+    ]
+    with open(f"{tg_dir}/utt_1.TextGrid") as f:
+        assert (
+            f.read()
+            == """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.000
+6.000
+<exists>
+1
+"IntervalTier"
+"transcript"
+1.000
+5.000
+2
+1.000
+2.000
+"a"
+4.000
+5.000
+"d"
+"""
+        )
+    with open(f"{tg_dir}/utt_2.TextGrid") as f:
+        assert (
+            f.read()
+            == """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.000
+6.000
+<exists>
+1
+"TextTier"
+"transcript"
+2.000
+6.000
+3
+2.000
+"b"
+3.000
+"a"
+6.000
+"e"
+"""
+        )
+    with open(f"{tg_dir}/utt_3.TextGrid") as f:
+        assert (
+            f.read()
+            == """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.000
+6.000
+<exists>
+1
+"IntervalTier"
+"transcript"
+0.000
+6.000
+1
+0.000
+6.000
+"b c d e"
+"""
+        )
+
+    assert not command_line.torch_token_data_dir_to_textgrids(
+        args + ["--infer", "--quiet", "--force-method=3"]
+    )
+    assert len(os.listdir(tg_dir)) == 3
+    with open(f"{tg_dir}/utt_1.TextGrid") as f:
+        assert (
+            f.read()
+            == """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.000
+5.000
+<exists>
+1
+"IntervalTier"
+"transcript"
+0.000
+5.000
+1
+0.000
+5.000
+"a d"
+"""
+        )
+    with open(f"{tg_dir}/utt_2.TextGrid") as f:
+        assert (
+            f.read()
+            == """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.000
+6.000
+<exists>
+1
+"IntervalTier"
+"transcript"
+0.000
+6.000
+1
+0.000
+6.000
+"b a e"
+"""
+        )
+    with open(f"{tg_dir}/utt_3.TextGrid") as f:
+        assert (
+            f.read()
+            == """\
+File type = "ooTextFile"
+Object class = "TextGrid"
+0.000
+0.000
+<exists>
+1
+"TextTier"
+"transcript"
+0.000
+0.000
+1
+0.000
+"b c d e"
+"""
+        )
+
+
+@pytest.mark.cpu
+def test_chunk_torch_spect_data_dir(temp_dir, populate_torch_dir):
+    N = 100
+    in_dir = os.path.join(temp_dir, "in")
+    out_dir = os.path.join(temp_dir, "out")
+    feats, alis, refs, lens, ref_lens, utt_ids = populate_torch_dir(in_dir, N)
+    feats = torch.nn.utils.rnn.pad_sequence(feats, batch_first=True)
+    alis = torch.nn.utils.rnn.pad_sequence(alis, batch_first=True)
+    refs = torch.nn.utils.rnn.pad_sequence(refs, batch_first=True)
+    lens = torch.tensor(lens)
+    ref_lens = torch.tensor(ref_lens)
+    slices, sources = slice_spect_data(feats, lens)
+    feats, alis, refs = feats[sources], alis[sources], refs[sources]
+    lens, ref_lens = lens[sources], ref_lens[sources]
+    basenames = []
+    for n, count in zip(*sources.unique_consecutive(return_counts=True)):
+        utt_id = utt_ids[n.item()]
+        for c in range(count.item()):
+            basenames.append(f"{utt_id}.{c}.pt")
+    basenames.sort()
+    feats, lens_ = chunk_by_slices(feats, slices, lens)
+    alis, lens_2 = chunk_by_slices(alis, slices, lens)
+    assert (lens_ == lens_2).all()
+    lens = lens_
+    assert len(basenames) == lens.numel()
+    refs, ref_lens = chunk_token_sequences_by_slices(refs, slices, ref_lens)
+    assert not command_line.chunk_torch_spect_data_dir(
+        [in_dir, out_dir, "--format-utt={utt_id}.{idx}"]
+    )
+    out_feat_dir = os.path.join(out_dir, "feat")
+    out_ali_dir = os.path.join(out_dir, "ali")
+    out_ref_dir = os.path.join(out_dir, "ref")
+    assert basenames == sorted(os.listdir(out_feat_dir))
+    assert basenames == sorted(os.listdir(out_ali_dir))
+    assert basenames == sorted(os.listdir(out_ref_dir))
+    for basename, feat, ali, len_, ref, ref_len in zip(
+        basenames, feats, alis, lens, refs, ref_lens
+    ):
+        exp_feat, exp_ali, exp_ref = feat[:len_], ali[:len_], ref[:ref_len]
+        act_feat = torch.load(os.path.join(out_feat_dir, basename))
+        act_ali = torch.load(os.path.join(out_ali_dir, basename))
+        act_ref = torch.load(os.path.join(out_ref_dir, basename))
+        assert exp_feat.shape == act_feat.shape
+        assert exp_ali.shape == act_ali.shape
+        assert exp_ref.shape == act_ref.shape
+        assert torch.allclose(exp_feat, act_feat)
+        assert (exp_ali == act_ali).all()
+        assert (exp_ref == act_ref).all()
+

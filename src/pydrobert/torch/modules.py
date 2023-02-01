@@ -1,4 +1,4 @@
-# Copyright 2022 Sean Robertson
+# Copyright 2023 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,6 +27,8 @@ module are initialized with. The general usage pattern is:
 
 __all__ = [
     "BeamSearch",
+    "ChunkBySlices",
+    "ChunkTokenSequencesBySlices",
     "ConcatSoftAttention",
     "CTCGreedySearch",
     "CTCPrefixSearch",
@@ -57,6 +59,7 @@ __all__ = [
     "RandomWalk",
     "SequenceLogProbabilities",
     "SequentialLanguageModel",
+    "SliceSpectData",
     "SparseImageWarp",
     "SpecAugment",
     "TimeDistributedReturn",
@@ -77,7 +80,12 @@ from ._decoding import (
     RandomWalk,
     SequenceLogProbabilities,
 )
-from ._feats import FeatureDeltas, MeanVarianceNormalization
+from ._feats import (
+    ChunkTokenSequencesBySlices,
+    FeatureDeltas,
+    MeanVarianceNormalization,
+    SliceSpectData,
+)
 from ._img import (
     DenseImageWarp,
     PolyharmonicSpline,
@@ -96,7 +104,7 @@ from ._mc import (
     LogisticBernoulliRebarControlVariate,
     GumbelOneHotCategoricalRebarControlVariate,
 )
-from ._pad import PadVariable, PadMaskedSequence
+from ._pad import ChunkBySlices, PadVariable, PadMaskedSequence
 from ._rl import TimeDistributedReturn
 from ._string import (
     EditDistance,

@@ -16,12 +16,39 @@
 
 If this submodule is imported first in :mod:`pydrobert.torch` and any values are
 changed, the changes will propagate to any submodules.
+
+This list is non-exhaustive; types or functions may have their own defaults.
 """
 
 import os
 import math
 
-__all__ = ["INDEX_PAD_VALUE", "USE_JIT", "EPS_NINF", "EPS_INF", "EPS_0"]
+__all__ = [
+    "DEFT_ALI_SUBDIR",
+    "DEFT_CHUNK_SIZE",
+    "DEFT_CTM_CHANNEL",
+    "DEFT_DEL_COST",
+    "DEFT_FEAT_SUBDIR",
+    "DEFT_FILE_PREFIX",
+    "DEFT_FILE_SUFFIX",
+    "DEFT_FRAME_SHIFT_MS",
+    "DEFT_HYP_SUBDIR",
+    "DEFT_INS_COST",
+    "DEFT_PAD_VALUE",
+    "DEFT_PDFS_SUBDIR",
+    "DEFT_REF_SUBDIR",
+    "DEFT_SUB_COST",
+    "DEFT_TEXTGRID_PRECISION",
+    "DEFT_TEXTGRID_SUFFIX",
+    "DEFT_TEXTGRID_TIER_ID",
+    "DEFT_TEXTGRID_TIER_NAME",
+    "EPS_0",
+    "EPS_INF",
+    "EPS_NINF",
+    "INDEX_PAD_VALUE",
+    "TINY",
+    "USE_JIT",
+]
 
 
 INDEX_PAD_VALUE = -100
@@ -34,6 +61,9 @@ ignored.
 The default value (:obj:`-100`) was chosen to coincide with the PyTorch 1.0 default
 for ``ignore_index`` in the likelihood losses
 """
+
+TINY = 1.1754943508222875e-38
+"""Smallest representable floating-point integer"""
 
 
 USE_JIT = os.environ.get("PYTORCH_JIT", None) == "1"
@@ -65,3 +95,57 @@ EPS_INF = math.log(3.4028234663852886e38) / 2
 This number is sometimes used in place of infinity in log-space values to avoid masking.
 Decreasing it will decrease the accuracy of computations, but may avoid NaNs.
 """
+
+DEFT_FRAME_SHIFT_MS = 10.0
+"""The default frame shift in milliseconds for commands"""
+
+DEFT_TEXTGRID_SUFFIX = ".TextGrid"
+"""The default suffix indicating TextGrid files for commands"""
+
+DEFT_CHUNK_SIZE = 1000
+"""Default number of units to process at once when performing multiprocessing"""
+
+DEFT_FILE_PREFIX = ""
+"""Default prefix of a torch data file"""
+
+DEFT_FILE_SUFFIX = ".pt"
+"""Default suffix of a torch data file"""
+
+DEFT_TEXTGRID_PRECISION = 3
+"""Default precision to write floating point TextGrids with"""
+
+DEFT_CTM_CHANNEL = "A"
+"""Default channel to write to CTM files"""
+
+DEFT_TEXTGRID_TIER_ID = 0
+"""Default TextGrid tier to read transcripts from"""
+
+DEFT_TEXTGRID_TIER_NAME = "transcript"
+"""Default TextGrid tiear to write transcripts to"""
+
+DEFT_FEAT_SUBDIR = "feat"
+"""Default subdirectory of a torch data directory containing features"""
+
+DEFT_ALI_SUBDIR = "ali"
+"""Default subdirectory of a torch data directory containing alignments"""
+
+DEFT_REF_SUBDIR = "ref"
+"""Default subdirectory of a torch data directory containing reference tokens"""
+
+DEFT_PDFS_SUBDIR = "pdfs"
+"""Default subdirectory of a torch data directory to write pdfs to"""
+
+DEFT_HYP_SUBDIR = "hyp"
+"""Default subdirectory of a torch data directory to write hypothesis tokens to"""
+
+DEFT_PAD_VALUE = 0.0
+"""Default value to pad floating-point tensors with"""
+
+DEFT_INS_COST = 1.0
+"""Default insertion cost in error rate/distance computations"""
+
+DEFT_DEL_COST = 1.0
+"""Default deletion cost in error rate/distance computations"""
+
+DEFT_SUB_COST = 1.0
+"""Default substitution cost in error rate/distance computations"""

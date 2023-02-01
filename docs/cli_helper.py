@@ -30,16 +30,21 @@ DIR = os.path.dirname(__file__)
 CLI_RST = os.path.join(DIR, "source", "cli.rst")
 
 buff = "Command-Line Interface\n======================\n\n"
-for cmd_name in (
+for cmd_name in sorted((
+    "chunk-torch-spect-data-dir",
     "compute-mvn-stats-for-torch-feat-data-dir",
     "compute-torch-token-data-dir-error-rates",
     "ctm-to-torch-token-data-dir",
     "get-torch-spect-data-dir-info",
+    "textgrids-to-torch-token-data-dir",
+    "torch-ali-data-dir-to-torch-token-data-dir",
     "torch-spect-data-dir-to-wds",
     "torch-token-data-dir-to-ctm",
+    "torch-token-data-dir-to-textgrids",
+    "torch-token-data-dir-to-torch-ali-data-dir",
     "torch-token-data-dir-to-trn",
     "trn-to-torch-token-data-dir",
-):
+)):
     buff += cmd_name + "\n" + ("-" * len(cmd_name)) + "\n\n::\n\n  "
     sys.argv[0] = cmd_name
     func = next(
