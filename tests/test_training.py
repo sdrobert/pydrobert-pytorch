@@ -361,6 +361,7 @@ def _test_distributed_controller_helper(
         x_mean = 0
         sampler.set_epoch(controller.get_last_epoch() + 1)
         train_loss = 0
+        print(f'{rank} training epoch')
         for x_, y_ in dl:
             x_mean += x_.mean().item()
             x_, y_ = x_.to(device), y_.to(device)
@@ -370,6 +371,7 @@ def _test_distributed_controller_helper(
             loss.backward()
             train_loss += loss.item()
             optim.step()
+        print(f'{rank} trained epoch')
         val_loss = 0
         with torch.no_grad():
             for x_, y_ in dl:
@@ -377,7 +379,9 @@ def _test_distributed_controller_helper(
                 x_ = model(x_)
                 loss = val_loss_func(x_.flatten(), y_.flatten())
                 val_loss += loss.item()
+        print(f'{rank} updating')
         controller.update_for_epoch(model, optim, train_loss, val_loss, x_mean=x_mean)
+        print(f'{rank} updated')
 
     info = controller.get_info(controller.get_best_epoch())
     if out is None:

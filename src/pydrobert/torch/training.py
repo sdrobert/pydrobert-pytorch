@@ -478,10 +478,6 @@ class TrainingStateController(object):
             self.reduced_entries.add(name)
         self.update_cache()
 
-    def _barrier(self):
-        if self._rank >= 0:
-            torch.distributed.barrier()
-
     def update_cache(self) -> None:
         """Update the cache with history stored in state_csv_path"""
         # add a dummy entry for epoch "0" just to make logic easier. We
@@ -577,7 +573,6 @@ class TrainingStateController(object):
             Whether to strictly enforce that the keys in ``model.state_dict()`` match
             those that were saved.
         """
-        self._barrier()
         if epoch is None:
             epoch = self.get_best_epoch()
         if not epoch:
@@ -630,7 +625,6 @@ class TrainingStateController(object):
             Whether to strictly enforce that the keys in ``model.state_dict()``
             match those that were saved.
         """
-        self._barrier()
         if epoch is None:
             epoch = self.get_last_epoch()
         if not epoch:
@@ -682,6 +676,8 @@ class TrainingStateController(object):
                     os.remove(pth)
                 except OSError:
                     warnings.warn(f"Failed to delete file '{pth}'")
+        if self._rank >= 0:
+            torch.distributed.barrier()
 
     def delete_model_and_optimizer_for_epoch(self, epoch: int) -> None:
         """Delete state dicts for model and epoch off of disk, if they exist
@@ -869,9 +865,6 @@ class TrainingStateController(object):
             hitting the max number of epochs or by early stopping.
         """
         if self._rank >= 0:
-            # synchronize to make sure that the buffers we're getting are the buffers
-            # we want, not buffers from training (not sure if this is necessary)
-            torch.distributed.barrier()
             kwargs["train_met"] = train_met
             kwargs["val_met"] = val_met
             handles = []
