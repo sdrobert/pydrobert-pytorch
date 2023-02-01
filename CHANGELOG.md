@@ -2,6 +2,15 @@
 
 ## HEAD
 
+- Slicing and chunking modules `SliceSpectData`, `ChunkBySlices`, and
+  `ChunkTokenSequenceBySlices`, as well as the command
+  `chunk-torch-spect-data-dir`, which puts them together.
+- Code for handling TextGrid files, including the functions `read_textgrid` and
+  `write_textgrid`, as well as the commands `torch-token-data-dir-to-textgrids`
+  and `textgrids-to-torch-token-data-dir`.
+- Commands for switching between ref and ali format:
+  `torch-ali-data-dir-to-torch-token-data-dir` and
+  `torch-token-data-dir-to-torch-ali-data-dir`.
 - Added py 3.10 support; removed py 3.6 support.
 - Initial (undocumented) support for
   [PyTorch-Lightning](https://www.pytorchlightning.ai/) in
