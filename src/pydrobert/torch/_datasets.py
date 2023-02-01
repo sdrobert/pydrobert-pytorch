@@ -662,27 +662,30 @@ class SpectDataSet(torch.utils.data.Dataset):
 def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
     """Validate SpectDataSet data directory
 
-    The data directory is valid if the following conditions are observed
+    The data directory is valid if the following conditions are observed:
 
-    1. All tensors are on the CPU
-    2. All features are tensor instances of the same dtype
-    3. All features have two dimensions
-    4. All features have the same size second dimension
-    5. If alignments are present
-       1. All alignments are long tensor instances
-       2. All alignments have one dimension
-       3. Features and alignments have the same size first axes for a given utterance id
-    6. If reference sequences are present
+    1. All tensors are on the CPU.
+    2. All features are tensor instances of the same dtype.
+    3. All features have two dimensions.
+    4. All features have the same size second dimension.
+    5. If alignments are present.
 
-       1. All references are long tensor instances
-       2. All alignments have the same number of dimensions: either 1 or 2
-       3. If 2-dimensional
+       1. All alignments are long tensor instances.
+       2. All alignments have one dimension.
+       3. Features and alignments have the same size first axes for a given utterance
+          id.
+
+    6. If reference sequences are present:
+
+       1. All references are long tensor instances.
+       2. All references have the same number of dimensions: either 1 or 2.
+       3. If 2-dimensional:
 
           1. The second dimension has length 3
           2. For the start and end points of a reference token, ``r[i, 1:]``, either
-             both of them are negative (indicating no alignment), or ``0 <= r[i, 1] <
+             both of them are negative (indicating no alignment), or ``0 <= r[i, 1] <=
              r[i, 2] <= T``, where ``T`` is the number of frames in the utterance. We do
-             not enforce that tokens be non-overlapping
+             not enforce that tokens be non-overlapping.
 
     Raises a :class:`ValueError` if a condition is violated.
 
@@ -698,6 +701,11 @@ def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
     4. A reference token with an exclusive boundary exceeding the number of features by
        one will be decreased by one. This is only possible if the exclusive end remains
        above the inclusive start.
+    
+    Notes
+    -----
+    The behaviour of condition 6.3.2. has changed slightly since version 0.3.0. We now
+    allow for empty reference token segments (i.e. ``r[i, 1]`` can equal ``r[i, 2]``).
     """
     num_filts = None
     ref_is_2d = None
@@ -709,6 +717,7 @@ def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
         prefix = "'{}' (index {})".format(fn, idx)
         dir_ = os.path.join(data_set.data_dir, data_set.feat_subdir)
         prefix_ = "{} in '{}'".format(prefix, dir_)
+
         if not isinstance(feat, torch.Tensor) or feat_dtype not in {None, feat.dtype}:
             raise ValueError(
                 "{} is not a tensor or not the same tensor type as previous features"
@@ -740,6 +749,7 @@ def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
         if write_back:
             torch.save(feat, os.path.join(dir_, fn))
             write_back = False
+
         if ali is not None:
             dir_ = os.path.join(data_set.data_dir, data_set.ali_subdir)
             prefix_ = "{} in '{}'".format(prefix, dir_)
@@ -782,6 +792,7 @@ def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
             if write_back:
                 torch.save(ali, os.path.join(dir_, fn))
                 write_back = False
+
         if ref is not None:
             dir_ = os.path.join(data_set.data_dir, data_set.ref_subdir)
             prefix_ = "{} in '{}'".format(prefix, dir_)
@@ -837,9 +848,8 @@ def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
                                 write_back = True
                             else:
                                 raise ValueError(msg)
-                        elif r[1] >= r[2]:
+                        elif r[1] > r[2]:
                             raise ValueError(msg)
-
             elif ref.dim() == 1:
                 if ref_is_2d is True:
                     raise ValueError(
