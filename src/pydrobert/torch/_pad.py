@@ -126,7 +126,7 @@ def pad_variable(
             f"For x of shape {shape}, pad should have shape (2, {N}), but got "
             f"{pad.shape}"
         )
-    x = x.reshape(N, T, -1)
+    x = x.unsqueeze(-1).flatten(2)
     F = x.size(2)
     left_buf, right_buf = _get_padding_buffers(x, lens, pad[0], pad[1], mode)
     new_lens = lens + pad.sum(0)
@@ -395,8 +395,10 @@ def chunk_by_slices(
     if x.ndim < 2:
         raise RuntimeError(f"Expected x to be at least 2-dimensional; got {x.ndim}")
     N, T = x.size(0), x.size(1)
+    if not N * T:
+        return x.new_empty(x.shape), slices.new_zeros((N,))
     rest = x.shape[2:]
-    x = x.view(N, T, -1)
+    x = x.unsqueeze(-1).flatten(2)
     device = x.device
     if lens is None:
         lens = torch.full((1,), T, dtype=torch.long, device=device).expand(N)

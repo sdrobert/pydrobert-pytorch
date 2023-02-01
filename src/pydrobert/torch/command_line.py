@@ -29,6 +29,8 @@ from typing import Dict, Optional, Sequence
 import torch
 
 from . import data, modules, config
+from ._feats import SliceSpectData, ChunkTokenSequencesBySlices
+from ._pad import ChunkBySlices
 from ._string import error_rate
 
 
@@ -103,7 +105,19 @@ _COMMON_ARGS = {
     },
     "--textgrid-suffix": {
         "default": config.DEFT_TEXTGRID_SUFFIX,
-        "help": "The file suffix in tg_dir indicating a TextGrid file",
+        "help": "The file suffix in tg_dir indicating a TextGrid file.",
+    },
+    "--feat-subdir": {
+        "default": config.DEFT_FEAT_SUBDIR,
+        "help": "Subdirectory where features are stored.",
+    },
+    "--ali-subdir": {
+        "default": config.DEFT_ALI_SUBDIR,
+        "help": "Subdirectory where per-frame alignments are stored.",
+    },
+    "--ref-subdir": {
+        "default": config.DEFT_REF_SUBDIR,
+        "help": "Subdirectory where reference token sequences are stored.",
     },
 }
 
@@ -177,18 +191,9 @@ integers.
     )
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
-    parser.add_argument(
-        "--feat-subdir", default="feat", help="Subdirectory where features are stored"
-    )
-    parser.add_argument(
-        "--ali-subdir", default="ali", help="Subdirectory where alignments are stored"
-    )
-    parser.add_argument(
-        "--ref-subdir",
-        default="ref",
-        help="Subdirectory where reference token sequences are stored",
-    )
-
+    _add_common_arg(parser, "--feat-subdir")
+    _add_common_arg(parser, "--ali-subdir")
+    _add_common_arg(parser, "--ref-subdir")
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "--strict",
@@ -1200,17 +1205,9 @@ This command does not require WebDataset to be installed."""
     parser.add_argument("tar_path", help="The path to store files to")
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
-    parser.add_argument(
-        "--feat-subdir", default="feat", help="Subdirectory where features are stored."
-    )
-    parser.add_argument(
-        "--ali-subdir", default="ali", help="Subdirectory where alignments are stored."
-    )
-    parser.add_argument(
-        "--ref-subdir",
-        default="ref",
-        help="Subdirectory where reference token sequences are stored.",
-    )
+    _add_common_arg(parser, "--feat-subdir")
+    _add_common_arg(parser, "--ali-subdir")
+    _add_common_arg(parser, "--ref-subdir")
     parser.add_argument(
         "--is-uri",
         action="store_true",
@@ -1818,15 +1815,253 @@ directory."""
     )
 
 
+def _chunk_torch_spect_data_dir_do_work(
+    utt_ids: Sequence[str],
+    in_feat_dir: str,
+    in_ali_dir: Optional[str],
+    in_ref_dir: Optional[str],
+    file_prefix: str,
+    file_suffix: str,
+    policy: str,
+    lobe_size: int,
+    window_type: str,
+    pad_mode: Optional[str],
+    pad_constant: float,
+    partial_tokens: bool,
+    retain_token_boundaries: bool,
+    quiet: bool,
+    format_utt: str,
+    out_feat_dir: str,
+    out_ali_dir: str,
+    out_ref_dir: str,
+):
+    slicer = SliceSpectData(policy, window_type, pad_mode is None, lobe_size)
+    chunker = ChunkBySlices("constant" if pad_mode is None else pad_mode, pad_constant)
+    ref_chunker = ChunkTokenSequencesBySlices(partial_tokens, retain_token_boundaries)
+    for utt_id in utt_ids:
+        in_basename = file_prefix + utt_id + file_suffix
+        feats = torch.load(os.path.join(in_feat_dir, in_basename)).unsqueeze(0)
+        if in_ali_dir is None:
+            alis = None
+        else:
+            alis = torch.load(os.path.join(in_ali_dir, in_basename)).unsqueeze(0)
+        if in_ref_dir is None:
+            refs = None
+        else:
+            refs = torch.load(os.path.join(in_ref_dir, in_basename)).unsqueeze(0)
+        if policy == "fixed":
+            slices, _ = slicer(feats)
+        elif policy == "ali":
+            slices, _ = slicer(alis)
+        else:
+            slices, _ = slicer(refs)
+        M = slices.size(0)
+        new_utt_ids = [
+            format_utt.format(utt_id=utt_id, idx=n, start=x[0], end=x[1])
+            for (n, x) in enumerate(slices.tolist())
+        ]
+        if not quiet and len(set(new_utt_ids)) != M:
+            warnings.warn(f"new utterance names for '{utt_id}' are not unique")
+        feats, lens = chunker(feats.expand(M, -1, -1), slices)
+        if alis is not None:
+            alis, lens_ = chunker(alis.expand(M, -1), slices)
+            assert (lens == lens_).all()
+        if refs is not None:
+            refs, ref_lens = ref_chunker(refs.expand(M, *refs.shape[1:]), slices)
+        for n, new_utt_id in enumerate(new_utt_ids):
+            out_basename = file_prefix + new_utt_id + file_suffix
+            torch.save(feats[n, : lens[n]], os.path.join(out_feat_dir, out_basename))
+            if alis is not None:
+                torch.save(alis[n, : lens[n]], os.path.join(out_ali_dir, out_basename))
+            if refs is not None:
+                torch.save(
+                    refs[n, : ref_lens[n]], os.path.join(out_ref_dir, out_basename)
+                )
+
+
+def chunk_torch_spect_data_dir(args: Optional[Sequence[str]] = None):
+    """Create a new SpectDataSet directory by chunking another
+
+This command breaks SpectDataSet sequences into sub-sequences (chunks), storing the
+results in a new directory. New utterances are named according to "--format-utt".
+
+Sequences are sliced according to one of three policies set by the "--policy" flag
+(default "fixed"). They are:
+
+- fixed: extract a fixed-sized window at fixed-length intervals along the feature
+         sequence.
+- ali: use per-frame alignments to segment the feature sequence into intervals with
+       matching labels. Requires per-frame alignments (data in the "ali/" subdirectory).
+- ref: use reference token sequence segments as slices. Requires reference sequences
+       (data in the "ali/" subdirectory) and for them to contain segment boundary
+       information.
+
+Overlapping chunks may be created by specifying "--lobe-size" (default "0") and
+"--window-type" (default "symmetric"). More details on the policies and windowing can
+be found in the Python module pydrobert.torch.modules.SliceSpectData.
+
+By default, only valid slices (i.e. those entirely within the boundaries of the input
+sequences) are counted. Specifying "--pad-mode" will include slices partially within
+boundaries as well as how to pad features and per-frame alignments to fill the
+remainder.
+
+See the command "get-torch-spect-data-dir-info" for more info SpectDataSet directories.
+"""
+    parser = argparse.ArgumentParser(
+        description=chunk_torch_spect_data_dir.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("in_dir", help="The torch data directory to chunk (input)")
+    parser.add_argument(
+        "out_dir", help="The torch data directory to store chunks (output)"
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--feat-subdir")
+    _add_common_arg(parser, "--ali-subdir")
+    _add_common_arg(parser, "--ref-subdir")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--chunk-size")
+    _add_common_arg(parser, "--timeout")
+    parser.add_argument(
+        "--policy",
+        default="fixed",
+        choices=["fixed", "ali", "ref"],
+        help="The policy for determining slices from the data. See SliceSpectData.",
+    )
+    parser.add_argument(
+        "--lobe-size",
+        type=int,
+        default=0,
+        help="Size of a side lobe of a slice. See SliceSpectData.",
+    )
+    parser.add_argument(
+        "--window-type",
+        default="symmetric",
+        choices=["symmetric", "causal", "future"],
+        help="Type of window used in slicing. See SliceSpectData.",
+    )
+    parser.add_argument(
+        "--pad-mode",
+        default=None,
+        choices=["constant", "reflect", "replicate"],
+        help="If specified, determines how to chunks of features and alignments "
+        " exceeding the original sequence boundaries. constant: pad with the value of "
+        "'--pad-constant'. reflect: padded values are the reflection around sequence "
+        "boundaries. replicate: padded values match the first and final sequence "
+        "values.",
+    )
+    parser.add_argument(
+        "--pad-constant",
+        type=float,
+        default=0.0,
+        help="Constant used when padding with '--pad-mode=constant'",
+    )
+    parser.add_argument(
+        "--partial-tokens",
+        action="store_true",
+        default=False,
+        help="If set, reference token sequences which only partly overlap with a chunk "
+        "will still be included with the chunk.",
+    )
+    parser.add_argument(
+        "--retain-token-boundaries",
+        action="store_true",
+        default=False,
+        help="If set, segment boundaries of reference token sequences will keep their "
+        "original values rather than being made relative to the chunk.",
+    )
+    parser.add_argument(
+        "--quiet", action="store_true", default=False, help="Suppress any warnings.",
+    )
+    parser.add_argument(
+        "--format-utt",
+        default=r"{utt_id}.{start:05d}.{end:05d}",
+        help="Format string with which to format utterance ids of chunks. Available "
+        "keys are 'utt_id': the old utterance id, 'start': the start frame of the "
+        "chunk (inclusive), 'end': the end frame of the chunk (exclusive), and 'idx': "
+        "the 0-index of the chunk within the utterance",
+    )
+    try:
+        options = parser.parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+
+    if any(
+        os.path.isabs(x)
+        for x in (options.feat_subdir, options.ref_subdir, options.ali_subdir)
+    ):
+        print(
+            "--feat-subdir, --ali-subdir, and --ref-subdir must all be relative paths",
+            file=sys.stderr,
+        )
+        return 1
+    in_feat_dir = os.path.join(options.in_dir, options.feat_subdir)
+    in_ali_dir = os.path.join(options.in_dir, options.ali_subdir)
+    in_ref_dir = os.path.join(options.in_dir, options.ref_subdir)
+    if not os.path.isdir(in_feat_dir):
+        print(f"'{in_feat_dir}' does not exist", file=sys.stderr)
+        return 1
+    out_feat_dir = os.path.join(options.out_dir, options.feat_subdir)
+    out_ali_dir = os.path.join(options.out_dir, options.ali_subdir)
+    out_ref_dir = os.path.join(options.out_dir, options.ref_subdir)
+    os.makedirs(out_feat_dir, exist_ok=True)
+    if os.path.isdir(in_ali_dir):
+        os.makedirs(out_ali_dir, exist_ok=True)
+    else:
+        in_ali_dir = None
+    if os.path.isdir(in_ref_dir):
+        os.makedirs(out_ref_dir, exist_ok=True)
+    else:
+        in_ref_dir = None
+
+    utt_ids = iter(
+        data.SpectDataSet(
+            options.in_dir,
+            options.file_prefix,
+            options.file_suffix,
+            not options.quiet,
+            feat_subdir=options.feat_subdir,
+            ali_subdir=options.ali_subdir,
+            ref_subdir=options.ref_subdir,
+            suppress_alis=False,
+            tokens_only=False,
+        ).utt_ids
+    )
+
+    _multiprocessor_pattern(
+        utt_ids,
+        options,
+        _chunk_torch_spect_data_dir_do_work,
+        in_feat_dir,
+        in_ali_dir,
+        in_ref_dir,
+        options.file_prefix,
+        options.file_suffix,
+        options.policy,
+        options.lobe_size,
+        options.window_type,
+        options.pad_mode,
+        options.pad_constant,
+        options.partial_tokens,
+        options.retain_token_boundaries,
+        options.quiet,
+        options.format_utt,
+        out_feat_dir,
+        out_ali_dir,
+        out_ref_dir,
+    )
+
+
 def _worker_func(queue, timeout, do_work_func, *args):
-    basenames = queue.get(True, timeout)
-    while basenames is not None:
-        do_work_func(basenames, *args)
-        del basenames
-        basenames = queue.get(True, timeout)
+    x = queue.get(True, timeout)
+    while x is not None:
+        do_work_func(x, *args)
+        del x
+        x = queue.get(True, timeout)
 
 
-def _multiprocessor_pattern(basenames, options, do_work_func, *args):
+def _multiprocessor_pattern(x, options, do_work_func, *args):
     if options.num_workers:
         queue = torch.multiprocessing.Queue(options.num_workers)
         with torch.multiprocessing.Pool(
@@ -1834,14 +2069,14 @@ def _multiprocessor_pattern(basenames, options, do_work_func, *args):
             _worker_func,
             (queue, options.timeout, do_work_func, *args),
         ) as pool:
-            chunk = tuple(itertools.islice(basenames, options.chunk_size))
+            chunk = tuple(itertools.islice(x, options.chunk_size))
             while len(chunk):
                 queue.put(chunk)
-                chunk = tuple(itertools.islice(basenames, options.chunk_size))
+                chunk = tuple(itertools.islice(x, options.chunk_size))
             for _ in range(options.num_workers):
                 queue.put(None)
             pool.close()
             pool.join()
     else:
-        do_work_func(basenames, *args)
+        do_work_func(x, *args)
 

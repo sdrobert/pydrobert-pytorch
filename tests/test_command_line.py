@@ -20,6 +20,12 @@ import pytest
 import torch
 import pydrobert.torch.command_line as command_line
 
+from pydrobert.torch.functional import (
+    slice_spect_data,
+    chunk_by_slices,
+    chunk_token_sequences_by_slices,
+)
+
 
 @pytest.mark.cpu
 @pytest.mark.parametrize("include_frame_shift", [True, False])
@@ -926,4 +932,54 @@ Object class = "TextGrid"
 "b c d e"
 """
         )
+
+
+@pytest.mark.cpu
+def test_chunk_torch_spect_data_dir(temp_dir, populate_torch_dir):
+    N = 100
+    in_dir = os.path.join(temp_dir, "in")
+    out_dir = os.path.join(temp_dir, "out")
+    feats, alis, refs, lens, ref_lens, utt_ids = populate_torch_dir(in_dir, N)
+    feats = torch.nn.utils.rnn.pad_sequence(feats, batch_first=True)
+    alis = torch.nn.utils.rnn.pad_sequence(alis, batch_first=True)
+    refs = torch.nn.utils.rnn.pad_sequence(refs, batch_first=True)
+    lens = torch.tensor(lens)
+    ref_lens = torch.tensor(ref_lens)
+    slices, sources = slice_spect_data(feats, lens)
+    feats, alis, refs = feats[sources], alis[sources], refs[sources]
+    lens, ref_lens = lens[sources], ref_lens[sources]
+    basenames = []
+    for n, count in zip(*sources.unique_consecutive(return_counts=True)):
+        utt_id = utt_ids[n.item()]
+        for c in range(count.item()):
+            basenames.append(f"{utt_id}.{c}.pt")
+    basenames.sort()
+    feats, lens_ = chunk_by_slices(feats, slices, lens)
+    alis, lens_2 = chunk_by_slices(alis, slices, lens)
+    assert (lens_ == lens_2).all()
+    lens = lens_
+    assert len(basenames) == lens.numel()
+    refs, ref_lens = chunk_token_sequences_by_slices(refs, slices, ref_lens)
+    assert not command_line.chunk_torch_spect_data_dir(
+        [in_dir, out_dir, "--format-utt={utt_id}.{idx}"]
+    )
+    out_feat_dir = os.path.join(out_dir, "feat")
+    out_ali_dir = os.path.join(out_dir, "ali")
+    out_ref_dir = os.path.join(out_dir, "ref")
+    assert basenames == sorted(os.listdir(out_feat_dir))
+    assert basenames == sorted(os.listdir(out_ali_dir))
+    assert basenames == sorted(os.listdir(out_ref_dir))
+    for basename, feat, ali, len_, ref, ref_len in zip(
+        basenames, feats, alis, lens, refs, ref_lens
+    ):
+        exp_feat, exp_ali, exp_ref = feat[:len_], ali[:len_], ref[:ref_len]
+        act_feat = torch.load(os.path.join(out_feat_dir, basename))
+        act_ali = torch.load(os.path.join(out_ali_dir, basename))
+        act_ref = torch.load(os.path.join(out_ref_dir, basename))
+        assert exp_feat.shape == act_feat.shape
+        assert exp_ali.shape == act_ali.shape
+        assert exp_ref.shape == act_ref.shape
+        assert torch.allclose(exp_feat, act_feat)
+        assert (exp_ali == act_ali).all()
+        assert (exp_ref == act_ref).all()
 

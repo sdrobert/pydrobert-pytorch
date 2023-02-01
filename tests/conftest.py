@@ -26,6 +26,10 @@ import pydrobert.torch.config as config
 
 import pydrobert.torch._compat as compat
 
+# command-line tests usually use relatively few utterances.
+# Make sure we're not putting them all on one thread.
+config.DEFT_CHUNK_SIZE = 10
+
 if compat._v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
     compat.script = torch.jit.script

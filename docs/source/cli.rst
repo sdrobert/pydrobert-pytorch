@@ -1,6 +1,113 @@
 Command-Line Interface
 ======================
 
+chunk-torch-spect-data-dir
+--------------------------
+
+::
+
+  usage: chunk-torch-spect-data-dir [-h] [--file-prefix FILE_PREFIX]
+                                    [--file-suffix FILE_SUFFIX]
+                                    [--feat-subdir FEAT_SUBDIR]
+                                    [--ali-subdir ALI_SUBDIR]
+                                    [--ref-subdir REF_SUBDIR]
+                                    [--num-workers NUM_WORKERS]
+                                    [--chunk-size CHUNK_SIZE]
+                                    [--timeout TIMEOUT]
+                                    [--policy {fixed,ali,ref}]
+                                    [--lobe-size LOBE_SIZE]
+                                    [--window-type {symmetric,causal,future}]
+                                    [--pad-mode {constant,reflect,replicate}]
+                                    [--pad-constant PAD_CONSTANT]
+                                    [--partial-tokens]
+                                    [--retain-token-boundaries] [--quiet]
+                                    [--format-utt FORMAT_UTT]
+                                    in_dir out_dir
+  
+  Create a new SpectDataSet directory by chunking another
+  
+  This command breaks SpectDataSet sequences into sub-sequences (chunks), storing the
+  results in a new directory. New utterances are named according to "--format-utt".
+  
+  Sequences are sliced according to one of three policies set by the "--policy" flag
+  (default "fixed"). They are:
+  
+  - fixed: extract a fixed-sized window at fixed-length intervals along the feature
+           sequence.
+  - ali: use per-frame alignments to segment the feature sequence into intervals with
+         matching labels. Requires per-frame alignments (data in the "ali/" subdirectory).
+  - ref: use reference token sequence segments as slices. Requires reference sequences
+         (data in the "ali/" subdirectory) and for them to contain segment boundary
+         information.
+  
+  Overlapping chunks may be created by specifying "--lobe-size" (default "0") and
+  "--window-type" (default "symmetric"). More details on the policies and windowing can
+  be found in the Python module pydrobert.torch.modules.SliceSpectData.
+  
+  By default, only valid slices (i.e. those entirely within the boundaries of the input
+  sequences) are counted. Specifying "--pad-mode" will include slices partially within
+  boundaries as well as how to pad features and per-frame alignments to fill the
+  remainder.
+  
+  See the command "get-torch-spect-data-dir-info" for more info SpectDataSet directories.
+  
+  positional arguments:
+    in_dir                The torch data directory to chunk (input)
+    out_dir               The torch data directory to store chunks (output)
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --feat-subdir FEAT_SUBDIR
+                          Subdirectory where features are stored.
+    --ali-subdir ALI_SUBDIR
+                          Subdirectory where per-frame alignments are stored.
+    --ref-subdir REF_SUBDIR
+                          Subdirectory where reference token sequences are
+                          stored.
+    --num-workers NUM_WORKERS
+                          The number of workers to spawn to process the data. 0
+                          is serial. Defaults to the CPU count
+    --chunk-size CHUNK_SIZE
+                          The number of utterances that a worker will process at
+                          once. Impacts speed and memory consumption.
+    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
+                          without new data before terminating. The default is to
+                          wait indefinitely.
+    --policy {fixed,ali,ref}
+                          The policy for determining slices from the data. See
+                          SliceSpectData.
+    --lobe-size LOBE_SIZE
+                          Size of a side lobe of a slice. See SliceSpectData.
+    --window-type {symmetric,causal,future}
+                          Type of window used in slicing. See SliceSpectData.
+    --pad-mode {constant,reflect,replicate}
+                          If specified, determines how to chunks of features and
+                          alignments exceeding the original sequence boundaries.
+                          constant: pad with the value of '--pad-constant'.
+                          reflect: padded values are the reflection around
+                          sequence boundaries. replicate: padded values match
+                          the first and final sequence values.
+    --pad-constant PAD_CONSTANT
+                          Constant used when padding with '--pad-mode=constant'
+    --partial-tokens      If set, reference token sequences which only partly
+                          overlap with a chunk will still be included with the
+                          chunk.
+    --retain-token-boundaries
+                          If set, segment boundaries of reference token
+                          sequences will keep their original values rather than
+                          being made relative to the chunk.
+    --quiet               Suppress any warnings.
+    --format-utt FORMAT_UTT
+                          Format string with which to format utterance ids of
+                          chunks. Available keys are 'utt_id': the old utterance
+                          id, 'start': the start frame of the chunk (inclusive),
+                          'end': the end frame of the chunk (exclusive), and
+                          'idx': the 0-index of the chunk within the utterance
+
 compute-mvn-stats-for-torch-feat-data-dir
 -----------------------------------------
 
@@ -325,12 +432,12 @@ get-torch-spect-data-dir-info
     --file-suffix FILE_SUFFIX
                           The file suffix indicating a torch data file
     --feat-subdir FEAT_SUBDIR
-                          Subdirectory where features are stored
+                          Subdirectory where features are stored.
     --ali-subdir ALI_SUBDIR
-                          Subdirectory where alignments are stored
+                          Subdirectory where per-frame alignments are stored.
     --ref-subdir REF_SUBDIR
                           Subdirectory where reference token sequences are
-                          stored
+                          stored.
     --strict              If set, validate the data directory before collecting
                           info. The process is described in
                           pydrobert.torch.data.validate_spect_data_set
@@ -406,7 +513,7 @@ textgrids-to-torch-token-data-dir
                           without new data before terminating. The default is to
                           wait indefinitely.
     --textgrid-suffix TEXTGRID_SUFFIX
-                          The file suffix in tg_dir indicating a TextGrid file
+                          The file suffix in tg_dir indicating a TextGrid file.
     --fill-symbol FILL_SYMBOL
                           If set, unlabelled intervals in the TextGrid files
                           will be assigned this symbol. Relevant only if a point
@@ -542,7 +649,7 @@ torch-spect-data-dir-to-wds
     --feat-subdir FEAT_SUBDIR
                           Subdirectory where features are stored.
     --ali-subdir ALI_SUBDIR
-                          Subdirectory where alignments are stored.
+                          Subdirectory where per-frame alignments are stored.
     --ref-subdir REF_SUBDIR
                           Subdirectory where reference token sequences are
                           stored.
@@ -719,7 +826,7 @@ torch-token-data-dir-to-textgrids
                           without new data before terminating. The default is to
                           wait indefinitely.
     --textgrid-suffix TEXTGRID_SUFFIX
-                          The file suffix in tg_dir indicating a TextGrid file
+                          The file suffix in tg_dir indicating a TextGrid file.
     --tier-name TIER_NAME
                           The name to save the tier with
     --precision PRECISION
