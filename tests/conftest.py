@@ -15,10 +15,12 @@
 import pytest
 import os
 import math
+import socket
 
 from tempfile import mkdtemp
 from shutil import rmtree
 from zlib import adler32
+from contextlib import closing
 
 import torch
 
@@ -60,6 +62,13 @@ def device(request):
 CUDA_AVAIL = torch.cuda.is_available()
 
 
+def find_free_port():
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+        s.bind(("localhost", 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
+
+
 def pytest_runtest_setup(item):
     if any(mark.name == "gpu" for mark in item.iter_markers()):
         if not CUDA_AVAIL:
@@ -69,7 +78,7 @@ def pytest_runtest_setup(item):
 
     # for distributed training (doesn't overwrite test)
     os.environ.setdefault("MASTER_ADDR", "localhost")
-    os.environ.setdefault("MASTER_PORT", "12355")
+    os.environ.setdefault("MASTER_PORT", str(find_free_port()))
 
 
 @pytest.fixture(scope="session")
