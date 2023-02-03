@@ -15,7 +15,6 @@
 import os
 import argparse
 import abc
-import logging
 
 from pathlib import PurePath
 from typing import Dict, Optional, TypeVar, Generic, Type, Union
@@ -38,7 +37,7 @@ from ._dataloaders import (
 StrPath = Union[str, os.PathLike[str]]
 
 
-class MyPath(param.Parameterized):
+class MyPath(param.Parameter):
 
     __slots__ = ["always_exists", "type"]
 
@@ -58,7 +57,7 @@ class MyPath(param.Parameterized):
             )
         self.always_exists = always_exists
         self.type = type
-        super().__init__(default, **params)
+        super().__init__(default=default, **params)
 
     def __get__(self, obj, objtype) -> Optional[str]:
         path: Optional[StrPath] = super().__get__(obj, objtype)
@@ -335,8 +334,12 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
     def setup(self, stage: Optional[str] = None):
 
         if self._num_workers is None:
-            # FIXME(sdrobert): DDP and such
-            self._num_workers = torch.multiprocessing.cpu_count()
+            if self.trainer is not None and isinstance(
+                self.trainer.strategy, pl.strategies.DDPSpawnStrategy
+            ):
+                self._num_workers = 1
+            else:
+                self._num_workers = torch.multiprocessing.cpu_count()
 
         if self._pin_memory is None:
             if self.trainer is not None:
@@ -709,7 +712,6 @@ class LitSpectDataModule(
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             on_uneven_distributed=self.on_uneven_distributed,
-            persistent_workers=partition not in {"test", "predict"},
         )
 
     @classmethod

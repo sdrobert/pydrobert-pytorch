@@ -88,6 +88,7 @@ def populate_lit_dir(request, populate_torch_dir):
     return _populate_lit_dir
 
 
+@pytest.mark.cpu
 def test_lit_spect_data_module_basic(temp_dir, populate_lit_dir):
     tN, VN, TN, N, F, A, V = 101, 11, 21, 10, 5, 9, 10
     params = plightning.LitSpectDataModuleParams(
@@ -98,15 +99,15 @@ def test_lit_spect_data_module_basic(temp_dir, populate_lit_dir):
     params.train_params.batch_size = N
     params.train_params.drop_last = True
     data = plightning.LitSpectDataModule(params)
-    assert data.vocab_size is None
     data.prepare_data()
-    assert data.vocab_size == V
-    assert data.feat_size == F
+    assert data.vocab_size is None
     assert data.test_set is None
     assert data.val_set is None
     assert data.train_set is None
     assert data.predict_set is None
     data.setup()
+    assert data.vocab_size == V
+    assert data.feat_size == F
     assert len(data.train_set) == tN
     assert len(data.val_set) == VN
     assert len(data.test_set) == TN
@@ -131,6 +132,7 @@ def test_lit_spect_data_module_basic(temp_dir, populate_lit_dir):
     assert (ref_lens_0 == ref_lens_1).all()
 
 
+@pytest.mark.cpu
 def test_lit_spect_data_module_argparse(temp_dir, populate_lit_dir):
     tNN, VNN, TNN, PNN, tN, TN = 50, 40, 30, 20, 5, 10
     assert tNN % tN == VNN % tN == TNN % TN == PNN % TN == 0
