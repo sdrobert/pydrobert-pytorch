@@ -1324,7 +1324,7 @@ class OptimalCompletion(_StringMatching):
     Consider the reference text "foot" and the hypothesis text "bot". The below shows
     the matrix used to calculate edit distances between them::
 
-        \ _ f o o t
+        \\ _ f o o t
         _ 0 1 2 3 4
         b 1 1 2 3 4
         o 2 2 1 2 3
@@ -1709,7 +1709,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
     .. math::
 
-        \mathcal{{L}}(s, s^*) = \\frac{{Pr(s) ER(s, s^*)}}{{\\sum_{{s'}} Pr(s')}}
+        \\mathcal{{L}}(s, s^*) = \\frac{{Pr(s) ER(s, s^*)}}{{\\sum_{{s'}} Pr(s')}}
 
     This is an exact expectation over :math:`S` but not over :math:`P`. The larger the
     mass covered by :math:`S`, the closer the expectation is to the population -

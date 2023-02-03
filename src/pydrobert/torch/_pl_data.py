@@ -1,4 +1,4 @@
-# Copyright 2022 Sean Robertson
+# Copyright 2023 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,8 +15,10 @@
 import os
 import argparse
 import abc
+import logging
 
-from typing import Dict, Optional, TypeVar, Generic, Type
+from pathlib import PurePath
+from typing import Dict, Optional, TypeVar, Generic, Type, Union
 from typing_extensions import Literal
 
 import torch
@@ -31,6 +33,58 @@ from ._dataloaders import (
     SpectDataLoaderParams,
     LangDataLoaderParams,
 )
+
+
+StrPath = Union[str, os.PathLike[str]]
+
+
+class MyPath(param.Parameterized):
+
+    __slots__ = ["always_exists", "type"]
+
+    always_exists: bool
+    type: Optional[Literal["dir", "file"]]
+
+    def __init__(
+        self,
+        default: Optional[StrPath] = None,
+        always_exists: bool = True,
+        type: Optional[Literal["dir", "file"]] = None,
+        **params,
+    ):
+        if type not in {"dir", "file", None}:
+            raise ValueError(
+                f"type must be one of 'dir', 'file', or None; got '{type}'"
+            )
+        self.always_exists = always_exists
+        self.type = type
+        super().__init__(default, **params)
+
+    def __get__(self, obj, objtype) -> Optional[str]:
+        path: Optional[StrPath] = super().__get__(obj, objtype)
+        if path is not None:
+            path = os.path.normpath(path)
+            if os.path.exists(path):
+                if self.type is not None and (
+                    os.path.isdir(path) != (self.type == "dir")
+                    or os.path.isfile(path) != (self.type == "file")
+                ):
+                    raise IOError(f"'{path}' is not a {self.type}")
+            elif self.always_exists:
+                raise IOError(f"'{path}' does not exist")
+        return path
+
+    @classmethod
+    def serialize(cls, value: Optional[StrPath]) -> Optional[str]:
+        if value is None:
+            return value
+        return PurePath(value).as_posix()
+
+    @classmethod
+    def deserialize(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or value == "null":
+            return None
+        return os.path.normpath(value)
 
 
 class LitDataModuleParamsMetaclass(pabc.AbstractParameterizedMetaclass):
@@ -82,14 +136,10 @@ class LitDataModuleParams(
         doc="Prediction data loader parameters. If set, cannot instantiate common",
     )
 
-    train_dir: Optional[str] = param.Foldername(
-        None, doc="Path to training data directory"
-    )
-    val_dir: Optional[str] = param.Foldername(
-        None, doc="Path to validation data directory"
-    )
-    test_dir: Optional[str] = param.Foldername(None, doc="Path to test data directory")
-    predict_dir: Optional[str] = param.Foldername(
+    train_dir: Optional[str] = MyPath(None, doc="Path to training data directory")
+    val_dir: Optional[str] = MyPath(None, doc="Path to validation data directory")
+    test_dir: Optional[str] = MyPath(None, doc="Path to test data directory")
+    predict_dir: Optional[str] = MyPath(
         None,
         doc="Path to prediction data directory (leave empty to use test_dir if avail.)",
     )
@@ -442,11 +492,9 @@ class LitLangDataModuleParams(LitDataModuleParams[LangDataLoaderParams]):
     vocab_size: Optional[int] = param.Integer(
         None, bounds=(1, None), doc="Vocabulary size",
     )
-    info_path: Optional[str] = param.Filename(
+    info_path: Optional[str] = MyPath(
         None,
-        doc="Path to output of get-torch-spect-data-dir-info command on train_dir/.., "
-        "if train_dir happens to be a subdirectory of a SpectDataSet. Can be "
-        "used to infer the vocabulary size.",
+        doc="Path to output of get-torch-spect-data-dir-info command on train_dir/",
     )
 
 
@@ -477,11 +525,11 @@ class LitSpectDataModuleParams(LitDataModuleParams[SpectDataLoaderParams]):
 
     pclass = SpectDataLoaderParams
 
-    info_path: Optional[str] = param.Filename(
+    info_path: Optional[str] = MyPath(
         None, doc="Path to output of get-torch-spect-data-dir-info command on train_dir"
     )
 
-    mvn_path: Optional[str] = param.Filename(
+    mvn_path: Optional[str] = MyPath(
         None,
         doc="Path to output of compute-mvn-stats-for-torch-feat-data-dir on train_dir",
     )
@@ -558,7 +606,7 @@ class LitSpectDataModule(
     ) -> Optional[int]:
         """Get a value from the info dict
 
-        The info dict is gathered in :func:`prepare_data` if ``params.info_path`` is not
+        The info dict is gathered in :func:`setup` if ``params.info_path`` is not
         :obj:`None`.
         """
         return None if self._info_dict is None else self._info_dict.get(key, default)
@@ -590,7 +638,7 @@ class LitSpectDataModule(
     def max_ali_class(self) -> Optional[int]:
         """int: the maximum token id in the ali/ subdirectory (usually of training)
         
-        Determined in :func:`prepare_data` if `params.info_path` is not :obj:`None`.
+        Determined in :func:`setup` if `params.info_path` is not :obj:`None`.
         """
         return self.get_info_dict_value("max_ali_class")
 
@@ -598,22 +646,9 @@ class LitSpectDataModule(
     def num_filts(self) -> Optional[int]:
         """int : size of the last dimension of tensors in feat/
         
-        Determined in :func:`prepare_data` if `params.info_path` is not :obj:`None`.
+        Determined in :func:`setup` if `params.info_path` is not :obj:`None`.
         """
         return None if self._info_dict is None else self._info_dict["num_filts"]
-
-    def prepare_data(self):
-        if self.params.info_path is not None and self._info_dict is None:
-            self._info_dict = dict()
-            with open(self.params.info_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    key, value = line.split()
-                    value = int(value)
-                    if value != -1:
-                        self._info_dict[key] = value
 
     def construct_dataset(
         self,
@@ -634,6 +669,19 @@ class LitSpectDataModule(
         )
 
     def setup(self, stage: Optional[str] = None):
+
+        if self.params.info_path is not None and self._info_dict is None:
+            self._info_dict = dict()
+            with open(self.params.info_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    key, value = line.split()
+                    value = int(value)
+                    if value != -1:
+                        self._info_dict[key] = value
+
         if (
             self.params.mvn_path is not None
             and self._mvn_mean is None
@@ -642,6 +690,7 @@ class LitSpectDataModule(
             dict_ = torch.load(self.params.mvn_path, "cpu")
             self._mvn_mean = dict_["mean"]
             self._mvn_std = dict_["std"]
+
         super().setup(stage)
 
     def construct_dataloader(
@@ -660,6 +709,7 @@ class LitSpectDataModule(
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             on_uneven_distributed=self.on_uneven_distributed,
+            persistent_workers=partition not in {"test", "predict"},
         )
 
     @classmethod

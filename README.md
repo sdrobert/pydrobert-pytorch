@@ -49,7 +49,8 @@ The implementation of `pydrobert.torch._compat.check_methods` was taken
 directly from the CPython codebase, Copyright 2007 Google with additional
 notices at <https://docs.python.org/3/copyright.html?highlight=copyright>.
 
-The file `pydrobert.torch._textgrid,py` was taken directly from
+The file `pydrobert.torch._textgrid,py` was taken with some minor modifications
+from
 [nltk_contrib](https://github.com/nltk/nltk_contrib/blob/95d1806e2f4e89e960b76a685b1fba2eaa7d5142/nltk_contrib/textgrid.py#L1).
 It is Apache 2.0-licensed, with the specific license text saved to
 `LICENSE_nltk.txt`.
