@@ -450,7 +450,7 @@ def slice_spect_data(
         shift = lobe_size + 1
         if valid_only and window_type == "symmetric":
             window_size = 2 * lobe_size + 1
-            starts = torch.arange(0, T - window_size + 1, shift, device=device)
+            starts = torch.arange(0, max(T - window_size + 1, 0), shift, device=device)
             ends = starts + window_size
             mids = ends - 1
         elif window_type == "symmetric":
@@ -462,7 +462,7 @@ def slice_spect_data(
             ends = starts + window_size
         elif valid_only:
             # the behaviour doesn't change with "causal" or "future" when valid_only
-            starts = torch.arange(0, T - lobe_size, shift, device=device)
+            starts = torch.arange(0, max(T - lobe_size, 0), shift, device=device)
             ends = starts + shift
             mids = ends - 1
         elif window_type == "causal":
