@@ -434,13 +434,13 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
         parser: argparse.ArgumentParser,
         split: bool = True,
         include_overloads: bool = True,
-        flag_fmt_str: str = "--read-{file_format}",
+        flag_format_str: str = "--read-{file_format}",
     ):
         pobj = cls.pclass(name="data_params")
         pobj.prefer_split = split
         pobj.initialize_set_parameters()
         grp = pargparse.add_deserialization_group_to_parser(
-            parser, pobj, "data_params", reckless=True, flag_format_str=flag_fmt_str
+            parser, pobj, "data_params", reckless=True, flag_format_str=flag_format_str
         )
 
         if include_overloads:
