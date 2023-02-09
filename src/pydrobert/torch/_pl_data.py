@@ -732,8 +732,11 @@ class LitSpectDataModule(
         parser: argparse.ArgumentParser,
         split: bool = True,
         include_overloads: bool = True,
+        flag_format_str: str = "--read-{file_format}",
     ):
-        grp = super().add_argparse_args(parser, split, include_overloads)
+        grp = super().add_argparse_args(
+            parser, split, include_overloads, flag_format_str
+        )
         if include_overloads:
             grp.add_argument(
                 "--mvn-path",
