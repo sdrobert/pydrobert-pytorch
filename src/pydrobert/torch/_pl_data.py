@@ -558,6 +558,7 @@ class LitSpectDataModule(
         sort_batch: bool = False,
         suppress_alis: bool = True,
         tokens_only: bool = True,
+        suppress_uttids: Optional[bool] = None,
         num_workers: Optional[int] = None,
         pin_memory: Optional[bool] = None,
         warn_on_missing: bool = True,
@@ -588,6 +589,14 @@ class LitSpectDataModule(
     def tokens_only(self) -> bool:
         """bool : whether dataloaders suppress segment info in token seqs if avail."""
         return self.hparams.tokens_only
+
+    @property
+    def suppress_uttids(self) -> Optional[bool]:
+        """Optional[bool] : whether to suppress utterance ids in batch elements
+        
+        If :obj:`None`, suppresses for all partitions but the prediction
+        """
+        return self.hparams.suppress_uttids
 
     @property
     def warn_on_missing(self) -> bool:
@@ -659,7 +668,9 @@ class LitSpectDataModule(
         path: str,
         params: SpectDataLoaderParams,
     ) -> SpectDataSet:
-        suppress_uttids = partition != "predict"
+        suppress_uttids = self.suppress_uttids
+        if suppress_uttids is None:
+            suppress_uttids = partition != "predict"
         return SpectDataSet(
             path,
             warn_on_missing=self.warn_on_missing,
