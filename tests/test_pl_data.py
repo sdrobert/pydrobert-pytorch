@@ -157,7 +157,7 @@ def test_lit_spect_data_module_argparse(temp_dir, populate_lit_dir):
 
     parser = argparse.ArgumentParser()
     plightning.LitSpectDataModule.add_argparse_args(parser)
-    args = ["--read-json", cfg]
+    args = ["--read-data-json", cfg]
     namespace = parser.parse_args(args)
     dm = plightning.LitSpectDataModule.from_argparse_args(namespace)
     assert dm.params.pprint() == params.pprint()

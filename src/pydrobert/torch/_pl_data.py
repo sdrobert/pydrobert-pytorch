@@ -264,6 +264,8 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
     _num_workers: Optional[int]
     _pin_memory: Optional[bool]
 
+    params: LitDataModuleParams[P]
+
     def __init__(
         self,
         params: LitDataModuleParams[P],
@@ -274,6 +276,8 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
             raise ValueError(f"Incorrect parameter class {type(params)}")
         super().__init__()
 
+        self.params = params
+
         # The member is a "local copy" of the hyperparameter. The default changes
         # depending on the node we're running on, so we don't want to propagate them
         # back to the module state
@@ -282,13 +286,10 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
 
         self.train_set = self.predict_set = self.test_set = self.val_set = None
 
-        # XXX(sdrobert): save_hyperparameters saves unused arguments to self.hparams
-        self.save_hyperparameters()
-
-    @property
-    def params(self) -> LitDataModuleParams[P]:
-        """the data module parameters"""
-        return self.hparams.params
+    # @property
+    # def params(self) -> LitDataModuleParams[P]:
+    #     """the data module parameters"""
+    #     return self.hparams.params
 
     @property
     def num_workers(self) -> Optional[int]:
@@ -344,8 +345,7 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
         if self._pin_memory is None:
             if self.trainer is not None:
                 self._pin_memory = isinstance(
-                    self.trainer.accelerator,
-                    pl.accelerators.accelerator.CUDAAccelerator,
+                    self.trainer.accelerator, pl.accelerators.CUDAAccelerator,
                 )
             else:
                 self._pin_memory = True
@@ -434,13 +434,20 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
         parser: argparse.ArgumentParser,
         split: bool = True,
         include_overloads: bool = True,
-        flag_format_str: str = "--read-{file_format}",
+        read_format_str: str = "--read-data-{file_format}",
+        print_format_str: Optional[str] = None,
     ):
         pobj = cls.pclass(name="data_params")
         pobj.prefer_split = split
         pobj.initialize_set_parameters()
+
+        if print_format_str is not None:
+            pargparse.add_serialization_group_to_parser(
+                parser, pobj, reckless=True, flag_format_str=print_format_str
+            )
+
         grp = pargparse.add_deserialization_group_to_parser(
-            parser, pobj, "data_params", reckless=True, flag_format_str=flag_format_str
+            parser, pobj, "data_params", reckless=True, flag_format_str=read_format_str,
         )
 
         if include_overloads:
@@ -546,6 +553,14 @@ class LitSpectDataModule(
 
     pclass = LitSpectDataModuleParams
     params: LitSpectDataModuleParams
+    batch_first: bool
+    sort_batch: bool
+    suppress_alis: bool
+    tokens_only: bool
+    suppress_uttids: Optional[bool]
+    shuffle: Optional[bool]
+    warn_on_missing: bool
+    on_uneven_distributed: Literal["raise", "uneven", "ignore"]
 
     _num_filts: Optional[int]
     _info_dict: Optional[Dict[str, int]]
@@ -554,65 +569,29 @@ class LitSpectDataModule(
 
     def __init__(
         self,
-        params: LitSpectDataModuleParams,
+        data_params: LitSpectDataModuleParams,
         batch_first: bool = False,
         sort_batch: bool = False,
         suppress_alis: bool = True,
         tokens_only: bool = True,
         suppress_uttids: Optional[bool] = None,
+        shuffle: Optional[bool] = None,
         num_workers: Optional[int] = None,
         pin_memory: Optional[bool] = None,
         warn_on_missing: bool = True,
         on_uneven_distributed: Literal["raise", "uneven", "ignore"] = "raise",
     ) -> None:
-        super().__init__(params, num_workers, pin_memory)
+        super().__init__(data_params, num_workers, pin_memory)
 
+        self.batch_first = batch_first
+        self.sort_batch = sort_batch
+        self.suppress_alis = suppress_alis
+        self.tokens_only = tokens_only
+        self.suppress_uttids = suppress_uttids
+        self.shuffle = shuffle
+        self.warn_on_missing = warn_on_missing
+        self.on_uneven_distributed = on_uneven_distributed
         self._info_dict = None
-
-        self.save_hyperparameters()
-
-    @property
-    def batch_first(self) -> bool:
-        """bool : whether dataloaders present data with the batch dimension first"""
-        return self.hparams.batch_first
-
-    @property
-    def sort_batch(self) -> bool:
-        """bool : whether dataloaders sort batch elements by number of features"""
-        return self.hparams.sort_batch
-
-    @property
-    def suppress_alis(self) -> bool:
-        """bool : whether dataloaders suppress alignment info"""
-        return self.hparams.suppress_alis
-
-    @property
-    def tokens_only(self) -> bool:
-        """bool : whether dataloaders suppress segment info in token seqs if avail."""
-        return self.hparams.tokens_only
-
-    @property
-    def suppress_uttids(self) -> Optional[bool]:
-        """Optional[bool] : whether to suppress utterance ids in batch elements
-        
-        If :obj:`None`, suppresses for all partitions but the prediction
-        """
-        return self.hparams.suppress_uttids
-
-    @property
-    def warn_on_missing(self) -> bool:
-        """bool : whether to issue a warning if utterances are missing in subdirs"""
-        return self.hparams.warn_on_missing
-
-    @property
-    def on_uneven_distributed(self) -> Literal["raise", "uneven", "ignore"]:
-        """str : how to handle uneven batch sizes in the distributed environment
-        
-        - 'raise': throw a :class:`ValueError`
-        - 'uneven': allow some processes to make fewer or smaller batches.
-        - 'ignore': ignore the distributed environment. Each process yields all batches.
-        """
-        return self.hparams.on_uneven_distributed
 
     def get_info_dict_value(
         self, key: str, default: Optional[int] = None
@@ -714,10 +693,13 @@ class LitSpectDataModule(
         ds: SpectDataSet,
         params: SpectDataLoaderParams,
     ) -> SpectDataLoader:
+        shuffle = self.shuffle
+        if shuffle is None:
+            shuffle = partition == "train"
         return SpectDataLoader(
             ds,
             params,
-            shuffle=partition == "train",
+            shuffle=shuffle,
             batch_first=self.batch_first,
             sort_batch=self.sort_batch,
             init_epoch=0 if self.trainer is None else self.trainer.current_epoch,
@@ -732,10 +714,11 @@ class LitSpectDataModule(
         parser: argparse.ArgumentParser,
         split: bool = True,
         include_overloads: bool = True,
-        flag_format_str: str = "--read-{file_format}",
+        read_format_str: str = "--read-data-{file_format}",
+        print_format_str: Optional[str] = None,
     ):
         grp = super().add_argparse_args(
-            parser, split, include_overloads, flag_format_str
+            parser, split, include_overloads, read_format_str, print_format_str
         )
         if include_overloads:
             grp.add_argument(
