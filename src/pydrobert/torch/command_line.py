@@ -24,7 +24,7 @@ import io
 
 from pathlib import Path
 from collections import defaultdict, OrderedDict
-from typing import Dict, Optional, Sequence
+from typing import Dict, Optional, Sequence, Type, TypeVar
 
 import torch
 
@@ -32,6 +32,44 @@ from . import data, modules, config
 from ._feats import SliceSpectData, ChunkTokenSequencesBySlices
 from ._pad import ChunkBySlices
 from ._string import error_rate
+
+
+def rdir(x: str) -> str:
+    if not os.path.isdir(x):
+        raise TypeError(f"'{x}' is not a directory")
+    return x
+
+
+R = TypeVar("R")
+
+
+def bounded(
+    x: str,
+    type: Type[R],
+    lower: Optional[R] = None,
+    upper: Optional[R] = None,
+    inclusive_lower: bool = True,
+    inclusive_upper: bool = True,
+) -> R:
+    x: R = type(x)
+    if lower is not None:
+        if inclusive_lower and x < lower:
+            raise TypeError(f"Expected {x} >= {lower}")
+        elif not inclusive_lower and x <= lower:
+            raise TypeError(f"Expected {x} > {lower}")
+    if upper is not None:
+        if inclusive_upper and x > upper:
+            raise TypeError(f"Expected {x} <= {upper}")
+        elif not inclusive_upper and x >= upper:
+            raise TypeError(f"Expected {x} < {upper}")
+    return x
+
+
+nat = lambda x: bounded(x, int, 1)
+nat0 = lambda x: bounded(x, int, 0)
+pos = lambda x: bounded(x, float, 0, inclusive_lower=False)
+open01 = lambda x: bounded(x, float, 0.0, 1.0, False, False)
+closed01 = lambda x: bounded(x, float, 0.0, 1.0)
 
 
 _COMMON_ARGS = {
@@ -71,7 +109,7 @@ _COMMON_ARGS = {
         "help": "If set, will map out-of-vocabulary tokens to this symbol",
     },
     "--frame-shift-ms": {
-        "type": float,
+        "type": pos,
         "default": config.DEFT_FRAME_SHIFT_MS,
         "help": "The number of milliseconds that have passed between consecutive "
         "frames. Used to convert between time in seconds and frame index. If your "
@@ -92,13 +130,13 @@ _COMMON_ARGS = {
         "loaded as features in a SpectDataSet.",
     },
     "--chunk-size": {
-        "type": int,
+        "type": nat,
         "default": config.DEFT_CHUNK_SIZE,
         "help": "The number of utterances that a worker will process at once. Impacts "
         "speed and memory consumption.",
     },
     "--timeout": {
-        "type": int,
+        "type": nat,
         "default": None,
         "help": "When using multiple workers, how long (in seconds) without new data "
         "before terminating. The default is to wait indefinitely.",
@@ -202,7 +240,7 @@ integers."""
         description=get_torch_spect_data_dir_info.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("dir", type=str, help="The torch data directory")
+    parser.add_argument("dir", type=rdir, help="The torch data directory")
     parser.add_argument(
         "out_file",
         nargs="?",
@@ -236,9 +274,6 @@ integers."""
     except SystemExit as ex:
         return ex.code
 
-    if not os.path.isdir(options.dir):
-        print(f"'{options.dir}' is not a directory", file=sys.stderr)
-        return 1
     data_set = data.SpectDataSet(
         options.dir,
         file_prefix=options.file_prefix,
@@ -542,7 +577,9 @@ info about a SpectDataSet directory."""
         description=torch_token_data_dir_to_trn.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("dir", help="The directory to read token sequences from")
+    parser.add_argument(
+        "dir", type=rdir, help="The directory to read token sequences from"
+    )
     _add_common_arg(parser, "id2token")
     parser.add_argument(
         "trn",
@@ -558,9 +595,6 @@ info about a SpectDataSet directory."""
         options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
-    if not os.path.isdir(options.dir):
-        print(f"'{options.dir}' is not a directory", file=sys.stderr)
-        return 1
     id2token = _parse_token2id(options.id2token, not options.swap, options.swap)
     transcripts = _load_transcripts_from_data_dir(
         options.dir,
@@ -733,7 +767,9 @@ directory."""
         description=textgrids_to_torch_token_data_dir.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("tg_dir", help="The directory containing the TextGrid files")
+    parser.add_argument(
+        "tg_dir", type=rdir, help="The directory containing the TextGrid files"
+    )
     _add_common_arg(parser, "token2id")
     parser.add_argument(
         "dir",
@@ -773,8 +809,6 @@ directory."""
         options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
-    if not os.path.isdir(options.tg_dir):
-        raise ValueError(f"'{options.tg_dir}' is not a directory")
     token2id = _parse_token2id(options.token2id, options.swap, options.swap)
     if options.unk_symbol is not None and options.unk_symbol not in token2id:
         print(f"Unk symbol '{options.unk_symbol}' is not in token2id", file=sys.stderr)
@@ -843,7 +877,9 @@ SpectDataSet directory."""
         description=torch_token_data_dir_to_ctm.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("dir", help="The directory to read token sequences from")
+    parser.add_argument(
+        "dir", type=rdir, help="The directory to read token sequences from"
+    )
     _add_common_arg(parser, "id2token")
     parser.add_argument(
         "ctm",
@@ -933,6 +969,7 @@ performing these computations."""
     )
     parser.add_argument(
         "dir",
+        type=rdir,
         help="If the 'hyp' argument is not specified, this is the "
         "parent directory of two subdirectories, 'ref/' and 'hyp/', which "
         "contain the reference and hypothesis transcripts, respectively. If "
@@ -940,7 +977,11 @@ performing these computations."""
         "transcript directory",
     )
     parser.add_argument(
-        "hyp", nargs="?", default=None, help="The hypothesis transcript directory",
+        "hyp",
+        nargs="?",
+        type=rdir,
+        default=None,
+        help="The hypothesis transcript directory",
     )
     parser.add_argument(
         "out",
@@ -1001,7 +1042,7 @@ performing these computations."""
     )
     parser.add_argument(
         "--batch-size",
-        type=int,
+        type=nat,
         default=100,
         help="The number of error rates to compute at once. Reduce if you "
         "run into memory errors",
@@ -1247,7 +1288,7 @@ This command does not require WebDataset to be installed."""
         description=torch_spect_data_dir_to_wds.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("dir", help="The torch data directory")
+    parser.add_argument("dir", type=rdir, help="The torch data directory")
     parser.add_argument("tar_path", help="The path to store files to")
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
@@ -1269,14 +1310,14 @@ This command does not require WebDataset to be installed."""
     )
     parser.add_argument(
         "--max-samples-per-shard",
-        type=int,
+        type=nat,
         default=1e5,
         help="If sharding ('--shard' is specified), dictates the number of samples in "
         "each file.",
     )
     parser.add_argument(
         "--max-size-per-shard",
-        type=int,
+        type=nat,
         default=3e9,
         help="If sharding ('--shard' is specified), dictates the maximum size in bytes "
         "of each file.",
@@ -1286,9 +1327,6 @@ This command does not require WebDataset to be installed."""
     except SystemExit as ex:
         return ex.code
 
-    if not os.path.isdir(options.dir):
-        print(f"'{options.dir}' is not a directory", file=sys.stderr)
-        return 1
     data_set = data.SpectDataSet(
         options.dir,
         file_prefix=options.file_prefix,
@@ -1391,7 +1429,7 @@ pickled, nested dictionary
 of the statistics of all groups.
 """,
     )
-    parser.add_argument("dir", help="The feature directory")
+    parser.add_argument("dir", type=rdir, help="The feature directory")
     parser.add_argument("out", help="Output path")
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
@@ -1537,7 +1575,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "ref_dir", help="The token sequence data directory (input)",
+        "ref_dir", type=rdir, help="The token sequence data directory (input)",
     )
     parser.add_argument(
         "ali_dir", help="The frame alignment data directory (output)",
@@ -1559,9 +1597,6 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     except SystemExit as ex:
         return ex.code
 
-    if not os.path.isdir(options.ref_dir):
-        print(f"'{options.ref_dir}' is not a directory", file=sys.stderr)
-        return 1
     basenames = (
         x
         for x in os.listdir(options.ref_dir)
@@ -1610,7 +1645,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "ali_dir", help="The frame alignment data directory (input)",
+        "ali_dir", type=rdir, help="The frame alignment data directory (input)",
     )
     parser.add_argument(
         "ref_dir", help="The token sequence data directory (output)",
@@ -1624,9 +1659,6 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
-    if not os.path.isdir(options.ali_dir):
-        print(f"'{options.ali_dir}' is not a directory", file=sys.stderr)
-        return 1
 
     basenames = (
         x
@@ -1783,7 +1815,9 @@ directory."""
         description=torch_token_data_dir_to_textgrids.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("ref_dir", help="The token sequence data directory (input)")
+    parser.add_argument(
+        "ref_dir", type=rdir, help="The token sequence data directory (input)"
+    )
     _add_common_arg(parser, "id2token")
     parser.add_argument("tg_dir", help="The TextGrid directory (output)")
     len_opt = parser.add_mutually_exclusive_group(required=True)
@@ -1807,7 +1841,7 @@ directory."""
     )
     parser.add_argument(
         "--precision",
-        type=int,
+        type=nat0,
         default=config.DEFT_TEXTGRID_PRECISION,
         help="Default precision with which to save floating point values in "
         "TextGrid files",
@@ -1957,7 +1991,9 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         description=chunk_torch_spect_data_dir.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("in_dir", help="The torch data directory to chunk (input)")
+    parser.add_argument(
+        "in_dir", type=rdir, help="The torch data directory to chunk (input)"
+    )
     parser.add_argument(
         "out_dir", help="The torch data directory to store chunks (output)"
     )
@@ -1977,7 +2013,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     )
     parser.add_argument(
         "--lobe-size",
-        type=int,
+        type=nat0,
         default=0,
         help="Size of a side lobe of a slice. See SliceSpectData.",
     )
