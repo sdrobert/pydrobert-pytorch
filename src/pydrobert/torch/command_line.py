@@ -16,15 +16,17 @@ import os
 import sys
 import argparse
 import math
-from typing_extensions import Literal
 import warnings
 import itertools
 import tarfile
 import io
+import random
+import shutil
 
 from pathlib import Path
 from collections import defaultdict, OrderedDict
-from typing import Dict, Optional, Sequence, Type, TypeVar
+from typing import Any, Callable, Dict, Optional, Sequence, Type, TypeVar
+from typing_extensions import Literal
 
 import torch
 
@@ -487,9 +489,9 @@ class _DirectoryDataset(torch.utils.data.Dataset):
     def __init__(self, dir_, file_prefix, file_suffix):
         super().__init__()
         fpl = len(file_prefix)
-        neg_fsl = -len(file_suffix)
+        fsl = len(file_suffix)
         self.utt_ids = sorted(
-            x[fpl:neg_fsl]
+            x[fpl : len(x) - fsl]
             for x in os.listdir(dir_)
             if x.startswith(file_prefix) and x.endswith(file_suffix)
         )
@@ -2132,6 +2134,290 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         out_feat_dir,
         out_ali_dir,
         out_ref_dir,
+    )
+
+
+def _copy_spect_data_dir_do_work(
+    basenames: Sequence[str],
+    src_dir: str,
+    dest_dir: str,
+    cp: Callable[[str, str], Any],
+    feat_subdir: Optional[str],
+    ali_subdir: Optional[str],
+    ref_subdir: Optional[str],
+):
+    if feat_subdir is None:
+        for bn in basenames:
+            cp(os.path.join(src_dir, bn), os.path.join(dest_dir, bn))
+    else:
+        for bn in basenames:
+            for x in (feat_subdir, ali_subdir, ref_subdir):
+                if x is not None:
+                    src = os.path.join(src_dir, x, bn)
+                    if os.path.exists(src):
+                        cp(src, os.path.join(dest_dir, x, bn))
+
+
+def subset_torch_spect_data_dir(args: Optional[Sequence[str]] = None):
+    """Make a new SpectDataDir from a subset of utterances of another
+
+This command determines a set of utterances via a flag, then hard links all files in the
+"feat/", "ali/" and "ref/" subdirectories matching the utterance id to in the "src"
+directory to the "dest" directory.
+
+See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
+directory.
+"""
+    parser = argparse.ArgumentParser(
+        description=subset_torch_spect_data_dir.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Available utterances to extract are determined by the contents of the "feat/"
+subdirectory, unless "--only" was specified. Any extra or missing utterances in "ali/"
+and "ref/" will be ignored.
+
+If "--utt-list" or "--utt-list-file" is chosen, this command ignores any missing
+utterances.
+
+When a criterion involves extracting some number of utterances which exceeds the total
+number of utterances, that total is extracted instead.
+
+Ratios are rounded down to the nearest utterance.
+
+Sorting by id is performed according to python's sort method, i.e. by locale.
+
+When "--only" is paired with "--shortest-*" or "--longest-*", "src" is assumed to also
+be the directory to extract lengths from. Otherwise it's "feat/".
+
+This command has a similar functionality to Kaldi's (https://github.com/kaldi-asr)
+subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
+""",
+    )
+    parser.add_argument("src", type=rdir, help="The directory to extract from")
+    parser.add_argument("dest", help="The directory to extract to")
+    style = parser.add_mutually_exclusive_group()
+    style.add_argument(
+        "--copy",
+        action="store_true",
+        default=False,
+        help="Copy extracted files (instead of hard link)",
+    )
+    style.add_argument(
+        "--symlink",
+        action="store_true",
+        default=False,
+        help="Symlink extracted files (instead of hard link)",
+    )
+    criteria = parser.add_mutually_exclusive_group(required=True)
+    criteria.add_argument(
+        "--utt-list",
+        nargs="+",
+        metavar="UTTID",
+        default=None,
+        help="Extract the utterances listed directly after this flag",
+    )
+    criteria.add_argument(
+        "--utt-list-file",
+        type=argparse.FileType("r"),
+        metavar="PATH",
+        default=None,
+        help="Extract the utterances listed in the passed file, one-per-line",
+    )
+    criteria.add_argument(
+        "--first-n",
+        type=nat0,
+        metavar="N",
+        default=None,
+        help="Extract this number of utterances listed first by id",
+    )
+    criteria.add_argument(
+        "--first-ratio",
+        type=closed01,
+        metavar="R",
+        default=None,
+        help="Extract this ratio of utterances (rounding down) listed first by id",
+    )
+    criteria.add_argument(
+        "--last-n",
+        type=nat0,
+        metavar="N",
+        default=None,
+        help="Extract this number of utterances listed last by id",
+    )
+    criteria.add_argument(
+        "--last-ratio",
+        type=closed01,
+        metavar="R",
+        default=None,
+        help="Extract this ratio of utterances (rounding down) listed last by id",
+    )
+    criteria.add_argument(
+        "--shortest-n",
+        type=nat0,
+        metavar="N",
+        default=None,
+        help="Extract this number of utterances listed first by increasing length, "
+        "then by id",
+    )
+    criteria.add_argument(
+        "--shortest-ratio",
+        type=closed01,
+        metavar="R",
+        default=None,
+        help="Extract this ratio of utterances listed first by increasing length, "
+        "then by id",
+    )
+    criteria.add_argument(
+        "--longest-n",
+        type=nat0,
+        metavar="N",
+        default=None,
+        help="Extract this number of utterances listed first by decreasing length, "
+        "then by id",
+    )
+    criteria.add_argument(
+        "--longest-ratio",
+        type=closed01,
+        metavar="R",
+        default=None,
+        help="Extract this ratio of utterances listed first by decreasing length, "
+        "then by id",
+    )
+    criteria.add_argument(
+        "--rand-n",
+        type=nat0,
+        metavar="N",
+        default=None,
+        help="Extract this number of utterances listed randomly",
+    )
+    criteria.add_argument(
+        "--rand-ratio",
+        type=closed01,
+        metavar="R",
+        default=None,
+        help="Extract this ratio of utterances listed randomly",
+    )
+    parser.add_argument(
+        "--only",
+        action="store_true",
+        default=False,
+        help="If set, extract only the data directly stored in 'src'",
+    )
+    parser.add_argument(
+        "--seed",
+        default=None,
+        help="Seed used in --rand-* flags for determinism. If unspecified, "
+        "non-deterministic",
+    )
+    _add_common_arg(parser, "--feat-subdir")
+    _add_common_arg(parser, "--ali-subdir")
+    _add_common_arg(parser, "--ref-subdir")
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--chunk-size")
+    _add_common_arg(parser, "--timeout")
+    try:
+        options = parser.parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+
+    if options.only:
+        options.feat_subdir = options.ali_subdir = options.ref_subdir = None
+        feat_dir = options.src
+    else:
+        feat_dir = os.path.join(options.src, options.feat_subdir)
+        if not os.path.isdir(feat_dir):
+            print(f"'{feat_dir}' does not exist", file=sys.stderr)
+            return 1
+        if not os.path.isdir(os.path.join(options.src, options.ali_subdir)):
+            options.ali_subdir = None
+        if not os.path.isdir(os.path.join(options.src, options.ref_subdir)):
+            options.ref_subdir = None
+
+    ds = _DirectoryDataset(feat_dir, options.file_prefix, options.file_suffix)
+    if any(
+        x is not None
+        for x in (
+            options.shortest_n,
+            options.shortest_ratio,
+            options.longest_n,
+            options.longest_ratio,
+        )
+    ):
+        dl = torch.utils.data.DataLoader(
+            ds, batch_size=1, num_workers=options.num_workers, collate_fn=_noop_collate
+        )
+        pairs = [(x[1].size(0), x[0]) for x in dl]
+        if options.shortest_n is not None or options.shortest_ratio is not None:
+            pairs.sort()
+        else:
+            pairs.sort(key=lambda x: (-x[0], x[1]))
+        all_utt_ids = [x[1] for x in pairs]
+        del ds, dl, pairs
+    else:
+        all_utt_ids = ds.utt_ids
+        del ds
+        if options.last_n is not None or options.last_ratio is not None:
+            all_utt_ids.sort(reverse=True)
+        elif options.rand_n is not None or options.rand_ratio is not None:
+            random.seed(options.seed)
+            random.shuffle(all_utt_ids)
+
+    if options.utt_list is not None or options.utt_list_file is not None:
+        all_utt_ids = set(all_utt_ids)
+        if options.utt_list_file is not None:
+            utt_ids = (x.strip() for x in options.utt_list_file)
+        else:
+            utt_ids = options.utt_list
+        utt_ids = (x for x in utt_ids if x in all_utt_ids)
+    else:
+        a = (
+            0 if x is None else x
+            for x in (
+                options.shortest_n,
+                options.longest_n,
+                options.first_n,
+                options.last_n,
+                options.rand_n,
+            )
+        )
+        b = (
+            0 if x is None else int(len(all_utt_ids) * x)
+            for x in (
+                options.shortest_ratio,
+                options.longest_ratio,
+                options.first_ratio,
+                options.last_ratio,
+                options.rand_ratio,
+            )
+        )
+        n = max(itertools.chain(a, b))
+        utt_ids = iter(all_utt_ids[:n])
+    basenames = (options.file_prefix + x + options.file_suffix for x in utt_ids)
+
+    if options.copy:
+        cp = shutil.copy
+    elif options.symlink:
+        cp = os.symlink
+    else:
+        cp = os.link
+
+    os.makedirs(options.dest, exist_ok=True)
+    for x in (options.feat_subdir, options.ali_subdir, options.ref_subdir):
+        if x is not None:
+            os.makedirs(os.path.join(options.dest, x), exist_ok=True)
+
+    _multiprocessor_pattern(
+        basenames,
+        options,
+        _copy_spect_data_dir_do_work,
+        options.src,
+        options.dest,
+        cp,
+        options.feat_subdir,
+        options.ali_subdir,
+        options.ref_subdir,
     )
 
 

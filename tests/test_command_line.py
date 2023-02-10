@@ -15,6 +15,7 @@
 import os
 import warnings
 import glob
+import random
 
 import pytest
 import torch
@@ -1008,4 +1009,96 @@ def test_chunk_torch_spect_data_dir(temp_dir, populate_torch_dir):
         assert torch.allclose(exp_feat, act_feat)
         assert (exp_ali == act_ali).all()
         assert (exp_ref == act_ref).all()
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("only", [True, False], ids=["only", "all"])
+@pytest.mark.parametrize(
+    "style",
+    [
+        "utt-list",
+        "utt-list-file",
+        "first-n",
+        "first-ratio",
+        "last-n",
+        "last-ratio",
+        "shortest-n",
+        "shortest-ratio",
+        "longest-n",
+        "longest-ratio",
+        "rand-n",
+        "rand-ratio",
+    ],
+)
+def test_subset_torch_spect_data_dir(temp_dir, populate_torch_dir, only, style):
+    N, r = 50, 0.33333
+    n = int(N * r)
+    src = os.path.join(temp_dir, "src")
+    dst = os.path.join(temp_dir, "dest")
+    feats, alis, refs, _, _, utt_ids = populate_torch_dir(src, N)
+    feat_sdir, feat_ddir = os.path.join(src, "feat"), os.path.join(dst, "feat")
+    ali_sdir, ali_ddir = os.path.join(src, "ali"), os.path.join(dst, "ali")
+    ref_sdir, ref_ddir = os.path.join(src, "ref"), os.path.join(dst, "ref")
+    if only:
+        args = [
+            feat_sdir,
+            feat_ddir,
+            "--only",
+            f"--{style}",
+        ]
+    else:
+        args = [src, dst, f"--{style}"]
+    exp_utt_ids = sorted(utt_ids)
+    if style in {"utt-list", "utt-list-file"}:
+        random.seed(-1)
+        random.shuffle(exp_utt_ids)
+        exp_utt_ids = exp_utt_ids[:n]
+        if style == "utt-list":
+            args.extend(exp_utt_ids)
+        else:
+            pth = os.path.join(temp_dir, "uttids.txt")
+            args.append(pth)
+            with open(pth, "w") as file_:
+                file_.write("\n".join(exp_utt_ids))
+                file_.write("\n")
+    else:
+        if style[-1] == "n":
+            args.append(str(n))
+        else:
+            args.append(str(r))
+        if style.startswith("last"):
+            exp_utt_ids.sort(reverse=True)
+        elif style.startswith("rand"):
+            random.seed("fart")
+            random.shuffle(exp_utt_ids)
+            args.extend(["--seed", "fart"])
+        elif style.startswith("shortest") or style.startswith("longest"):
+            exp_utt_ids = ((x.size(0), y) for (x, y) in zip(feats, utt_ids))
+            if style.startswith("shortest"):
+                exp_utt_ids = sorted(exp_utt_ids)
+            else:
+                exp_utt_ids = sorted(exp_utt_ids, key=lambda x: (-x[0], x[1]))
+            exp_utt_ids = [x[1] for x in exp_utt_ids]
+    exp_utt_ids = sorted(exp_utt_ids[:n])
+
+    assert not command_line.subset_torch_spect_data_dir(args)
+    assert sorted(os.listdir(feat_ddir)) == [x + ".pt" for x in exp_utt_ids]
+    if only:
+        assert not os.path.isdir(ali_ddir)
+        assert not os.path.isdir(ref_ddir)
+    else:
+        assert len(os.listdir(ali_ddir)) == n
+        assert len(os.listdir(ref_ddir)) == n
+    for utt_id in exp_utt_ids:
+        i = utt_ids.index(utt_id)
+        assert i >= 0
+        feat_exp = feats[i]
+        feat_act = torch.load(os.path.join(feat_ddir, utt_id + ".pt"))
+        assert (feat_exp == feat_act).all()
+        if not only:
+            ali_exp, ref_exp = alis[i], refs[i]
+            ali_act = torch.load(os.path.join(ali_ddir, utt_id + ".pt"))
+            assert (ali_exp == ali_act).all()
+            ref_act = torch.load(os.path.join(ref_ddir, utt_id + ".pt"))
+            assert (ref_exp == ref_act).all()
 
