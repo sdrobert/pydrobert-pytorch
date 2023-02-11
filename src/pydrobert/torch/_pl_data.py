@@ -217,15 +217,18 @@ class LitDataModuleParams(
         else:
             self.common = params
 
-    def initialize_set_parameters(self, include_predict: bool = False):
+    def initialize_missing(self, include_predict: bool = False):
         if self._use_split():
             with param.parameterized.batch_call_watchers(self):
-                self.train = self.pclass(name="train")
-                self.val = self.pclass(name="val")
-                self.test = self.pclass(name="test")
+                if self.train is None:
+                    self.train = self.pclass(name="train")
+                if self.val is None:
+                    self.val = self.pclass(name="val")
+                if self.test is None:
+                    self.test = self.pclass(name="test")
                 if include_predict:
                     self.predict = self.pclass(name="predict")
-        else:
+        elif self.common is None:
             self.common = self.pclass(name="common")
 
     @property
@@ -439,7 +442,7 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
     ):
         pobj = cls.pclass(name="data_params")
         pobj.prefer_split = split
-        pobj.initialize_set_parameters()
+        pobj.initialize_missing()
 
         if print_format_str is not None:
             pargparse.add_serialization_group_to_parser(
@@ -488,6 +491,7 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
         cls, namespace: argparse.Namespace, **kwargs,
     ):
         data_params = namespace.data_params
+        data_params.initialize_missing()
         for overload in ("train_dir", "val_dir", "test_dir", "predict_dir"):
             value = getattr(namespace, overload, None)
             if value is not None:

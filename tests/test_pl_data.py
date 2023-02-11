@@ -95,7 +95,7 @@ def test_lit_spect_data_module_basic(temp_dir, populate_lit_dir):
         **populate_lit_dir(f"{temp_dir}/data", F, A, V - 1, tN, VN, TN)
     )
     params.prefer_split = False
-    params.initialize_set_parameters()
+    params.initialize_missing()
     params.train_params.batch_size = N
     params.train_params.drop_last = True
     data = plightning.LitSpectDataModule(params)
@@ -145,7 +145,7 @@ def test_lit_spect_data_module_argparse(temp_dir, populate_lit_dir):
             predict_utts=PNN,
         )
     )
-    params.initialize_set_parameters()
+    params.initialize_missing()
     params.train_params.batch_size = params.val_params.batch_size = tN
     params.test_params.batch_size = TN
     cfg = f"{temp_dir}/conf.json"
