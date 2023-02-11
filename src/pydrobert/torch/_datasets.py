@@ -784,9 +784,9 @@ def validate_spect_data_set(data_set: SpectDataSet, fix: bool = False) -> None:
                     "{} does not have the same first dimension of"
                     " size ({}) as its companion in '{}' ({})".format(
                         prefix_,
-                        feat.shape[0],
-                        os.path.join(data_set.data_dir, data_set.ali_subdir),
                         ali.shape[0],
+                        os.path.join(data_set.data_dir, data_set.feat_subdir),
+                        feat.shape[0],
                     )
                 )
             if write_back:
