@@ -318,7 +318,8 @@ class TrainingStateController(object):
     Warnings
     --------
     There's currently a `bug <https://github.com/sdrobert/pydrobert-pytorch/issues/71>`_
-    in the distributed environment. Please don't use for the time being.
+    in the distributed environment. Please don't use in a distributed environment until
+    it's cleared up.
 
     Notes
     -----

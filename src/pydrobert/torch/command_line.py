@@ -265,11 +265,15 @@ integers."""
     )
     group.add_argument(
         "--fix",
-        action="store_true",
-        default=False,
+        nargs="?",
+        metavar="N",
+        type=nat0,
+        const=1,
+        default=None,
         help="If set, validate the data directory before collecting info, potentially "
-        "fixing small errors in the directory. The process is described in "
-        "pydrobert.torch.validate_spect_data_set",
+        "fixing small errors in the directory. An optional integer argument controls "
+        "the cropping threshold for ali/ and ref/ (defaults to 1). The process is "
+        "described in pydrobert.torch.validate_spect_data_set.",
     )
     try:
         options = parser.parse_args(args)

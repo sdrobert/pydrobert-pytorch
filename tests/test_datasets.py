@@ -299,37 +299,38 @@ def test_spect_data_set_validity(temp_dir, eos):
     with pytest.raises(ValueError, match="is not a long tensor"):
         data.validate_spect_data_set(data_set)
     with pytest.warns(UserWarning):
-        data.validate_spect_data_set(data_set, True)  # will fix bad type
+        data.validate_spect_data_set(data_set, 0)  # will fix bad type
     data.validate_spect_data_set(data_set)  # fine after correction
     torch.save(torch.randint(10, (4, 1), dtype=torch.long), ali_b_pt)
     with pytest.raises(ValueError, match="does not have one dimension"):
         data.validate_spect_data_set(data_set)
-    torch.save(torch.randint(10, (3,), dtype=torch.long), ali_b_pt)
+    torch.save(torch.randint(10, (6,), dtype=torch.long), ali_b_pt)
     with pytest.raises(ValueError, match="does not have the same first"):
-        data.validate_spect_data_set(data_set)
-    torch.save(torch.randint(10, (4,), dtype=torch.long), ali_b_pt)
-    data.validate_spect_data_set(data_set)
+        data.validate_spect_data_set(data_set, 1)  # will not trim b/c fix < 2
+    with pytest.warns(UserWarning):
+        data.validate_spect_data_set(data_set, 2)  # trims
+    data.validate_spect_data_set(data_set)  # all good
     torch.save(torch.Tensor([[0, 1, 2]]).int(), ref_b_pt)
     with pytest.raises(ValueError, match="is not a long tensor"):
         data.validate_spect_data_set(data_set)
     with pytest.warns(UserWarning):
-        data.validate_spect_data_set(data_set, True)  # convert to long
+        data.validate_spect_data_set(data_set, 0)  # convert to long
     data.validate_spect_data_set(data_set)
     torch.save(torch.tensor([[0, -1, 2], [1, 1, 2]]), ref_b_pt)
     with pytest.raises(ValueError, match="invalid boundaries"):
         data.validate_spect_data_set(data_set)
     with pytest.warns(UserWarning):
-        data.validate_spect_data_set(data_set, True)  # will remove end bound
+        data.validate_spect_data_set(data_set, 0)  # will remove end bound
     data.validate_spect_data_set(data_set)
     torch.save(torch.tensor([[0, 0, 1], [1, 3, 5]]), ref_b_pt)
     with pytest.raises(ValueError, match="invalid boundaries"):
-        data.validate_spect_data_set(data_set)
+        data.validate_spect_data_set(data_set, 0)  # will not trim b/c fix < 1
     with pytest.warns(UserWarning):
-        data.validate_spect_data_set(data_set, True)  # will trim 5 to 4
+        data.validate_spect_data_set(data_set, 1)  # will trim 5 to 4
     data.validate_spect_data_set(data_set)
-    torch.save(torch.tensor([[0, 0, 1], [1, 4, 5]]), ref_b_pt)
+    torch.save(torch.tensor([[0, 0, 1], [1, 5, 5]]), ref_b_pt)
     with pytest.raises(ValueError, match="invalid boundaries"):
-        data.validate_spect_data_set(data_set, True)  # will not trim b/c causes s == e
+        data.validate_spect_data_set(data_set, 1)  # will not trim b/c causes s == e
     torch.save(torch.tensor([1, 2, 3]), ref_b_pt)
     with pytest.raises(ValueError, match="were 2D"):
         data.validate_spect_data_set(data_set)

@@ -6,10 +6,8 @@ chunk-torch-spect-data-dir
 
 ::
 
-  usage: chunk-torch-spect-data-dir [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--feat-subdir FEAT_SUBDIR] [--ali-subdir ALI_SUBDIR] [--ref-subdir REF_SUBDIR]
-                                    [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE] [--timeout TIMEOUT] [--policy {fixed,ali,ref}] [--lobe-size LOBE_SIZE]
-                                    [--window-type {symmetric,causal,future}] [--pad-mode {constant,reflect,replicate}] [--pad-constant PAD_CONSTANT] [--partial-tokens] [--retain-token-boundaries]
-                                    [--quiet] [--format-utt FORMAT_UTT]
+  usage: chunk-torch-spect-data-dir [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--feat-subdir FEAT_SUBDIR] [--ali-subdir ALI_SUBDIR] [--ref-subdir REF_SUBDIR] [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE] [--timeout TIMEOUT] [--policy {fixed,ali,ref}]
+                                    [--lobe-size LOBE_SIZE] [--window-type {symmetric,causal,future}] [--pad-mode {constant,reflect,replicate}] [--pad-constant PAD_CONSTANT] [--partial-tokens] [--retain-token-boundaries] [--quiet] [--format-utt FORMAT_UTT]
                                     in_dir out_dir
   
   Create a new SpectDataSet directory by chunking another
@@ -67,8 +65,8 @@ chunk-torch-spect-data-dir
     --window-type {symmetric,causal,future}
                           Type of window used in slicing. See SliceSpectData.
     --pad-mode {constant,reflect,replicate}
-                          If specified, determines how to chunks of features and alignments exceeding the original sequence boundaries. constant: pad with the value of '--pad-constant'. reflect:
-                          padded values are the reflection around sequence boundaries. replicate: padded values match the first and final sequence values.
+                          If specified, determines how to chunks of features and alignments exceeding the original sequence boundaries. constant: pad with the value of '--pad-constant'. reflect: padded values are the reflection around sequence boundaries. replicate: padded values match the
+                          first and final sequence values.
     --pad-constant PAD_CONSTANT
                           Constant used when padding with '--pad-mode=constant'
     --partial-tokens      If set, reference token sequences which only partly overlap with a chunk will still be included with the chunk.
@@ -76,8 +74,7 @@ chunk-torch-spect-data-dir
                           If set, segment boundaries of reference token sequences will keep their original values rather than being made relative to the chunk.
     --quiet               Suppress any warnings.
     --format-utt FORMAT_UTT
-                          Format string with which to format utterance ids of chunks. Available keys are 'utt_id': the old utterance id, 'start': the start frame of the chunk (inclusive), 'end':
-                          the end frame of the chunk (exclusive), and 'idx': the 0-index of the chunk within the utterance
+                          Format string with which to format utterance ids of chunks. Available keys are 'utt_id': the old utterance id, 'start': the start frame of the chunk (inclusive), 'end': the end frame of the chunk (exclusive), and 'idx': the 0-index of the chunk within the utterance
 
 compute-mvn-stats-for-torch-feat-data-dir
 -----------------------------------------
@@ -141,8 +138,8 @@ compute-torch-token-data-dir-error-rates
 
 ::
 
-  usage: compute-torch-token-data-dir-error-rates [-h] [--id2token ID2TOKEN] [--replace REPLACE] [--ignore IGNORE] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--swap] [--warn-missing]
-                                                  [--distances] [--per-utt] [--batch-size BATCH_SIZE] [--quiet] [--costs INS DEL SUB | --nist-costs]
+  usage: compute-torch-token-data-dir-error-rates [-h] [--id2token ID2TOKEN] [--replace REPLACE] [--ignore IGNORE] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--swap] [--warn-missing] [--distances] [--per-utt] [--batch-size BATCH_SIZE] [--quiet]
+                                                  [--costs INS DEL SUB | --nist-costs]
                                                   dir [hyp] [out]
   
   Compute error rates between reference and hypothesis token data dirs
@@ -172,19 +169,17 @@ compute-torch-token-data-dir-error-rates
   performing these computations.
   
   positional arguments:
-    dir                   If the 'hyp' argument is not specified, this is the parent directory of two subdirectories, 'ref/' and 'hyp/', which contain the reference and hypothesis transcripts,
-                          respectively. If the '--hyp' argument is specified, this is the reference transcript directory
+    dir                   If the 'hyp' argument is not specified, this is the parent directory of two subdirectories, 'ref/' and 'hyp/', which contain the reference and hypothesis transcripts, respectively. If the '--hyp' argument is specified, this is the reference transcript directory
     hyp                   The hypothesis transcript directory
     out                   Where to print the error rate to. Defaults to stdout
   
   options:
     -h, --help            show this help message and exit
-    --id2token ID2TOKEN   A file containing mappings from unique IDs to tokens (e.g. words or phones). Each line has the format "<id> <token>". The flag "--swap" can be used to swap the expected
-                          ordering (i.e. to "<token> <id>")
-    --replace REPLACE     A file containing pairs of elements per line. The first is the element to replace, the second what to replace it with. If '--id2token' is specified, the file should
-                          contain tokens. If '--id2token' is not specified, the file should contain IDs (integers). This is processed before '--ignore'
-    --ignore IGNORE       A file containing a whitespace-delimited list of elements to ignore in both the reference and hypothesis transcripts. If '--id2token' is specified, the file should
-                          contain tokens. If '--id2token' is not specified, the file should contain IDs (integers). This is processed after '--replace'
+    --id2token ID2TOKEN   A file containing mappings from unique IDs to tokens (e.g. words or phones). Each line has the format "<id> <token>". The flag "--swap" can be used to swap the expected ordering (i.e. to "<token> <id>")
+    --replace REPLACE     A file containing pairs of elements per line. The first is the element to replace, the second what to replace it with. If '--id2token' is specified, the file should contain tokens. If '--id2token' is not specified, the file should contain IDs (integers). This is
+                          processed before '--ignore'
+    --ignore IGNORE       A file containing a whitespace-delimited list of elements to ignore in both the reference and hypothesis transcripts. If '--id2token' is specified, the file should contain tokens. If '--id2token' is not specified, the file should contain IDs (integers). This is
+                          processed after '--replace'
     --file-prefix FILE_PREFIX
                           The file prefix indicating a torch data file
     --file-suffix FILE_SUFFIX
@@ -204,8 +199,8 @@ ctm-to-torch-token-data-dir
 
 ::
 
-  usage: ctm-to-torch-token-data-dir [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--swap] [--unk-symbol UNK_SYMBOL] [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE]
-                                     [--timeout TIMEOUT] [--skip-frame-times | --feat-sizing | --frame-shift-ms FRAME_SHIFT_MS] [--wc2utt WC2UTT | --utt2wc UTT2WC]
+  usage: ctm-to-torch-token-data-dir [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--swap] [--unk-symbol UNK_SYMBOL] [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE] [--timeout TIMEOUT] [--skip-frame-times | --feat-sizing | --frame-shift-ms FRAME_SHIFT_MS]
+                                     [--wc2utt WC2UTT | --utt2wc UTT2WC]
                                      ctm token2id dir
   
   Convert a NIST "ctm" file to a SpectDataSet token data dir
@@ -229,8 +224,7 @@ ctm-to-torch-token-data-dir
   
   positional arguments:
     ctm                   The "ctm" file to read token segments from
-    token2id              A file containing mappings from tokens (e.g. words or phones) to unique IDs. Each line has the format "<token> <id>". The flag "--swap" can be used to swap the expected
-                          ordering (i.e. to "<id> <token>")
+    token2id              A file containing mappings from tokens (e.g. words or phones) to unique IDs. Each line has the format "<token> <id>". The flag "--swap" can be used to swap the expected ordering (i.e. to "<id> <token>")
     dir                   The directory to store token sequences to. If the directory does not exist, it will be created
   
   options:
@@ -248,24 +242,20 @@ ctm-to-torch-token-data-dir
                           The number of utterances that a worker will process at once. Impacts speed and memory consumption.
     --timeout TIMEOUT     When using multiple workers, how long (in seconds) without new data before terminating. The default is to wait indefinitely.
     --skip-frame-times    If true, will store token tensors of shape (R,) instead of (R, 3), foregoing segment start and end times.
-    --feat-sizing         If true, will store token tensors of shape (R, 1) instead of (R, 3), foregoing segment start and end times (which trn does not have). The extra dimension will allow data
-                          in this directory to be loaded as features in a SpectDataSet.
+    --feat-sizing         If true, will store token tensors of shape (R, 1) instead of (R, 3), foregoing segment start and end times (which trn does not have). The extra dimension will allow data in this directory to be loaded as features in a SpectDataSet.
     --frame-shift-ms FRAME_SHIFT_MS
-                          The number of milliseconds that have passed between consecutive frames. Used to convert between time in seconds and frame index. If your features are the raw samples, set
-                          this to 1000 / sample_rate_hz
-    --wc2utt WC2UTT       A file mapping wavefile name and channel combinations (e.g. 'utt_1 A') to utterance IDs. Each line of the file has the format '<wavefile_name> <channel> <utt_id>'. If
-                          neither '--wc2utt' nor '--utt2wc' has been specied, the wavefile name will be treated as the utterance ID
-    --utt2wc UTT2WC       A file mapping utterance IDs to wavefile name and channel combinations (e.g. 'utt_1 A'). Each line of the file has the format '<utt_id> <wavefile_name> <channel>'. If
-                          neither '--wc2utt' nor '--utt2wc' has been specied, the wavefile name will be treated as the utterance ID
+                          The number of milliseconds that have passed between consecutive frames. Used to convert between time in seconds and frame index. If your features are the raw samples, set this to 1000 / sample_rate_hz
+    --wc2utt WC2UTT       A file mapping wavefile name and channel combinations (e.g. 'utt_1 A') to utterance IDs. Each line of the file has the format '<wavefile_name> <channel> <utt_id>'. If neither '--wc2utt' nor '--utt2wc' has been specied, the wavefile name will be treated as the
+                          utterance ID
+    --utt2wc UTT2WC       A file mapping utterance IDs to wavefile name and channel combinations (e.g. 'utt_1 A'). Each line of the file has the format '<utt_id> <wavefile_name> <channel>'. If neither '--wc2utt' nor '--utt2wc' has been specied, the wavefile name will be treated as the
+                          utterance ID
 
 get-torch-spect-data-dir-info
 -----------------------------
 
 ::
 
-  usage: get-torch-spect-data-dir-info [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--feat-subdir FEAT_SUBDIR] [--ali-subdir ALI_SUBDIR] [--ref-subdir REF_SUBDIR]
-                                       [--strict | --fix]
-                                       dir [out_file]
+  usage: get-torch-spect-data-dir-info [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--feat-subdir FEAT_SUBDIR] [--ali-subdir ALI_SUBDIR] [--ref-subdir REF_SUBDIR] [--strict | --fix [N]] dir [out_file]
   
   Write info about the specified SpectDataSet data dir
   
@@ -354,18 +344,16 @@ get-torch-spect-data-dir-info
     --ref-subdir REF_SUBDIR
                           Subdirectory where reference token sequences are stored.
     --strict              If set, validate the data directory before collecting info. The process is described in pydrobert.torch.data.validate_spect_data_set
-    --fix                 If set, validate the data directory before collecting info, potentially fixing small errors in the directory. The process is described in
-                          pydrobert.torch.validate_spect_data_set
+    --fix [N]             If set, validate the data directory before collecting info, potentially fixing small errors in the directory. An optional integer argument controls the cropping threshold for ali/ and ref/ (defaults to 1). The process is described in
+                          pydrobert.torch.validate_spect_data_set.
 
 subset-torch-spect-data-dir
 ---------------------------
 
 ::
 
-  usage: subset-torch-spect-data-dir [-h] [--copy | --symlink]
-                                     (--utt-list UTTID [UTTID ...] | --utt-list-file PATH | --first-n N | --first-ratio R | --last-n N | --last-ratio R | --shortest-n N | --shortest-ratio R | --longest-n N | --longest-ratio R | --rand-n N | --rand-ratio R)
-                                     [--only] [--seed SEED] [--feat-subdir FEAT_SUBDIR] [--ali-subdir ALI_SUBDIR] [--ref-subdir REF_SUBDIR] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX]
-                                     [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE] [--timeout TIMEOUT]
+  usage: subset-torch-spect-data-dir [-h] [--copy | --symlink] (--utt-list UTTID [UTTID ...] | --utt-list-file PATH | --first-n N | --first-ratio R | --last-n N | --last-ratio R | --shortest-n N | --shortest-ratio R | --longest-n N | --longest-ratio R | --rand-n N | --rand-ratio R) [--only]
+                                     [--seed SEED] [--feat-subdir FEAT_SUBDIR] [--ali-subdir ALI_SUBDIR] [--ref-subdir REF_SUBDIR] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE] [--timeout TIMEOUT]
                                      src dest
   
   Make a new SpectDataDir from a subset of utterances of another
@@ -441,8 +429,7 @@ textgrids-to-torch-token-data-dir
 
 ::
 
-  usage: textgrids-to-torch-token-data-dir [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--swap] [--unk-symbol UNK_SYMBOL] [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE]
-                                           [--timeout TIMEOUT] [--textgrid-suffix TEXTGRID_SUFFIX] [--fill-symbol FILL_SYMBOL]
+  usage: textgrids-to-torch-token-data-dir [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--swap] [--unk-symbol UNK_SYMBOL] [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE] [--timeout TIMEOUT] [--textgrid-suffix TEXTGRID_SUFFIX] [--fill-symbol FILL_SYMBOL]
                                            [--skip-frame-times | --feat-sizing | --frame-shift-ms FRAME_SHIFT_MS] [--tier-name TIER_ID | --tier-idx TIER_ID]
                                            tg_dir token2id dir
   
@@ -468,8 +455,7 @@ textgrids-to-torch-token-data-dir
   
   positional arguments:
     tg_dir                The directory containing the TextGrid files
-    token2id              A file containing mappings from tokens (e.g. words or phones) to unique IDs. Each line has the format "<token> <id>". The flag "--swap" can be used to swap the expected
-                          ordering (i.e. to "<id> <token>")
+    token2id              A file containing mappings from tokens (e.g. words or phones) to unique IDs. Each line has the format "<token> <id>". The flag "--swap" can be used to swap the expected ordering (i.e. to "<id> <token>")
     dir                   The directory to store token sequences to. If the directory does not exist, it will be created
   
   options:
@@ -491,11 +477,9 @@ textgrids-to-torch-token-data-dir
     --fill-symbol FILL_SYMBOL
                           If set, unlabelled intervals in the TextGrid files will be assigned this symbol. Relevant only if a point grid.
     --skip-frame-times    If true, will store token tensors of shape (R,) instead of (R, 3), foregoing segment start and end times.
-    --feat-sizing         If true, will store token tensors of shape (R, 1) instead of (R, 3), foregoing segment start and end times (which trn does not have). The extra dimension will allow data
-                          in this directory to be loaded as features in a SpectDataSet.
+    --feat-sizing         If true, will store token tensors of shape (R, 1) instead of (R, 3), foregoing segment start and end times (which trn does not have). The extra dimension will allow data in this directory to be loaded as features in a SpectDataSet.
     --frame-shift-ms FRAME_SHIFT_MS
-                          The number of milliseconds that have passed between consecutive frames. Used to convert between time in seconds and frame index. If your features are the raw samples, set
-                          this to 1000 / sample_rate_hz
+                          The number of milliseconds that have passed between consecutive frames. Used to convert between time in seconds and frame index. If your features are the raw samples, set this to 1000 / sample_rate_hz
     --tier-name TIER_ID   The name of the tier to extract.
     --tier-idx TIER_ID    The index of the tier to extract.
 
@@ -504,8 +488,7 @@ torch-ali-data-dir-to-torch-token-data-dir
 
 ::
 
-  usage: torch-ali-data-dir-to-torch-token-data-dir [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE] [--timeout TIMEOUT]
-                                                    ali_dir ref_dir
+  usage: torch-ali-data-dir-to-torch-token-data-dir [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE] [--timeout TIMEOUT] ali_dir ref_dir
   
   Convert an ali/ dir to a ref/ dir
   
@@ -539,8 +522,7 @@ torch-spect-data-dir-to-wds
 
 ::
 
-  usage: torch-spect-data-dir-to-wds [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--feat-subdir FEAT_SUBDIR] [--ali-subdir ALI_SUBDIR] [--ref-subdir REF_SUBDIR] [--is-uri]
-                                     [--shard] [--max-samples-per-shard MAX_SAMPLES_PER_SHARD] [--max-size-per-shard MAX_SIZE_PER_SHARD]
+  usage: torch-spect-data-dir-to-wds [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--feat-subdir FEAT_SUBDIR] [--ali-subdir ALI_SUBDIR] [--ref-subdir REF_SUBDIR] [--is-uri] [--shard] [--max-samples-per-shard MAX_SAMPLES_PER_SHARD] [--max-size-per-shard MAX_SIZE_PER_SHARD]
                                      dir tar_path
   
   Convert a SpectDataSet to a WebDataset
@@ -614,8 +596,7 @@ torch-token-data-dir-to-ctm
 
 ::
 
-  usage: torch-token-data-dir-to-ctm [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--swap] [--frame-shift-ms FRAME_SHIFT_MS] [--wc2utt WC2UTT | --utt2wc UTT2WC | --channel CHANNEL]
-                                     dir id2token ctm
+  usage: torch-token-data-dir-to-ctm [-h] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--swap] [--frame-shift-ms FRAME_SHIFT_MS] [--wc2utt WC2UTT | --utt2wc UTT2WC | --channel CHANNEL] dir id2token ctm
   
   Convert a SpectDataSet token data directory to a NIST "ctm" file
   
@@ -640,8 +621,7 @@ torch-token-data-dir-to-ctm
   
   positional arguments:
     dir                   The directory to read token sequences from
-    id2token              A file containing mappings from unique IDs to tokens (e.g. words or phones). Each line has the format "<id> <token>". The flag "--swap" can be used to swap the expected
-                          ordering (i.e. to "<token> <id>")
+    id2token              A file containing mappings from unique IDs to tokens (e.g. words or phones). Each line has the format "<id> <token>". The flag "--swap" can be used to swap the expected ordering (i.e. to "<token> <id>")
     ctm                   The "ctm" file to write token segments to
   
   options:
@@ -652,8 +632,7 @@ torch-token-data-dir-to-ctm
                           The file suffix indicating a torch data file
     --swap                If set, swaps the order of the key and value in token/id mapping
     --frame-shift-ms FRAME_SHIFT_MS
-                          The number of milliseconds that have passed between consecutive frames. Used to convert between time in seconds and frame index. If your features are the raw samples, set
-                          this to 1000 / sample_rate_hz
+                          The number of milliseconds that have passed between consecutive frames. Used to convert between time in seconds and frame index. If your features are the raw samples, set this to 1000 / sample_rate_hz
     --wc2utt WC2UTT       A file mapping wavefile name and channel combinations (e.g. 'utt_1 A') to utterance IDs. Each line of the file has the format '<wavefile_name> <channel> <utt_id>'.
     --utt2wc UTT2WC       A file mapping utterance IDs to wavefile name and channel combinations (e.g. 'utt_1 A'). Each line of the file has the format '<utt_id> <wavefile_name> <channel>'.
     --channel CHANNEL     If neither "--wc2utt" nor "--utt2wc" is specified, utterance IDs are treated as wavefile names and are given the value of this flag as a channel
@@ -663,9 +642,8 @@ torch-token-data-dir-to-textgrids
 
 ::
 
-  usage: torch-token-data-dir-to-textgrids [-h] (--feat-dir FEAT_DIR | --infer) [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--swap] [--frame-shift-ms FRAME_SHIFT_MS]
-                                           [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE] [--timeout TIMEOUT] [--textgrid-suffix TEXTGRID_SUFFIX] [--tier-name TIER_NAME]
-                                           [--precision PRECISION] [--quiet] [--force-method {1,2,3}]
+  usage: torch-token-data-dir-to-textgrids [-h] (--feat-dir FEAT_DIR | --infer) [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--swap] [--frame-shift-ms FRAME_SHIFT_MS] [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE] [--timeout TIMEOUT] [--textgrid-suffix TEXTGRID_SUFFIX]
+                                           [--tier-name TIER_NAME] [--precision PRECISION] [--quiet] [--force-method {1,2,3}]
                                            ref_dir id2token tg_dir
   
   Convert a SpectDataSet ref/ dir into a directory of TextGrid files
@@ -715,8 +693,7 @@ torch-token-data-dir-to-textgrids
   
   positional arguments:
     ref_dir               The token sequence data directory (input)
-    id2token              A file containing mappings from unique IDs to tokens (e.g. words or phones). Each line has the format "<id> <token>". The flag "--swap" can be used to swap the expected
-                          ordering (i.e. to "<token> <id>")
+    id2token              A file containing mappings from unique IDs to tokens (e.g. words or phones). Each line has the format "<id> <token>". The flag "--swap" can be used to swap the expected ordering (i.e. to "<token> <id>")
     tg_dir                The TextGrid directory (output)
   
   options:
@@ -729,8 +706,7 @@ torch-token-data-dir-to-textgrids
                           The file suffix indicating a torch data file
     --swap                If set, swaps the order of the key and value in token/id mapping
     --frame-shift-ms FRAME_SHIFT_MS
-                          The number of milliseconds that have passed between consecutive frames. Used to convert between time in seconds and frame index. If your features are the raw samples, set
-                          this to 1000 / sample_rate_hz
+                          The number of milliseconds that have passed between consecutive frames. Used to convert between time in seconds and frame index. If your features are the raw samples, set this to 1000 / sample_rate_hz
     --num-workers NUM_WORKERS
                           The number of workers to spawn to process the data. 0 is serial. Defaults to the CPU count
     --chunk-size CHUNK_SIZE
@@ -751,9 +727,7 @@ torch-token-data-dir-to-torch-ali-data-dir
 
 ::
 
-  usage: torch-token-data-dir-to-torch-ali-data-dir [-h] [--feat-dir FEAT_DIR] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE]
-                                                    [--timeout TIMEOUT]
-                                                    ref_dir ali_dir
+  usage: torch-token-data-dir-to-torch-ali-data-dir [-h] [--feat-dir FEAT_DIR] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE] [--timeout TIMEOUT] ref_dir ali_dir
   
   Convert a ref/ dir to an ali/ dir
   
@@ -783,8 +757,7 @@ torch-token-data-dir-to-torch-ali-data-dir
   
   options:
     -h, --help            show this help message and exit
-    --feat-dir FEAT_DIR   The feature data directory. While not necessary for the conversion, specifying this directory will allow the total number of frames in each utterance to be checked by
-                          loading the associated feature matrix.
+    --feat-dir FEAT_DIR   The feature data directory. While not necessary for the conversion, specifying this directory will allow the total number of frames in each utterance to be checked by loading the associated feature matrix.
     --file-prefix FILE_PREFIX
                           The file prefix indicating a torch data file
     --file-suffix FILE_SUFFIX
@@ -818,8 +791,7 @@ torch-token-data-dir-to-trn
   
   positional arguments:
     dir                   The directory to read token sequences from
-    id2token              A file containing mappings from unique IDs to tokens (e.g. words or phones). Each line has the format "<id> <token>". The flag "--swap" can be used to swap the expected
-                          ordering (i.e. to "<token> <id>")
+    id2token              A file containing mappings from unique IDs to tokens (e.g. words or phones). Each line has the format "<id> <token>". The flag "--swap" can be used to swap the expected ordering (i.e. to "<token> <id>")
     trn                   The "trn" file to write transcriptions to
   
   options:
@@ -837,9 +809,7 @@ trn-to-torch-token-data-dir
 
 ::
 
-  usage: trn-to-torch-token-data-dir [-h] [--alt-handler {error,first}] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--swap] [--unk-symbol UNK_SYMBOL] [--num-workers NUM_WORKERS]
-                                     [--chunk-size CHUNK_SIZE] [--timeout TIMEOUT] [--skip-frame-times | --feat-sizing]
-                                     trn token2id dir
+  usage: trn-to-torch-token-data-dir [-h] [--alt-handler {error,first}] [--file-prefix FILE_PREFIX] [--file-suffix FILE_SUFFIX] [--swap] [--unk-symbol UNK_SYMBOL] [--num-workers NUM_WORKERS] [--chunk-size CHUNK_SIZE] [--timeout TIMEOUT] [--skip-frame-times | --feat-sizing] trn token2id dir
   
   Convert a NIST "trn" file to the specified SpectDataSet data dir
   
@@ -856,8 +826,7 @@ trn-to-torch-token-data-dir
   
   positional arguments:
     trn                   The input trn file
-    token2id              A file containing mappings from tokens (e.g. words or phones) to unique IDs. Each line has the format "<token> <id>". The flag "--swap" can be used to swap the expected
-                          ordering (i.e. to "<id> <token>")
+    token2id              A file containing mappings from tokens (e.g. words or phones) to unique IDs. Each line has the format "<token> <id>". The flag "--swap" can be used to swap the expected ordering (i.e. to "<id> <token>")
     dir                   The directory to store token sequences to. If the directory does not exist, it will be created
   
   options:
@@ -877,6 +846,5 @@ trn-to-torch-token-data-dir
                           The number of utterances that a worker will process at once. Impacts speed and memory consumption.
     --timeout TIMEOUT     When using multiple workers, how long (in seconds) without new data before terminating. The default is to wait indefinitely.
     --skip-frame-times    If true, will store token tensors of shape (R,) instead of (R, 3), foregoing segment start and end times.
-    --feat-sizing         If true, will store token tensors of shape (R, 1) instead of (R, 3), foregoing segment start and end times (which trn does not have). The extra dimension will allow data
-                          in this directory to be loaded as features in a SpectDataSet.
+    --feat-sizing         If true, will store token tensors of shape (R, 1) instead of (R, 3), foregoing segment start and end times (which trn does not have). The extra dimension will allow data in this directory to be loaded as features in a SpectDataSet.
 
