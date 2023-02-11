@@ -263,8 +263,7 @@ class TrainingStateController(object):
 
     Parameters
     ----------
-    params
-    state_csv_path
+    params state_csv_path
         A path to where training state information is stored. It stores in
         comma-separated-values format the following information. Note that stored values
         represent the state *after* updates due to epoch results, such as the learning
@@ -272,28 +271,28 @@ class TrainingStateController(object):
         loaded results.
 
         1. "epoch": the epoch associated with this row of information
-        2. "es_resume_cd": the number of epochs left before the early
-           stopping criterion begins/resumes
-        3. es_patience_cd: the number of epochs left that must pass
-           without much improvement before training halts due to early stopping
-        4. "rlr_resume_cd": the number of epochs left before the
-           criterion for reducing the learning rate begins/resumes
-        5. "rlr_patience_cd": the number of epochs left that must pass
-           without much improvement before the learning rate is reduced
+        2. "es_resume_cd": the number of epochs left before the early stopping criterion
+           begins/resumes
+        3. es_patience_cd: the number of epochs left that must pass without much
+           improvement before training halts due to early stopping
+        4. "rlr_resume_cd": the number of epochs left before the criterion for reducing
+           the learning rate begins/resumes
+        5. "rlr_patience_cd": the number of epochs left that must pass without much
+           improvement before the learning rate is reduced
         6. "lr": the learning rate of the optimizer after any updates
-        7. "train_met": mean training metric in exponent format. The metric
-           is assumed to be lower is better
-        8. "val_met": mean validation metric in exponent format. The metric
-           is assumed to be lower is better
+        7. "train_met": mean training metric in exponent format. The metric is assumed
+           to be lower is better
+        8. "val_met": mean validation metric in exponent format. The metric is assumed
+           to be lower is better
         9. Any additional entries added through :func:`add_entry`
 
         If unset, the history will not be stored/loaded.
     state_dir
-        A path to a directory to store/load model and optimizer states. If
-        unset, the information will not be stored/loaded.
+        A path to a directory to store/load model and optimizer states. If unset, the
+        information will not be stored/loaded.
     warn
-        Whether to warn using :mod:`warnings` module when a format string does
-        not contain the "epoch" field.
+        Whether to warn using :mod:`warnings` module when a format string does not
+        contain the "epoch" field.
     reduce_op
         The op to combine metrics and other reducable ops in a distributed environment.
         See the note below for more details.
@@ -315,6 +314,11 @@ class TrainingStateController(object):
     >>>     if not controller.update_for_epoch(
     ...             model, optimizer, train_loss, val_loss):
     >>>         break  # early stopping
+
+    Warnings
+    --------
+    There's currently a `bug <https://github.com/sdrobert/pydrobert-pytorch/issues/71>`_
+    in the distributed environment. Please don't use for the time being.
 
     Notes
     -----
