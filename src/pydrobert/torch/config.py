@@ -102,9 +102,6 @@ DEFT_FRAME_SHIFT_MS = 10.0
 DEFT_TEXTGRID_SUFFIX = ".TextGrid"
 """The default suffix indicating TextGrid files for commands"""
 
-DEFT_CHUNK_SIZE = 1000
-"""Default number of units to process at once when performing multiprocessing"""
-
 DEFT_FILE_PREFIX = ""
 """Default prefix of a torch data file"""
 

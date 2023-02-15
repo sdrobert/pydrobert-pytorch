@@ -165,14 +165,7 @@ A a (utt5)
         )
     with warnings.catch_warnings(record=True):
         assert not command_line.trn_to_torch_token_data_dir(
-            [
-                trn_path,
-                tokens_path,
-                ref_dir,
-                "--alt-handler=first",
-                "--unk-symbol=c",
-                "--chunk-size=1",
-            ]
+            [trn_path, tokens_path, ref_dir, "--alt-handler=first", "--unk-symbol=c",]
             + (["--swap"] if tokens == "id2token" else [])
             + (["--skip-frame-times"] if skip_frame_times else [])
             + (["--feat-sizing"] if feat_sizing else [])

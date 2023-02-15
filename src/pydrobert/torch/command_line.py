@@ -131,12 +131,6 @@ _COMMON_ARGS = {
         "have). The extra dimension will allow data in this directory to be "
         "loaded as features in a SpectDataSet.",
     },
-    "--chunk-size": {
-        "type": nat,
-        "default": config.DEFT_CHUNK_SIZE,
-        "help": "The number of utterances that a worker will process at once. Impacts "
-        "speed and memory consumption.",
-    },
     "--timeout": {
         "type": nat,
         "default": None,
@@ -387,16 +381,16 @@ def _parse_token2id(file, swap, return_swap):
 
 
 def _save_transcripts_to_dir_do_work(
-    transcripts, token2id, dir_, frame_shift_ms, unk, skip_frame_times, feat_sizing,
+    bt, token2id, dir_, frame_shift_ms, unk, skip_frame_times, feat_sizing,
 ):
-    for basename, transcript in transcripts:
-        tok = data.transcript_to_token(
-            transcript, token2id, frame_shift_ms, unk, skip_frame_times or feat_sizing,
-        )
-        if feat_sizing:
-            tok = tok.unsqueeze(-1)
-        path = os.path.join(dir_, basename)
-        torch.save(tok, path)
+    basename, transcript = bt
+    tok = data.transcript_to_token(
+        transcript, token2id, frame_shift_ms, unk, skip_frame_times or feat_sizing,
+    )
+    if feat_sizing:
+        tok = tok.unsqueeze(-1)
+    path = os.path.join(dir_, basename)
+    torch.save(tok, path)
 
 
 def trn_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
@@ -436,7 +430,6 @@ with the "ref/" directory of a SpectDataSet. See the command
     _add_common_arg(parser, "--swap")
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
     _add_common_arg(parser, "--timeout")
     size_group = parser.add_mutually_exclusive_group()
     _add_common_arg(size_group, "--skip-frame-times")
@@ -477,7 +470,7 @@ with the "ref/" directory of a SpectDataSet. See the command
     os.makedirs(options.dir, exist_ok=True)
     _multiprocessor_pattern(
         error_handling_iter(),
-        options,
+        options.num_workers,
         _save_transcripts_to_dir_do_work,
         token2id,
         options.dir,
@@ -682,7 +675,6 @@ with the "ref/" directory of a SpectDataSet. See the command
     _add_common_arg(parser, "--swap")
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
     _add_common_arg(parser, "--timeout")
     size_group = parser.add_mutually_exclusive_group()
     _add_common_arg(size_group, "--skip-frame-times")
@@ -737,7 +729,7 @@ with the "ref/" directory of a SpectDataSet. See the command
     os.makedirs(options.dir, exist_ok=True)
     _multiprocessor_pattern(
         transcripts,
-        options,
+        options.num_workers,
         _save_transcripts_to_dir_do_work,
         token2id,
         options.dir,
@@ -787,7 +779,6 @@ directory."""
     _add_common_arg(parser, "--swap")
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
     _add_common_arg(parser, "--timeout")
     _add_common_arg(parser, "--textgrid-suffix")
     parser.add_argument(
@@ -846,7 +837,7 @@ directory."""
     os.makedirs(options.dir, exist_ok=True)
     _multiprocessor_pattern(
         textgrid_iter(),
-        options,
+        options.num_workers,
         _save_transcripts_to_dir_do_work,
         token2id,
         options.dir,
@@ -1524,33 +1515,29 @@ of the statistics of all groups.
 
 
 def _torch_token_data_dir_to_torch_ali_dir_do_work(
-    basenames: Sequence[str],
-    ref_dir: str,
-    ali_dir: str,
-    feat_dir: Optional[str] = None,
+    basename: str, ref_dir: str, ali_dir: str, feat_dir: Optional[str] = None,
 ):
-    for basename in basenames:
-        ref_path = os.path.join(ref_dir, basename)
-        ref = torch.load(ref_path)
-        err_msg = f"Error converting '{ref_path}' to ali:"
-        if ref.ndim != 2 or ref.size(0) == 0 or ref.size(1) != 3:
-            raise ValueError(f"{err_msg} invalid size '{ref.shape}'")
-        if (ref[:, 1:] < 0).any():
-            raise ValueError(f"{err_msg} some token boundaries missing")
-        if ref[0, 1] != 0:
-            raise ValueError(f"{err_msg} starts at frame {ref[0, 1].item()}, not 0")
-        if (ref[:-1, 2] != ref[1:, 1]).any():
-            raise ValueError(f"{err_msg} not all boundaries are contiguous")
-        if feat_dir is not None:
-            feat_path = os.path.join(feat_dir, basename)
-            T = torch.load(feat_path).size(0)
-            if ref[-1, 2] != T:
-                raise ValueError(
-                    f"{err_msg} feats at '{feat_path}' report {T} frames. ref "
-                    f"ends with {ref[-1, 2].item()}"
-                )
-        ali = torch.repeat_interleave(ref[:, 0], ref[:, 2] - ref[:, 1])
-        torch.save(ali, os.path.join(ali_dir, basename))
+    ref_path = os.path.join(ref_dir, basename)
+    ref = torch.load(ref_path)
+    err_msg = f"Error converting '{ref_path}' to ali:"
+    if ref.ndim != 2 or ref.size(0) == 0 or ref.size(1) != 3:
+        raise ValueError(f"{err_msg} invalid size '{ref.shape}'")
+    if (ref[:, 1:] < 0).any():
+        raise ValueError(f"{err_msg} some token boundaries missing")
+    if ref[0, 1] != 0:
+        raise ValueError(f"{err_msg} starts at frame {ref[0, 1].item()}, not 0")
+    if (ref[:-1, 2] != ref[1:, 1]).any():
+        raise ValueError(f"{err_msg} not all boundaries are contiguous")
+    if feat_dir is not None:
+        feat_path = os.path.join(feat_dir, basename)
+        T = torch.load(feat_path).size(0)
+        if ref[-1, 2] != T:
+            raise ValueError(
+                f"{err_msg} feats at '{feat_path}' report {T} frames. ref "
+                f"ends with {ref[-1, 2].item()}"
+            )
+    ali = torch.repeat_interleave(ref[:, 0], ref[:, 2] - ref[:, 1])
+    torch.save(ali, os.path.join(ali_dir, basename))
 
 
 def torch_token_data_dir_to_torch_ali_data_dir(args: Optional[Sequence[str]] = None):
@@ -1596,7 +1583,6 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
     _add_common_arg(parser, "--timeout")
     try:
         options = parser.parse_args(args)
@@ -1611,7 +1597,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     os.makedirs(options.ali_dir, exist_ok=True)
     _multiprocessor_pattern(
         basenames,
-        options,
+        options.num_workers,
         _torch_token_data_dir_to_torch_ali_dir_do_work,
         options.ref_dir,
         options.ali_dir,
@@ -1621,17 +1607,16 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
 
 
 def _torch_ali_dir_to_torch_token_dir_do_work(
-    basenames: Sequence[str], ali_dir: str, ref_dir: str,
+    basename: str, ali_dir: str, ref_dir: str,
 ):
     zeros_ = torch.zeros(1, dtype=torch.long)
-    for basename in basenames:
-        ali_path = os.path.join(ali_dir, basename)
-        ali = torch.load(ali_path)
-        tok, c = ali.unique_consecutive(return_counts=True)
-        c = torch.cat([zeros_, c]).cumsum(0)
-        start, end = c[:-1], c[1:]
-        ref = torch.stack([tok, start, end], -1)
-        torch.save(ref, os.path.join(ref_dir, basename))
+    ali_path = os.path.join(ali_dir, basename)
+    ali = torch.load(ali_path)
+    tok, c = ali.unique_consecutive(return_counts=True)
+    c = torch.cat([zeros_, c]).cumsum(0)
+    start, end = c[:-1], c[1:]
+    ref = torch.stack([tok, start, end], -1)
+    torch.save(ref, os.path.join(ref_dir, basename))
 
 
 def torch_ali_data_dir_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
@@ -1659,7 +1644,6 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
     _add_common_arg(parser, "--timeout")
     try:
         options = parser.parse_args(args)
@@ -1674,7 +1658,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     os.makedirs(options.ref_dir, exist_ok=True)
     _multiprocessor_pattern(
         basenames,
-        options,
+        options.num_workers,
         _torch_ali_dir_to_torch_token_dir_do_work,
         options.ali_dir,
         options.ref_dir,
@@ -1683,7 +1667,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
 
 
 def _torch_token_data_dir_to_textgrids_do_work(
-    utt_ids: Sequence[str],
+    utt_id: str,
     ref_dir: str,
     id2token: Dict[int, str],
     feat_dir: Optional[str],
@@ -1696,80 +1680,75 @@ def _torch_token_data_dir_to_textgrids_do_work(
     quiet: bool,
     force_method: Optional[Literal[1, 2, 3]],
 ):
-    for utt_id in utt_ids:
-        in_name = utt_id + in_suffix
-        ref_name = os.path.join(ref_dir, in_name)
-        ref = torch.load(ref_name)
-        err_msg = f"Failure converting '{ref_name}' to TextGrid:"
-        T = -1
-        has_segment_index = ref.ndim == 2 and ref.size(1) == 3
-        if not has_segment_index and ref.ndim != 1:
-            raise ValueError(f"{err_msg} tensor is an invalid size")
-        if feat_dir is not None:
-            feat_name = os.path.join(feat_dir, in_name)
-            if not os.path.isfile(feat_name):
-                raise ValueError(
-                    f"{err_msg} corresponding feature file '{feat_name}' does not exist"
-                )
-            feat = torch.load(feat_name)
-            if feat.ndim != 2:
-                raise ValueError(f"{err_msg} feature tensor is an invalid size")
-            T = feat.size(0)
-        elif has_segment_index:
-            T = ref[..., 1:].max()
-        else:
-            if not quiet:
-                warnings.warn(
-                    f"Could not determine length of '{ref_name}'. Setting to 0"
-                )
-            T = 0
-        T = (T * frame_shift_ms) / 1000
-        try_method = force_method if force_method else 1
-        if try_method == 1:
-            if (
-                has_segment_index
-                and ((ref[..., 2] > ref[..., 1]) & (ref[..., 1] >= 0)).all()
-            ):
-                point_tier = False
-            elif force_method:
-                raise ValueError(f"{err_msg} does not have enough info for method 1")
-            else:
-                try_method += 1
-        if try_method == 2:
-            if has_segment_index:
-                maxes = ref[..., 1:].max(1)[0]
-            else:
-                maxes = torch.tensor(-1)
-            if (maxes >= 0).all():
-                ref[..., 1:] = maxes.unsqueeze(1)
-                point_tier = True
-            elif force_method:
-                raise ValueError(f"{err_msg} does not have enough info for method 2")
-            else:
-                try_method += 1
-        if try_method == 3:
-            if ref.ndim != 1:
-                ref = ref[..., 0]
-            transcript = [
-                (" ".join(id2token.get(x.item(), x.item()) for x in ref), 0.0, T)
-            ]
-            point_tier = False
-        else:
-            transcript = data.token_to_transcript(ref, id2token, frame_shift_ms)
-        if any(isinstance(x[0], int) for x in transcript):
-            raise ValueError(f"{err_msg} not all ids exist in '{id2token.name}'")
-        try:
-            data.write_textgrid(
-                transcript,
-                os.path.join(tg_dir, utt_id + out_suffix),
-                0.0,
-                T,
-                tier_name,
-                point_tier,
-                precision,
+    in_name = utt_id + in_suffix
+    ref_name = os.path.join(ref_dir, in_name)
+    ref = torch.load(ref_name)
+    err_msg = f"Failure converting '{ref_name}' to TextGrid:"
+    T = -1
+    has_segment_index = ref.ndim == 2 and ref.size(1) == 3
+    if not has_segment_index and ref.ndim != 1:
+        raise ValueError(f"{err_msg} tensor is an invalid size")
+    if feat_dir is not None:
+        feat_name = os.path.join(feat_dir, in_name)
+        if not os.path.isfile(feat_name):
+            raise ValueError(
+                f"{err_msg} corresponding feature file '{feat_name}' does not exist"
             )
-        except Exception as e:
-            raise ValueError(f"{err_msg} could not write textgrid") from e
+        feat = torch.load(feat_name)
+        if feat.ndim != 2:
+            raise ValueError(f"{err_msg} feature tensor is an invalid size")
+        T = feat.size(0)
+    elif has_segment_index:
+        T = ref[..., 1:].max()
+    else:
+        if not quiet:
+            warnings.warn(f"Could not determine length of '{ref_name}'. Setting to 0")
+        T = 0
+    T = (T * frame_shift_ms) / 1000
+    try_method = force_method if force_method else 1
+    if try_method == 1:
+        if (
+            has_segment_index
+            and ((ref[..., 2] > ref[..., 1]) & (ref[..., 1] >= 0)).all()
+        ):
+            point_tier = False
+        elif force_method:
+            raise ValueError(f"{err_msg} does not have enough info for method 1")
+        else:
+            try_method += 1
+    if try_method == 2:
+        if has_segment_index:
+            maxes = ref[..., 1:].max(1)[0]
+        else:
+            maxes = torch.tensor(-1)
+        if (maxes >= 0).all():
+            ref[..., 1:] = maxes.unsqueeze(1)
+            point_tier = True
+        elif force_method:
+            raise ValueError(f"{err_msg} does not have enough info for method 2")
+        else:
+            try_method += 1
+    if try_method == 3:
+        if ref.ndim != 1:
+            ref = ref[..., 0]
+        transcript = [(" ".join(id2token.get(x.item(), x.item()) for x in ref), 0.0, T)]
+        point_tier = False
+    else:
+        transcript = data.token_to_transcript(ref, id2token, frame_shift_ms)
+    if any(isinstance(x[0], int) for x in transcript):
+        raise ValueError(f"{err_msg} not all ids exist in '{id2token.name}'")
+    try:
+        data.write_textgrid(
+            transcript,
+            os.path.join(tg_dir, utt_id + out_suffix),
+            0.0,
+            T,
+            tier_name,
+            point_tier,
+            precision,
+        )
+    except Exception as e:
+        raise ValueError(f"{err_msg} could not write textgrid") from e
 
 
 def torch_token_data_dir_to_textgrids(args: Optional[Sequence[str]] = None):
@@ -1839,7 +1818,6 @@ directory."""
     _add_common_arg(parser, "--swap")
     _add_common_arg(parser, "--frame-shift-ms")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
     _add_common_arg(parser, "--timeout")
     _add_common_arg(parser, "--textgrid-suffix")
     parser.add_argument(
@@ -1885,7 +1863,7 @@ directory."""
     os.makedirs(options.tg_dir, exist_ok=True)
     _multiprocessor_pattern(
         utt_ids,
-        options,
+        options.num_workers,
         _torch_token_data_dir_to_textgrids_do_work,
         options.ref_dir,
         id2token,
@@ -1902,7 +1880,7 @@ directory."""
 
 
 def _chunk_torch_spect_data_dir_do_work(
-    utt_ids: Sequence[str],
+    utt_id: str,
     in_feat_dir: str,
     in_ali_dir: Optional[str],
     in_ref_dir: Optional[str],
@@ -1924,45 +1902,42 @@ def _chunk_torch_spect_data_dir_do_work(
     slicer = SliceSpectData(policy, window_type, pad_mode is None, lobe_size)
     chunker = ChunkBySlices("constant" if pad_mode is None else pad_mode, pad_constant)
     ref_chunker = ChunkTokenSequencesBySlices(partial_tokens, retain_token_boundaries)
-    for utt_id in utt_ids:
-        in_basename = file_prefix + utt_id + file_suffix
-        feats = torch.load(os.path.join(in_feat_dir, in_basename)).unsqueeze(0)
-        if in_ali_dir is None:
-            alis = None
-        else:
-            alis = torch.load(os.path.join(in_ali_dir, in_basename)).unsqueeze(0)
-        if in_ref_dir is None:
-            refs = None
-        else:
-            refs = torch.load(os.path.join(in_ref_dir, in_basename)).unsqueeze(0)
-        if policy == "fixed":
-            slices, _ = slicer(feats)
-        elif policy == "ali":
-            slices, _ = slicer(alis)
-        else:
-            slices, _ = slicer(refs)
-        M = slices.size(0)
-        new_utt_ids = [
-            format_utt.format(utt_id=utt_id, idx=n, start=x[0], end=x[1])
-            for (n, x) in enumerate(slices.tolist())
-        ]
-        if not quiet and len(set(new_utt_ids)) != M:
-            warnings.warn(f"new utterance names for '{utt_id}' are not unique")
-        feats, lens = chunker(feats.expand(M, -1, -1), slices)
+    in_basename = file_prefix + utt_id + file_suffix
+    feats = torch.load(os.path.join(in_feat_dir, in_basename)).unsqueeze(0)
+    if in_ali_dir is None:
+        alis = None
+    else:
+        alis = torch.load(os.path.join(in_ali_dir, in_basename)).unsqueeze(0)
+    if in_ref_dir is None:
+        refs = None
+    else:
+        refs = torch.load(os.path.join(in_ref_dir, in_basename)).unsqueeze(0)
+    if policy == "fixed":
+        slices, _ = slicer(feats)
+    elif policy == "ali":
+        slices, _ = slicer(alis)
+    else:
+        slices, _ = slicer(refs)
+    M = slices.size(0)
+    new_utt_ids = [
+        format_utt.format(utt_id=utt_id, idx=n, start=x[0], end=x[1])
+        for (n, x) in enumerate(slices.tolist())
+    ]
+    if not quiet and len(set(new_utt_ids)) != M:
+        warnings.warn(f"new utterance names for '{utt_id}' are not unique")
+    feats, lens = chunker(feats.expand(M, -1, -1), slices)
+    if alis is not None:
+        alis, lens_ = chunker(alis.expand(M, -1), slices)
+        assert (lens == lens_).all()
+    if refs is not None:
+        refs, ref_lens = ref_chunker(refs.expand(M, *refs.shape[1:]), slices)
+    for n, new_utt_id in enumerate(new_utt_ids):
+        out_basename = file_prefix + new_utt_id + file_suffix
+        torch.save(feats[n, : lens[n]], os.path.join(out_feat_dir, out_basename))
         if alis is not None:
-            alis, lens_ = chunker(alis.expand(M, -1), slices)
-            assert (lens == lens_).all()
+            torch.save(alis[n, : lens[n]], os.path.join(out_ali_dir, out_basename))
         if refs is not None:
-            refs, ref_lens = ref_chunker(refs.expand(M, *refs.shape[1:]), slices)
-        for n, new_utt_id in enumerate(new_utt_ids):
-            out_basename = file_prefix + new_utt_id + file_suffix
-            torch.save(feats[n, : lens[n]], os.path.join(out_feat_dir, out_basename))
-            if alis is not None:
-                torch.save(alis[n, : lens[n]], os.path.join(out_ali_dir, out_basename))
-            if refs is not None:
-                torch.save(
-                    refs[n, : ref_lens[n]], os.path.join(out_ref_dir, out_basename)
-                )
+            torch.save(refs[n, : ref_lens[n]], os.path.join(out_ref_dir, out_basename))
 
 
 def chunk_torch_spect_data_dir(args: Optional[Sequence[str]] = None):
@@ -2009,7 +1984,6 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     _add_common_arg(parser, "--ali-subdir")
     _add_common_arg(parser, "--ref-subdir")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
     _add_common_arg(parser, "--timeout")
     parser.add_argument(
         "--policy",
@@ -2119,7 +2093,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
 
     _multiprocessor_pattern(
         utt_ids,
-        options,
+        options.num_workers,
         _chunk_torch_spect_data_dir_do_work,
         in_feat_dir,
         in_ali_dir,
@@ -2142,7 +2116,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
 
 
 def _copy_spect_data_dir_do_work(
-    basenames: Sequence[str],
+    basename: str,
     src_dir: str,
     dest_dir: str,
     cp: Callable[[str, str], Any],
@@ -2151,15 +2125,13 @@ def _copy_spect_data_dir_do_work(
     ref_subdir: Optional[str],
 ):
     if feat_subdir is None:
-        for bn in basenames:
-            cp(os.path.join(src_dir, bn), os.path.join(dest_dir, bn))
+        cp(os.path.join(src_dir, basename), os.path.join(dest_dir, basename))
     else:
-        for bn in basenames:
-            for x in (feat_subdir, ali_subdir, ref_subdir):
-                if x is not None:
-                    src = os.path.join(src_dir, x, bn)
-                    if os.path.exists(src):
-                        cp(src, os.path.join(dest_dir, x, bn))
+        for x in (feat_subdir, ali_subdir, ref_subdir):
+            if x is not None:
+                src = os.path.join(src_dir, x, basename)
+                if os.path.exists(src):
+                    cp(src, os.path.join(dest_dir, x, basename))
 
 
 def subset_torch_spect_data_dir(args: Optional[Sequence[str]] = None):
@@ -2319,7 +2291,6 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
     _add_common_arg(parser, "--timeout")
     try:
         options = parser.parse_args(args)
@@ -2414,7 +2385,7 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
 
     _multiprocessor_pattern(
         basenames,
-        options,
+        options.num_workers,
         _copy_spect_data_dir_do_work,
         options.src,
         options.dest,
@@ -2425,30 +2396,31 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     )
 
 
-def _worker_func(queue, timeout, do_work_func, *args):
-    x = queue.get(True, timeout)
-    while x is not None:
-        do_work_func(x, *args)
-        del x
-        x = queue.get(True, timeout)
+global _mp_args
+global _mp_func
 
 
-def _multiprocessor_pattern(x, options, do_work_func, *args):
-    if options.num_workers:
-        queue = torch.multiprocessing.Queue(options.num_workers)
+def _worker_init(func, *args):
+    global _mp_args
+    global _mp_func
+    _mp_args = args
+    _mp_func = func
+
+
+def _worker_func(x_n):
+    global _mp_func
+    global _mp_args
+    _mp_func(x_n, *_mp_args)
+
+
+def _multiprocessor_pattern(x, num_workers, do_work_func, *args):
+    if num_workers:
         with torch.multiprocessing.Pool(
-            options.num_workers,
-            _worker_func,
-            (queue, options.timeout, do_work_func, *args),
+            num_workers, _worker_init, (do_work_func, *args),
         ) as pool:
-            chunk = tuple(itertools.islice(x, options.chunk_size))
-            while len(chunk):
-                queue.put(chunk)
-                chunk = tuple(itertools.islice(x, options.chunk_size))
-            for _ in range(options.num_workers):
-                queue.put(None)
-            pool.close()
-            pool.join()
+            for _ in pool.imap_unordered(_worker_func, x):
+                pass
     else:
-        do_work_func(x, *args)
+        for x_n in x:
+            do_work_func(x_n, *args)
 
