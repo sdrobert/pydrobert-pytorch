@@ -131,6 +131,12 @@ _COMMON_ARGS = {
         "have). The extra dimension will allow data in this directory to be "
         "loaded as features in a SpectDataSet.",
     },
+    "--mp-chunk-size": {
+        "type": nat,
+        "default": config.DEFT_CHUNK_SIZE,
+        "help": "The number of utterances that a multiprocessing worker will process "
+        "at once. Impacts speed and memory consumption.",
+    },
     "--timeout": {
         "type": nat,
         "default": None,
@@ -430,6 +436,7 @@ with the "ref/" directory of a SpectDataSet. See the command
     _add_common_arg(parser, "--swap")
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--mp-chunk-size")
     _add_common_arg(parser, "--timeout")
     size_group = parser.add_mutually_exclusive_group()
     _add_common_arg(size_group, "--skip-frame-times")
@@ -470,7 +477,7 @@ with the "ref/" directory of a SpectDataSet. See the command
     os.makedirs(options.dir, exist_ok=True)
     _multiprocessor_pattern(
         error_handling_iter(),
-        options.num_workers,
+        options,
         _save_transcripts_to_dir_do_work,
         token2id,
         options.dir,
@@ -675,6 +682,7 @@ with the "ref/" directory of a SpectDataSet. See the command
     _add_common_arg(parser, "--swap")
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--mp-chunk-size")
     _add_common_arg(parser, "--timeout")
     size_group = parser.add_mutually_exclusive_group()
     _add_common_arg(size_group, "--skip-frame-times")
@@ -729,7 +737,7 @@ with the "ref/" directory of a SpectDataSet. See the command
     os.makedirs(options.dir, exist_ok=True)
     _multiprocessor_pattern(
         transcripts,
-        options.num_workers,
+        options,
         _save_transcripts_to_dir_do_work,
         token2id,
         options.dir,
@@ -779,6 +787,7 @@ directory."""
     _add_common_arg(parser, "--swap")
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--mp-chunk-size")
     _add_common_arg(parser, "--timeout")
     _add_common_arg(parser, "--textgrid-suffix")
     parser.add_argument(
@@ -837,7 +846,7 @@ directory."""
     os.makedirs(options.dir, exist_ok=True)
     _multiprocessor_pattern(
         textgrid_iter(),
-        options.num_workers,
+        options,
         _save_transcripts_to_dir_do_work,
         token2id,
         options.dir,
@@ -1583,6 +1592,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--mp-chunk-size")
     _add_common_arg(parser, "--timeout")
     try:
         options = parser.parse_args(args)
@@ -1597,7 +1607,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     os.makedirs(options.ali_dir, exist_ok=True)
     _multiprocessor_pattern(
         basenames,
-        options.num_workers,
+        options,
         _torch_token_data_dir_to_torch_ali_dir_do_work,
         options.ref_dir,
         options.ali_dir,
@@ -1644,6 +1654,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--mp-chunk-size")
     _add_common_arg(parser, "--timeout")
     try:
         options = parser.parse_args(args)
@@ -1658,7 +1669,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     os.makedirs(options.ref_dir, exist_ok=True)
     _multiprocessor_pattern(
         basenames,
-        options.num_workers,
+        options,
         _torch_ali_dir_to_torch_token_dir_do_work,
         options.ali_dir,
         options.ref_dir,
@@ -1818,6 +1829,7 @@ directory."""
     _add_common_arg(parser, "--swap")
     _add_common_arg(parser, "--frame-shift-ms")
     _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--mp-chunk-size")
     _add_common_arg(parser, "--timeout")
     _add_common_arg(parser, "--textgrid-suffix")
     parser.add_argument(
@@ -1863,7 +1875,7 @@ directory."""
     os.makedirs(options.tg_dir, exist_ok=True)
     _multiprocessor_pattern(
         utt_ids,
-        options.num_workers,
+        options,
         _torch_token_data_dir_to_textgrids_do_work,
         options.ref_dir,
         id2token,
@@ -1984,6 +1996,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     _add_common_arg(parser, "--ali-subdir")
     _add_common_arg(parser, "--ref-subdir")
     _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--mp-chunk-size")
     _add_common_arg(parser, "--timeout")
     parser.add_argument(
         "--policy",
@@ -2093,7 +2106,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
 
     _multiprocessor_pattern(
         utt_ids,
-        options.num_workers,
+        options,
         _chunk_torch_spect_data_dir_do_work,
         in_feat_dir,
         in_ali_dir,
@@ -2291,6 +2304,7 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--mp-chunk-size")
     _add_common_arg(parser, "--timeout")
     try:
         options = parser.parse_args(args)
@@ -2385,7 +2399,7 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
 
     _multiprocessor_pattern(
         basenames,
-        options.num_workers,
+        options,
         _copy_spect_data_dir_do_work,
         options.src,
         options.dest,
@@ -2413,12 +2427,12 @@ def _worker_func(x_n):
     _mp_func(x_n, *_mp_args)
 
 
-def _multiprocessor_pattern(x, num_workers, do_work_func, *args):
-    if num_workers:
+def _multiprocessor_pattern(x, options, do_work_func, *args):
+    if options.num_workers:
         with torch.multiprocessing.Pool(
-            num_workers, _worker_init, (do_work_func, *args),
+            options.num_workers, _worker_init, (do_work_func, *args),
         ) as pool:
-            for _ in pool.imap_unordered(_worker_func, x):
+            for _ in pool.imap_unordered(_worker_func, x, options.mp_chunk_size):
                 pass
     else:
         for x_n in x:
