@@ -2424,7 +2424,7 @@ def _worker_init(func, *args):
 def _worker_func(x_n):
     global _mp_func
     global _mp_args
-    _mp_func(x_n, *_mp_args)
+    return _mp_func(x_n, *_mp_args)
 
 
 def _multiprocessor_pattern(x, options, do_work_func, *args):
