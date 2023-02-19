@@ -620,7 +620,7 @@ def write_textgrid(
     end_time: Optional[float] = None,
     tier_name: str = config.DEFT_TEXTGRID_TIER_NAME,
     point_tier: Optional[bool] = None,
-    precision: int = config.DEFT_TEXTGRID_PRECISION,
+    precision: int = config.DEFT_FLOAT_PRINT_PRECISION,
 ) -> None:
     """Write a transcription as a TextGrid file
     

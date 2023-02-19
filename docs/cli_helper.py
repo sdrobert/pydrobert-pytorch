@@ -37,6 +37,7 @@ for cmd_name in sorted(
         "compute-torch-token-data-dir-error-rates",
         "ctm-to-torch-token-data-dir",
         "get-torch-spect-data-dir-info",
+        "print-torch-ali-data-dir-length-moments",
         "subset-torch-spect-data-dir",
         "textgrids-to-torch-token-data-dir",
         "torch-ali-data-dir-to-torch-token-data-dir",

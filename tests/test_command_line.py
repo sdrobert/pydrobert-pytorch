@@ -1095,3 +1095,35 @@ def test_subset_torch_spect_data_dir(temp_dir, populate_torch_dir, only, style):
             ref_act = torch.load(os.path.join(ref_ddir, utt_id + ".pt"))
             assert (ref_exp == ref_act).all()
 
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("bessel", [True, False], ids=["unbiased", "biased"])
+@pytest.mark.parametrize("std", [True, False], ids=["std", "var"])
+def test_print_torch_ali_data_dir_length_moments(temp_dir, bessel, std):
+    N, len_max, seg_max = 100, 30, 5
+    lens = torch.randint(1, len_max + 1, (N * seg_max,))
+    nsegs = torch.randint(1, seg_max + 1, (N,))
+    lens = lens[: nsegs.sum()]
+    lens_ = lens.float()
+    mean = lens_.mean().item()
+    if std:
+        var = lens_.std(unbiased=bessel).item()
+    else:
+        var = lens_.var(unbiased=bessel).item()
+    out_exp = f"{mean:0.03f} ({var:0.03f})\n"
+    for n in range(N):
+        nseg = nsegs[n]
+        lens_n, lens = lens[:nseg], lens[nseg:]
+        ali = torch.arange(nseg).repeat_interleave(lens_n)
+        torch.save(ali, os.path.join(temp_dir, f"utt{n}.pt"))
+    assert not lens.numel()
+    out_file = os.path.join(temp_dir, "out.txt")
+    args = [temp_dir, out_file]
+    if std:
+        args.append("--std")
+    if bessel:
+        args.append("--bessel")
+    assert not command_line.print_torch_ali_data_dir_length_moments(args)
+    with open(out_file) as f:
+        out_act = f.read()
+    assert out_exp == out_act

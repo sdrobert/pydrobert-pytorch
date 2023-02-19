@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
 import os
 import sys
 import argparse
@@ -136,12 +137,6 @@ _COMMON_ARGS = {
         "default": config.DEFT_CHUNK_SIZE,
         "help": "The number of utterances that a multiprocessing worker will process "
         "at once. Impacts speed and memory consumption.",
-    },
-    "--timeout": {
-        "type": nat,
-        "default": None,
-        "help": "When using multiple workers, how long (in seconds) without new data "
-        "before terminating. The default is to wait indefinitely.",
     },
     "--textgrid-suffix": {
         "default": config.DEFT_TEXTGRID_SUFFIX,
@@ -437,7 +432,6 @@ with the "ref/" directory of a SpectDataSet. See the command
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
     _add_common_arg(parser, "--mp-chunk-size")
-    _add_common_arg(parser, "--timeout")
     size_group = parser.add_mutually_exclusive_group()
     _add_common_arg(size_group, "--skip-frame-times")
     _add_common_arg(size_group, "--feat-sizing")
@@ -683,7 +677,6 @@ with the "ref/" directory of a SpectDataSet. See the command
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
     _add_common_arg(parser, "--mp-chunk-size")
-    _add_common_arg(parser, "--timeout")
     size_group = parser.add_mutually_exclusive_group()
     _add_common_arg(size_group, "--skip-frame-times")
     _add_common_arg(size_group, "--feat-sizing")
@@ -788,7 +781,6 @@ directory."""
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
     _add_common_arg(parser, "--mp-chunk-size")
-    _add_common_arg(parser, "--timeout")
     _add_common_arg(parser, "--textgrid-suffix")
     parser.add_argument(
         "--fill-symbol",
@@ -1593,7 +1585,6 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
     _add_common_arg(parser, "--mp-chunk-size")
-    _add_common_arg(parser, "--timeout")
     try:
         options = parser.parse_args(args)
     except SystemExit as ex:
@@ -1655,7 +1646,6 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
     _add_common_arg(parser, "--mp-chunk-size")
-    _add_common_arg(parser, "--timeout")
     try:
         options = parser.parse_args(args)
     except SystemExit as ex:
@@ -1830,7 +1820,6 @@ directory."""
     _add_common_arg(parser, "--frame-shift-ms")
     _add_common_arg(parser, "--num-workers")
     _add_common_arg(parser, "--mp-chunk-size")
-    _add_common_arg(parser, "--timeout")
     _add_common_arg(parser, "--textgrid-suffix")
     parser.add_argument(
         "--tier-name", default="transcript", help="The name to save the tier with"
@@ -1838,9 +1827,8 @@ directory."""
     parser.add_argument(
         "--precision",
         type=nat0,
-        default=config.DEFT_TEXTGRID_PRECISION,
-        help="Default precision with which to save floating point values in "
-        "TextGrid files",
+        default=config.DEFT_FLOAT_PRINT_PRECISION,
+        help="Precision with which to save floating point values in TextGrid files",
     )
     parser.add_argument(
         "--quiet",
@@ -1997,7 +1985,6 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     _add_common_arg(parser, "--ref-subdir")
     _add_common_arg(parser, "--num-workers")
     _add_common_arg(parser, "--mp-chunk-size")
-    _add_common_arg(parser, "--timeout")
     parser.add_argument(
         "--policy",
         default="fixed",
@@ -2305,7 +2292,6 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
     _add_common_arg(parser, "--mp-chunk-size")
-    _add_common_arg(parser, "--timeout")
     try:
         options = parser.parse_args(args)
     except SystemExit as ex:
@@ -2410,6 +2396,100 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     )
 
 
+def _compute_torch_ali_data_dir_mean_length_do_work(file_name: str):
+    x = torch.load(file_name)
+    _, lens = x.unique_consecutive(return_counts=True)
+    return lens
+
+
+def print_torch_ali_data_dir_length_moments(args: Optional[Sequence[str]] = None):
+    """Compute the mean and variance of segment lengths from an ali data dir
+
+A segment in an "ali/" directory is a maximal sequence of frames with the same id. This
+command computes the mean and variance of segment lengths, printing them on one line
+as
+
+    <mean> (<var>)
+
+The input to this command is the "ali/" subdirectory of the SpectDataSet, not its root.
+
+See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
+directory.
+"""
+    parser = argparse.ArgumentParser(
+        description=print_torch_ali_data_dir_length_moments.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("dir", type=rdir, help="The ali/ dir (input)")
+    parser.add_argument(
+        "out",
+        nargs="?",
+        type=argparse.FileType("w"),
+        default=sys.stdout,
+        help="Where to print statistics. Defaults to stdout",
+    )
+    parser.add_argument(
+        "--precision",
+        type=nat0,
+        default=config.DEFT_FLOAT_PRINT_PRECISION,
+        help="Precision with which to print stats",
+    )
+    parser.add_argument(
+        "--bessel",
+        action="store_true",
+        default=False,
+        help="Perform Bessel correction on the variance estimate",
+    )
+    parser.add_argument(
+        "--std",
+        action="store_true",
+        default=False,
+        help="Print standard deviation instead of variance",
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--mp-chunk-size")
+    try:
+        options = parser.parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+
+    filenames = (
+        os.path.join(options.dir, x)
+        for x in os.listdir(options.dir)
+        if x.startswith(options.file_prefix) and x.endswith(options.file_suffix)
+    )
+
+    s = 0
+    ss = 0
+    c = 0
+    for lens in _multiprocessor_pattern_generator(
+        filenames, options, _compute_torch_ali_data_dir_mean_length_do_work
+    ):
+        s += lens.sum().item()
+        ss += lens.square().sum().item()
+        c += lens.numel()
+
+    if c > 0:
+        float_fmt_str = f"{{:0.0{options.precision}f}}"
+        mean = s / c
+        var = ss / c - mean ** 2
+        mean = float_fmt_str.format(mean)
+        if options.bessel and c == 1:
+            var = "n/a"
+        else:
+            if options.bessel:
+                var *= c / (c - 1)
+            if options.std:
+                var = math.sqrt(var)
+            var = float_fmt_str.format(var)
+        out_str = f"{mean} ({var})\n"
+    else:
+        out_str = "n/a (n/a)\n"
+    options.out.write(out_str)
+
+
 global _mp_args
 global _mp_func
 
@@ -2428,13 +2508,17 @@ def _worker_func(x_n):
 
 
 def _multiprocessor_pattern(x, options, do_work_func, *args):
+    collections.deque(
+        iter(_multiprocessor_pattern_generator(x, options, do_work_func, *args)),
+        maxlen=1,
+    )
+
+
+def _multiprocessor_pattern_generator(x, options, do_work_func, *args):
     if options.num_workers:
         with torch.multiprocessing.Pool(
             options.num_workers, _worker_init, (do_work_func, *args),
         ) as pool:
-            for _ in pool.imap_unordered(_worker_func, x, options.mp_chunk_size):
-                pass
+            yield from pool.imap_unordered(_worker_func, x, options.mp_chunk_size)
     else:
-        for x_n in x:
-            do_work_func(x_n, *args)
-
+        yield from (do_work_func(x_n, *args) for x_n in x)

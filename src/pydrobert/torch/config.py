@@ -38,7 +38,7 @@ __all__ = [
     "DEFT_PDFS_SUBDIR",
     "DEFT_REF_SUBDIR",
     "DEFT_SUB_COST",
-    "DEFT_TEXTGRID_PRECISION",
+    "DEFT_FLOAT_PRINT_PRECISION",
     "DEFT_TEXTGRID_SUFFIX",
     "DEFT_TEXTGRID_TIER_ID",
     "DEFT_TEXTGRID_TIER_NAME",
@@ -111,8 +111,8 @@ DEFT_FILE_PREFIX = ""
 DEFT_FILE_SUFFIX = ".pt"
 """Default suffix of a torch data file"""
 
-DEFT_TEXTGRID_PRECISION = 3
-"""Default precision to write floating point TextGrids with"""
+DEFT_FLOAT_PRINT_PRECISION = 3
+"""Default precision to write floating point values to file with"""
 
 DEFT_CTM_CHANNEL = "A"
 """Default channel to write to CTM files"""
