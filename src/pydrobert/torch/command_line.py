@@ -2399,7 +2399,8 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
 def _compute_torch_ali_data_dir_mean_length_do_work(file_name: str):
     x = torch.load(file_name)
     _, lens = x.unique_consecutive(return_counts=True)
-    return lens
+    s, ss, c = lens.sum().item(), lens.square().sum().item(), lens.numel()
+    return s, ss, c
 
 
 def print_torch_ali_data_dir_length_moments(args: Optional[Sequence[str]] = None):
@@ -2464,12 +2465,12 @@ directory.
     s = 0
     ss = 0
     c = 0
-    for lens in _multiprocessor_pattern_generator(
+    for s_, ss_, c_ in _multiprocessor_pattern_generator(
         filenames, options, _compute_torch_ali_data_dir_mean_length_do_work
     ):
-        s += lens.sum().item()
-        ss += lens.square().sum().item()
-        c += lens.numel()
+        s += s_
+        ss += ss_
+        c += c_
 
     if c > 0:
         float_fmt_str = f"{{:0.0{options.precision}f}}"
