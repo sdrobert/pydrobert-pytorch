@@ -1127,3 +1127,52 @@ def test_print_torch_ali_data_dir_length_moments(temp_dir, bessel, std):
     with open(out_file) as f:
         out_act = f.read()
     assert out_exp == out_act
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("bessel", [True, False], ids=["unbiased", "biased"])
+@pytest.mark.parametrize("std", [True, False], ids=["std", "var"])
+def test_print_torch_ref_data_dir_length_moments(temp_dir, bessel, std):
+    N, len_max, seg_max, V = 200, 5, 20, 30
+    lens = torch.randint(1, len_max + 1, (N * seg_max,))
+    offs = torch.randint(0, len_max * seg_max, (N * seg_max,))
+    nsegs = torch.randint(1, seg_max + 1, (N,))
+    lens, offs = lens[: nsegs.sum()], offs[: nsegs.sum()]
+    lens_ = lens.float()
+    mean = lens_.mean().item()
+    if std:
+        var = lens_.std(unbiased=bessel).item()
+    else:
+        var = lens_.var(unbiased=bessel).item()
+    out_exp = f"{mean:0.03f} ({var:0.03f})\n"
+    for n in range(N):
+        nseg = nsegs[n]
+        lens_n, lens = lens[:nseg], lens[nseg:]
+        offs_n, offs = offs[:nseg], offs[nseg:]
+        ref = torch.stack([torch.randint(V, (nseg,)), offs_n, offs_n + lens_n], 1)
+        torch.save(ref, os.path.join(temp_dir, f"utt{n}.pt"))
+    assert not lens.numel()
+    out_file = os.path.join(temp_dir, "out.txt")
+    args = [temp_dir, out_file]
+    if std:
+        args.append("--std")
+    if bessel:
+        args.append("--bessel")
+    assert not command_line.print_torch_ref_data_dir_length_moments(args)
+    with open(out_file) as f:
+        out_act = f.read()
+    assert out_exp == out_act
+    ref = torch.tensor([[1, 2, 3], [1, 3, 2], [1, -1, 4], [1, 0, 10]])
+    lens_ = torch.cat([lens_, torch.tensor([1.0, 10], dtype=torch.float)])
+    mean = lens_.mean().item()
+    if std:
+        var = lens_.std(unbiased=bessel).item()
+    else:
+        var = lens_.var(unbiased=bessel).item()
+    out_exp = f"{mean:0.03f} ({var:0.03f})\n"
+    torch.save(ref, os.path.join(temp_dir, "bad.pt"))
+    with pytest.warns(UserWarning, match=r"'bad': segments \[1, 2\]"):
+        assert not command_line.print_torch_ref_data_dir_length_moments(args)
+    with open(out_file) as f:
+        out_act = f.read()
+    assert out_exp == out_act

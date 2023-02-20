@@ -2396,27 +2396,46 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     )
 
 
-def _compute_torch_ali_data_dir_mean_length_do_work(file_name: str):
+def _print_torch_ali_data_dir_length_moments(file_name: str):
     x = torch.load(file_name)
     _, lens = x.unique_consecutive(return_counts=True)
     s, ss, c = lens.sum().item(), lens.square().sum().item(), lens.numel()
     return s, ss, c
 
 
+def _do_mv_printing(s, ss, c, options):
+    if c > 0:
+        float_fmt_str = f"{{:0.0{options.precision}f}}"
+        mean = s / c
+        var = ss / c - mean ** 2
+        mean = float_fmt_str.format(mean)
+        if options.bessel and c == 1:
+            var = "n/a"
+        else:
+            if options.bessel:
+                var *= c / (c - 1)
+            if options.std:
+                var = math.sqrt(var)
+            var = float_fmt_str.format(var)
+        out_str = f"{mean} ({var})\n"
+    else:
+        out_str = "n/a (n/a)\n"
+    options.out.write(out_str)
+
+
 def print_torch_ali_data_dir_length_moments(args: Optional[Sequence[str]] = None):
     """Compute the mean and variance of segment lengths from an ali data dir
 
-A segment in an "ali/" directory is a maximal sequence of frames with the same id. This
-command computes the mean and variance of segment lengths, printing them on one line
-as
+A segment in an "ali/" directory tensor is a maximal sequence of frames with the same
+id. This command computes the mean and variance of segment lengths, printing them on one
+line as
 
     <mean> (<var>)
 
 The input to this command is the "ali/" subdirectory of the SpectDataSet, not its root.
 
 See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
-directory.
-"""
+directory."""
     parser = argparse.ArgumentParser(
         description=print_torch_ali_data_dir_length_moments.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2466,29 +2485,126 @@ directory.
     ss = 0
     c = 0
     for s_, ss_, c_ in _multiprocessor_pattern_generator(
-        filenames, options, _compute_torch_ali_data_dir_mean_length_do_work
+        filenames, options, _print_torch_ali_data_dir_length_moments
     ):
         s += s_
         ss += ss_
         c += c_
 
-    if c > 0:
-        float_fmt_str = f"{{:0.0{options.precision}f}}"
-        mean = s / c
-        var = ss / c - mean ** 2
-        mean = float_fmt_str.format(mean)
-        if options.bessel and c == 1:
-            var = "n/a"
-        else:
-            if options.bessel:
-                var *= c / (c - 1)
-            if options.std:
-                var = math.sqrt(var)
-            var = float_fmt_str.format(var)
-        out_str = f"{mean} ({var})\n"
+    _do_mv_printing(s, ss, c, options)
+
+
+def _print_torch_ref_data_dir_length_moments(utt_id, dir_, prefix, suffix):
+    ref = torch.load(os.path.join(dir_, prefix + utt_id + suffix))
+    eprefix = f"Utterance '{utt_id}':"
+    if ref.ndim != 2 or ref.size(1) != 3:
+        err_msg = f"{eprefix} expected tensor of shape '(R, 3)'; got '{ref.shape}'"
+        return 0, 0, 0, err_msg
+    lens = ref[:, 2] - ref[:, 1]
+    valid = (0 <= ref[:, 1]) & (ref[:, 1] <= ref[:, 2])
+    if valid.long().sum() != lens.numel():
+        idxs = (~valid).nonzero().flatten().tolist()
+        err_msg = f"{eprefix} segments {idxs} are invalid or missing"
     else:
-        out_str = "n/a (n/a)\n"
-    options.out.write(out_str)
+        err_msg = None
+    lens = lens[valid]
+    s, ss, c = lens.sum().item(), lens.square().sum().item(), lens.numel()
+    return s, ss, c, err_msg
+
+
+def print_torch_ref_data_dir_length_moments(args: Optional[Sequence[str]] = None):
+    """Compute the mean and variance of segment lengths from a ref data dir
+
+Segment lengths from "ref/" directory tensors are computed from token segment boundaries
+(end - start). For this to be computed, a token must include those boundaries. Those
+utterances or segments without boundaries are discarded with a warning. This command
+computes the mean and variance of segment lengths, printing them on one line as
+
+    <mean> (<var>)
+
+The input to this command is the "ref/" subdirectory of the SpectDataSet, not its root.
+
+See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
+directory."""
+    parser = argparse.ArgumentParser(
+        description=print_torch_ali_data_dir_length_moments.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("dir", type=rdir, help="The ref/ dir (input)")
+    parser.add_argument(
+        "out",
+        nargs="?",
+        type=argparse.FileType("w"),
+        default=sys.stdout,
+        help="Where to print statistics. Defaults to stdout",
+    )
+    err_grp = parser.add_mutually_exclusive_group()
+    err_grp.add_argument(
+        "--strict",
+        action="store_true",
+        default=False,
+        help="Error when boundary info is not available",
+    )
+    err_grp.add_argument(
+        "--quiet",
+        action="store_true",
+        default=False,
+        help="Suppress warnings about missing boundary info",
+    )
+    parser.add_argument(
+        "--precision",
+        type=nat0,
+        default=config.DEFT_FLOAT_PRINT_PRECISION,
+        help="Precision with which to print stats",
+    )
+    parser.add_argument(
+        "--bessel",
+        action="store_true",
+        default=False,
+        help="Perform Bessel correction on the variance estimate",
+    )
+    parser.add_argument(
+        "--std",
+        action="store_true",
+        default=False,
+        help="Print standard deviation instead of variance",
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--mp-chunk-size")
+    try:
+        options = parser.parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+
+    utt_ids = (
+        x[len(options.file_prefix) : len(x) - len(options.file_suffix)]
+        for x in os.listdir(options.dir)
+        if x.startswith(options.file_prefix) and x.endswith(options.file_suffix)
+    )
+
+    s = 0
+    ss = 0
+    c = 0
+    for s_, ss_, c_, err_msg in _multiprocessor_pattern_generator(
+        utt_ids,
+        options,
+        _print_torch_ref_data_dir_length_moments,
+        options.dir,
+        options.file_prefix,
+        options.file_suffix,
+    ):
+        if err_msg is not None:
+            if options.strict:
+                raise ValueError(err_msg)
+            elif not options.quiet:
+                warnings.warn(err_msg)
+        s += s_
+        ss += ss_
+        c += c_
+
+    _do_mv_printing(s, ss, c, options)
 
 
 global _mp_args
