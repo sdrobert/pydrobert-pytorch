@@ -616,6 +616,19 @@ class LitSpectDataModule(
         return None if self.max_ref_class is None else self.max_ref_class + 1
 
     @property
+    def batch_size(self) -> int:
+        """int : training batch size
+        
+        This property is just the value of ``self.params.train_params.batch_size``.
+        It is exposed in case ``auto_scale_batch_size`` is desired.
+        """
+        return self.params.train_params.batch_size
+
+    @batch_size.setter
+    def batch_size(self, batch_size: int):
+        self.params.train_params.batch_size = batch_size
+
+    @property
     def feat_size(self) -> Optional[int]:
         """int : feature vector size
         
