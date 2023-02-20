@@ -2396,9 +2396,12 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     )
 
 
-def _print_torch_ali_data_dir_length_moments(file_name: str):
+def _print_torch_ali_data_dir_length_moments(file_name, exclude_ids):
     x = torch.load(file_name)
-    _, lens = x.unique_consecutive(return_counts=True)
+    counts, lens = x.unique_consecutive(return_counts=True)
+    if exclude_ids is not None:
+        not_excluded = (counts.unsqueeze(1) != exclude_ids).all(1)
+        lens = lens[not_excluded]
     s, ss, c = lens.sum().item(), lens.square().sum().item(), lens.numel()
     return s, ss, c
 
@@ -2466,6 +2469,14 @@ directory."""
         default=False,
         help="Print standard deviation instead of variance",
     )
+    parser.add_argument(
+        "--exclude-ids",
+        type=int,
+        nargs="+",
+        default=None,
+        help="If specified, segments with ali ids in this list will be excluded from"
+        "counts",
+    )
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
@@ -2481,11 +2492,15 @@ directory."""
         if x.startswith(options.file_prefix) and x.endswith(options.file_suffix)
     )
 
+    exclude_ids = options.exclude_ids
+    if exclude_ids is not None:
+        exclude_ids = torch.tensor(list(set(exclude_ids)))
+
     s = 0
     ss = 0
     c = 0
     for s_, ss_, c_ in _multiprocessor_pattern_generator(
-        filenames, options, _print_torch_ali_data_dir_length_moments
+        filenames, options, _print_torch_ali_data_dir_length_moments, exclude_ids
     ):
         s += s_
         ss += ss_
@@ -2494,7 +2509,7 @@ directory."""
     _do_mv_printing(s, ss, c, options)
 
 
-def _print_torch_ref_data_dir_length_moments(utt_id, dir_, prefix, suffix):
+def _print_torch_ref_data_dir_length_moments(utt_id, dir_, prefix, suffix, exclude_ids):
     ref = torch.load(os.path.join(dir_, prefix + utt_id + suffix))
     eprefix = f"Utterance '{utt_id}':"
     if ref.ndim != 2 or ref.size(1) != 3:
@@ -2502,12 +2517,17 @@ def _print_torch_ref_data_dir_length_moments(utt_id, dir_, prefix, suffix):
         return 0, 0, 0, err_msg
     lens = ref[:, 2] - ref[:, 1]
     valid = (0 <= ref[:, 1]) & (ref[:, 1] <= ref[:, 2])
-    if valid.long().sum() != lens.numel():
-        idxs = (~valid).nonzero().flatten().tolist()
+    if exclude_ids is not None:
+        not_excluded = (ref[:, :1] != exclude_ids).all(1)
+    else:
+        not_excluded = torch.ones_like(valid)
+    invalid_and_not_excluded = ~valid & not_excluded
+    if invalid_and_not_excluded.long().sum() != 0:
+        idxs = invalid_and_not_excluded.nonzero().flatten().tolist()
         err_msg = f"{eprefix} segments {idxs} are invalid or missing"
     else:
         err_msg = None
-    lens = lens[valid]
+    lens = lens[valid & not_excluded]
     s, ss, c = lens.sum().item(), lens.square().sum().item(), lens.numel()
     return s, ss, c, err_msg
 
@@ -2569,6 +2589,14 @@ directory."""
         default=False,
         help="Print standard deviation instead of variance",
     )
+    parser.add_argument(
+        "--exclude-ids",
+        type=int,
+        nargs="+",
+        default=None,
+        help="If specified, segments with token ids in this list will be excluded from"
+        "counts",
+    )
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
@@ -2584,6 +2612,10 @@ directory."""
         if x.startswith(options.file_prefix) and x.endswith(options.file_suffix)
     )
 
+    exclude_ids = options.exclude_ids
+    if exclude_ids is not None:
+        exclude_ids = torch.tensor(list(set(exclude_ids)))
+
     s = 0
     ss = 0
     c = 0
@@ -2594,6 +2626,7 @@ directory."""
         options.dir,
         options.file_prefix,
         options.file_suffix,
+        exclude_ids,
     ):
         if err_msg is not None:
             if options.strict:

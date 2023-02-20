@@ -1099,7 +1099,8 @@ def test_subset_torch_spect_data_dir(temp_dir, populate_torch_dir, only, style):
 @pytest.mark.cpu
 @pytest.mark.parametrize("bessel", [True, False], ids=["unbiased", "biased"])
 @pytest.mark.parametrize("std", [True, False], ids=["std", "var"])
-def test_print_torch_ali_data_dir_length_moments(temp_dir, bessel, std):
+@pytest.mark.parametrize("exclude", [True, False], ids=["exclude", "noexclude"])
+def test_print_torch_ali_data_dir_length_moments(temp_dir, bessel, std, exclude):
     N, len_max, seg_max = 100, 30, 5
     lens = torch.randint(1, len_max + 1, (N * seg_max,))
     nsegs = torch.randint(1, seg_max + 1, (N,))
@@ -1115,10 +1116,14 @@ def test_print_torch_ali_data_dir_length_moments(temp_dir, bessel, std):
         nseg = nsegs[n]
         lens_n, lens = lens[:nseg], lens[nseg:]
         ali = torch.arange(nseg).repeat_interleave(lens_n)
+        if exclude:
+            ali = torch.cat([ali, torch.tensor([-1, -1])])
         torch.save(ali, os.path.join(temp_dir, f"utt{n}.pt"))
     assert not lens.numel()
     out_file = os.path.join(temp_dir, "out.txt")
     args = [temp_dir, out_file]
+    if exclude:
+        args.extend(["--exclude-ids", "-1"])
     if std:
         args.append("--std")
     if bessel:
@@ -1132,7 +1137,8 @@ def test_print_torch_ali_data_dir_length_moments(temp_dir, bessel, std):
 @pytest.mark.cpu
 @pytest.mark.parametrize("bessel", [True, False], ids=["unbiased", "biased"])
 @pytest.mark.parametrize("std", [True, False], ids=["std", "var"])
-def test_print_torch_ref_data_dir_length_moments(temp_dir, bessel, std):
+@pytest.mark.parametrize("exclude", [True, False], ids=["exclude", "noexclude"])
+def test_print_torch_ref_data_dir_length_moments(temp_dir, bessel, std, exclude):
     N, len_max, seg_max, V = 200, 5, 20, 30
     lens = torch.randint(1, len_max + 1, (N * seg_max,))
     offs = torch.randint(0, len_max * seg_max, (N * seg_max,))
@@ -1150,10 +1156,14 @@ def test_print_torch_ref_data_dir_length_moments(temp_dir, bessel, std):
         lens_n, lens = lens[:nseg], lens[nseg:]
         offs_n, offs = offs[:nseg], offs[nseg:]
         ref = torch.stack([torch.randint(V, (nseg,)), offs_n, offs_n + lens_n], 1)
+        if exclude:
+            ref = torch.cat([ref, torch.tensor([[n % 2 - 2, 0, 10000]])], 0)
         torch.save(ref, os.path.join(temp_dir, f"utt{n}.pt"))
     assert not lens.numel()
     out_file = os.path.join(temp_dir, "out.txt")
     args = [temp_dir, out_file]
+    if exclude:
+        args.extend(["--exclude-ids", "-1", "-2"])
     if std:
         args.append("--std")
     if bessel:
