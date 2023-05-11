@@ -2182,7 +2182,8 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
         "--symlink",
         action="store_true",
         default=False,
-        help="Symlink extracted files (instead of hard link)",
+        help="Symlink extracted files (instead of hard link). Symlinks will be "
+        "relative to the destination.",
     )
     criteria = parser.add_mutually_exclusive_group(required=True)
     criteria.add_argument(

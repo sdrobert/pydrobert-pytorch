@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import sys
 import warnings
 import glob
 import random
@@ -1030,8 +1031,8 @@ def test_subset_torch_spect_data_dir(temp_dir, populate_torch_dir, only, style):
     dst = os.path.join(temp_dir, "dest")
     feats, alis, refs, _, _, utt_ids = populate_torch_dir(src, N)
     feat_sdir, feat_ddir = os.path.join(src, "feat"), os.path.join(dst, "feat")
-    ali_sdir, ali_ddir = os.path.join(src, "ali"), os.path.join(dst, "ali")
-    ref_sdir, ref_ddir = os.path.join(src, "ref"), os.path.join(dst, "ref")
+    ali_ddir = os.path.join(dst, "ali")
+    ref_ddir = os.path.join(dst, "ref")
     if only:
         args = [
             feat_sdir,
@@ -1094,6 +1095,23 @@ def test_subset_torch_spect_data_dir(temp_dir, populate_torch_dir, only, style):
             assert (ali_exp == ali_act).all()
             ref_act = torch.load(os.path.join(ref_ddir, utt_id + ".pt"))
             assert (ref_exp == ref_act).all()
+
+
+@pytest.mark.cpu
+@pytest.mark.skipif(
+    sys.platform.startswith("win"), reason="symlinks unlikely to work on Windows"
+)
+def test_subset_torch_spect_data_dir_symlink(temp_dir, populate_torch_dir):
+    src = os.path.join(temp_dir, "src")
+    dst = os.path.join(temp_dir, "dest")
+    feats, alis, refs, _, _, utt_ids = populate_torch_dir(src, 1)
+    feat, ali, ref, utt_id = feats[0], alis[0], refs[0], utt_ids[0]
+    assert not command_line.subset_torch_spect_data_dir(
+        [src, dst, "--first-n", "1", "--symlink"]
+    )
+    assert (feat == torch.load(f"{dst}/feat/{utt_id}.pt")).all()
+    assert (ali == torch.load(f"{dst}/ali/{utt_id}.pt")).all()
+    assert (ref == torch.load(f"{dst}/feat/{utt_id}.pt")).all()
 
 
 @pytest.mark.cpu
