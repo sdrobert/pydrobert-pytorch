@@ -1102,8 +1102,9 @@ def test_subset_torch_spect_data_dir(temp_dir, populate_torch_dir, only, style):
     sys.platform.startswith("win"), reason="symlinks unlikely to work on Windows"
 )
 def test_subset_torch_spect_data_dir_symlink(temp_dir, populate_torch_dir):
-    src = os.path.join(temp_dir, "src")
-    dst = os.path.join(temp_dir, "dest")
+    # make sure symlinks are relative
+    src = os.path.relpath(os.path.join(temp_dir, "src"))
+    dst = os.path.relpath(os.path.join(temp_dir, "dest"))
     feats, alis, refs, _, _, utt_ids = populate_torch_dir(src, 1)
     feat, ali, ref, utt_id = feats[0], alis[0], refs[0], utt_ids[0]
     assert not command_line.subset_torch_spect_data_dir(
