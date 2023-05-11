@@ -2375,7 +2375,9 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     if options.copy:
         cp = shutil.copy
     elif options.symlink:
-        cp = os.symlink
+        def cp(src, dst):
+            src = os.path.relpath(src, os.path.dirname(dst))
+            return os.symlink(src, dst)
     else:
         cp = os.link
 

@@ -1111,7 +1111,7 @@ def test_subset_torch_spect_data_dir_symlink(temp_dir, populate_torch_dir):
     )
     assert (feat == torch.load(f"{dst}/feat/{utt_id}.pt")).all()
     assert (ali == torch.load(f"{dst}/ali/{utt_id}.pt")).all()
-    assert (ref == torch.load(f"{dst}/feat/{utt_id}.pt")).all()
+    assert (ref == torch.load(f"{dst}/ref/{utt_id}.pt")).all()
 
 
 @pytest.mark.cpu
