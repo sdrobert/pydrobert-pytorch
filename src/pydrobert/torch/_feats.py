@@ -431,7 +431,9 @@ def slice_spect_data(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     with torch.no_grad():
         if in_.ndim < 2:
-            raise RuntimeError(f"Expected in_ to be at least 2-dimensional; got {in_.ndim}")
+            raise RuntimeError(
+                f"Expected in_ to be at least 2-dimensional; got {in_.ndim}"
+            )
         N, T = in_.shape[:2]
         device = in_.device
         if not T:
@@ -794,19 +796,19 @@ def chunk_token_sequences_by_slices(
     partial: bool = False,
     retain: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if refs.ndim == 2:
-        return refs.new_empty((0, refs.size(1),)), slices.new_empty((0,))
-    elif refs.ndim != 3 or refs.size(2) != 3:
-        raise RuntimeError(
-            "Expected refs to be 2-dimensional or 3-dimensional with final dimension "
-            f"size 3. Got shape '{refs.shape}'"
-        )
-    N, R = refs.size(0), refs.size(1)
-    if slices.shape != (N, 2):
-        raise RuntimeError(
-            f"Expected slices to be a tensor of shape ({N}, 2), got {slices.shape}"
-        )
     with torch.no_grad():
+        if refs.ndim == 2:
+            return refs.new_empty((0, refs.size(1),)), slices.new_empty((0,))
+        elif refs.ndim != 3 or refs.size(2) != 3:
+            raise RuntimeError(
+                "Expected refs to be 2-dimensional or 3-dimensional with final dimension "
+                f"size 3. Got shape '{refs.shape}'"
+            )
+        N, R = refs.size(0), refs.size(1)
+        if slices.shape != (N, 2):
+            raise RuntimeError(
+                f"Expected slices to be a tensor of shape ({N}, 2), got {slices.shape}"
+            )
         arange = torch.arange(R, device=refs.device)
         if ref_lens is None:
             mask = torch.ones((N, R), device=refs.device, dtype=torch.bool)
@@ -830,7 +832,7 @@ def chunk_token_sequences_by_slices(
         mask = (chunked_lens.unsqueeze(1) > arange).unsqueeze(2).expand(N, R, 3)
         chunked = refs.new_empty((N, R, 3)).masked_scatter_(mask, refs)
         if not retain:
-            chunked[..., 1:] += slices[..., 0].view(N, 1, 1)
+            chunked[..., 1:] += slices[..., 0].view(N, 1, 1).expand(N, R, 2)
         return chunked, chunked_lens
 
 
@@ -893,7 +895,7 @@ class ChunkTokenSequencesBySlices(torch.nn.Module):
         `feats` or `alis` from :class:`SpectDataSet`.
     """
 
-    __constants__ = ["partial", "retain"]
+    __constants__ = "partial", "retain"
 
     partial: bool
     retain: bool
@@ -923,4 +925,4 @@ class ChunkTokenSequencesBySlices(torch.nn.Module):
             ref, slices, ref_lens, self.partial, self.retain
         )
 
-    __call__ = proxy(forward)
+    # __call__ = proxy(forward)
