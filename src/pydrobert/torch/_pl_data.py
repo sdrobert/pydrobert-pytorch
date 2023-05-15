@@ -34,7 +34,7 @@ from ._dataloaders import (
 )
 
 
-StrPath = Union[str, os.PathLike[str]]
+StrPath = Union[str, os.PathLike]
 
 
 class MyPath(param.Parameter):

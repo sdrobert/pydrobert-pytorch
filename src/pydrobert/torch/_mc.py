@@ -675,69 +675,70 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
         self.initial_sample_tries = initial_sample_tries
         self.burn_in = burn_in
 
-    @torch.no_grad()
     def find_initial_sample(self, tries: Optional[int] = None) -> torch.Tensor:
         """Find an initial sample by randomly sampling from the proposal"""
         if tries is None:
             tries = self.initial_sample_tries
         if tries < 1:
             raise ValueError("tries must be positive")
-        sample = self.proposal.sample([1])
-        keep = torch.isfinite(self.density.log_prob(sample))
-        if keep.all():
-            return sample
-        for _ in range(tries - 1):
-            cur_sample = self.proposal.sample([1])
-            while keep.dim() < cur_sample.dim():
-                keep = keep.unsqueeze(-1)  # event dims
-            sample = torch.where(keep, sample, cur_sample)
+        with torch.no_grad():
+            sample = self.proposal.sample([1])
             keep = torch.isfinite(self.density.log_prob(sample))
             if keep.all():
                 return sample
-        raise RuntimeError(
-            f"Unable to find initial sample in {tries} draws. "
-            f"Either specify initial_sample on instantiation or increase "
-            f"initial_sample_tries."
-        )
-
-    @torch.no_grad()
-    def __call__(self) -> torch.Tensor:
-        if self.initial_sample is None:
-            last_sample = self.find_initial_sample()
-        else:
-            last_sample = self.initial_sample
-        v = None
-        num_kept = self.mc_samples - self.burn_in
-        last_ratio = self.density.log_prob(last_sample) - self.proposal.log_prob(
-            last_sample
-        )
-        uniform_draws = torch.rand(
-            (self.mc_samples,) + self.proposal.batch_shape, device=last_sample.device
-        ).log()
-        for n in range(self.mc_samples):
-            cur_sample = self.proposal.sample([1])
-            cur_ratio = self.density.log_prob(cur_sample) - self.proposal.log_prob(
-                cur_sample
+            for _ in range(tries - 1):
+                cur_sample = self.proposal.sample([1])
+                while keep.dim() < cur_sample.dim():
+                    keep = keep.unsqueeze(-1)  # event dims
+                sample = torch.where(keep, sample, cur_sample)
+                keep = torch.isfinite(self.density.log_prob(sample))
+                if keep.all():
+                    return sample
+            raise RuntimeError(
+                f"Unable to find initial sample in {tries} draws. "
+                f"Either specify initial_sample on instantiation or increase "
+                f"initial_sample_tries."
             )
-            accept = (cur_ratio - last_ratio) > uniform_draws[n]
-            cur_ratio = accept * cur_ratio + (~accept) * last_ratio
-            while accept.dim() < cur_sample.dim():
-                accept = accept.unsqueeze(-1)  # event dims
-            cur_sample = torch.where(accept, cur_sample, last_sample)
-            if n >= self.burn_in:
-                fb = self.func(cur_sample).squeeze(0)
-                if n == self.burn_in:
-                    v = fb
-                elif self.is_log:
-                    v = logaddexp(v, fb)
-                else:
-                    v = v + fb
-            last_sample, last_ratio = cur_sample, cur_ratio
-        if self.is_log:
-            v -= math.log(num_kept)
-        else:
-            v /= num_kept
-        return v
+
+    def __call__(self) -> torch.Tensor:
+        with torch.no_grad():
+            if self.initial_sample is None:
+                last_sample = self.find_initial_sample()
+            else:
+                last_sample = self.initial_sample
+            v = None
+            num_kept = self.mc_samples - self.burn_in
+            last_ratio = self.density.log_prob(last_sample) - self.proposal.log_prob(
+                last_sample
+            )
+            uniform_draws = torch.rand(
+                (self.mc_samples,) + self.proposal.batch_shape,
+                device=last_sample.device,
+            ).log()
+            for n in range(self.mc_samples):
+                cur_sample = self.proposal.sample([1])
+                cur_ratio = self.density.log_prob(cur_sample) - self.proposal.log_prob(
+                    cur_sample
+                )
+                accept = (cur_ratio - last_ratio) > uniform_draws[n]
+                cur_ratio = accept * cur_ratio + (~accept) * last_ratio
+                while accept.dim() < cur_sample.dim():
+                    accept = accept.unsqueeze(-1)  # event dims
+                cur_sample = torch.where(accept, cur_sample, last_sample)
+                if n >= self.burn_in:
+                    fb = self.func(cur_sample).squeeze(0)
+                    if n == self.burn_in:
+                        v = fb
+                    elif self.is_log:
+                        v = logaddexp(v, fb)
+                    else:
+                        v = v + fb
+                last_sample, last_ratio = cur_sample, cur_ratio
+            if self.is_log:
+                v -= math.log(num_kept)
+            else:
+                v /= num_kept
+            return v
 
 
 def _attach_grad(x: torch.tensor, g: torch.Tensor):

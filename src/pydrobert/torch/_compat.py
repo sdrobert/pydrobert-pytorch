@@ -346,13 +346,13 @@ else:
     logaddexp = torch.logaddexp
 
 
-@torch.no_grad()
 def broadcast_shapes(a: List[int], b: List[int]) -> List[int]:
-    scalar = torch.zeros((), device="cpu")
-    tensor_a = scalar.expand(a)
-    tensor_b = scalar.expand(b)
-    tensor_a, tensor_b = torch.broadcast_tensors(tensor_a, tensor_b)
-    return tensor_a.shape
+    with torch.no_grad():
+        scalar = torch.zeros((), device="cpu")
+        tensor_a = scalar.expand(a)
+        tensor_b = scalar.expand(b)
+        tensor_a, tensor_b = torch.broadcast_tensors(tensor_a, tensor_b)
+        return tensor_a.shape
 
 
 @script

@@ -419,7 +419,6 @@ def slice_spect_data(
 
 
 @script
-@torch.no_grad()
 @functional_wrapper("SliceSpectData")
 def slice_spect_data(
     in_: torch.Tensor,
@@ -430,152 +429,155 @@ def slice_spect_data(
     valid_only: bool = True,
     lobe_size: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if in_.ndim < 2:
-        raise RuntimeError(f"Expected in_ to be at least 2-dimensional; got {in_.ndim}")
-    N, T = in_.shape[:2]
-    device = in_.device
-    if not T:
-        return (
-            torch.empty(0, 2, dtype=torch.long, device=device),
-            torch.empty(0, dtype=torch.long, device=device),
-        )
-    if lobe_size < 0:
-        raise RuntimeError(f"Expected non-negative lobe_size, got {lobe_size}")
-    if window_type not in ("symmetric", "causal", "future"):
-        raise RuntimeError(
-            "expected window_type to be one of 'symmetric', 'casual', or 'future'"
-            f"got '{window_type}'"
-        )
-    if policy == "fixed":
-        shift = lobe_size + 1
-        if valid_only and window_type == "symmetric":
-            window_size = 2 * lobe_size + 1
-            starts = torch.arange(0, max(T - window_size + 1, 0), shift, device=device)
-            ends = starts + window_size
-            mids = ends - 1
-        elif window_type == "symmetric":
-            window_size = 2 * lobe_size + 1
-            half_shift = shift // 2
-            TT = (T + half_shift) // shift
-            mids = torch.arange(TT, device=device) * shift + half_shift
-            starts = mids - window_size // 2
-            ends = starts + window_size
-        elif valid_only:
-            # the behaviour doesn't change with "causal" or "future" when valid_only
-            starts = torch.arange(0, max(T - lobe_size, 0), shift, device=device)
-            ends = starts + shift
-            mids = ends - 1
-        elif window_type == "causal":
-            starts = torch.arange(-lobe_size, T - lobe_size, shift, device=device)
-            ends = starts + shift
-            mids = ends - 1
-        else:  # future
-            starts = mids = torch.arange(0, T, shift, device=device)
-            ends = starts + shift
-        starts, ends = starts.expand(N, -1), ends.expand(N, -1)
-        # starts = starts.clamp_min_(0).expand(N, -1)
-        # if in_lens is None:
-        #     ends = ends.clamp_max_(T).expand(N, -1)
-        # else:
-        #     ends = torch.min(ends.unsqueeze(0), in_lens.unsqueeze(1))
-        TT = starts.size(1)
-        slices = torch.stack([starts, ends], 2).flatten(end_dim=1)
-        sources = torch.arange(N, device=device).view(N, 1).expand(N, TT).flatten()
-        if in_lens is not None:
-            if in_lens.shape != (N,):
-                raise RuntimeError(
-                    f"Expected in_lens to be of shape ({N},); got {in_lens.shape}"
+    with torch.no_grad():
+        if in_.ndim < 2:
+            raise RuntimeError(f"Expected in_ to be at least 2-dimensional; got {in_.ndim}")
+        N, T = in_.shape[:2]
+        device = in_.device
+        if not T:
+            return (
+                torch.empty(0, 2, dtype=torch.long, device=device),
+                torch.empty(0, dtype=torch.long, device=device),
+            )
+        if lobe_size < 0:
+            raise RuntimeError(f"Expected non-negative lobe_size, got {lobe_size}")
+        if window_type not in ("symmetric", "causal", "future"):
+            raise RuntimeError(
+                "expected window_type to be one of 'symmetric', 'casual', or 'future'"
+                f"got '{window_type}'"
+            )
+        if policy == "fixed":
+            shift = lobe_size + 1
+            if valid_only and window_type == "symmetric":
+                window_size = 2 * lobe_size + 1
+                starts = torch.arange(
+                    0, max(T - window_size + 1, 0), shift, device=device
                 )
-            mask = (in_lens.unsqueeze(1) > mids).flatten()
-            slices = slices[mask]
-            sources = sources[mask]
-    elif policy == "ali":
-        if in_.ndim != 2:
-            raise RuntimeError(f"expected tensor of dimension 2 with policy 'ali'")
-        mask = in_[:, :-1] != in_[:, 1:]
-        arange = torch.arange(T, device=device)
-        if in_lens is not None:
-            if in_lens.shape != (N,):
-                raise RuntimeError(
-                    f"Expected in_lens to be of shape ({N},); got {in_lens.shape}"
-                )
-            mask = mask & (in_lens.view(N, 1) > arange[1:])
-        else:
-            in_lens = torch.full((N,), T, device=device)
-        nonempty = (in_lens > 0).view(N, 1)
-        starts = torch.cat([nonempty, mask], 1).nonzero()
-        mask = torch.cat([torch.zeros_like(nonempty), mask], 1)
-        mask |= nonempty & (in_lens.view(N, 1) == arange)
-        ends = mask.nonzero()
-        sources = starts[:, 0]
-        starts, ends = starts[:, 1], ends[:, 1]
-        if lobe_size:
-            NN = starts.size(0)
-            do_left = window_type in ("symmetric", "causal")
-            do_right = window_type in ("symmetric", "future")
-            if valid_only:
-                offs = (int(do_left) + int(do_right)) * lobe_size
-                is_same = sources[: NN - offs] == sources[offs:]
-                starts = starts[: NN - offs][is_same]
-                ends = ends[offs:][is_same]
-                sources = sources[: NN - offs][is_same]
+                ends = starts + window_size
+                mids = ends - 1
+            elif window_type == "symmetric":
+                window_size = 2 * lobe_size + 1
+                half_shift = shift // 2
+                TT = (T + half_shift) // shift
+                mids = torch.arange(TT, device=device) * shift + half_shift
+                starts = mids - window_size // 2
+                ends = starts + window_size
+            elif valid_only:
+                # the behaviour doesn't change with "causal" or "future" when valid_only
+                starts = torch.arange(0, max(T - lobe_size, 0), shift, device=device)
+                ends = starts + shift
+                mids = ends - 1
+            elif window_type == "causal":
+                starts = torch.arange(-lobe_size, T - lobe_size, shift, device=device)
+                ends = starts + shift
+                mids = ends - 1
+            else:  # future
+                starts = mids = torch.arange(0, T, shift, device=device)
+                ends = starts + shift
+            starts, ends = starts.expand(N, -1), ends.expand(N, -1)
+            # starts = starts.clamp_min_(0).expand(N, -1)
+            # if in_lens is None:
+            #     ends = ends.clamp_max_(T).expand(N, -1)
+            # else:
+            #     ends = torch.min(ends.unsqueeze(0), in_lens.unsqueeze(1))
+            TT = starts.size(1)
+            slices = torch.stack([starts, ends], 2).flatten(end_dim=1)
+            sources = torch.arange(N, device=device).view(N, 1).expand(N, TT).flatten()
+            if in_lens is not None:
+                if in_lens.shape != (N,):
+                    raise RuntimeError(
+                        f"Expected in_lens to be of shape ({N},); got {in_lens.shape}"
+                    )
+                mask = (in_lens.unsqueeze(1) > mids).flatten()
+                slices = slices[mask]
+                sources = sources[mask]
+        elif policy == "ali":
+            if in_.ndim != 2:
+                raise RuntimeError(f"expected tensor of dimension 2 with policy 'ali'")
+            mask = in_[:, :-1] != in_[:, 1:]
+            arange = torch.arange(T, device=device)
+            if in_lens is not None:
+                if in_lens.shape != (N,):
+                    raise RuntimeError(
+                        f"Expected in_lens to be of shape ({N},); got {in_lens.shape}"
+                    )
+                mask = mask & (in_lens.view(N, 1) > arange[1:])
             else:
-                start_idx = torch.arange(NN, device=device)
-                end_idx = start_idx.clone()
-                for n in range(1, lobe_size + 1):
-                    offs = (sources[n:] == sources[: NN - n]).long()
-                    if do_left:
-                        start_idx[n:] -= offs
-                    if do_right:
-                        end_idx[: NN - n] += offs
-                starts = starts[start_idx]
-                ends = ends[end_idx]
-        slices = torch.stack([starts, ends], 1)
-    elif policy == "ref":
-        if in_.ndim != 3:
-            raise RuntimeError(f"Expected in_ to be 3-dimensional, got {in_.ndim}")
-        if in_.size(2) != 3:
-            raise RuntimeError(
-                f"Expected 3rd dimension of in_ to be of size 3, got {in_.size(2)}"
-            )
-        starts = in_[..., 1]
-        ends = in_[..., 2]
-        if in_lens is None:
-            in_lens = torch.full((N,), T, device=device)
-        if other_lens is None:
-            # the final segment's end time
-            other_lens = (
-                ends[..., 1]
-                .gather(1, (in_lens - 1).clamp_min_(0).view(N, 1))
-                .squeeze(1)
-                .masked_fill_(in_lens == 0, 0)
-            )
-        elif other_lens.shape != (N,):
-            raise RuntimeError(
-                f"Expected other_lens to have shape ({N},); got {other_lens.shape}"
-            )
-        mask = in_lens.view(N, 1) > torch.arange(T, device=device)
-        mask &= (in_[..., 1:] >= 0).all(2)
-        if window_type in ("symmetric", "causal"):
-            starts = starts - lobe_size
-        if window_type in ("symmetric", "future"):
-            ends = ends + lobe_size
-        if valid_only:
-            mask &= (starts >= 0) & (ends <= other_lens.view(N, 1))
+                in_lens = torch.full((N,), T, device=device)
+            nonempty = (in_lens > 0).view(N, 1)
+            starts = torch.cat([nonempty, mask], 1).nonzero()
+            mask = torch.cat([torch.zeros_like(nonempty), mask], 1)
+            mask |= nonempty & (in_lens.view(N, 1) == arange)
+            ends = mask.nonzero()
+            sources = starts[:, 0]
+            starts, ends = starts[:, 1], ends[:, 1]
+            if lobe_size:
+                NN = starts.size(0)
+                do_left = window_type in ("symmetric", "causal")
+                do_right = window_type in ("symmetric", "future")
+                if valid_only:
+                    offs = (int(do_left) + int(do_right)) * lobe_size
+                    is_same = sources[: NN - offs] == sources[offs:]
+                    starts = starts[: NN - offs][is_same]
+                    ends = ends[offs:][is_same]
+                    sources = sources[: NN - offs][is_same]
+                else:
+                    start_idx = torch.arange(NN, device=device)
+                    end_idx = start_idx.clone()
+                    for n in range(1, lobe_size + 1):
+                        offs = (sources[n:] == sources[: NN - n]).long()
+                        if do_left:
+                            start_idx[n:] -= offs
+                        if do_right:
+                            end_idx[: NN - n] += offs
+                    starts = starts[start_idx]
+                    ends = ends[end_idx]
+            slices = torch.stack([starts, ends], 1)
+        elif policy == "ref":
+            if in_.ndim != 3:
+                raise RuntimeError(f"Expected in_ to be 3-dimensional, got {in_.ndim}")
+            if in_.size(2) != 3:
+                raise RuntimeError(
+                    f"Expected 3rd dimension of in_ to be of size 3, got {in_.size(2)}"
+                )
+            starts = in_[..., 1]
+            ends = in_[..., 2]
+            if in_lens is None:
+                in_lens = torch.full((N,), T, device=device)
+            if other_lens is None:
+                # the final segment's end time
+                other_lens = (
+                    ends[..., 1]
+                    .gather(1, (in_lens - 1).clamp_min_(0).view(N, 1))
+                    .squeeze(1)
+                    .masked_fill_(in_lens == 0, 0)
+                )
+            elif other_lens.shape != (N,):
+                raise RuntimeError(
+                    f"Expected other_lens to have shape ({N},); got {other_lens.shape}"
+                )
+            mask = in_lens.view(N, 1) > torch.arange(T, device=device)
+            mask &= (in_[..., 1:] >= 0).all(2)
+            if window_type in ("symmetric", "causal"):
+                starts = starts - lobe_size
+            if window_type in ("symmetric", "future"):
+                ends = ends + lobe_size
+            if valid_only:
+                mask &= (starts >= 0) & (ends <= other_lens.view(N, 1))
+            else:
+                mask &= (ends > 0) & (starts < other_lens.view(N, 1))
+            mask &= starts < ends
+            starts, ends, mask = starts.flatten(), ends.flatten(), mask.flatten()
+            sources = torch.arange(N, device=device).view(N, 1).expand(N, T).flatten()
+            starts = starts[mask]
+            ends = ends[mask]
+            sources = sources[mask]
+            slices = torch.stack([starts, ends], 1)
         else:
-            mask &= (ends > 0) & (starts < other_lens.view(N, 1))
-        mask &= starts < ends
-        starts, ends, mask = starts.flatten(), ends.flatten(), mask.flatten()
-        sources = torch.arange(N, device=device).view(N, 1).expand(N, T).flatten()
-        starts = starts[mask]
-        ends = ends[mask]
-        sources = sources[mask]
-        slices = torch.stack([starts, ends], 1)
-    else:
-        raise RuntimeError(
-            f"Expected policy to be one of 'fixed', 'ali', or 'ref'; got '{policy}'"
-        )
-    return slices, sources
+            raise RuntimeError(
+                f"Expected policy to be one of 'fixed', 'ali', or 'ref'; got '{policy}'"
+            )
+        return slices, sources
 
 
 class SliceSpectData(torch.nn.Module):
@@ -784,7 +786,6 @@ class SliceSpectData(torch.nn.Module):
 
 
 @script
-@torch.no_grad()
 @functional_wrapper("ChunkTokenSequencesBySlices")
 def chunk_token_sequences_by_slices(
     refs: torch.Tensor,
@@ -805,29 +806,32 @@ def chunk_token_sequences_by_slices(
         raise RuntimeError(
             f"Expected slices to be a tensor of shape ({N}, 2), got {slices.shape}"
         )
-    arange = torch.arange(R, device=refs.device)
-    if ref_lens is None:
-        mask = torch.ones((N, R), device=refs.device, dtype=torch.bool)
-    elif ref_lens.shape != (N,):
-        raise RuntimeError(
-            f"Expected ref_lens to be a tensor of shape ({N},), got {ref_lens.shape}"
-        )
-    else:
-        mask = ref_lens.unsqueeze(1) > arange
-    mask &= (refs[..., 1:] >= 0).all(2) & (refs[..., 2] >= refs[..., 1])
-    if partial:
-        # slice_start < ref_end and slice_end > ref_start
-        mask &= (slices[..., :1] < refs[..., 2]) & (slices[..., 1:] > refs[..., 1])
-    else:
-        # slice_start <= ref_start and slice_end >= ref_end
-        mask &= (slices[..., :1] <= refs[..., 1]) & (slices[..., 1:] >= refs[..., 2])
-    chunked_lens = mask.long().sum(1)
-    refs = refs[mask.unsqueeze(2).expand_as(refs)]
-    mask = (chunked_lens.unsqueeze(1) > arange).unsqueeze(2).expand(N, R, 3)
-    chunked = refs.new_empty((N, R, 3)).masked_scatter_(mask, refs)
-    if not retain:
-        chunked[..., 1:] += slices[..., 0].view(N, 1, 1)
-    return chunked, chunked_lens
+    with torch.no_grad():
+        arange = torch.arange(R, device=refs.device)
+        if ref_lens is None:
+            mask = torch.ones((N, R), device=refs.device, dtype=torch.bool)
+        elif ref_lens.shape != (N,):
+            raise RuntimeError(
+                f"Expected ref_lens to be a tensor of shape ({N},), got {ref_lens.shape}"
+            )
+        else:
+            mask = ref_lens.unsqueeze(1) > arange
+        mask &= (refs[..., 1:] >= 0).all(2) & (refs[..., 2] >= refs[..., 1])
+        if partial:
+            # slice_start < ref_end and slice_end > ref_start
+            mask &= (slices[..., :1] < refs[..., 2]) & (slices[..., 1:] > refs[..., 1])
+        else:
+            # slice_start <= ref_start and slice_end >= ref_end
+            mask &= (slices[..., :1] <= refs[..., 1]) & (
+                slices[..., 1:] >= refs[..., 2]
+            )
+        chunked_lens = mask.long().sum(1)
+        refs = refs[mask.unsqueeze(2).expand_as(refs)]
+        mask = (chunked_lens.unsqueeze(1) > arange).unsqueeze(2).expand(N, R, 3)
+        chunked = refs.new_empty((N, R, 3)).masked_scatter_(mask, refs)
+        if not retain:
+            chunked[..., 1:] += slices[..., 0].view(N, 1, 1)
+        return chunked, chunked_lens
 
 
 class ChunkTokenSequencesBySlices(torch.nn.Module):
