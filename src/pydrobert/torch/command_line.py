@@ -1294,12 +1294,6 @@ This command does not require WebDataset to be installed."""
     _add_common_arg(parser, "--ali-subdir")
     _add_common_arg(parser, "--ref-subdir")
     parser.add_argument(
-        "--is-uri",
-        action="store_true",
-        default=False,
-        help="If set, tar_pattern will be treated as a URI rather than a path/",
-    )
-    parser.add_argument(
         "--shard",
         action="store_true",
         default=False,
@@ -2375,9 +2369,11 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     if options.copy:
         cp = shutil.copy
     elif options.symlink:
+
         def cp(src, dst):
             src = os.path.relpath(src, os.path.dirname(dst))
             return os.symlink(src, dst)
+
     else:
         cp = os.link
 
