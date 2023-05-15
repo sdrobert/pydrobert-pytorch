@@ -801,8 +801,8 @@ def chunk_token_sequences_by_slices(
             return refs.new_empty((0, refs.size(1),)), slices.new_empty((0,))
         elif refs.ndim != 3 or refs.size(2) != 3:
             raise RuntimeError(
-                "Expected refs to be 2-dimensional or 3-dimensional with final dimension "
-                f"size 3. Got shape '{refs.shape}'"
+                "Expected refs to be 2-dimensional or 3-dimensional with final "
+                f"dimension size 3. Got shape '{refs.shape}'"
             )
         N, R = refs.size(0), refs.size(1)
         if slices.shape != (N, 2):
