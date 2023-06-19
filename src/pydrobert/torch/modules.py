@@ -37,6 +37,7 @@ __all__ = [
     "EditDistance",
     "ErrorRate",
     "ExtractableSequentialLanguageModel",
+    "ExtractableShallowFusionLanguageModel",
     "FeatureDeltas",
     "FillAfterEndOfSequence",
     "GeneralizedDotProductSoftAttention",
@@ -48,6 +49,7 @@ __all__ = [
     "MeanVarianceNormalization",
     "MinimumErrorRateLoss",
     "MixableSequentialLanguageModel",
+    "MixableShallowFusionLanguageModel",
     "MultiHeadedAttention",
     "OptimalCompletion",
     "PadMaskedSequence",
@@ -59,6 +61,7 @@ __all__ = [
     "RandomWalk",
     "SequenceLogProbabilities",
     "SequentialLanguageModel",
+    "ShallowFusionLanguageModel",
     "SliceSpectData",
     "SparseImageWarp",
     "SpecAugment",
@@ -96,9 +99,12 @@ from ._img import (
 )
 from ._lm import (
     ExtractableSequentialLanguageModel,
+    ExtractableShallowFusionLanguageModel,
     LookupLanguageModel,
     MixableSequentialLanguageModel,
+    MixableShallowFusionLanguageModel,
     SequentialLanguageModel,
+    ShallowFusionLanguageModel,
 )
 from ._mc import (
     LogisticBernoulliRebarControlVariate,

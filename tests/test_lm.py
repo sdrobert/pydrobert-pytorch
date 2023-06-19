@@ -20,7 +20,11 @@ from typing import Dict, Tuple
 import torch
 import pytest
 
-from pydrobert.torch.modules import LookupLanguageModel, MixableSequentialLanguageModel
+from pydrobert.torch.modules import (
+    LookupLanguageModel,
+    MixableSequentialLanguageModel,
+    ShallowFusionLanguageModel,
+)
 from pydrobert.torch.data import parse_arpa_lm
 
 INF = float("inf")
@@ -498,3 +502,25 @@ def test_sequential_language_model(device, jit_type):
         log_probs_idx_ = lm(hist[:idx], prev, idx=torch.as_tensor(idx).to(device))[0]
         assert torch.allclose(log_probs_idx, log_probs_idx_)
         prev = next_
+
+
+def test_shallow_fusion_language_model(device):
+    S, N, V, beta = 30, 10, 50, 0.2
+    hist = torch.randint(0, V, (S, N), device=device)
+    first = RNNLM(V).to(device)
+    second = RNNLM(V).to(device)
+    lm = ShallowFusionLanguageModel(first, second, beta)
+    log_probs = lm(hist)
+    prev = dict()
+    for idx in range(S):
+        log_probs_idx, next_ = lm(hist[:idx], prev, idx=idx)
+        assert torch.allclose(log_probs[idx], log_probs_idx)
+        # this is more for the scripting to ensure we can handle both tensor and
+        # integer indexes
+        log_probs_idx_ = lm(hist[:idx], prev, idx=torch.as_tensor(idx).to(device))[0]
+        assert torch.allclose(log_probs_idx, log_probs_idx_)
+        prev = next_
+    log_probs_first = first(hist)
+    log_probs_second = second(hist)
+    log_probs_ = log_probs_first + beta * log_probs_second
+    assert torch.allclose(log_probs, log_probs_)

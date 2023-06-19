@@ -877,3 +877,235 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         return logs, ids, pointers
 
     __call__ = proxy(SequentialLanguageModel.forward)
+
+
+class ShallowFusionLanguageModel(SequentialLanguageModel):
+    r"""Language model combining two language models with shallow fusion
+    
+    Shallow fusion [gulcehre2015]_ combines the predictions of two language models
+    by taking the weighted sum of their log probabilities:
+
+    .. math::
+        \log S(y_t=v|...) = \log P_{first}(y_t=v|...) +
+                                \beta \log P_{second}(y_t = v|...)
+
+    The resulting value :math:`log S(y_t=v)` is not technically a probability.
+
+    Parameters
+    ----------
+    first
+        The first language model
+    second
+        The second language model, whose log probabilities multiply with `beta`
+    beta
+        The value :math:`\beta`
+    first_prefix
+        Elements of the state dict for `first` will have `first_prefix` prepended to
+        their keys
+    second_prefix
+        Like `first_prefix`, but for `second`
+    
+    Warnings
+    --------
+    This class does not (and cannot) support JIT.
+
+    Notes
+    -----
+    If you intend to perform shallow fusion between CTC logits and an external language
+    model, you will not be able to do so via this class. CTC operates on an extended
+    vocabulary while an external language model does not. Fortunately,
+    :class:`CTCPrefixSearch` has built-in support for shallow fusion. Consult that
+    class for more information.
+
+    See Also
+    --------
+    MixableShallowFusionModel
+        A mixable subclass of this class. Applicable only if `first` and `second`
+        are both :class:`MixableSequentialLanguageModel` instances.
+    ExtractableShallowFusionModel
+        An extractable subclass of this class. Applicable only if `first` and `second`
+        are both :class:`ExtractableSequentialLanguageModel` instances.
+    """
+
+    __constants__ = "beta", "first_prefix", "second_prefix"
+    first: SequentialLanguageModel
+    second: SequentialLanguageModel
+    beta: float
+    first_prefix: str
+    second_prefix: str
+
+    def __init__(
+        self,
+        first: SequentialLanguageModel,
+        second: SequentialLanguageModel,
+        beta: float = 0.0,
+        first_prefix: str = "first.",
+        second_prefix: str = "second.",
+    ):
+        if first.vocab_size != second.vocab_size:
+            raise ValueError(
+                f"first's vocab_size ({first.vocab_size}) differs from second's "
+                f"vocab_size ({second.vocab_size})"
+            )
+        if not len(first_prefix) or not len(second_prefix):
+            raise ValueError(f"prefixes cannot be empty")
+        if first_prefix == second_prefix:
+            raise ValueError(f"first_prefix matches second_prefix ('{first_prefix}')")
+        super().__init__(first.vocab_size)
+        self.first, self.second, self.beta = first, second, beta
+        self.first_prefix, self.second_prefix = first_prefix, second_prefix
+
+    def extra_repr(self) -> str:
+        return super().extra_repr() + (
+            f", beta={self.beta}, first_prefix='{self.first_prefix}'"
+            f", second_prefix='{self.second_prefix}'"
+            f", first={self.first}, second={self.second}"
+        )
+
+    @torch.jit.export
+    def split_dicts(
+        self, prev: Dict[str, torch.Tensor]
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+        """Split state dicts into state dicts for first and second lms"""
+        prev_first: Dict[str, torch.Tensor] = dict()
+        prev_second: Dict[str, torch.Tensor] = dict()
+        for k, v in prev.items():
+            if k.startswith(self.first_prefix):
+                prev_first[k[len(self.first_prefix) :]] = v
+            elif k.startswith(self.second_prefix):
+                prev_second[k[len(self.second_prefix) :]] = v
+            else:
+                raise RuntimeError(
+                    f"key '{k}' from prev does not start with first_prefix "
+                    f"'{self.first_prefix}' nor second_prefix '{self.second_prefix}'"
+                )
+        return prev_first, prev_second
+
+    @torch.jit.export
+    def merge_dicts(
+        self, prev_first: Dict[str, torch.Tensor], prev_second: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """Merge state dicts from first and second lms into state dict"""
+        prev: Dict[str, torch.Tensor] = dict()
+        prev.update((self.first_prefix + k, v) for (k, v) in prev_first.items())
+        prev.update((self.second_prefix + k, v) for (k, v) in prev_second.items())
+        return prev
+
+    @torch.jit.export
+    def update_input(
+        self, prev: Dict[str, torch.Tensor], hist: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        prev_first, prev_second = self.split_dicts(prev)
+        prev_first = self.first.update_input(prev_first, hist)
+        prev_second = self.second.update_input(prev_second, hist)
+        return self.merge_dicts(prev_first, prev_second)
+
+    @torch.jit.export
+    def calc_idx_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        prev_first, prev_second = self.split_dicts(prev)
+        log_probs_first, cur_first = self.first.calc_idx_log_probs(
+            hist, prev_first, idx
+        )
+        log_probs_second, cur_second = self.second.calc_idx_log_probs(
+            hist, prev_second, idx
+        )
+        log_probs = log_probs_first + self.beta * log_probs_second
+        cur = self.merge_dicts(cur_first, cur_second)
+        return log_probs, cur
+
+    @torch.jit.export
+    def calc_full_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        prev_first, prev_second = self.split_dicts(prev)
+        log_probs_first = self.first.calc_full_log_probs(hist, prev_first)
+        log_probs_second = self.second.calc_full_log_probs(hist, prev_second)
+        return log_probs_first + self.beta * log_probs_second
+
+
+class ExtractableShallowFusionLanguageModel(
+    ShallowFusionLanguageModel, ExtractableSequentialLanguageModel
+):
+    """ShallowFusionLanguageModel which is also an ExtractableSequentialLanguageModel
+    
+    Both `first` and `second` must be :class:`ExtractableSequentialLanguageModel`
+    instances.
+
+    See Also
+    --------
+    ShallowFusionLanguageModel
+        For a description of shallow fusion and parameters. `first` and `second` may
+        not be extractable, but neither is :class:`ShallowFusionLanguageModel`.
+    MixableShallowFusionModel
+        A mixable subclass of this class. Applicable only if `first` and `second`
+        are both :class:`MixableSequentialLanguageModel` instances.
+    """
+
+    first: ExtractableSequentialLanguageModel
+    second: ExtractableSequentialLanguageModel
+
+    def __init__(
+        self,
+        first: ExtractableSequentialLanguageModel,
+        second: ExtractableSequentialLanguageModel,
+        beta: float = 0,
+        first_prefix: str = "first.",
+        second_prefix: str = "second.",
+    ):
+        super().__init__(first, second, beta, first_prefix, second_prefix)
+
+    @torch.jit.export
+    def extract_by_src(
+        self, prev: Dict[str, torch.Tensor], src: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        prev_first, prev_second = self.split_dicts(prev)
+        prev_first = self.first.extract_by_src(prev_first, src)
+        prev_second = self.second.extract_by_src(prev_second, src)
+        return self.merge_dicts(prev_first, prev_second)
+
+
+class MixableShallowFusionLanguageModel(
+    ExtractableShallowFusionLanguageModel, MixableSequentialLanguageModel
+):
+    """ShallowFusionLanguageModel which is also a MixableSequentialLanguageModel
+    
+    Both `first` and `second` must be :class:`ExtractableSequentialLanguageModel`
+    instances.
+
+    See Also
+    --------
+    ShallowFusionLanguageModel
+        For a description of shallow fusion and parameters. `first` and `second` may
+        not be mixable, but neither is :class:`ShallowFusionLanguageModel`.
+    ExtractableSequentialLanguageModel
+        An extractable superclass of this class. Applicable if `first` and `second`
+        are both :class:`ExtractableSequentialLanguageModel` instances.
+    """
+
+    first: MixableSequentialLanguageModel
+    second: MixableSequentialLanguageModel
+
+    def __init__(
+        self,
+        first: MixableSequentialLanguageModel,
+        second: MixableSequentialLanguageModel,
+        beta: float = 0,
+        first_prefix: str = "first.",
+        second_prefix: str = "second.",
+    ):
+        super().__init__(first, second, beta, first_prefix, second_prefix)
+
+    @torch.jit.export
+    def mix_by_mask(
+        self,
+        prev_true: Dict[str, torch.Tensor],
+        prev_false: Dict[str, torch.Tensor],
+        mask: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        prev_first_true, prev_second_true = self.split_dicts(prev_true)
+        prev_first_false, prev_second_false = self.split_dicts(prev_false)
+        prev_first = self.first.mix_by_mask(prev_first_true, prev_first_false, mask)
+        prev_second = self.second.mix_by_mask(prev_second_true, prev_second_false, mask)
+        return self.merge_dicts(prev_first, prev_second)

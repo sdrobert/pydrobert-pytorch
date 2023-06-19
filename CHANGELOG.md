@@ -2,6 +2,8 @@
 
 ## HEAD
 
+- Added `ShallowFusionLanguageModel`, `ExtractableShallowFusionLanguageModel`,
+  and `MixableShallowFusionLanguageModel`
 - Slicing and chunking modules `SliceSpectData`, `ChunkBySlices`, and
   `ChunkTokenSequenceBySlices`, as well as the command
   `chunk-torch-spect-data-dir`, which puts them together.

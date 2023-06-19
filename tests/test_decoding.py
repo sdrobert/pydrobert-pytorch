@@ -24,6 +24,7 @@ from pydrobert.torch.modules import (
     CTCGreedySearch,
     CTCPrefixSearch,
     MixableSequentialLanguageModel,
+    MixableShallowFusionLanguageModel,
     RandomWalk,
     SequenceLogProbabilities,
     SequentialLanguageModel,
@@ -187,14 +188,20 @@ def test_ctc_prefix_search(device):
             assert torch.allclose(probs_k_exp, probs_k_act)
 
 
-def test_ctc_prefix_search_batch(device, jit_type):
+@pytest.mark.parametrize("shallow_fusion", [True, False], ids=["fusion", "nofusion"])
+def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
     T, N, V, K = 50, 128, 50, 5
     assert K <= V
     lm = RNNLM(V)
     if jit_type == "script":
+        if shallow_fusion:
+            pytest.xfail("script unsupported for shallow_fusion")
         lm = torch.jit.script(lm)
     elif jit_type == "trace":
         pytest.xfail("trace unsupported for CTCPrefixSearch")
+    if shallow_fusion:
+        lm2 = RNNLM(V)
+        lm = MixableShallowFusionLanguageModel(lm, lm2)
     search = CTCPrefixSearch(K, lm=lm).to(device)
     if jit_type == "script":
         search = torch.jit.script(search)
