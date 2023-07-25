@@ -39,10 +39,10 @@ if compat._v < "1.8.0":
 
 
 @pytest.fixture
-def temp_dir():
-    dir_name = mkdtemp()
-    yield dir_name
-    rmtree(dir_name)
+def temp_dir(tmp_path):
+    dir_ = tmp_path / "pytest"
+    dir_.mkdir()
+    yield os.fspath(dir_)
 
 
 @pytest.fixture(
