@@ -1,12 +1,17 @@
+# adapted from https://github.com/tox-dev/tox-gh
+
 name: tox
 on:
   push:
+    branches-ignore:
+      - docs
   pull_request:
   schedule:
-    - cron: "0 8 * * *"
+    # run every monday @ 8am
+    - cron: "0 8 * * 1"
 
 concurrency:
-  group: check-${{ github.ref }}
+  group: tox-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -35,4 +40,4 @@ jobs:
       - name: Setup test suite
         run: tox -vv --notest
       - name: Run test suite
-        run: tox --skip-pkg-install
+        run: tox --skip-pkg-install -sv
