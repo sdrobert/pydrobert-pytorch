@@ -347,12 +347,11 @@ else:
 
 
 def broadcast_shapes(a: List[int], b: List[int]) -> List[int]:
-    with torch.no_grad():
-        scalar = torch.zeros((), device="cpu")
-        tensor_a = scalar.expand(a)
-        tensor_b = scalar.expand(b)
-        tensor_a, tensor_b = torch.broadcast_tensors(tensor_a, tensor_b)
-        return tensor_a.shape
+    scalar = torch.zeros((), device="cpu")
+    tensor_a = scalar.expand(a)
+    tensor_b = scalar.expand(b)
+    tensor_a, tensor_b = torch.broadcast_tensors(tensor_a, tensor_b)
+    return tensor_a.shape
 
 
 @script
