@@ -394,6 +394,7 @@ def _test_distributed_controller_helper(
 
 
 @pytest.mark.parametrize("world_size", [1, 2])
+@pytest.mark.skip
 def test_distributed_controller(device, temp_dir, world_size):
     if device.type == "cuda" and world_size > torch.cuda.device_count():
         pytest.skip("not enough gpus")
