@@ -393,7 +393,6 @@ def _test_distributed_controller_helper(
     return out
 
 
-@pytest.mark.xfail(reason="see bug #71")
 @pytest.mark.parametrize("world_size", [1, 2])
 def test_distributed_controller(device, temp_dir, world_size):
     if device.type == "cuda" and world_size > torch.cuda.device_count():
