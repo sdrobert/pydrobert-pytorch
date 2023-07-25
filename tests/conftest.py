@@ -17,8 +17,6 @@ import os
 import math
 import socket
 
-from tempfile import mkdtemp
-from shutil import rmtree
 from zlib import adler32
 from contextlib import closing
 
