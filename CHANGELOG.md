@@ -2,6 +2,7 @@
 
 ## HEAD
 
+- `LookupLanguageMode.prob_list` has been renamed to `prob_dicts`
 - Added `ShallowFusionLanguageModel`, `ExtractableShallowFusionLanguageModel`,
   and `MixableShallowFusionLanguageModel`
 - Slicing and chunking modules `SliceSpectData`, `ChunkBySlices`, and

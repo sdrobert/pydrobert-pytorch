@@ -115,7 +115,7 @@ class RNNLM(MixableSequentialLanguageModel):
 
 @pytest.mark.cpu
 @pytest.mark.parametrize(
-    "prob_list,pointers,ids,logs",
+    "prob_dicts,pointers,ids,logs",
     [
         (
             None,
@@ -223,9 +223,9 @@ class RNNLM(MixableSequentialLanguageModel):
     ],
     ids=["deft", "unigram", "bigram", "trigram"],
 )
-def test_lookup_language_model_builds_trie(prob_list, pointers, ids, logs):
+def test_lookup_language_model_builds_trie(prob_dicts, pointers, ids, logs):
     vocab_size = 5
-    lm = LookupLanguageModel(vocab_size, 0, prob_list=prob_list)
+    lm = LookupLanguageModel(vocab_size, 0, prob_dicts=prob_dicts)
     assert lm.pointers.shape == pointers.shape
     assert lm.ids.shape == ids.shape
     assert lm.logs.shape == logs.shape
@@ -241,7 +241,7 @@ def test_lookup_language_model_builds_trie(prob_list, pointers, ids, logs):
 @pytest.mark.parametrize("N", [1, 2, 5])
 def test_lookup_language_model_log_probs(device, N, jit_type):
     vocab_size, sos = 10, -1
-    prob_list = []
+    prob_dicts = []
     for n in range(1, N + 1):
         max_ngrams = vocab_size ** n
         has_ngram = torch.randint(2, (max_ngrams,), device=device).eq(1)
@@ -262,7 +262,7 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
                 dict_[key] = torch.randn((1,), device=device).item()
             else:
                 dict_[key] = torch.randn((2,), device=device).tolist()
-        prob_list.append(dict_)
+        prob_dicts.append(dict_)
     # we're not going to pad anything
     all_queries = [[(x,) for x in range(vocab_size)]]
     for _ in range(2, N + 1):
@@ -295,7 +295,7 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
 
     exps = [
         torch.tensor(
-            [lookup(prob_list, query) for query in ngram_queries], device=device
+            [lookup(prob_dicts, query) for query in ngram_queries], device=device
         ).view(-1, vocab_size)
         for ngram_queries in all_queries
     ]
@@ -307,7 +307,7 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
     # the sos shouldn't matter -- it isn't in the lookup table. The lm will
     # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
     # be 0
-    lm = LookupLanguageModel(vocab_size, sos, prob_list=prob_list).to(device)
+    lm = LookupLanguageModel(vocab_size, sos, prob_dicts=prob_dicts).to(device)
     if jit_type == "script":
         lm = torch.jit.script(lm)
     elif jit_type == "trace":
@@ -319,9 +319,9 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
 
 def test_lookup_language_model_nonuniform_idx(device):
     S, N, B = 100, 5, 30
-    prob_list = []
+    prob_dicts = []
     vocab_size, sos = 10, -1
-    prob_list = []
+    prob_dicts = []
     for n in range(1, N + 1):
         max_ngrams = vocab_size ** n
         has_ngram = torch.randint(2, (max_ngrams,), device=device).eq(1)
@@ -342,9 +342,9 @@ def test_lookup_language_model_nonuniform_idx(device):
                 dict_[key] = torch.randn((1,), device=device).item()
             else:
                 dict_[key] = torch.randn((2,), device=device).tolist()
-        prob_list.append(dict_)
-    prob_list[0][sos] = (-99, 0)
-    lm = LookupLanguageModel(vocab_size, sos, prob_list=prob_list).to(device)
+        prob_dicts.append(dict_)
+    prob_dicts[0][sos] = (-99, 0)
+    lm = LookupLanguageModel(vocab_size, sos, prob_dicts=prob_dicts).to(device)
     hist = torch.randint(0, vocab_size, (S, B), device=device)
     exp = lm(hist)
     idx = torch.randint(0, S + 1, (B,), device=device)
@@ -355,12 +355,12 @@ def test_lookup_language_model_nonuniform_idx(device):
 
 def test_lookup_language_model_sos_context(device):
     # 0 = sos
-    prob_list = [
+    prob_dicts = [
         {0: (-99, 0.0), 1: (0.1, -0.1), 2: (0.2, -0.2), 3: (0.3, -0.3)},
         {(0, 1): (0.01, -0.01), (0, 2): (0.02, -0.02)},
         {(0, 0, 1): 0.001},
     ]
-    lm = LookupLanguageModel(4, sos=0, prob_list=prob_list)
+    lm = LookupLanguageModel(4, sos=0, prob_dicts=prob_dicts)
     lm.to(device)
     # XXX(sdrobert): pad_sos_to_n has been removed now - it's always true
     # P(0|0, 0) = P(0) = -99
@@ -411,8 +411,8 @@ def test_lookup_language_model_republic():
             exp.append(float(line))
     exp = torch.tensor(exp, device=device)
     assert exp.shape[0] == queries.shape[1]
-    prob_list = parse_arpa_lm(arpa_file, token2id=token2id)
-    lm = LookupLanguageModel(vocab_size, sos=sos, prob_list=prob_list)
+    prob_dicts = parse_arpa_lm(arpa_file, token2id=token2id)
+    lm = LookupLanguageModel(vocab_size, sos=sos, prob_dicts=prob_dicts)
     lm = lm.to(device)
     log_probs = lm(queries)
     queries = torch.cat([queries, torch.full_like(queries[:1], eos)])
@@ -429,7 +429,7 @@ def test_lookup_language_model_republic():
 def test_lookup_language_model_state_dict():
     vocab_size, sos = 10, -1
     uni_list = [{0: 0.0, 1: 0.1, 2: 0.2}]
-    lm_a = LookupLanguageModel(vocab_size, sos, prob_list=uni_list)
+    lm_a = LookupLanguageModel(vocab_size, sos, prob_dicts=uni_list)
     lm_b = LookupLanguageModel(vocab_size, sos)
 
     def compare(assert_same):
@@ -469,7 +469,7 @@ def test_lookup_language_model_state_dict():
     lm_b.load_state_dict(lm_a.state_dict())
     compare(True)
     bi_list = [{2: (0.2, -0.2), 3: (0.3, -0.3)}, {(0, 3): 0.03, (2, 4): 0.24}]
-    lm_a = LookupLanguageModel(vocab_size, sos=sos, prob_list=bi_list)
+    lm_a = LookupLanguageModel(vocab_size, sos=sos, prob_dicts=bi_list)
     compare(False)
     lm_b.load_state_dict(lm_a.state_dict())
     compare(True)
@@ -478,7 +478,7 @@ def test_lookup_language_model_state_dict():
         dict(),
         {(0, 0, 0): 0.0, (4, 4, 4): 0.444, (2, 3, 2): 0.232},
     ]
-    lm_a = LookupLanguageModel(vocab_size, sos=sos, prob_list=tri_list)
+    lm_a = LookupLanguageModel(vocab_size, sos=sos, prob_dicts=tri_list)
     compare(False)
     lm_b.load_state_dict(lm_a.state_dict())
     compare(True)
