@@ -35,6 +35,7 @@ from . import data, modules, config
 from ._feats import SliceSpectData, ChunkTokenSequencesBySlices
 from ._pad import ChunkBySlices
 from ._string import error_rate
+from ._datasets import _info_and_validate
 
 
 def rdir(x: str) -> str:
@@ -285,64 +286,10 @@ integers."""
         suppress_alis=False,
         tokens_only=False,
     )
-    if options.strict or options.fix:
-        data.validate_spect_data_set(data_set, options.fix)
 
-    info_dict = {
-        "num_utterances": len(data_set),
-        "total_frames": 0,
-        "max_ali_class": -1,
-        "max_ref_class": -1,
-    }
-    counts, segs, rcounts, rsegs = dict(), dict(), dict(), dict()
-    for feat, ali, ref in data_set:
-        info_dict["num_filts"] = feat.size()[1]
-        info_dict["total_frames"] += feat.size()[0]
-        if ali is not None:
-            class_idxs, counts_ = ali.unique_consecutive(return_counts=True)
-            for class_idx, count in zip(class_idxs.tolist(), counts_.tolist()):
-                if class_idx < 0:
-                    raise ValueError("Got a negative ali class idx")
-                info_dict["max_ali_class"] = max(class_idx, info_dict["max_ali_class"])
-                counts[class_idx] = counts.get(class_idx, 0) + count
-                segs[class_idx] = segs.get(class_idx, 0) + 1
-        if ref is not None:
-            if ref.ndim == 1:
-                ref = ref.unsqueeze(1)
-                ref = torch.cat(
-                    [ref, torch.full((ref.size(0), 2), -1, dtype=torch.long)], 1
-                )
-            for tok, start, end in ref.tolist():
-                if tok < 0:
-                    raise ValueError(f"Got a negative reference token index '{tok}'")
-                info_dict["total_tokens"] = info_dict.get("total_tokens", 0) + 1
-                info_dict["max_ref_class"] = max(info_dict["max_ref_class"], tok)
-                rcount = rcounts.get(tok, 0)
-                if rcount >= 0 and end > start >= 0:
-                    rcounts[tok] = rcount + end - start
-                else:
-                    rcounts[tok] = -1
-                rsegs[tok] = rsegs.get(tok, 0) + 1
-
-    info_dict.setdefault("total_tokens", -1)
-
-    max_ali_class = info_dict["max_ali_class"]
-    if max_ali_class >= 0:
-        digits = int(math.log10(max(max_ali_class, 1))) + 1
-        count_fmt_str = f"count_{{:0{digits}d}}"
-        seg_fmt_str = f"segs_{{:0{digits}d}}"
-        for class_idx in range(max_ali_class + 1):
-            info_dict[count_fmt_str.format(class_idx)] = counts.get(class_idx, 0)
-            info_dict[seg_fmt_str.format(class_idx)] = segs.get(class_idx, 0)
-
-    max_ref_class = info_dict["max_ref_class"]
-    if max_ref_class >= 0:
-        digits = int(math.log10(max(max_ref_class, 1))) + 1
-        count_fmt_str = f"rcount_{{:0{digits}d}}"
-        seg_fmt_str = f"rsegs_{{:0{digits}d}}"
-        for class_idx in range(max_ref_class + 1):
-            info_dict[count_fmt_str.format(class_idx)] = rcounts.get(class_idx, -1)
-            info_dict[seg_fmt_str.format(class_idx)] = rsegs.get(class_idx, 0)
+    info_dict = _info_and_validate(
+        data_set, True, options.strict or options.fix, options.fix
+    )
 
     info_list = sorted(info_dict.items())
     for key, value in info_list:
