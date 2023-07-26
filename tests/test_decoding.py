@@ -271,7 +271,7 @@ def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
 
 
 def test_beam_search_advance_greedy(device):
-    N, C, T = 30, 100, 25
+    N, C, T = 30, 31, 25
     logits = torch.randn((T, N, C), device=device)
     greedy_logits, greedy_paths = logits.max(2)
     greedy_scores = greedy_logits.sum(0)
