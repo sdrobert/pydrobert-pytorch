@@ -734,6 +734,7 @@ def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
         feat_dir = None
     refs = []
     for n in range(N):
+        print(f"generating utt_{n}")
         R = torch.randint(1, max_R, (1,)).item()
         ref = torch.zeros((R, 3), dtype=torch.long)
         ref[:, 0] = torch.randint(V, (R,))
@@ -744,6 +745,7 @@ def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
         refs.append(ref)
         if with_feats:
             torch.save(torch.randn((ends[-1].item(), 1)), f"{feat_dir}/utt_{n}.pt")
+    print("calling cmd")
     assert not command_line.torch_token_data_dir_to_torch_ali_data_dir(args)
     assert len(os.listdir(ali_dir)) == N
     for n, ref in enumerate(refs):
