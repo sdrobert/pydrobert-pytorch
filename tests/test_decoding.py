@@ -190,7 +190,7 @@ def test_ctc_prefix_search(device):
 
 @pytest.mark.parametrize("shallow_fusion", [True, False], ids=["fusion", "nofusion"])
 def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
-    T, N, V, K = 50, 128, 50, 5
+    T, N, V, K = 50, 64, 50, 5
     assert K <= V
     lm = RNNLM(V)
     if jit_type == "script":
@@ -270,7 +270,7 @@ def test_beam_search_advance_greedy(device):
 
 @pytest.mark.parametrize("finish_all_paths", ["all", "first"])
 def test_beam_search_batch(device, jit_type, finish_all_paths):
-    T, N, V, K = 64, 16, 64, 8
+    T, N, V, K = 64, 16, 128, 8
     assert K <= V and N * K <= V
     lm = RNNLM(V).to(device)
     initial_state = {
