@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         py:
           - "3.11"

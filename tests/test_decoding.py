@@ -118,6 +118,20 @@ class RNNLM(MixableSequentialLanguageModel):
             {"hidden": h_1, "cell": c_1},
         )
 
+    @torch.jit.unused
+    def train(self, iters: int = 1, len_: int = 100, batch: int = 10):
+        # a convenience method for training a little bit. Avoids too-similar values
+        optim = torch.optim.Adam(self.parameters())
+        hist = torch.randint(
+            0, self.vocab_size, (len_, batch), device=self.lstm.weight_ih_l0.device
+        )
+        for iter_ in range(iters):
+            optim.zero_grad()
+            logits = self(hist[:-1])
+            loss = torch.nn.CrossEntropyLoss()(logits.flatten(0, 1), hist.flatten())
+            loss.backward()
+            optim.step()
+
 
 def test_ctc_prefix_search(device):
     class MyLM(MixableSequentialLanguageModel):
@@ -190,9 +204,10 @@ def test_ctc_prefix_search(device):
 
 @pytest.mark.parametrize("shallow_fusion", [True, False], ids=["fusion", "nofusion"])
 def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
-    T, N, V, K = 50, 64, 50, 5
+    T, N, V, K = 50, 128, 50, 5
     assert K <= V
     lm = RNNLM(V)
+    lm.train()
     if jit_type == "script":
         if shallow_fusion:
             pytest.xfail("script unsupported for shallow_fusion")
@@ -201,6 +216,7 @@ def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
         pytest.xfail("trace unsupported for CTCPrefixSearch")
     if shallow_fusion:
         lm2 = RNNLM(V)
+        lm2.train()
         lm = MixableShallowFusionLanguageModel(lm, lm2)
     search = CTCPrefixSearch(K, lm=lm).to(device)
     if jit_type == "script":
@@ -273,6 +289,8 @@ def test_beam_search_batch(device, jit_type, finish_all_paths):
     T, N, V, K = 12, 16, 128, 8
     assert K <= V and N * K <= V
     lm = RNNLM(V).to(device)
+    lm.train()
+
     initial_state = {
         "hidden": torch.randn((N, lm.hidden_size), device=device),
         "cell": torch.randn((N, lm.hidden_size), device=device),

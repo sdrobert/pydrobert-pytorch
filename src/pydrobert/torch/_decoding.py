@@ -447,9 +447,10 @@ class BeamSearch(torch.nn.Module):
                 log_probs_t = log_probs_t.masked_fill(
                     eos_mask.unsqueeze(2), -float("inf")
                 )
-                eos_mask_ = eos_mask.unsqueeze(2).repeat(1, 1, self.lm.vocab_size)
-                eos_mask_[..., : self.eos] = False
-                eos_mask_[..., self.eos + 1 :] = False
+                eos_mask_ = eos_mask.unsqueeze(2) & torch.nn.functional.one_hot(
+                    torch.tensor(float(self.eos), dtype=torch.long, device=device),
+                    self.lm.vocab_size,
+                ).to(torch.bool)
                 log_probs_t = log_probs_t.masked_fill(eos_mask_, 0.0)
 
             # extend + prune

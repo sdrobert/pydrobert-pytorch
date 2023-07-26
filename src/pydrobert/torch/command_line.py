@@ -2060,11 +2060,21 @@ def _copy_spect_data_dir_do_work(
     basename: str,
     src_dir: str,
     dest_dir: str,
-    cp: Callable[[str, str], Any],
+    cp: int,
     feat_subdir: Optional[str],
     ali_subdir: Optional[str],
     ref_subdir: Optional[str],
 ):
+    if cp == 0:
+        cp = shutil.copy
+    elif cp == 1:
+
+        def cp(src, dst):
+            src = os.path.relpath(src, os.path.dirname(dst))
+            return os.symlink(src, dst)
+
+    else:
+        cp = os.link
     if feat_subdir is None:
         cp(os.path.join(src_dir, basename), os.path.join(dest_dir, basename))
     else:
@@ -2314,15 +2324,11 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     basenames = (options.file_prefix + x + options.file_suffix for x in utt_ids)
 
     if options.copy:
-        cp = shutil.copy
+        cp = 0
     elif options.symlink:
-
-        def cp(src, dst):
-            src = os.path.relpath(src, os.path.dirname(dst))
-            return os.symlink(src, dst)
-
+        cp = 1
     else:
-        cp = os.link
+        cp = 2  # hard link
 
     os.makedirs(options.dest, exist_ok=True)
     for x in (options.feat_subdir, options.ali_subdir, options.ref_subdir):
