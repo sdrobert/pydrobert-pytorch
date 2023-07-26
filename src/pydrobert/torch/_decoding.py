@@ -403,6 +403,9 @@ class BeamSearch(torch.nn.Module):
         elif max_iters < 0:
             raise RuntimeError(f"max_iters must be non-negative, got {max_iters}")
 
+        pad_y = torch.full(
+            (1, N, self.width), self.pad_value, device=device, dtype=torch.long
+        )
         for t in range(max_iters):
             t = torch.tensor(t, device=device)
 
@@ -476,8 +479,8 @@ class BeamSearch(torch.nn.Module):
                 y_prev, log_probs_prev, y_prev_lens = self._to_width(
                     y_prev, log_probs_prev, y_prev_lens
                 )
-                y_next[:-1] = torch.where(done_mask.unsqueeze(0), y_prev, y_next[:-1])
-                y_next[-1:].masked_fill_(done_mask, self.pad_value)
+                y_prev = torch.cat([y_prev, pad_y], 0)
+                y_next = torch.where(done_mask.unsqueeze(0), y_prev, y_next)
                 log_probs_next = torch.where(done_mask, log_probs_prev, log_probs_next)
                 y_next_lens = torch.where(done_mask, y_prev_lens, y_next_lens)
 
@@ -1083,6 +1086,7 @@ class CTCPrefixSearch(torch.nn.Module):
         if self.lm is not None:
             prev = self.lm.update_input(prev, y_prev)
         prev_width = 1
+        pad_y = torch.zeros((1, N, self.width), device=device, dtype=torch.long)
         for t in range(len_max):
             valid_mask = None if t < len_min else (t < lens).unsqueeze(1)  # (N, 1)
             nonext_probs_t, blank_probs_t = nonext_probs[t], blank_probs[t]
@@ -1130,7 +1134,8 @@ class CTCPrefixSearch(torch.nn.Module):
                 y_prev_lens = y_next_lens
                 nb_probs_prev, b_probs_prev = nb_probs_next, b_probs_next
             else:
-                y_next[:-1] = torch.where(valid_mask.unsqueeze(0), y_next[:-1], y_prev)
+                y_prev = torch.cat([y_prev.expand(-1, -1, self.width), pad_y], 0)
+                y_next = torch.where(valid_mask.unsqueeze(0), y_next, y_prev)
                 y_prev_lens = torch.where(valid_mask, y_next_lens, y_prev_lens)
                 if prev_width < self.width:
                     assert prev_width == 1  # otherwise advance would've padded it
@@ -1448,9 +1453,10 @@ class RandomWalk(torch.nn.Module):
                 log_probs_t = log_probs_t.masked_fill(
                     eos_mask.unsqueeze(1), -float("inf")
                 )
-                eos_mask_ = eos_mask.unsqueeze(1).repeat(1, self.lm.vocab_size)
-                eos_mask_[..., : self.eos] = False
-                eos_mask_[..., self.eos + 1 :] = False
+                eos_mask_ = eos_mask.unsqueeze(1) & torch.nn.functional.one_hot(
+                    torch.tensor(float(self.eos), dtype=torch.long, device=device),
+                    self.lm.vocab_size,
+                ).to(torch.bool)
                 log_probs_t = log_probs_t.masked_fill(eos_mask_, 0.0)
 
             y, log_probs = random_walk_advance(log_probs_t, log_probs, y, y_lens)
