@@ -38,9 +38,6 @@ from pydrobert.torch.distributions import SequentialLanguageModelDistribution
 
 from pydrobert.torch._compat import _v
 
-if _v < "1.8.1":
-    pytest.skip(reason="Weird malloc errors", allow_module_level=True)
-
 
 class RNNLM(MixableSequentialLanguageModel):
     def __init__(self, vocab_size, embed_size=128, hidden_size=512):
