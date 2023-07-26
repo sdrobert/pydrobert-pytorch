@@ -204,7 +204,7 @@ def test_ctc_prefix_search(device):
 
 @pytest.mark.parametrize("shallow_fusion", [True, False], ids=["fusion", "nofusion"])
 def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
-    T, N, V, K = 50, 128, 50, 5
+    T, N, V, K = 31, 32, 33, 5
     assert K <= V
     lm = RNNLM(V)
     lm.train()

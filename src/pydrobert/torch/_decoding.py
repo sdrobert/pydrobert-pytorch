@@ -529,7 +529,8 @@ def ctc_greedy_search(
         logits = logits.transpose(0, 1)
     max_, argmax = logits.max(2)
     keep_mask = argmax != blank_idx
-    keep_mask[:, 1:] = keep_mask[:, 1:] & (argmax[:, 1:] != argmax[:, :-1])
+    keep_mask_ = keep_mask[:, 1:] & (argmax[:, 1:] != argmax[:, :-1])
+    keep_mask = torch.cat([keep_mask[:, :1], keep_mask_], 1)
     seq_size = argmax.size(1)
     if in_lens is not None:
         in_len_mask = torch.arange(seq_size, device=argmax.device).unsqueeze(
