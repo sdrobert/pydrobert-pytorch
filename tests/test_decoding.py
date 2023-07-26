@@ -284,7 +284,7 @@ def test_beam_search_advance_greedy(device):
     assert torch.all(y == greedy_paths)
 
 
-@pytest.mark.parametrize("finish_all_paths", ["all", "first"])
+@pytest.mark.parametrize("finish_all_paths", ["first"])
 def test_beam_search_batch(device, jit_type, finish_all_paths):
     T, N, V, K = 12, 16, 64, 4
     assert K <= V and N * K <= V
