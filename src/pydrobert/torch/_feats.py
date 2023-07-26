@@ -504,7 +504,7 @@ def slice_spect_data(
         nonempty = (in_lens > 0).view(N, 1)
         starts = torch.cat([nonempty, mask], 1).nonzero()
         mask = torch.cat([torch.zeros_like(nonempty), mask], 1)
-        mask |= nonempty & (in_lens.view(N, 1) == arange)
+        mask = mask | (nonempty & (in_lens.view(N, 1) == arange))
         ends = mask.nonzero()
         sources = starts[:, 0]
         starts, ends = starts[:, 1], ends[:, 1]
@@ -818,9 +818,7 @@ def chunk_token_sequences_by_slices(
         mask &= (slices[..., :1] < refs[..., 2]) & (slices[..., 1:] > refs[..., 1])
     else:
         # slice_start <= ref_start and slice_end >= ref_end
-        mask &= (slices[..., :1] <= refs[..., 1]) & (
-            slices[..., 1:] >= refs[..., 2]
-        )
+        mask &= (slices[..., :1] <= refs[..., 1]) & (slices[..., 1:] >= refs[..., 2])
     chunked_lens = mask.long().sum(1)
     refs = refs[mask.unsqueeze(2).expand_as(refs)]
     mask = (chunked_lens.unsqueeze(1) > arange).unsqueeze(2).expand(N, R, 3)

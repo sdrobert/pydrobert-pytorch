@@ -18,8 +18,9 @@ jobs:
   test:
     name: Python ${{ matrix.py }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         py:
           - "3.11"

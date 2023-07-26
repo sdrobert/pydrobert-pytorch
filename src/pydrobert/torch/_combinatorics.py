@@ -190,13 +190,12 @@ def enumerate_vocab_sequences(
     length: int,
     vocab_size: int,
     device: torch.device = torch.device("cpu"),
-    dtype: torch.dtype = torch.long,
+    dtype: int = torch.long,
 ) -> torch.Tensor:
-    r"""Enumerate all sequences of a finite range of values of a fixed length
+    """Enumerate all sequences of a finite range of values of a fixed length
     
     This function generalizes :func:`enumerate_binary_sequences` to any positive
-    vocabulary size. Each step in each sequence takes on a value from :math:`[0,
-    vocab\_size)`.
+    vocabulary size. Each step in each sequence takes on a value from 0-`vocab_size`
 
     Parameters
     ----------
