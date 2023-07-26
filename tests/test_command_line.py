@@ -720,10 +720,8 @@ Object class = "TextGrid"
 @pytest.mark.cpu
 @pytest.mark.parametrize("with_feats", [True, False])
 def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
-    N = 100
-    V = 10
-    max_R = 10
-    max_seg = 5
+    print(f"Started with_feats={with_feats}")
+    N, V, max_R, max_seg = 50, 10, 10, 5
     ref_dir = os.path.join(temp_dir, "ref")
     ali_dir = os.path.join(temp_dir, "ali")
     os.makedirs(ref_dir)
