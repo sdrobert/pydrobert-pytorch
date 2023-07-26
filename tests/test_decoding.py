@@ -133,41 +133,43 @@ class RNNLM(MixableSequentialLanguageModel):
             optim.step()
 
 
+class MyBigramLM(MixableSequentialLanguageModel):
+
+    bigram_table: torch.Tensor
+
+    def __init__(self):
+        super().__init__(2)
+        self.register_buffer(
+            "bigram_table",
+            torch.tensor(
+                [
+                    [1.0, 0.0],  # P(0|<s>), P(1|<s>)
+                    [0.5, 0.5],  # P(0|0), P(1|0)
+                    [0.0, 1.0],  # P(0|1), P(1|1)
+                ]
+            ).log(),
+        )
+
+    def extract_by_src(self, in_prev, src):
+        return in_prev
+
+    def mix_by_mask(self, in_prev_true, in_prev_false, mask):
+        return in_prev_true
+
+    def calc_idx_log_probs(self, hist, prev, idx):
+        # note we shift + 1 to make room for <s>
+        idx_zero = idx == 0
+        if idx_zero.all():
+            x = hist.new_full((hist.size(1),), 0)
+        else:
+            x = (
+                hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(0) + 1
+            )  # (N,)
+            x = x.masked_fill(idx_zero, 0)
+        return self.bigram_table.gather(0, x.unsqueeze(1).expand(-1, 2)), None
+
+
 def test_ctc_prefix_search(device):
-    class MyLM(MixableSequentialLanguageModel):
-
-        bigram_table: torch.Tensor
-
-        def __init__(self):
-            super().__init__(2)
-            self.register_buffer(
-                "bigram_table",
-                torch.tensor(
-                    [
-                        [1.0, 0.0],  # P(0|<s>), P(1|<s>)
-                        [0.5, 0.5],  # P(0|0), P(1|0)
-                        [0.0, 1.0],  # P(0|1), P(1|1)
-                    ]
-                ).log(),
-            )
-
-        def extract_by_src(self, in_prev, src):
-            return in_prev
-
-        def mix_by_mask(self, in_prev_true, in_prev_false, mask):
-            return in_prev_true
-
-        def calc_idx_log_probs(self, hist, prev, idx):
-            # note we shift + 1 to make room for <s>
-            idx_zero = idx == 0
-            if idx_zero.all():
-                x = hist.new_full((hist.size(1),), 0)
-            else:
-                x = (
-                    hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(0) + 1
-                )  # (N,)
-                x = x.masked_fill(idx_zero, 0)
-            return self.bigram_table.gather(0, x.unsqueeze(1).expand(-1, 2)), None
 
     T, N, K, V = 3, 128, 2, 3
     logits = (
@@ -183,7 +185,7 @@ def test_ctc_prefix_search(device):
         (0.0, [[0, 1], [0]], [5 / 24, 1 / 6]),
         (1.0, [[0], [0, 1]], [5 / 24, 17 / 144]),
     ]
-    lm = MyLM().to(device)
+    lm = MyBigramLM().to(device)
     for beta, y_exp, probs_exp in exps:
         search = CTCPrefixSearch(K, beta, lm)
         y_act, y_lens_act, probs_act = search(logits)
@@ -268,6 +270,8 @@ def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
         y_n_exp = y_n_exp.masked_fill_(len_mask, -1)
         y_n_act = y_n_act.masked_fill_(len_mask, -1)
         assert (y_n_exp == y_n_act).all()
+    
+    del lm
 
 
 def test_beam_search_advance_greedy(device):
@@ -288,7 +292,7 @@ def test_beam_search_advance_greedy(device):
 def test_beam_search_batch(device, jit_type, finish_all_paths):
     if jit_type == "trace":
         pytest.xfail("trace unsupported for BeamSearch")
-    T, N, V, K = 12, 16, 64, 8
+    T, N, V, K = 12, 16, 128, 8
     assert K <= V and N * K <= V
     lm = RNNLM(V).to(device)
     lm.train()
@@ -321,6 +325,8 @@ def test_beam_search_batch(device, jit_type, finish_all_paths):
         y_exp_n, y_act_n = y_exp_n[y_exp_n != -1], y_act_n[y_act_n != -1]
         assert y_exp_n.numel() == y_act_n.numel(), n
         assert (y_exp_n == y_act_n).all(), n
+
+    del lm
 
 
 @pytest.mark.parametrize(
@@ -738,20 +744,20 @@ def test_beam_search_advance(device):
     assert (y_next_act[:Kp, :, 0] == y_next_0_exp).all()
 
 
-def test_random_walk(device):
-    class StationaryLM(SequentialLanguageModel):
-        def __init__(self, vocab_size: int):
-            super().__init__(vocab_size)
-            self.logits = torch.nn.Parameter(torch.randn(vocab_size, vocab_size))
+class StationaryLM(SequentialLanguageModel):
+    def __init__(self, vocab_size: int):
+        super().__init__(vocab_size)
+        self.logits = torch.nn.Parameter(torch.randn(vocab_size, vocab_size))
 
-        def calc_idx_log_probs(
-            self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
-        ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-            if idx == 0:
-                hist = torch.zeros(
-                    1, hist.size(1), device=hist.device, dtype=hist.dtype
-                )
-            return self.logits.index_select(0, hist[(idx - 1).clamp_min_(0)]), prev
+    def calc_idx_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        if idx == 0:
+            hist = torch.zeros(1, hist.size(1), device=hist.device, dtype=hist.dtype)
+        return self.logits.index_select(0, hist[(idx - 1).clamp_min_(0)]), prev
+
+
+def test_random_walk(device):
 
     T, V = 10000, 4
     lm = StationaryLM(V).to(device)
@@ -777,22 +783,23 @@ def test_random_walk(device):
     assert torch.allclose(exp_expectation, act_expectation, atol=1e-2)
 
 
+# it's deterministic and always terminates
+class SpinningLM(SequentialLanguageModel):
+    def calc_idx_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        if idx == 0:
+            hist = prev["init"]
+        next_ = (hist[idx - 1] + 1) % self.vocab_size
+        return (
+            torch.nn.functional.one_hot(next_, self.vocab_size).float().log() - 1,
+            prev,
+        )
+
+
 def test_random_walk_batch(device, jit_type):
     if jit_type == "trace":
         pytest.xfail("trace unsupported for RandomWalk")
-
-    # it's deterministic and always terminates
-    class SpinningLM(SequentialLanguageModel):
-        def calc_idx_log_probs(
-            self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
-        ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-            if idx == 0:
-                hist = prev["init"]
-            next_ = (hist[idx - 1] + 1) % self.vocab_size
-            return (
-                torch.nn.functional.one_hot(next_, self.vocab_size).float().log() - 1,
-                prev,
-            )
 
     N, V = 128, 16
     assert V > 1
@@ -965,4 +972,5 @@ def test_sequential_language_model_distribution(device, eos, batch_size):
 
     sample = dist.sample()
     assert 0 < sample.numel() <= T * N
+    del lm
 

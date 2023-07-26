@@ -74,6 +74,7 @@ def pytest_runtest_setup(item):
     if any(mark.name == "gpu" for mark in item.iter_markers()):
         if not CUDA_AVAIL:
             pytest.skip("cuda is not available")
+        torch.cuda.empty_cache()
     # implicitly seeds all tests for the sake of reproducibility
     torch.manual_seed(abs(adler32(bytes(item.name, "utf-8"))))
 
