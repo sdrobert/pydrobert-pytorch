@@ -16,6 +16,7 @@ import itertools
 
 import torch
 import pytest
+import time
 
 from typing import Dict, Tuple
 
@@ -270,7 +271,7 @@ def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
         y_n_exp = y_n_exp.masked_fill_(len_mask, -1)
         y_n_act = y_n_act.masked_fill_(len_mask, -1)
         assert (y_n_exp == y_n_act).all()
-    
+
     del lm
 
 
@@ -288,13 +289,22 @@ def test_beam_search_advance_greedy(device):
     assert torch.all(y == greedy_paths)
 
 
+def print_and_sleep(*args, **kwargs):
+    print(*args, **kwargs)
+    time.sleep(1)
+
+
 @pytest.mark.parametrize("finish_all_paths", ["all", "first"])
 def test_beam_search_batch(device, jit_type, finish_all_paths):
     if jit_type == "trace":
         pytest.xfail("trace unsupported for BeamSearch")
+    print_and_sleep("starting")
     T, N, V, K = 12, 16, 128, 8
     assert K <= V and N * K <= V
+
+    print_and_sleep("initializing lm")
     lm = RNNLM(V).to(device)
+    print_and_sleep("training lm")
     lm.train()
 
     initial_state = {
@@ -302,9 +312,12 @@ def test_beam_search_batch(device, jit_type, finish_all_paths):
         "cell": torch.randn((N, lm.hidden_size), device=device),
     }
     if jit_type == "script":
+        print_and_sleep("scripting lm")
         lm = torch.jit.script(lm)
+    print_and_sleep("initializing beam search")
     search = BeamSearch(lm, K, eos=0, pad_value=-1, finish_all_paths=finish_all_paths)
     if jit_type == "script":
+        print_and_sleep("scripting beam search")
         search = torch.jit.script(search)
 
     y_exp, y_lens_exp, log_probs_exp = search(initial_state, N, T)
