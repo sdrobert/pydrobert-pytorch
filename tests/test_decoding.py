@@ -1,4 +1,4 @@
-# Copyright 2022 Sean Robertson
+# Copyright 2023 Sean Robertson
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@ import itertools
 
 import torch
 import pytest
-import time
 
 from typing import Dict, Tuple
 
@@ -36,6 +35,11 @@ from pydrobert.torch.functional import (
     fill_after_eos,
 )
 from pydrobert.torch.distributions import SequentialLanguageModelDistribution
+
+from pydrobert.torch._compat import _v
+
+if _v < "1.8.1":
+    pytest.skip(reason="Weird malloc errors", allow_module_level=True)
 
 
 class RNNLM(MixableSequentialLanguageModel):
@@ -289,46 +293,46 @@ def test_beam_search_advance_greedy(device):
     assert torch.all(y == greedy_paths)
 
 
-# @pytest.mark.parametrize("finish_all_paths", ["all", "first"])
-# def test_beam_search_batch(device, jit_type, finish_all_paths):
-#     if jit_type == "trace":
-#         pytest.xfail("trace unsupported for BeamSearch")
-#     T, N, V, K = 12, 4, 32, 8
-#     assert K <= V and N * K <= V
+@pytest.mark.parametrize("finish_all_paths", ["all", "first"])
+def test_beam_search_batch(device, jit_type, finish_all_paths):
+    if jit_type == "trace":
+        pytest.xfail("trace unsupported for BeamSearch")
+    T, N, V, K = 12, 4, 32, 8
+    assert K <= V and N * K <= V
 
-#     lm = RNNLM(V).to(device)
-#     lm.train()
+    lm = RNNLM(V).to(device)
+    lm.train()
 
-#     initial_state = {
-#         "hidden": torch.randn((N, lm.hidden_size), device=device),
-#         "cell": torch.randn((N, lm.hidden_size), device=device),
-#     }
-#     if jit_type == "script":
-#         lm = torch.jit.script(lm)
-#     search = BeamSearch(lm, K, eos=0, pad_value=-1, finish_all_paths=finish_all_paths)
-#     if jit_type == "script":
-#         search = torch.jit.script(search)
+    initial_state = {
+        "hidden": torch.randn((N, lm.hidden_size), device=device),
+        "cell": torch.randn((N, lm.hidden_size), device=device),
+    }
+    if jit_type == "script":
+        lm = torch.jit.script(lm)
+    search = BeamSearch(lm, K, eos=0, pad_value=-1, finish_all_paths=finish_all_paths)
+    if jit_type == "script":
+        search = torch.jit.script(search)
 
-#     y_exp, y_lens_exp, log_probs_exp = search(initial_state, N, T)
-#     y_exp = fill_after_eos(y_exp, 0, fill=-1)
-#     assert y_exp.device == y_lens_exp.device == log_probs_exp.device == device
-#     assert y_exp.shape[1:] == y_lens_exp.shape == log_probs_exp.shape == (N, K)
-#     assert not torch.allclose(log_probs_exp, log_probs_exp[:1])
+    y_exp, y_lens_exp, log_probs_exp = search(initial_state, N, T)
+    y_exp = fill_after_eos(y_exp, 0, fill=-1)
+    assert y_exp.device == y_lens_exp.device == log_probs_exp.device == device
+    assert y_exp.shape[1:] == y_lens_exp.shape == log_probs_exp.shape == (N, K)
+    assert not torch.allclose(log_probs_exp, log_probs_exp[:1])
 
-#     for n in range(N):
-#         y_exp_n, y_lens_exp_n = y_exp[:, n], y_lens_exp[n]
-#         log_probs_exp_n = log_probs_exp[n]
-#         initial_state_n = dict((k, v[n : n + 1]) for (k, v) in initial_state.items())
-#         y_act_n, y_lens_act_n, log_probs_act_n = search(initial_state_n, max_iters=T)
-#         assert y_act_n.shape[1:] == y_lens_act_n.shape == log_probs_act_n.shape == (K,)
-#         assert (y_lens_exp_n == y_lens_act_n).all(), n
-#         assert torch.allclose(log_probs_exp_n, log_probs_act_n), n
-#         y_act_n = fill_after_eos(y_act_n, 0, fill=-1)
-#         y_exp_n, y_act_n = y_exp_n[y_exp_n != -1], y_act_n[y_act_n != -1]
-#         assert y_exp_n.numel() == y_act_n.numel(), n
-#         assert (y_exp_n == y_act_n).all(), n
+    for n in range(N):
+        y_exp_n, y_lens_exp_n = y_exp[:, n], y_lens_exp[n]
+        log_probs_exp_n = log_probs_exp[n]
+        initial_state_n = dict((k, v[n : n + 1]) for (k, v) in initial_state.items())
+        y_act_n, y_lens_act_n, log_probs_act_n = search(initial_state_n, max_iters=T)
+        assert y_act_n.shape[1:] == y_lens_act_n.shape == log_probs_act_n.shape == (K,)
+        assert (y_lens_exp_n == y_lens_act_n).all(), n
+        assert torch.allclose(log_probs_exp_n, log_probs_act_n), n
+        y_act_n = fill_after_eos(y_act_n, 0, fill=-1)
+        y_exp_n, y_act_n = y_exp_n[y_exp_n != -1], y_act_n[y_act_n != -1]
+        assert y_exp_n.numel() == y_act_n.numel(), n
+        assert (y_exp_n == y_act_n).all(), n
 
-#     del lm
+    del lm
 
 
 @pytest.mark.parametrize(
