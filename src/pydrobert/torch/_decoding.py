@@ -388,7 +388,6 @@ class BeamSearch(torch.nn.Module):
         initial_state = dict() if initial_state_ is None else initial_state_
         device = self.device_buffer.device
         N = 1 if batch_size is None else batch_size
-        print('forward', N)
         prev_width = 1
         y_prev = torch.empty((0, N), dtype=torch.long, device=device)
         prev = self.lm.update_input(initial_state, y_prev)
@@ -490,7 +489,6 @@ class BeamSearch(torch.nn.Module):
             y_prev_lens = y_next_lens
             log_probs_prev = log_probs_next
             prev_width = self.width
-        print('loop done', N)
 
         y_prev, log_probs_prev, y_prev_lens = self._to_width(
             y_prev, log_probs_prev, y_prev_lens
@@ -500,7 +498,6 @@ class BeamSearch(torch.nn.Module):
             y_prev = y_prev.squeeze(1)
             y_prev_lens = y_prev_lens.squeeze(0)
             log_probs_prev = log_probs_prev.squeeze(0)
-        print('returning', N)
 
         return y_prev, y_prev_lens, log_probs_prev
 

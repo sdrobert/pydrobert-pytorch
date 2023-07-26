@@ -288,8 +288,11 @@ def test_beam_search_advance_greedy(device):
 def test_beam_search_batch(device, jit_type, finish_all_paths):
     T, N, V, K = 12, 16, 64, 4
     assert K <= V and N * K <= V
+    print('initializing lm')
     lm = RNNLM(V).to(device)
+    print('training lm')
     lm.train()
+    print('trained lm')
 
     initial_state = {
         "hidden": torch.randn((N, lm.hidden_size), device=device),
@@ -299,11 +302,15 @@ def test_beam_search_batch(device, jit_type, finish_all_paths):
         lm = torch.jit.script(lm)
     elif jit_type == "trace":
         pytest.xfail("trace unsupported for BeamSearch")
+    print('initializing BeamSearch')
     search = BeamSearch(lm, K, eos=0, pad_value=-1, finish_all_paths=finish_all_paths)
     if jit_type == "script":
+        print('scripting beam search')
         search = torch.jit.script(search)
 
+    print('Calling search')
     y_exp, y_lens_exp, log_probs_exp = search(initial_state, N, T)
+    print('called search')
     y_exp = fill_after_eos(y_exp, 0, fill=-1)
     assert y_exp.device == y_lens_exp.device == log_probs_exp.device == device
     assert y_exp.shape[1:] == y_lens_exp.shape == log_probs_exp.shape == (N, K)
