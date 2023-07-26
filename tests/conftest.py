@@ -30,6 +30,7 @@ import pydrobert.torch._compat as compat
 # command-line tests usually use relatively few utterances.
 # Make sure we're not putting them all on one thread.
 config.DEFT_CHUNK_SIZE = 10
+config.DEFT_NUM_WORKERS = 2
 
 if compat._v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
@@ -43,6 +44,7 @@ def temp_dir(tmp_path):
     dir_.mkdir()
     yield os.fspath(dir_)
     rmtree(os.fspath(dir_))
+
 
 @pytest.fixture(
     params=[

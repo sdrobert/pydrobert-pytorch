@@ -99,7 +99,7 @@ _COMMON_ARGS = {
     },
     "--num-workers": {
         "type": int,
-        "default": 0,
+        "default": config.DEFT_NUM_WORKERS,
         "help": "The number of workers to spawn to process the data. 0 is serial. "
         "Defaults to the CPU count",
     },
@@ -2612,7 +2612,7 @@ def _multiprocessor_pattern(x, options, do_work_func, *args):
 
 def _multiprocessor_pattern_generator(x, options, do_work_func, *args):
     if options.num_workers:
-        with torch.multiprocessing.Pool(
+        with torch.multiprocessing.get_context("spawn").Pool(
             options.num_workers, _worker_init, (do_work_func, *args),
         ) as pool:
             yield from pool.imap_unordered(_worker_func, x, options.mp_chunk_size)

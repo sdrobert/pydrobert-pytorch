@@ -105,6 +105,17 @@ DEFT_TEXTGRID_SUFFIX = ".TextGrid"
 DEFT_CHUNK_SIZE = 1000
 """Default number of units to process at once when performing multiprocessing"""
 
+
+def _cpu_count() -> int:
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    cpu_count = os.cpu_count()
+    return 0 if cpu_count is None else cpu_count
+
+
+DEFT_NUM_WORKERS = _cpu_count()
+"""Default number of workers when performing multiprocessing"""
+
 DEFT_FILE_PREFIX = ""
 """Default prefix of a torch data file"""
 
