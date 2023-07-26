@@ -1,4 +1,4 @@
-[![Build status](https://ci.appveyor.com/api/projects/status/shj64c2ddtswndhq/branch/master?svg=true)](https://ci.appveyor.com/project/sdrobert/pydrobert-pytorch/branch/master)
+[![tox](https://github.com/sdrobert/pydrobert-pytorch/actions/workflows/tox.yml/badge.svg)](https://github.com/sdrobert/pydrobert-pytorch/actions/workflows/tox.yml)
 [![Documentation Status](https://readthedocs.org/projects/pydrobert-pytorch/badge/?version=latest)](https://pydrobert-pytorch.readthedocs.io/en/latest/?badge=latest)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 

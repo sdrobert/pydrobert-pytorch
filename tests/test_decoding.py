@@ -270,7 +270,7 @@ def test_beam_search_advance_greedy(device):
 
 @pytest.mark.parametrize("finish_all_paths", ["all", "first"])
 def test_beam_search_batch(device, jit_type, finish_all_paths):
-    T, N, V, K = 64, 16, 128, 8
+    T, N, V, K = 64, 16, 64, 8
     assert K <= V and N * K <= V
     lm = RNNLM(V).to(device)
     initial_state = {
@@ -281,7 +281,7 @@ def test_beam_search_batch(device, jit_type, finish_all_paths):
         lm = torch.jit.script(lm)
     elif jit_type == "trace":
         pytest.xfail("trace unsupported for BeamSearch")
-    search = BeamSearch(lm, K, eos=0, pad_value=-1, finish_all_paths=finish_all_paths,)
+    search = BeamSearch(lm, K, eos=0, pad_value=-1, finish_all_paths=finish_all_paths)
     if jit_type == "script":
         search = torch.jit.script(search)
 
