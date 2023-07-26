@@ -407,7 +407,6 @@ class BeamSearch(torch.nn.Module):
             (1, N, self.width), self.pad_value, device=device, dtype=torch.long
         )
         for t in range(max_iters):
-            print(t, N)
             t = torch.tensor(t, device=device)
 
             if self.eos is not None and t:
