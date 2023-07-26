@@ -448,11 +448,15 @@ def chunk_by_slices(
             offset = (start_ - lens).clamp_min_(0)
             keep = (offset > 0).view(N, 1, 1)
             right_pad -= offset
-            right_mask &= (
-                ((left_pad + slice_lens + offset).unsqueeze(1) <= arange[:Tp])
-                .unsqueeze(2)
-                .expand(N, Tp, F)
-            ) & keep
+            right_mask = (
+                right_mask
+                & (
+                    ((left_pad + slice_lens + offset).unsqueeze(1) <= arange[:Tp])
+                    .unsqueeze(2)
+                    .expand(N, Tp, F)
+                )
+                & keep
+            )
             right_buf = chunks[right_mask]
             right_mask = (
                 (right_pad.unsqueeze(1) > arange[:Tp]).unsqueeze(2).expand(N, Tp, F)
