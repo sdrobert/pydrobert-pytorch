@@ -16,6 +16,7 @@ import pytest
 import os
 import math
 import socket
+import gc
 
 from zlib import adler32
 from contextlib import closing
@@ -81,6 +82,8 @@ def pytest_runtest_setup(item):
     # for distributed training (doesn't overwrite test)
     os.environ.setdefault("MASTER_ADDR", "localhost")
     os.environ.setdefault("MASTER_PORT", str(find_free_port()))
+
+    gc.collect()
 
 
 @pytest.fixture(scope="session")
