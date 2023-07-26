@@ -99,7 +99,7 @@ _COMMON_ARGS = {
     },
     "--num-workers": {
         "type": int,
-        "default": torch.multiprocessing.cpu_count(),
+        "default": 0,
         "help": "The number of workers to spawn to process the data. 0 is serial. "
         "Defaults to the CPU count",
     },

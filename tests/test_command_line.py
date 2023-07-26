@@ -747,8 +747,10 @@ def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
             torch.save(torch.randn((ends[-1].item(), 1)), f"{feat_dir}/utt_{n}.pt")
     print("calling cmd")
     assert not command_line.torch_token_data_dir_to_torch_ali_data_dir(args)
+    print("command done")
     assert len(os.listdir(ali_dir)) == N
     for n, ref in enumerate(refs):
+        print(f"checking utt_{n}")
         ali = torch.load(f"{ali_dir}/utt_{n}.pt")
         assert ali.ndim == 1
         T = ali.size(0)

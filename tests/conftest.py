@@ -19,6 +19,7 @@ import socket
 
 from zlib import adler32
 from contextlib import closing
+from shutil import rmtree
 
 import torch
 
@@ -41,7 +42,7 @@ def temp_dir(tmp_path):
     dir_ = tmp_path / "pytest"
     dir_.mkdir()
     yield os.fspath(dir_)
-
+    rmtree(os.fspath(dir_))
 
 @pytest.fixture(
     params=[
