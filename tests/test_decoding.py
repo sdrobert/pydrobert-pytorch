@@ -38,7 +38,7 @@ from pydrobert.torch.distributions import SequentialLanguageModelDistribution
 
 
 class RNNLM(MixableSequentialLanguageModel):
-    def __init__(self, vocab_size, embed_size=16, hidden_size=64):
+    def __init__(self, vocab_size, embed_size=128, hidden_size=512):
         super().__init__(vocab_size)
         self.hidden_size = hidden_size
         self.embed = torch.nn.Embedding(
@@ -284,7 +284,7 @@ def test_beam_search_advance_greedy(device):
     assert torch.all(y == greedy_paths)
 
 
-@pytest.mark.parametrize("finish_all_paths", ["first"])
+@pytest.mark.parametrize("finish_all_paths", ["all", "first"])
 def test_beam_search_batch(device, jit_type, finish_all_paths):
     T, N, V, K = 12, 16, 64, 4
     assert K <= V and N * K <= V
