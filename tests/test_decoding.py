@@ -44,12 +44,14 @@ class RNNLM(MixableSequentialLanguageModel):
         self.embed = torch.nn.Embedding(
             vocab_size + 1, embed_size, padding_idx=vocab_size
         )
-        self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
-        self.lstm = torch.nn.LSTM(embed_size, hidden_size)
-        self.lstm.weight_ih_l0 = self.cell.weight_ih
-        self.lstm.weight_hh_l0 = self.cell.weight_hh
-        self.lstm.bias_ih_l0 = self.cell.bias_ih
-        self.lstm.bias_hh_l0 = self.cell.bias_hh
+        # LSTMs were causing corrupt memory issues in 1.5.1, possibly due to
+        # https://github.com/pytorch/pytorch/issues/94808
+        self.cell = torch.nn.GRUCell(embed_size, hidden_size)
+        self.recur = torch.nn.GRU(embed_size, hidden_size)
+        self.recur.weight_ih_l0 = self.cell.weight_ih
+        self.recur.weight_hh_l0 = self.cell.weight_hh
+        self.recur.bias_ih_l0 = self.cell.bias_ih
+        self.recur.bias_hh_l0 = self.cell.bias_hh
         self.ff = torch.nn.Linear(hidden_size, vocab_size)
 
     @torch.jit.export
@@ -58,7 +60,6 @@ class RNNLM(MixableSequentialLanguageModel):
     ) -> Dict[str, torch.Tensor]:
         return {
             "hidden": prev["hidden"].index_select(0, src),
-            "cell": prev["cell"].index_select(0, src),
         }
 
     @torch.jit.export
@@ -71,7 +72,6 @@ class RNNLM(MixableSequentialLanguageModel):
         mask = mask.unsqueeze(1)
         return {
             "hidden": torch.where(mask, prev_true["hidden"], prev_false["hidden"]),
-            "cell": torch.where(mask, prev_true["cell"], prev_false["cell"]),
         }
 
     @torch.jit.export
@@ -82,7 +82,7 @@ class RNNLM(MixableSequentialLanguageModel):
             return prev
         N = hist.size(1)
         zeros = self.ff.weight.new_zeros((N, self.hidden_size))
-        return {"hidden": zeros, "cell": zeros}
+        return {"hidden": zeros}
 
     @torch.jit.export
     def calc_full_log_probs(
@@ -90,7 +90,7 @@ class RNNLM(MixableSequentialLanguageModel):
     ) -> torch.Tensor:
         hist = torch.cat([hist.new_full((1, hist.size(1)), self.vocab_size), hist], 0)
         x = self.embed(hist)
-        x = self.lstm(x)[0]
+        x = self.recur(x)[0]
         logits = self.ff(x)
         return torch.nn.functional.log_softmax(logits, -1)
 
@@ -111,11 +111,11 @@ class RNNLM(MixableSequentialLanguageModel):
             )  # (N,)
             x = x.masked_fill(idx_zero.expand(x.shape), self.vocab_size)
         x = self.embed(x)
-        h_1, c_1 = self.cell(x, (prev["hidden"], prev["cell"]))
+        h_1 = self.cell(x, prev["hidden"])
         logits = self.ff(h_1)
         return (
             torch.nn.functional.log_softmax(logits, -1),
-            {"hidden": h_1, "cell": c_1},
+            {"hidden": h_1},
         )
 
 
@@ -270,7 +270,7 @@ def test_beam_search_advance_greedy(device):
 
 @pytest.mark.parametrize("finish_all_paths", ["all", "first"])
 def test_beam_search_batch(device, jit_type, finish_all_paths):
-    T, N, V, K = 32, 16, 64, 4
+    T, N, V, K = 64, 16, 128, 8
     assert K <= V and N * K <= V
     lm = RNNLM(V).to(device)
     initial_state = {
