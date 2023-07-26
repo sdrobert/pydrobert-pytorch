@@ -554,16 +554,16 @@ def slice_spect_data(
                 f"Expected other_lens to have shape ({N},); got {other_lens.shape}"
             )
         mask = in_lens.view(N, 1) > torch.arange(T, device=device)
-        mask &= (in_[..., 1:] >= 0).all(2)
+        mask = mask & (in_[..., 1:] >= 0).all(2)
         if window_type in ("symmetric", "causal"):
             starts = starts - lobe_size
         if window_type in ("symmetric", "future"):
             ends = ends + lobe_size
         if valid_only:
-            mask &= (starts >= 0) & (ends <= other_lens.view(N, 1))
+            mask = mask & (starts >= 0) & (ends <= other_lens.view(N, 1))
         else:
-            mask &= (ends > 0) & (starts < other_lens.view(N, 1))
-        mask &= starts < ends
+            mask = mask & (ends > 0) & (starts < other_lens.view(N, 1))
+        mask = mask & (starts < ends)
         starts, ends, mask = starts.flatten(), ends.flatten(), mask.flatten()
         sources = torch.arange(N, device=device).view(N, 1).expand(N, T).flatten()
         starts = starts[mask]
@@ -812,13 +812,13 @@ def chunk_token_sequences_by_slices(
         )
     else:
         mask = ref_lens.unsqueeze(1) > arange
-    mask &= (refs[..., 1:] >= 0).all(2) & (refs[..., 2] >= refs[..., 1])
+    mask = mask & (refs[..., 1:] >= 0).all(2) & (refs[..., 2] >= refs[..., 1])
     if partial:
         # slice_start < ref_end and slice_end > ref_start
-        mask &= (slices[..., :1] < refs[..., 2]) & (slices[..., 1:] > refs[..., 1])
+        mask = mask & (slices[..., :1] < refs[..., 2]) & (slices[..., 1:] > refs[..., 1])
     else:
         # slice_start <= ref_start and slice_end >= ref_end
-        mask &= (slices[..., :1] <= refs[..., 1]) & (slices[..., 1:] >= refs[..., 2])
+        mask = mask & (slices[..., :1] <= refs[..., 1]) & (slices[..., 1:] >= refs[..., 2])
     chunked_lens = mask.long().sum(1)
     refs = refs[mask.unsqueeze(2).expand_as(refs)]
     mask = (chunked_lens.unsqueeze(1) > arange).unsqueeze(2).expand(N, R, 3)

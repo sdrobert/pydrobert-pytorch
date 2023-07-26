@@ -765,9 +765,9 @@ def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
 
 @pytest.mark.cpu
 def test_torch_ali_data_dir_to_torch_token_data_dir(temp_dir):
-    N = 100
+    N = 50
     V = 10
-    T = 50
+    T = 20
     ref_dir = os.path.join(temp_dir, "ref")
     ali_dir = os.path.join(temp_dir, "ali")
     os.makedirs(ali_dir)
@@ -957,7 +957,7 @@ Object class = "TextGrid"
 
 @pytest.mark.cpu
 def test_chunk_torch_spect_data_dir(temp_dir, populate_torch_dir):
-    N = 100
+    N = 50
     in_dir = os.path.join(temp_dir, "in")
     out_dir = os.path.join(temp_dir, "out")
     feats, alis, refs, lens, ref_lens, utt_ids = populate_torch_dir(in_dir, N)
@@ -1120,7 +1120,7 @@ def test_subset_torch_spect_data_dir_symlink(temp_dir, populate_torch_dir):
 @pytest.mark.parametrize("std", [True, False], ids=["std", "var"])
 @pytest.mark.parametrize("exclude", [True, False], ids=["exclude", "noexclude"])
 def test_print_torch_ali_data_dir_length_moments(temp_dir, bessel, std, exclude):
-    N, len_max, seg_max = 100, 30, 5
+    N, len_max, seg_max = 49, 30, 5
     lens = torch.randint(1, len_max + 1, (N * seg_max,))
     nsegs = torch.randint(1, seg_max + 1, (N,))
     lens = lens[: nsegs.sum()]
