@@ -463,6 +463,7 @@ def optimal_completion(
         return_mask=True,
         exclude_last=exclude_last,
     )
+    print(mask)
     if not batch_first:
         ref = ref.t()
     H, R, N = mask.shape
@@ -1454,10 +1455,7 @@ def hard_optimal_completion_distillation_loss(
         reduction="none",
     ).view_as(optimals)
     padding_mask = optimals == ignore_index
-    print("logits", logits.masked_select(~(padding_mask.unsqueeze(-1))))
-    print("optimals", optimals[~padding_mask])
     loss = loss.masked_fill(padding_mask, 0.0).sum(2)
-    print("loss", loss)
     loss = loss / (~padding_mask).long().sum(2).clamp_min(1)
     if reduction == "mean":
         seq_dim = 1 if batch_first else 0
