@@ -244,8 +244,8 @@ if _v < "1.8.0":
     def linalg_solve(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
         return torch.solve(B, A)[0]
 
-    @torch.jit.unused
-    def _jit_isinstance(obj: Any, x: type) -> bool:
+    @torch.jit.ignore
+    def jit_isinstance(obj: Any, x: Any) -> bool:
         if isinstance(obj, torch.nn.utils.rnn.PackedSequence):
             obj = obj.data, obj.batch_sizes, obj.sorted_indices, obj.unsorted_indices
         origin = getattr(x, "__origin__", None)
@@ -261,21 +261,15 @@ if _v < "1.8.0":
                 )
             if origin in {tuple, Tuple}:
                 return (len(obj) is len(args)) and all(
-                    _jit_isinstance(*y) for y in zip(obj, args)
+                    jit_isinstance(*y) for y in zip(obj, args)
                 )
             else:
                 assert len(args) == 1
-                return all(_jit_isinstance(o, args[0]) for o in obj)
+                return all(jit_isinstance(o, args[0]) for o in obj)
         elif origin is Union:
             args = x.__args__
-            return any(_jit_isinstance(obj, y) for y in args)
+            return any(jit_isinstance(obj, y) for y in args)
         return False
-
-    def jit_isinstance(obj: Any, x: Any) -> bool:
-        if torch.jit.is_scripting():
-            return isinstance(obj, x)
-        else:
-            return _jit_isinstance(obj, x)
 
     from torch.distributions.constraints import Constraint
 
