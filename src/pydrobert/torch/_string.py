@@ -575,6 +575,7 @@ def _string_matching(
     padding: int = config.INDEX_PAD_VALUE,
     return_mistakes: bool = False,
 ):
+    assert torch.jit.is_scripting()
     assert not return_mask or not return_prf_dsts
     assert not exclude_last or (return_mask or return_prf_dsts)
     if ref.dim() != 2 or hyp.dim() != 2:
@@ -735,7 +736,6 @@ def _string_matching(
             # the invalid range of the row. The below masking could always be applied,
             # but it's wasted effort otherwise.
             row = row.masked_fill(rrange.unsqueeze(1) > ref_lens, float("inf"))
-            assert False
             print(hyp_idx, "row", row)
             mins = row.min(0, keepdim=True)[0]
             print(hyp_idx, "mins", row)
