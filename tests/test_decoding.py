@@ -306,7 +306,9 @@ def test_beam_search_batch(device, jit_type, finish_all_paths):
     }
     if jit_type == "script":
         lm = torch.jit.script(lm)
-    search = BeamSearch(lm, K, eos=0, pad_value=-1, finish_all_paths=finish_all_paths)
+    search = BeamSearch(
+        lm, K, eos=0, pad_value=-1, finish_all_paths=finish_all_paths == "all"
+    )
     if jit_type == "script":
         search = torch.jit.script(search)
 
