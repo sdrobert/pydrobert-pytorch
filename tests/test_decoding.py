@@ -38,18 +38,18 @@ from pydrobert.torch.distributions import SequentialLanguageModelDistribution
 
 
 class RNNLM(MixableSequentialLanguageModel):
-    def __init__(self, vocab_size, embed_size=128, hidden_size=512):
+    def __init__(self, vocab_size, embed_size=128, hidden_size=256):
         super().__init__(vocab_size)
         self.hidden_size = hidden_size
         self.embed = torch.nn.Embedding(
             vocab_size + 1, embed_size, padding_idx=vocab_size
         )
-        self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
-        self.lstm = torch.nn.LSTM(embed_size, hidden_size)
-        self.lstm.weight_ih_l0 = self.cell.weight_ih
-        self.lstm.weight_hh_l0 = self.cell.weight_hh
-        self.lstm.bias_ih_l0 = self.cell.bias_ih
-        self.lstm.bias_hh_l0 = self.cell.bias_hh
+        self.cell = torch.nn.GRUCell(embed_size, hidden_size)
+        self.full = torch.nn.GRU(embed_size, hidden_size)
+        self.full.weight_ih_l0 = self.cell.weight_ih
+        self.full.weight_hh_l0 = self.cell.weight_hh
+        self.full.bias_ih_l0 = self.cell.bias_ih
+        self.full.bias_hh_l0 = self.cell.bias_hh
         self.ff = torch.nn.Linear(hidden_size, vocab_size)
 
     @torch.jit.export
@@ -58,7 +58,7 @@ class RNNLM(MixableSequentialLanguageModel):
     ) -> Dict[str, torch.Tensor]:
         return {
             "hidden": prev["hidden"].index_select(0, src),
-            "cell": prev["cell"].index_select(0, src),
+            # "cell": prev["cell"].index_select(0, src),
         }
 
     @torch.jit.export
@@ -71,7 +71,7 @@ class RNNLM(MixableSequentialLanguageModel):
         mask = mask.unsqueeze(1)
         return {
             "hidden": torch.where(mask, prev_true["hidden"], prev_false["hidden"]),
-            "cell": torch.where(mask, prev_true["cell"], prev_false["cell"]),
+            # "cell": torch.where(mask, prev_true["cell"], prev_false["cell"]),
         }
 
     @torch.jit.export
@@ -82,7 +82,7 @@ class RNNLM(MixableSequentialLanguageModel):
             return prev
         N = hist.size(1)
         zeros = self.ff.weight.new_zeros((N, self.hidden_size))
-        return {"hidden": zeros, "cell": zeros}
+        return {"hidden": zeros}
 
     @torch.jit.export
     def calc_full_log_probs(
@@ -90,7 +90,7 @@ class RNNLM(MixableSequentialLanguageModel):
     ) -> torch.Tensor:
         hist = torch.cat([hist.new_full((1, hist.size(1)), self.vocab_size), hist], 0)
         x = self.embed(hist)
-        x = self.lstm(x)[0]
+        x = self.full(x)[0]
         logits = self.ff(x)
         return torch.nn.functional.log_softmax(logits, -1)
 
@@ -111,27 +111,28 @@ class RNNLM(MixableSequentialLanguageModel):
             )  # (N,)
             x = x.masked_fill(idx_zero.expand(x.shape), self.vocab_size)
         x = self.embed(x)
-        h_1, c_1 = self.cell(x, (prev["hidden"], prev["cell"]))
+        h_1 = self.cell(x, prev["hidden"])
         logits = self.ff(h_1)
         return (
             torch.nn.functional.log_softmax(logits, -1),
-            {"hidden": h_1, "cell": c_1},
+            {"hidden": h_1},
         )
 
-    def train(self, iters: int = 1, len_: int = 100, batch: int = 10):
-        # a convenience method for training a little bit. Avoids too-similar values
-        optim = torch.optim.SGD(self.parameters(), 1e-4)
-        hist = torch.randint(
-            0, self.vocab_size, (len_, batch), device=self.lstm.weight_ih_l0.device
-        )
-        for _ in range(iters):
-            optim.zero_grad()
-            logits = self(hist[:-1])
-            loss = torch.nn.CrossEntropyLoss()(logits.flatten(0, 1), hist.flatten())
-            loss.backward()
-            optim.step()
-            del loss
-        del optim
+
+def _train_rnnlm(lm: RNNLM, iters: int = 1, len_: int = 100, batch: int = 10):
+    # a convenience method for training a little bit. Avoids too-similar values
+    optim = torch.optim.SGD(lm.parameters(), 1e-4)
+    hist = torch.randint(
+        0, lm.vocab_size, (len_, batch), device=lm.full.weight_ih_l0.device
+    )
+    for _ in range(iters):
+        optim.zero_grad()
+        logits = lm(hist[:-1])
+        loss = torch.nn.CrossEntropyLoss()(logits.flatten(0, 1), hist.flatten())
+        loss.backward()
+        optim.step()
+        del loss
+    del optim
 
 
 class MyBigramLM(MixableSequentialLanguageModel):
@@ -212,14 +213,14 @@ def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
     T, N, V, K = 31, 32, 33, 5
     assert K <= V
     lm = RNNLM(V)
-    lm.train()
+    _train_rnnlm(lm)
     if jit_type == "script":
         if shallow_fusion:
             pytest.xfail("script unsupported for shallow_fusion")
         lm = torch.jit.script(lm)
     if shallow_fusion:
         lm2 = RNNLM(V)
-        lm2.train()
+        _train_rnnlm(lm)
         lm = MixableShallowFusionLanguageModel(lm, lm2)
     search = CTCPrefixSearch(K, lm=lm).to(device)
     if jit_type == "script":
@@ -297,7 +298,7 @@ def test_beam_search_batch(device, jit_type, finish_all_paths):
     assert K <= V and N * K <= V
 
     lm = RNNLM(V).to(device)
-    lm.train()
+    _train_rnnlm(lm)
 
     initial_state = {
         "hidden": torch.randn((N, lm.hidden_size), device=device),
