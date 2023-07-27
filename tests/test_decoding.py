@@ -36,6 +36,8 @@ from pydrobert.torch.functional import (
 )
 from pydrobert.torch.distributions import SequentialLanguageModelDistribution
 
+from pydrobert.torch._compat import _v
+
 
 class RNNLM(MixableSequentialLanguageModel):
     def __init__(self, vocab_size, embed_size=128, hidden_size=256):
@@ -838,6 +840,8 @@ def test_random_walk_batch(device, jit_type):
 
 @pytest.mark.parametrize("dim", [0, 2, -1, None])
 def test_sequence_log_probs(device, dim, jit_type):
+    if jit_type == "script" and _v < "1.8.0" and dim is None:
+        pytest.xfail("scripting + PackedSequence unsupported in Pytorch < 1.8.0")
     max_steps, num_classes, eos = 30, 10, 0
     dim1, dim2, dim3, dim4 = 5, 2, 1, 4
     logits = torch.full(

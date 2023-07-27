@@ -1653,6 +1653,9 @@ class SequenceLogProbabilities(torch.nn.Module):
     by length. The sort is not guaranteed to be deterministic if some entries have equal
     length. To avoid the possibility that `logits` and `hyp` are sorted differently, we
     require `hyp` to always be a :class:`torch.Tensor`.
+
+    PyTorch < 1.8.0 cannot infer whether `logits` is a
+    :class:`torch.nn.utils.rnn.PackedSequence` in scripting mode.
     """
 
     __constants__ = ["dim", "eos"]
