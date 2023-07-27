@@ -355,7 +355,7 @@ def test_hard_optimal_completion_distillation_loss_batch(device, jit_type):
     N, T, C = 2, 5, 4
 
     loss = HardOptimalCompletionDistillationLoss(eos=C, reduction="sum")
-    if jit_type == "script":
+    if jit_type == "script" or jit_type == "trace":
         loss = torch.jit.script(loss)
     elif jit_type == "trace":
         loss = torch.jit.trace(

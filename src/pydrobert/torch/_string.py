@@ -441,7 +441,7 @@ def edit_distance(
 
 
 # @functional_wrapper("OptimalCompletion")
-@script
+# @script
 def optimal_completion(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -562,7 +562,7 @@ def prefix_edit_distances(
     )
 
 
-@script
+# @script
 def _string_matching(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -1420,7 +1420,7 @@ def hard_optimal_completion_distillation_loss(
 
 
 # @functional_wrapper("HardOptimalCompletionDistillationLoss")
-@script
+# @script
 def hard_optimal_completion_distillation_loss(
     logits: torch.Tensor,
     ref: torch.Tensor,
