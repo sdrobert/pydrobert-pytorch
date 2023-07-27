@@ -31,6 +31,7 @@ from ._compat import (
     jit_isinstance,
     SpoofPackedSequence,
     broadcast_shapes,
+    _v,
 )
 from ._string import _lens_from_eos, fill_after_eos
 from ._wrappers import functional_wrapper, proxy
@@ -1563,14 +1564,15 @@ def sequence_log_probs(
     ...
 
 
-@functional_wrapper("SequentialLogProbabilities")
-def sequence_log_probs(
-    logits: Any, hyp: torch.Tensor, dim: int = 0, eos: Optional[int] = None,
-) -> torch.Tensor:
-    if isinstance(logits, torch.Tensor):
-        return _sequence_log_probs_tensor(logits, hyp, dim, eos)
-    else:
-        assert jit_isinstance(
+if _v < "1.8.0":
+
+    @functional_wrapper("SequentialLogProbabilities")
+    def sequence_log_probs(
+        logits: Any, hyp: torch.Tensor, dim: int = 0, eos: Optional[int] = None,
+    ) -> torch.Tensor:
+        if isinstance(logits, torch.Tensor):
+            return _sequence_log_probs_tensor(logits, hyp, dim, eos)
+        elif not torch.jit.is_scripting() and jit_isinstance(
             logits,
             Tuple[
                 torch.Tensor,
@@ -1578,8 +1580,30 @@ def sequence_log_probs(
                 Optional[torch.Tensor],
                 Optional[torch.Tensor],
             ],
-        )
-        return _sequence_log_probs_ps(logits, hyp, dim)
+        ):
+            return _sequence_log_probs_ps(logits, hyp, dim)
+        raise RuntimeError("logits must be either a Tensor or PackedSequence")
+
+
+else:
+
+    @functional_wrapper("SequentialLogProbabilities")
+    def sequence_log_probs(
+        logits: Any, hyp: torch.Tensor, dim: int = 0, eos: Optional[int] = None,
+    ) -> torch.Tensor:
+        if isinstance(logits, torch.Tensor):
+            return _sequence_log_probs_tensor(logits, hyp, dim, eos)
+        elif jit_isinstance(
+            logits,
+            Tuple[
+                torch.Tensor,
+                torch.Tensor,
+                Optional[torch.Tensor],
+                Optional[torch.Tensor],
+            ],
+        ):
+            return _sequence_log_probs_ps(logits, hyp, dim)
+        raise RuntimeError("logits must be either a Tensor or PackedSequence")
 
 
 class SequenceLogProbabilities(torch.nn.Module):

@@ -274,7 +274,7 @@ if _v < "1.8.0":
 
     def jit_isinstance(obj: Any, x: Any) -> bool:
         if torch.jit.is_scripting():
-            return True
+            raise RuntimeError("Refinement isn't possible with this version of pytorch")
         else:
             return _jit_isinstance(obj, x)
 
