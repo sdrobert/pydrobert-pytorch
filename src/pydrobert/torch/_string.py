@@ -450,7 +450,7 @@ def optimal_completion(
     exclude_last: bool = False,
     warn: bool = True,
 ) -> torch.Tensor:
-    print("a")
+    print('zz')
     mask = _string_matching(
         ref,
         hyp,
@@ -464,7 +464,7 @@ def optimal_completion(
         return_mask=True,
         exclude_last=exclude_last,
     )
-    print("b")
+    print('top')
     if not batch_first:
         ref = ref.t()
     H, R, N = mask.shape
@@ -559,7 +559,7 @@ def prefix_edit_distances(
     )
 
 
-@script
+@torch.jit.script
 def _string_matching(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -577,8 +577,6 @@ def _string_matching(
     padding: int = config.INDEX_PAD_VALUE,
     return_mistakes: bool = False,
 ):
-    assert return_mask
-    assert not return_mask
     assert not return_mask or not return_prf_dsts
     assert not exclude_last or (return_mask or return_prf_dsts)
     if ref.dim() != 2 or hyp.dim() != 2:
@@ -739,11 +737,8 @@ def _string_matching(
             # the invalid range of the row. The below masking could always be applied,
             # but it's wasted effort otherwise.
             row = row.masked_fill(rrange.unsqueeze(1) > ref_lens, float("inf"))
-            print(hyp_idx, "row", row)
             mins = row.min(0, keepdim=True)[0]
-            print(hyp_idx, "mins", row)
             row_mask = (row[:-1] == mins) & not_done
-            print(hyp_idx, "mask", row_mask)
             masks.append(row_mask)
         elif return_prf_dsts:
             if return_mistakes:
