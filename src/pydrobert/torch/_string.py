@@ -735,6 +735,7 @@ def _string_matching(
             # the invalid range of the row. The below masking could always be applied,
             # but it's wasted effort otherwise.
             row = row.masked_fill(rrange.unsqueeze(1) > ref_lens, float("inf"))
+            assert False
             print(hyp_idx, "row", row)
             mins = row.min(0, keepdim=True)[0]
             print(hyp_idx, "mins", row)
