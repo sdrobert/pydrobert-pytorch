@@ -681,8 +681,6 @@ class TrainingStateController(object):
                     os.remove(pth)
                 except OSError:
                     warnings.warn(f"Failed to delete file '{pth}'")
-        if self._rank >= 0:
-            torch.distributed.barrier()
 
     def delete_model_and_optimizer_for_epoch(self, epoch: int) -> None:
         """Delete state dicts for model and epoch off of disk, if they exist
