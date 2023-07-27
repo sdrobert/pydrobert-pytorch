@@ -463,7 +463,6 @@ def optimal_completion(
         return_mask=True,
         exclude_last=exclude_last,
     )
-    print(mask)
     if not batch_first:
         ref = ref.t()
     H, R, N = mask.shape
@@ -596,7 +595,8 @@ def _string_matching(
     if batch_first:
         ref = ref.t()
         hyp = hyp.t()
-    mistakes = del_mat = mask = prefix_ers = torch.empty(0)
+    mistakes = del_mat = prefix_ers = torch.empty(0)
+    masks = []
     ref = ref.detach()
     hyp = hyp.detach()
     max_ref_steps, batch_size = ref.shape
@@ -638,13 +638,11 @@ def _string_matching(
             (batch_size,), max_hyp_steps, device=ref.device, dtype=torch.long
         )
     if return_mask:
-        mask = torch.empty(
-            (max_hyp_steps + (0 if exclude_last else 1), max_ref_steps, batch_size),
-            device=device,
-            dtype=torch.bool,
+        mask = torch.zeros(
+            (max_ref_steps, batch_size), device=device, dtype=torch.bool,
         )
-        mask[0, 0] = ref_lens > 0
-        mask[0, 1:] = 0
+        mask[0] = ref_lens > 0
+        masks.append(mask)
     elif return_prf_dsts:
         prefix_ers = torch.empty(
             (max_hyp_steps + (0 if exclude_last else 1), batch_size),
@@ -739,7 +737,7 @@ def _string_matching(
             row = row.masked_fill(rrange.unsqueeze(1) > ref_lens, float("inf"))
             mins = row.min(0, keepdim=True)[0]
             row_mask = (row[:-1] == mins) & not_done
-            mask[hyp_idx] = row_mask
+            masks.append(row_mask)
         elif return_prf_dsts:
             if return_mistakes:
                 prefix_ers[hyp_idx] = mistakes.gather(0, ref_lens.unsqueeze(0)).squeeze(
@@ -748,7 +746,7 @@ def _string_matching(
             else:
                 prefix_ers[hyp_idx] = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
     if return_mask:
-        # &= unsupported in scripting < 1.8
+        mask = torch.stack(masks, 0)
         mask = mask & (
             torch.arange(max_ref_steps, device=device)
             .unsqueeze(1)
@@ -1456,7 +1454,7 @@ def hard_optimal_completion_distillation_loss(
     ).view_as(optimals)
     padding_mask = optimals == ignore_index
     loss = loss.masked_fill(padding_mask, 0.0).sum(2)
-    loss = loss / (~padding_mask).long().sum(2).clamp_min(1)
+    loss = loss / (~padding_mask).sum(2).clamp_min(1)
     if reduction == "mean":
         seq_dim = 1 if batch_first else 0
         loss = (
