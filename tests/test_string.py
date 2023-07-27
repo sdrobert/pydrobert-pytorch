@@ -385,6 +385,7 @@ def test_hard_optimal_completion_distillation_loss_batch(device, jit_type):
     hyp = torch.nn.utils.rnn.pad_sequence(hyp)
     logits = torch.nn.utils.rnn.pad_sequence(logits)
     l1_act = loss(logits, ref, hyp)
+    print(l1_exp.float(), l1_act.float())
     assert torch.isclose(l1_exp, l1_act)
 
 

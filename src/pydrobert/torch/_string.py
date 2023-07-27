@@ -1446,8 +1446,6 @@ def hard_optimal_completion_distillation_loss(
     max_unique_next = optimals.size(-1)
     logits = logits.unsqueeze(2).expand(-1, -1, max_unique_next, -1)
     logits = logits.contiguous()
-    print("logits", logits)
-    print("optimals", optimals)
     loss = torch.nn.functional.cross_entropy(
         logits.flatten(0, -2),
         optimals.flatten(),
@@ -1456,6 +1454,8 @@ def hard_optimal_completion_distillation_loss(
         reduction="none",
     ).view_as(optimals)
     padding_mask = optimals == ignore_index
+    print("logits", logits.masked_select(~(padding_mask.unsqueeze(-1))))
+    print("optimals", optimals[~padding_mask])
     loss = loss.masked_fill(padding_mask, 0.0).sum(2)
     print("loss", loss)
     loss = loss / (~padding_mask).long().sum(2).clamp_min(1)
