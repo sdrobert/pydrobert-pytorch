@@ -24,7 +24,6 @@ jobs:
       matrix:
         py:
           - "3.11"
-          - "3.8"
           - "3.7"
     steps:
       - uses: actions/checkout@v3

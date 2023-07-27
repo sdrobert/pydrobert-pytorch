@@ -1,7 +1,10 @@
 # Change log
 
-## HEAD
+## v0.4.0
 
+- Refactored `get-torch-spect-data-dir-info` to be faster
+- `subset-torch-spect-data-dir` command has been added
+- `print-torch-{ali,ref}-data-dir-length-moments` commands have been added
 - `LookupLanguageMode.prob_list` has been renamed to `prob_dicts`
 - Added `ShallowFusionLanguageModel`, `ExtractableShallowFusionLanguageModel`,
   and `MixableShallowFusionLanguageModel`
