@@ -118,7 +118,6 @@ class RNNLM(MixableSequentialLanguageModel):
             {"hidden": h_1, "cell": c_1},
         )
 
-    @torch.jit.unused
     def train(self, iters: int = 1, len_: int = 100, batch: int = 10):
         # a convenience method for training a little bit. Avoids too-similar values
         optim = torch.optim.SGD(self.parameters(), 1e-4)
