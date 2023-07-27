@@ -1446,6 +1446,8 @@ def hard_optimal_completion_distillation_loss(
     max_unique_next = optimals.size(-1)
     logits = logits.unsqueeze(2).expand(-1, -1, max_unique_next, -1)
     logits = logits.contiguous()
+    print("logits", logits)
+    print("optimals", optimals)
     loss = torch.nn.functional.cross_entropy(
         logits.flatten(0, -2),
         optimals.flatten(),
@@ -1455,7 +1457,8 @@ def hard_optimal_completion_distillation_loss(
     ).view_as(optimals)
     padding_mask = optimals == ignore_index
     loss = loss.masked_fill(padding_mask, 0.0).sum(2)
-    loss = loss / (~padding_mask).sum(2).clamp_min(1)
+    print("loss", loss)
+    loss = loss / (~padding_mask).long().sum(2).clamp_min(1)
     if reduction == "mean":
         seq_dim = 1 if batch_first else 0
         loss = (
@@ -1541,6 +1544,7 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
     sub_cost: float
     reduction: str
     ignore_index: int
+    weight: Optional[torch.Tensor]
 
     def __init__(
         self,
