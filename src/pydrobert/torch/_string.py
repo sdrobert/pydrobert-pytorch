@@ -477,7 +477,8 @@ def optimal_completion(
     ref, src = ref.sort(1)
     mask = mask.gather(2, src.expand_as(mask))
     # set the mask to false for every duplicate token
-    mask[..., :-1] = mask[..., :-1] & (ref[:, :-1] != ref[:, 1:]).expand(H, -1, -1)
+    mask_ = mask[..., :-1] & (ref[:, :-1] != ref[:, 1:]).expand(H, -1, -1)
+    mask = torch.cat([mask_, mask[..., -1:]], 2)
     # scatter the tokens into the target buffer
     targets_flat = ref.expand_as(mask).masked_select(mask)
     counts = mask.sum(2)  # (H, N)

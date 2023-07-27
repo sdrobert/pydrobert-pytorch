@@ -16,7 +16,6 @@ import pytest
 import os
 import math
 import socket
-import gc
 
 from zlib import adler32
 from contextlib import closing
@@ -38,6 +37,8 @@ if compat._v < "1.8.0":
     compat.script = torch.jit.script
     compat.unflatten = torch.jit.script(compat.unflatten)
 
+    # don't re-script anything
+    # https://github.com/pytorch/pytorch/issues/51140
     def script(obj, *args, **kwargs):
         if isinstance(obj, torch.ScriptFunction) or isinstance(obj, torch.ScriptModule):
             return obj
@@ -90,8 +91,6 @@ def pytest_runtest_setup(item):
     # for distributed training (doesn't overwrite test)
     os.environ.setdefault("MASTER_ADDR", "localhost")
     os.environ.setdefault("MASTER_PORT", str(find_free_port()))
-
-    gc.collect()
 
 
 @pytest.fixture(scope="session")
