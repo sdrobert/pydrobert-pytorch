@@ -38,6 +38,14 @@ if compat._v < "1.8.0":
     compat.script = torch.jit.script
     compat.unflatten = torch.jit.script(compat.unflatten)
 
+    def script(obj, *args, **kwargs):
+        if isinstance(obj, torch.ScriptFunction) or isinstance(obj, torch.ScriptModule):
+            return obj
+        else:
+            return compat.script(obj)
+
+    torch.jit.script = script
+
 
 @pytest.fixture
 def temp_dir(tmp_path):
