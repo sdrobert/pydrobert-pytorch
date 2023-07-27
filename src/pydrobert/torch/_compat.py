@@ -42,6 +42,7 @@ from typing import (
 )
 
 import torch
+import torch.jit.annotations
 
 from . import config
 
@@ -244,7 +245,7 @@ if _v < "1.8.0":
     def linalg_solve(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
         return torch.solve(B, A)[0]
 
-    @torch.jit.ignore
+    @torch.jit.unused
     def _jit_isinstance(obj: Any, x: type) -> bool:
         if isinstance(obj, torch.nn.utils.rnn.PackedSequence):
             obj = obj.data, obj.batch_sizes, obj.sorted_indices, obj.unsorted_indices
@@ -271,8 +272,11 @@ if _v < "1.8.0":
             return any(_jit_isinstance(obj, y) for y in args)
         return False
 
-    def jit_isinstance(obj: Any, x) -> bool:
-        return _jit_isinstance(obj, x)
+    def jit_isinstance(obj: Any, x: Any) -> bool:
+        if torch.jit.is_scripting():
+            return True
+        else:
+            return _jit_isinstance(obj, x)
 
     from torch.distributions.constraints import Constraint
 

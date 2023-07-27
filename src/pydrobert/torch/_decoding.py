@@ -1569,14 +1569,17 @@ def sequence_log_probs(
 ) -> torch.Tensor:
     if isinstance(logits, torch.Tensor):
         return _sequence_log_probs_tensor(logits, hyp, dim, eos)
-    elif jit_isinstance(
-        logits,
-        Tuple[
-            torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor],
-        ],
-    ):
+    else:
+        assert jit_isinstance(
+            logits,
+            Tuple[
+                torch.Tensor,
+                torch.Tensor,
+                Optional[torch.Tensor],
+                Optional[torch.Tensor],
+            ],
+        )
         return _sequence_log_probs_ps(logits, hyp, dim)
-    raise RuntimeError("logits must be either a Tensor or PackedSequence")
 
 
 class SequenceLogProbabilities(torch.nn.Module):
