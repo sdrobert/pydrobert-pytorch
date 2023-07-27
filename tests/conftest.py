@@ -33,19 +33,19 @@ config.DEFT_CHUNK_SIZE = 10
 config.DEFT_NUM_WORKERS = 2
 
 if compat._v < "1.8.0":
-    config.USE_JIT = False  # "trace" tests won't work otherwise
-    # compat.script = torch.jit.script
-    # compat.unflatten = torch.jit.script(compat.unflatten)
+    config.USE_JIT = True  # "trace" tests won't work otherwise
+    compat.script = torch.jit.script
+    compat.unflatten = torch.jit.script(compat.unflatten)
 
-    # # don't re-script anything
-    # # https://github.com/pytorch/pytorch/issues/51140
-    # def script(obj, *args, **kwargs):
-    #     if isinstance(obj, torch.ScriptFunction) or isinstance(obj, torch.ScriptModule):
-    #         return obj
-    #     else:
-    #         return compat.script(obj)
+    # don't re-script anything
+    # https://github.com/pytorch/pytorch/issues/51140
+    def script(obj, *args, **kwargs):
+        if isinstance(obj, torch.ScriptFunction) or isinstance(obj, torch.ScriptModule):
+            return obj
+        else:
+            return compat.script(obj)
 
-    # torch.jit.script = script
+    torch.jit.script = script
 
 
 @pytest.fixture
