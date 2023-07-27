@@ -128,7 +128,7 @@ class FillAfterEndOfSequence(torch.nn.Module):
     __call__ = proxy(forward)
 
 
-@script
+@torch.jit.script
 def _lens_from_eos(tok: torch.Tensor, eos: int, dim: int) -> torch.Tensor:
     # length to first eos (exclusive)
     mask = tok.eq(eos)
@@ -137,7 +137,6 @@ def _lens_from_eos(tok: torch.Tensor, eos: int, dim: int) -> torch.Tensor:
     return argmax.masked_fill(max_.eq(0), tok.shape[dim])
 
 
-@script
 def _string_matching(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -185,6 +184,9 @@ def _string_matching(
     if eos is not None:
         ref_lens = _lens_from_eos(ref, eos, 0)
         hyp_lens = _lens_from_eos(hyp, eos, 0)
+        for n in range(batch_size):
+            print("ref", n, ref[: ref_lens[n]])
+            print("hyp", n, hyp[: hyp_lens[n]])
         if include_eos:
             ref_eq_mask = ref_lens == max_ref_steps
             ref_lens = ref_lens + 1
@@ -262,7 +264,7 @@ def _string_matching(
         mistakes = row.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
         row = row * del_cost
     else:
-        row *= del_cost
+        row = row * del_cost
         del_mat = row.unsqueeze(1) - row
         del_mat = del_mat + torch.full_like(del_mat, float("inf")).triu(1)
         del_mat = del_mat.unsqueeze(-1)  # (R + 1, R + 1, 1)
@@ -308,8 +310,11 @@ def _string_matching(
             # levenshtein matrix for one of these OCD targets (which is this matrix,
             # except for the final row), the minimal values on the final row sit on a
             # diagonal from the minimal values of the current row.
+            print(hyp_idx, "row", row)
             mins = row.min(0, keepdim=True)[0]
+            print(hyp_idx, "mins", mins)
             row_mask = row[:-1] == mins
+            print(hyp_idx, "mask", row_mask)
             row_mask = row_mask & not_done
             mask[hyp_idx] = row_mask
         elif return_prf_dsts:
@@ -435,8 +440,8 @@ def edit_distance(
     )
 
 
+# @functional_wrapper("OptimalCompletion")
 @script
-@functional_wrapper("OptimalCompletion")
 def optimal_completion(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -450,7 +455,6 @@ def optimal_completion(
     exclude_last: bool = False,
     warn: bool = True,
 ) -> torch.Tensor:
-    print("zz")
     mask = _string_matching(
         ref,
         hyp,
@@ -464,7 +468,6 @@ def optimal_completion(
         return_mask=True,
         exclude_last=exclude_last,
     )
-    print("top")
     if not batch_first:
         ref = ref.t()
     H, R, N = mask.shape
@@ -559,7 +562,7 @@ def prefix_edit_distances(
     )
 
 
-@torch.jit.script
+@script
 def _string_matching(
     ref: torch.Tensor,
     hyp: torch.Tensor,
@@ -577,7 +580,6 @@ def _string_matching(
     padding: int = config.INDEX_PAD_VALUE,
     return_mistakes: bool = False,
 ):
-    assert not return_mask
     assert not return_mask or not return_prf_dsts
     assert not exclude_last or (return_mask or return_prf_dsts)
     if ref.dim() != 2 or hyp.dim() != 2:
@@ -633,6 +635,9 @@ def _string_matching(
                         "warning, set warn=False".format(eos)
                     )
                 hyp_lens = hyp_lens - hyp_eq_mask.to(hyp_lens.dtype)
+        for n in range(batch_size):
+            print(n, "ref", ref[: ref_lens[n], n])
+            print(n, "hyp", hyp[: hyp_lens[n], n])
     else:
         ref_lens = torch.full(
             (batch_size,), max_ref_steps, device=ref.device, dtype=torch.long
@@ -640,19 +645,6 @@ def _string_matching(
         hyp_lens = torch.full(
             (batch_size,), max_hyp_steps, device=ref.device, dtype=torch.long
         )
-    if return_mask:
-        mask = torch.zeros(
-            (max_ref_steps, batch_size), device=device, dtype=torch.bool,
-        )
-        mask[0] = ref_lens > 0
-        masks.append(mask)
-    elif return_prf_dsts:
-        prefix_ers = torch.empty(
-            (max_hyp_steps + (0 if exclude_last else 1), batch_size),
-            device=device,
-            dtype=torch.float,
-        )
-        prefix_ers[0] = ref_lens * (1.0 if return_mistakes else del_cost)
     # direct row down corresponds to insertion
     # direct col right corresponds to a deletion
     #
@@ -691,8 +683,27 @@ def _string_matching(
         del_mat = row.unsqueeze(1) - row
         del_mat = del_mat + torch.full_like(del_mat, float("inf")).triu(1)
         del_mat = del_mat.unsqueeze(-1)  # (R + 1, R + 1, 1)
+    print("k", 0)
     row = row.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
+    for n in range(batch_size):
+        print(n, "row", row[..., n])
+    if return_mask:
+        row_mask = torch.zeros(
+            (max_ref_steps, batch_size), device=device, dtype=torch.bool,
+        )
+        row_mask[0] = ref_lens > 0
+        for n in range(batch_size):
+            print(n, "row_mask", row_mask[..., n])
+        masks.append(row_mask)
+    elif return_prf_dsts:
+        prefix_ers = torch.empty(
+            (max_hyp_steps + (0 if exclude_last else 1), batch_size),
+            device=device,
+            dtype=torch.float,
+        )
+        prefix_ers[0] = ref_lens * (1.0 if return_mistakes else del_cost)
     for hyp_idx in range(1, max_hyp_steps + (0 if exclude_last else 1)):
+        print("k", hyp_idx)
         not_done = (hyp_idx - (0 if exclude_last else 1)) < hyp_lens
         last_row = row
         ins_mask = (hyp_lens >= hyp_idx).float()  # (N,)
@@ -740,6 +751,10 @@ def _string_matching(
             row = row.masked_fill(rrange.unsqueeze(1) > ref_lens, float("inf"))
             mins = row.min(0, keepdim=True)[0]
             row_mask = (row[:-1] == mins) & not_done
+            for n in range(batch_size):
+                print(n, "row", row[..., n])
+                print(n, "mins", row_mask[..., n])
+                print(n, "row_mask", row_mask[..., n])
             masks.append(row_mask)
         elif return_prf_dsts:
             if return_mistakes:
@@ -1404,8 +1419,8 @@ def hard_optimal_completion_distillation_loss(
     ...
 
 
+# @functional_wrapper("HardOptimalCompletionDistillationLoss")
 @script
-@functional_wrapper("HardOptimalCompletionDistillationLoss")
 def hard_optimal_completion_distillation_loss(
     logits: torch.Tensor,
     ref: torch.Tensor,
@@ -1543,7 +1558,6 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
     sub_cost: float
     reduction: str
     ignore_index: int
-    weight: Optional[torch.Tensor]
 
     def __init__(
         self,
