@@ -25,6 +25,7 @@ from string import Formatter
 from collections import OrderedDict
 
 import torch
+import torch.distributed
 import param
 
 
