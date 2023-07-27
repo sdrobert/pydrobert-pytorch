@@ -121,16 +121,18 @@ class RNNLM(MixableSequentialLanguageModel):
     @torch.jit.unused
     def train(self, iters: int = 1, len_: int = 100, batch: int = 10):
         # a convenience method for training a little bit. Avoids too-similar values
-        optim = torch.optim.Adam(self.parameters())
+        optim = torch.optim.SGD(self.parameters(), 1e-4)
         hist = torch.randint(
             0, self.vocab_size, (len_, batch), device=self.lstm.weight_ih_l0.device
         )
-        for iter_ in range(iters):
+        for _ in range(iters):
             optim.zero_grad()
             logits = self(hist[:-1])
             loss = torch.nn.CrossEntropyLoss()(logits.flatten(0, 1), hist.flatten())
             loss.backward()
             optim.step()
+            del loss
+        del optim
 
 
 class MyBigramLM(MixableSequentialLanguageModel):
