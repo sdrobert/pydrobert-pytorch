@@ -1572,16 +1572,14 @@ if _v < "1.8.0":
     ) -> torch.Tensor:
         if isinstance(logits, torch.Tensor):
             return _sequence_log_probs_tensor(logits, hyp, dim, eos)
-        elif not torch.jit.is_scripting() and jit_isinstance(
-            logits,
-            Tuple[
-                torch.Tensor,
-                torch.Tensor,
-                Optional[torch.Tensor],
-                Optional[torch.Tensor],
-            ],
+        elif not torch.jit.is_scripting() and isinstance(
+            logits, torch.nn.utils.rnn.PackedSequence
         ):
             return _sequence_log_probs_ps(logits, hyp, dim)
+        elif torch.jit.is_scripting():
+            raise RuntimeError(
+                "logits must a Tensor (upgrade pytorch for PackedSequence!)"
+            )
         raise RuntimeError("logits must be either a Tensor or PackedSequence")
 
 
