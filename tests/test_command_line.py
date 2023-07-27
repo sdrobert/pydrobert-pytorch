@@ -720,7 +720,7 @@ Object class = "TextGrid"
 @pytest.mark.cpu
 @pytest.mark.parametrize("with_feats", [True, False])
 def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
-    print(f"Started with_feats={with_feats}")
+    # print(f"Started with_feats={with_feats}")
     N, V, max_R, max_seg = 50, 10, 10, 5
     ref_dir = os.path.join(temp_dir, "ref")
     ali_dir = os.path.join(temp_dir, "ali")
@@ -734,7 +734,7 @@ def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
         feat_dir = None
     refs = []
     for n in range(N):
-        print(f"generating utt_{n}")
+        # print(f"generating utt_{n}")
         R = torch.randint(1, max_R, (1,)).item()
         ref = torch.zeros((R, 3), dtype=torch.long)
         ref[:, 0] = torch.randint(V, (R,))
@@ -745,12 +745,12 @@ def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
         refs.append(ref)
         if with_feats:
             torch.save(torch.randn((ends[-1].item(), 1)), f"{feat_dir}/utt_{n}.pt")
-    print("calling cmd")
+    # print("calling cmd")
     assert not command_line.torch_token_data_dir_to_torch_ali_data_dir(args)
-    print("command done")
+    # print("command done")
     assert len(os.listdir(ali_dir)) == N
     for n, ref in enumerate(refs):
-        print(f"checking utt_{n}")
+        # print(f"checking utt_{n}")
         ali = torch.load(f"{ali_dir}/utt_{n}.pt")
         assert ali.ndim == 1
         T = ali.size(0)
