@@ -246,29 +246,7 @@ if _v < "1.8.0":
 
     @torch.jit.ignore
     def jit_isinstance(obj: Any, x: type) -> bool:
-        if isinstance(obj, torch.nn.utils.rnn.PackedSequence):
-            obj = obj.data, obj.batch_sizes, obj.sorted_indices, obj.unsorted_indices
-        origin = getattr(x, "__origin__", None)
-        if origin is None:
-            return isinstance(obj, x)
-        if origin in {tuple, list, set, List, Set, Tuple}:
-            args = getattr(x, "__args__", None)
-            if not args:
-                return (
-                    (origin in {tuple, Tuple} and obj == tuple())
-                    or (origin in {list, List} and obj == list())
-                    or (origin in {set, Set} and obj == set())
-                )
-            if origin in {tuple, Tuple}:
-                return (len(obj) is len(args)) and all(
-                    jit_isinstance(*y) for y in zip(obj, args)
-                )
-            else:
-                assert len(args) == 1
-                return all(jit_isinstance(o, args[0]) for o in obj)
-        elif origin is Union:
-            args = x.__args__
-            return any(jit_isinstance(obj, y) for y in args)
+        # I don't think it'll be able to refine the type
         return False
 
     from torch.distributions.constraints import Constraint
