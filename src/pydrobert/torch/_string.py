@@ -450,6 +450,7 @@ def optimal_completion(
     exclude_last: bool = False,
     warn: bool = True,
 ) -> torch.Tensor:
+    print("a")
     mask = _string_matching(
         ref,
         hyp,
@@ -463,6 +464,7 @@ def optimal_completion(
         return_mask=True,
         exclude_last=exclude_last,
     )
+    print("b")
     if not batch_first:
         ref = ref.t()
     H, R, N = mask.shape
@@ -575,7 +577,8 @@ def _string_matching(
     padding: int = config.INDEX_PAD_VALUE,
     return_mistakes: bool = False,
 ):
-    assert torch.jit.is_scripting()
+    assert return_mask
+    assert not return_mask
     assert not return_mask or not return_prf_dsts
     assert not exclude_last or (return_mask or return_prf_dsts)
     if ref.dim() != 2 or hyp.dim() != 2:
