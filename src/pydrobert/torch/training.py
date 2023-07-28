@@ -526,6 +526,10 @@ class TrainingStateController(object):
                 }
                 for name, type_ in list(self.user_entry_types.items()):
                     self.cache_hist[epoch][name] = type_(row[name])
+                print(
+                    f"{self._rank} updated cache @ epoch {epoch}: ",
+                    self.cache_hist[epoch],
+                )
 
     def get_last_epoch(self) -> int:
         """Return the last finished epoch from training, or 0 if no history"""
