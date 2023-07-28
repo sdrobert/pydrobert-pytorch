@@ -493,15 +493,8 @@ class TrainingStateController(object):
 
     def update_cache(self) -> None:
         """Update the cache with history stored in state_csv_path"""
-        if self._rank >= 0:
-            # make sure no one tries to read the history before it's written
-            print(f"{self._rank} update cache barrier in")
-            torch.distributed.barrier()
-            print(f"{self._rank} update cache barrier out")
-
         # add a dummy entry for epoch "0" just to make logic easier. We
         # won't save it
-
         self.cache_hist[0] = {
             "epoch": 0,
             "es_resume_cd": self.params.early_stopping_burnin,
@@ -515,7 +508,13 @@ class TrainingStateController(object):
         self.cache_hist[0].update(dict((key, None) for key in self.user_entry_types))
         if self.params.log10_learning_rate is not None:
             self.cache_hist[0]["lr"] = 10**self.params.log10_learning_rate
-        if self.state_csv_path is None or not os.path.exists(self.state_csv_path):
+        if self.state_csv_path is None:
+            return
+        if self._rank >= 0:
+            # don't try to read before we're guaranteed rank 0 wrote it. This includes
+            # creation (which is why we split the return below)
+            torch.distributed.barrier()
+        if not os.path.exists(self.state_csv_path):
             return
         with open(self.state_csv_path) as f:
             reader = DictReader(f)
@@ -533,10 +532,6 @@ class TrainingStateController(object):
                 }
                 for name, type_ in list(self.user_entry_types.items()):
                     self.cache_hist[epoch][name] = type_(row[name])
-                print(
-                    f"{self._rank} updated cache @ epoch {epoch}: ",
-                    self.cache_hist[epoch],
-                )
 
     def _get_last_epoch(self) -> int:
         return max(self.cache_hist)
@@ -604,9 +599,7 @@ class TrainingStateController(object):
             those that were saved.
         """
         if self._rank >= 0:
-            print(f"{self._rank} load barrier in")
             torch.distributed.barrier()
-            print(f"{self._rank} load barrier out")
         if epoch is None:
             epoch = self.get_best_epoch()
         if not epoch:
@@ -665,9 +658,7 @@ class TrainingStateController(object):
             match those that were saved.
         """
         if self._rank >= 0:
-            print(f"{self._rank} load barrier in")
             torch.distributed.barrier()
-            print(f"{self._rank} load barrier out")
         if epoch is None:
             epoch = self.get_last_epoch()
         if not epoch:
@@ -805,7 +796,6 @@ class TrainingStateController(object):
         ----------
         info
         """
-        print(f"{self._rank} saving info {info}")
         epoch = info["epoch"]
         self.cache_hist[epoch] = info
         if self.state_csv_path is None:
@@ -851,19 +841,11 @@ class TrainingStateController(object):
         if epoch is None:
             epoch = self.get_last_epoch()
         info = self[epoch]
-        print(f"{self._rank} checking whether to continue training with {info}")
         if not self.params.num_epochs:
-            print(f"{self._rank} no epochs - continue indefinitely?")
             cont = True
         else:
             cont = epoch < self.params.num_epochs
-            print(
-                f"{self._rank} epoch {epoch} < num_epochs {self.params.num_epochs}? {cont}"
-            )
         if self.params.early_stopping_threshold and not info["es_patience_cd"]:
-            print(
-                f"{self._rank} es threshold {self.params.early_stopping_threshold} and no more patience"
-            )
             cont = False
         return cont
 
@@ -934,7 +916,6 @@ class TrainingStateController(object):
             val_met = kwargs.pop("val_met")
         if epoch is None:
             epoch = self._get_last_epoch() + 1
-            print(f"{self._rank} retrieved epoch {epoch}")
         last_best = self._get_best_epoch(best_is_train)
         if not self.params.num_epochs:
             cont = True
