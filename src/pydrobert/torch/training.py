@@ -869,7 +869,7 @@ class TrainingStateController(object):
         if self._rank >= 0:
             kwargs["train_met"] = train_met
             kwargs["val_met"] = val_met
-            handles = []
+            # handles = []
             reduced_entries = sorted(self.reduced_entries)
             W = torch.distributed.get_world_size()
             to_gpu = torch.distributed.get_backend() == torch.distributed.Backend.NCCL
@@ -881,14 +881,16 @@ class TrainingStateController(object):
                 if reduce_op is None:
                     val = val / W
                     reduce_op = torch.distributed.ReduceOp.SUM
-                handles.append(
-                    torch.distributed.all_reduce(val, reduce_op, async_op=True)
-                )
-                kwargs[name] = val
-            for handle in handles:
-                handle.wait()
-            for name in reduced_entries:
-                kwargs[name] = kwargs[name].item()
+                torch.distributed.all_reduce(val, reduce_op)
+                kwargs[name] = val.item()
+            #     handles.append(
+            #
+            #     )
+            #     kwargs[name] = val
+            # for handle in handles:
+            #     handle.wait()
+            # for name in reduced_entries:
+            #     kwargs[name] = kwargs[name].item()
             train_met = kwargs.pop("train_met")
             val_met = kwargs.pop("val_met")
         if epoch is None:
