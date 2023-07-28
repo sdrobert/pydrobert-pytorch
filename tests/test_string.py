@@ -366,7 +366,7 @@ def test_hard_optimal_completion_distillation_loss_batch(device, jit_type):
                 torch.full((1, 1), C, dtype=torch.long),
             ),
         )
-        print("trace done")
+        # print("trace done")
     ref, hyp, logits = [], [], []
     l1_exp = torch.zeros(1, device=device)
     for _ in range(N):
@@ -386,7 +386,6 @@ def test_hard_optimal_completion_distillation_loss_batch(device, jit_type):
     hyp = torch.nn.utils.rnn.pad_sequence(hyp)
     logits = torch.nn.utils.rnn.pad_sequence(logits)
     l1_act = loss(logits, ref, hyp)
-    print(l1_exp.float(), l1_act.float())
     assert torch.isclose(l1_exp, l1_act)
 
 
