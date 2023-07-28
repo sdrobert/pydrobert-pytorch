@@ -866,6 +866,7 @@ class TrainingStateController(object):
             Whether to continue training. This can be set to :obj:`False` either by
             hitting the max number of epochs or by early stopping.
         """
+        print(f"I am rank {self._rank}")
         if self._rank >= 0:
             kwargs["train_met"] = train_met
             kwargs["val_met"] = val_met
