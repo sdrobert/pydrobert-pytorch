@@ -18,7 +18,7 @@ jobs:
   test:
     name: Python ${{ matrix.py }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -39,4 +39,4 @@ jobs:
       - name: Setup test suite
         run: tox -vv --notest
       - name: Run test suite
-        run: tox --skip-pkg-install -- tests/test_decoding.py -sv
+        run: tox --skip-pkg-install
