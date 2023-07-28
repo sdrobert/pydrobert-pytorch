@@ -493,6 +493,11 @@ class TrainingStateController(object):
 
     def update_cache(self) -> None:
         """Update the cache with history stored in state_csv_path"""
+        if self._rank >= 0:
+            # make sure no one tries to read the history before it's written
+            print(f"{self._rank} update cache barrier in")
+            torch.distributed.barrier()
+            print(f"{self._rank} update cache barrier out")
 
         # add a dummy entry for epoch "0" just to make logic easier. We
         # won't save it
@@ -512,11 +517,6 @@ class TrainingStateController(object):
             self.cache_hist[0]["lr"] = 10**self.params.log10_learning_rate
         if self.state_csv_path is None or not os.path.exists(self.state_csv_path):
             return
-        if self._rank >= 0:
-            # make sure no one tries to read the history before it's written
-            print(f"{self._rank} update cache barrier in")
-            torch.distributed.barrier()
-            print(f"{self._rank} update cache barrier out")
         with open(self.state_csv_path) as f:
             reader = DictReader(f)
             for row in reader:
@@ -617,7 +617,8 @@ class TrainingStateController(object):
             model.load_state_dict(model_state_dict, strict=strict)
         else:
             warnings.warn(
-                f"Unable to load model for epoch {epoch}. No state directory!"
+                "Unable to load model for epoch {}. No state directory!"
+                "".format(epoch)
             )
 
     def _init_seed_and_model(self, model):
