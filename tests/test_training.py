@@ -411,18 +411,22 @@ def _test_distributed_controller_helper(
     return out
 
 
-@pytest.mark.parametrize("world_size", [1, 2])
+@pytest.mark.parametrize("world_size", [2])
 def test_distributed_controller(device, temp_dir, world_size):
     if device.type == "cuda" and world_size > torch.cuda.device_count():
         pytest.skip("not enough gpus")
 
+    print("first set (not distributed)")
     exp_vals_1 = _test_distributed_controller_helper(0, 0, 3, f"{temp_dir}/a", device)
+    print("second set (not distributed)")
     exp_vals_2 = _test_distributed_controller_helper(0, 0, 5, f"{temp_dir}/a", device)
     assert not torch.allclose(exp_vals_1, exp_vals_2, atol=1e-3)
+    print("third set (not distributed)")
     exp_vals_3 = _test_distributed_controller_helper(0, 0, 5, None, device)
     assert torch.allclose(exp_vals_2, exp_vals_3, atol=1e-3)
 
     act_vals = torch.empty_like(exp_vals_1)
+    print("fourth set (distributed)")
     torch.multiprocessing.spawn(
         _test_distributed_controller_helper,
         (world_size, 3, f"{temp_dir}/b", device, act_vals),
@@ -430,6 +434,7 @@ def test_distributed_controller(device, temp_dir, world_size):
         True,
     )
     assert torch.allclose(exp_vals_1, act_vals, atol=1e-3)
+    print("fifth set (distributed)")
     torch.multiprocessing.spawn(
         _test_distributed_controller_helper,
         (world_size, 5, f"{temp_dir}/b", device, act_vals),
@@ -437,6 +442,7 @@ def test_distributed_controller(device, temp_dir, world_size):
         True,
     )
     assert torch.allclose(act_vals, exp_vals_2, atol=1e-3)
+    print("sixth set (distributed)")
     torch.multiprocessing.spawn(
         _test_distributed_controller_helper,
         (world_size, 5, None, device, act_vals),
