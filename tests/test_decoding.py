@@ -215,16 +215,16 @@ def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
     T, N, V, K = 31, 32, 33, 5
     assert K <= V
     lm = RNNLM(V)
-    _train_rnnlm(lm)
     if jit_type == "script":
         if shallow_fusion:
             pytest.xfail("script unsupported for shallow_fusion")
         lm = torch.jit.script(lm)
+    _train_rnnlm(lm)
     if shallow_fusion:
         lm2 = RNNLM(V)
-        _train_rnnlm(lm)
         if jit_type == "script":
             lm2 = torch.jit.script(lm2)
+        _train_rnnlm(lm2)
         lm = MixableShallowFusionLanguageModel(lm, lm2)
         if jit_type == "script":
             lm = torch.jit.script(lm)
