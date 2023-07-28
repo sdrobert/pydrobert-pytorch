@@ -792,6 +792,7 @@ class TrainingStateController(object):
         ----------
         info
         """
+        print(f"{self._rank} saving info {info}")
         epoch = info["epoch"]
         self.cache_hist[epoch] = info
         if self.state_csv_path is None:
@@ -919,6 +920,7 @@ class TrainingStateController(object):
             val_met = kwargs.pop("val_met")
         if epoch is None:
             epoch = self.get_last_epoch() + 1
+            print(f"{self._rank} retrieved epoch {epoch}")
         last_best = self.get_best_epoch()
         if not self.params.num_epochs:
             cont = True
