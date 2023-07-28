@@ -137,183 +137,6 @@ def _lens_from_eos(tok: torch.Tensor, eos: int, dim: int) -> torch.Tensor:
     return argmax.masked_fill(max_.eq(0), tok.shape[dim])
 
 
-@functional_wrapper("ErrorRate")
-def error_rate(
-    ref: torch.Tensor,
-    hyp: torch.Tensor,
-    eos: Optional[int] = None,
-    include_eos: bool = False,
-    norm: bool = True,
-    batch_first: bool = False,
-    ins_cost: float = config.DEFT_INS_COST,
-    del_cost: float = config.DEFT_DEL_COST,
-    sub_cost: float = config.DEFT_SUB_COST,
-    warn: bool = True,
-) -> torch.Tensor:
-    return _string_matching(
-        ref,
-        hyp,
-        eos,
-        include_eos,
-        batch_first,
-        ins_cost,
-        del_cost,
-        sub_cost,
-        warn,
-        norm=norm,
-        return_mistakes=True,
-    )
-
-
-@functional_wrapper("EditDistance")
-def edit_distance(
-    ref: torch.Tensor,
-    hyp: torch.Tensor,
-    eos: Optional[int] = None,
-    include_eos: bool = False,
-    norm: bool = False,
-    batch_first: bool = False,
-    ins_cost: float = config.DEFT_INS_COST,
-    del_cost: float = config.DEFT_DEL_COST,
-    sub_cost: float = config.DEFT_SUB_COST,
-    warn: bool = True,
-) -> torch.Tensor:
-    return _string_matching(
-        ref,
-        hyp,
-        eos,
-        include_eos,
-        batch_first,
-        ins_cost,
-        del_cost,
-        sub_cost,
-        warn,
-        norm=norm,
-    )
-
-
-# @functional_wrapper("OptimalCompletion")
-@script
-def optimal_completion(
-    ref: torch.Tensor,
-    hyp: torch.Tensor,
-    eos: Optional[int] = None,
-    include_eos: bool = True,
-    batch_first: bool = False,
-    ins_cost: float = config.DEFT_INS_COST,
-    del_cost: float = config.DEFT_DEL_COST,
-    sub_cost: float = config.DEFT_SUB_COST,
-    padding: int = config.INDEX_PAD_VALUE,
-    exclude_last: bool = False,
-    warn: bool = True,
-) -> torch.Tensor:
-    mask = _string_matching(
-        ref,
-        hyp,
-        eos,
-        include_eos,
-        batch_first,
-        ins_cost,
-        del_cost,
-        sub_cost,
-        warn,
-        return_mask=True,
-        exclude_last=exclude_last,
-    )
-    if not batch_first:
-        ref = ref.t()
-    H, R, N = mask.shape
-    device = ref.device
-    # if a token is set to true once, set all duplicates in the transcription to true
-    mask = (
-        mask.transpose(1, 2).unsqueeze(2) & (ref.unsqueeze(1) == ref.unsqueeze(2))
-    ).any(
-        3
-    )  # (H, N, R)
-    # sort the transcriptions and the mask
-    ref, src = ref.sort(1)
-    mask = mask.gather(2, src.expand_as(mask))
-    # set the mask to false for every duplicate token
-    mask_ = mask[..., :-1] & (ref[:, :-1] != ref[:, 1:]).expand(H, -1, -1)
-    mask = torch.cat([mask_, mask[..., -1:]], 2)
-    # scatter the tokens into the target buffer
-    targets_flat = ref.expand_as(mask).masked_select(mask)
-    counts = mask.sum(2)  # (H, N)
-    C = int(counts.max().item())
-    targets = torch.full((H, N, C), padding, dtype=torch.long, device=device)
-    target_mask = counts.unsqueeze(-1) > torch.arange(C, device=device)
-    targets.masked_scatter_(target_mask, targets_flat)
-    if batch_first:
-        targets = targets.transpose(0, 1)
-    return targets
-
-
-@functional_wrapper("PrefixErrorRates")
-def prefix_error_rates(
-    ref: torch.Tensor,
-    hyp: torch.Tensor,
-    eos: Optional[int] = None,
-    include_eos: bool = True,
-    norm: bool = True,
-    batch_first: bool = False,
-    ins_cost: float = config.DEFT_INS_COST,
-    del_cost: float = config.DEFT_DEL_COST,
-    sub_cost: float = config.DEFT_SUB_COST,
-    padding: int = config.INDEX_PAD_VALUE,
-    exclude_last: bool = False,
-    warn: bool = True,
-) -> torch.Tensor:
-    return _string_matching(
-        ref,
-        hyp,
-        eos,
-        include_eos,
-        batch_first,
-        ins_cost,
-        del_cost,
-        sub_cost,
-        warn,
-        norm=norm,
-        return_prf_dsts=True,
-        exclude_last=exclude_last,
-        padding=padding,
-        return_mistakes=True,
-    )
-
-
-@functional_wrapper("PrefixEditDistances")
-def prefix_edit_distances(
-    ref: torch.Tensor,
-    hyp: torch.Tensor,
-    eos: Optional[int] = None,
-    include_eos: bool = True,
-    norm: bool = False,
-    batch_first: bool = False,
-    ins_cost: float = config.DEFT_INS_COST,
-    del_cost: float = config.DEFT_DEL_COST,
-    sub_cost: float = config.DEFT_SUB_COST,
-    padding: int = config.INDEX_PAD_VALUE,
-    exclude_last: bool = False,
-    warn: bool = True,
-) -> torch.Tensor:
-    return _string_matching(
-        ref,
-        hyp,
-        eos,
-        include_eos,
-        batch_first,
-        ins_cost,
-        del_cost,
-        sub_cost,
-        warn,
-        norm=norm,
-        return_prf_dsts=True,
-        exclude_last=exclude_last,
-        padding=padding,
-        return_mistakes=False,
-    )
-
-
 @script
 def _string_matching(
     ref: torch.Tensor,
@@ -575,6 +398,183 @@ def _string_matching(
                 )
             er = torch.where(zero_mask, hyp_lens.gt(0).to(er.dtype), er)
     return er
+
+
+@functional_wrapper("ErrorRate")
+def error_rate(
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = False,
+    norm: bool = True,
+    batch_first: bool = False,
+    ins_cost: float = config.DEFT_INS_COST,
+    del_cost: float = config.DEFT_DEL_COST,
+    sub_cost: float = config.DEFT_SUB_COST,
+    warn: bool = True,
+) -> torch.Tensor:
+    return _string_matching(
+        ref,
+        hyp,
+        eos,
+        include_eos,
+        batch_first,
+        ins_cost,
+        del_cost,
+        sub_cost,
+        warn,
+        norm=norm,
+        return_mistakes=True,
+    )
+
+
+@functional_wrapper("EditDistance")
+def edit_distance(
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = False,
+    norm: bool = False,
+    batch_first: bool = False,
+    ins_cost: float = config.DEFT_INS_COST,
+    del_cost: float = config.DEFT_DEL_COST,
+    sub_cost: float = config.DEFT_SUB_COST,
+    warn: bool = True,
+) -> torch.Tensor:
+    return _string_matching(
+        ref,
+        hyp,
+        eos,
+        include_eos,
+        batch_first,
+        ins_cost,
+        del_cost,
+        sub_cost,
+        warn,
+        norm=norm,
+    )
+
+
+@script
+@functional_wrapper("OptimalCompletion")
+def optimal_completion(
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    batch_first: bool = False,
+    ins_cost: float = config.DEFT_INS_COST,
+    del_cost: float = config.DEFT_DEL_COST,
+    sub_cost: float = config.DEFT_SUB_COST,
+    padding: int = config.INDEX_PAD_VALUE,
+    exclude_last: bool = False,
+    warn: bool = True,
+) -> torch.Tensor:
+    mask = _string_matching(
+        ref,
+        hyp,
+        eos,
+        include_eos,
+        batch_first,
+        ins_cost,
+        del_cost,
+        sub_cost,
+        warn,
+        return_mask=True,
+        exclude_last=exclude_last,
+    )
+    if not batch_first:
+        ref = ref.t()
+    H, R, N = mask.shape
+    device = ref.device
+    # if a token is set to true once, set all duplicates in the transcription to true
+    mask = (
+        mask.transpose(1, 2).unsqueeze(2) & (ref.unsqueeze(1) == ref.unsqueeze(2))
+    ).any(
+        3
+    )  # (H, N, R)
+    # sort the transcriptions and the mask
+    ref, src = ref.sort(1)
+    mask = mask.gather(2, src.expand_as(mask))
+    # set the mask to false for every duplicate token
+    mask_ = mask[..., :-1] & (ref[:, :-1] != ref[:, 1:]).expand(H, -1, -1)
+    mask = torch.cat([mask_, mask[..., -1:]], 2)
+    # scatter the tokens into the target buffer
+    targets_flat = ref.expand_as(mask).masked_select(mask)
+    counts = mask.sum(2)  # (H, N)
+    C = int(counts.max().item())
+    targets = torch.full((H, N, C), padding, dtype=torch.long, device=device)
+    target_mask = counts.unsqueeze(-1) > torch.arange(C, device=device)
+    targets.masked_scatter_(target_mask, targets_flat)
+    if batch_first:
+        targets = targets.transpose(0, 1)
+    return targets
+
+
+@functional_wrapper("PrefixErrorRates")
+def prefix_error_rates(
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    norm: bool = True,
+    batch_first: bool = False,
+    ins_cost: float = config.DEFT_INS_COST,
+    del_cost: float = config.DEFT_DEL_COST,
+    sub_cost: float = config.DEFT_SUB_COST,
+    padding: int = config.INDEX_PAD_VALUE,
+    exclude_last: bool = False,
+    warn: bool = True,
+) -> torch.Tensor:
+    return _string_matching(
+        ref,
+        hyp,
+        eos,
+        include_eos,
+        batch_first,
+        ins_cost,
+        del_cost,
+        sub_cost,
+        warn,
+        norm=norm,
+        return_prf_dsts=True,
+        exclude_last=exclude_last,
+        padding=padding,
+        return_mistakes=True,
+    )
+
+
+@functional_wrapper("PrefixEditDistances")
+def prefix_edit_distances(
+    ref: torch.Tensor,
+    hyp: torch.Tensor,
+    eos: Optional[int] = None,
+    include_eos: bool = True,
+    norm: bool = False,
+    batch_first: bool = False,
+    ins_cost: float = config.DEFT_INS_COST,
+    del_cost: float = config.DEFT_DEL_COST,
+    sub_cost: float = config.DEFT_SUB_COST,
+    padding: int = config.INDEX_PAD_VALUE,
+    exclude_last: bool = False,
+    warn: bool = True,
+) -> torch.Tensor:
+    return _string_matching(
+        ref,
+        hyp,
+        eos,
+        include_eos,
+        batch_first,
+        ins_cost,
+        del_cost,
+        sub_cost,
+        warn,
+        norm=norm,
+        return_prf_dsts=True,
+        exclude_last=exclude_last,
+        padding=padding,
+        return_mistakes=False,
+    )
 
 
 _SM_PARAM_DICT = {
@@ -1171,8 +1171,8 @@ def hard_optimal_completion_distillation_loss(
     ...
 
 
-# @functional_wrapper("HardOptimalCompletionDistillationLoss")
 @script
+@functional_wrapper("HardOptimalCompletionDistillationLoss")
 def hard_optimal_completion_distillation_loss(
     logits: torch.Tensor,
     ref: torch.Tensor,
