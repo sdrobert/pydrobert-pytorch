@@ -208,11 +208,11 @@ def test_ctc_prefix_search(device):
             assert torch.allclose(probs_k_exp, probs_k_act)
 
 
-@pytest.mark.parametrize("shallow_fusion", [True, False], ids=["fusion", "nofusion"])
+@pytest.mark.parametrize("shallow_fusion", ["fusion", "nofusion", "validfusion"])
 def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
     if jit_type == "trace":
         pytest.xfail("trace unsupported for CTCPrefixSearch")
-    elif jit_type == "script" and shallow_fusion:
+    elif jit_type == "script" and shallow_fusion != "nofusion":
         pytest.xfail("script unsupported for shallow_fusion")
     T, N, V, K = 31, 32, 33, 5
     assert K <= V
@@ -220,11 +220,13 @@ def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
     if jit_type == "script":
         lm = torch.jit.script(lm)
     _train_rnnlm(lm)
-    if shallow_fusion:
+    if shallow_fusion != "nofusion":
         lm2 = RNNLM(V)
         _train_rnnlm(lm2)
         lm = MixableShallowFusionLanguageModel(lm, lm2)
-    search = CTCPrefixSearch(K, lm=lm).to(device)
+    search = CTCPrefixSearch(
+        K, lm=lm, valid_mixture=shallow_fusion == "validfusion"
+    ).to(device)
     if jit_type == "script":
         search = torch.jit.script(search)
     logits = torch.randn((T, N, V + 1), device=device)

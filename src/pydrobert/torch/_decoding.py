@@ -943,10 +943,10 @@ class CTCPrefixSearch(torch.nn.Module):
     a new token math:`v` (:math:`v` is not blank) with the following equation
 
     .. math::
-        \log S(y_t=v|y_{1..t-1}) = \log P_{logits}(y_t=v) +
+        \log S(y_t=v|y_{1..t-1}) = \log P_{ctc}(y_t=v) +
                                                 \beta \log P_{lm}(y_t = v|y_{1..t-1})
 
-    The resulting value :math:`log S(y_t=v)` is not technically a probability.
+    The resulting value :math:`log S(y_t=v)` is not technically a log-probability.
 
     Parameters
     ----------
@@ -958,6 +958,17 @@ class CTCPrefixSearch(torch.nn.Module):
         If set, the language model used in shallow fusion. Specifying `lm` will
         restrict the extended vocabulary size of `logits` to be one more than that
         of `lm`: ``lm.vocab_size == V``.
+    valid_mixture
+        If :obj:`True`, an alternate equation for shallow fusion is employed:
+
+        .. math::
+
+            S(y_t|\ldots) = (1 - \beta) P_{ctc}(y_t=v) +
+                \beta P_{lm}(y_t=v|\ldots)
+                    \left(\sum_{v' \neq blank} P_{ctc}(y_t = v'|ldots)\right)
+        
+        for :math:`\beta \in [0, 1]`. Unlike in regular shallow fusion, the resulting
+        value is a log-probability over the extended vocabulary.
     
     Call Parameters
     ---------------
@@ -1006,25 +1017,28 @@ class CTCPrefixSearch(torch.nn.Module):
     the name from [graves2006]_ as it is entirely possible to apply a normal beam search
     to CTC logits, only removing blank labels after the search. Doing so would be faster
     and may not lead to much decrease in performance if `logits` is sufficiently
-    "peaky".
+    "peaky."
     """
 
-    __constants__ = ["width", "beta"]
+    __constants__ = "width", "beta", "valid_mixture"
 
     width: int
     beta: float
+    valid_mixture: bool
 
     def __init__(
         self,
         width: int,
         beta: float = 0.2,
         lm: Optional[MixableSequentialLanguageModel] = None,
+        valid_mixture: bool = False,
     ):
-        super().__init__()
         if width < 1:
             raise ValueError("width must be positive")
-        self.width = width
-        self.beta = beta
+        if valid_mixture and lm is not None and (beta < 0 or beta > 1):
+            raise ValueError("beta must be between [0,1] when valid_mixture is true")
+        super().__init__()
+        self.width, self.beta, self.valid_mixture = width, beta, valid_mixture
         if lm is None:
             self.add_module("lm", None)
         else:
@@ -1099,10 +1113,22 @@ class CTCPrefixSearch(torch.nn.Module):
                 lm_log_probs_t, in_next = self.lm.calc_idx_log_probs(
                     y_prev.flatten(1), prev, y_prev_lens.flatten()
                 )
-                lm_log_probs_t = lm_log_probs_t.log_softmax(-1)
-                lm_probs_t = (self.beta * lm_log_probs_t).exp().view(N, prev_width, V)
-                # note we're no longer in log space, so it's a product
-                ext_probs_t = lm_probs_t * nonext_probs_t.unsqueeze(1)
+                if self.valid_mixture:
+                    lm_probs_t = (
+                        self.beta
+                        * lm_log_probs_t.softmax(-1).view(N, prev_width, V)
+                        * (1 - blank_probs_t.view(N, 1, 1))
+                    )
+                    ext_probs_t = (1.0 - self.beta) * nonext_probs_t.unsqueeze(
+                        1
+                    ) + lm_probs_t
+                else:
+                    lm_log_probs_t = lm_log_probs_t.log_softmax(-1)
+                    lm_probs_t = (
+                        (self.beta * lm_log_probs_t).exp().view(N, prev_width, V)
+                    )
+                    # note we're no longer in log space, so it's a product
+                    ext_probs_t = lm_probs_t * nonext_probs_t.unsqueeze(1)
             (
                 y_next,
                 y_next_last,
