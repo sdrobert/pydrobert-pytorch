@@ -586,6 +586,8 @@ class TrainingStateController(object):
             Whether to strictly enforce that the keys in ``model.state_dict()`` match
             those that were saved.
         """
+        # if self._rank >= 0:
+        #     torch.distributed.barrier()
         if epoch is None:
             epoch = self.get_best_epoch()
         if not epoch:
@@ -643,6 +645,8 @@ class TrainingStateController(object):
             Whether to strictly enforce that the keys in ``model.state_dict()``
             match those that were saved.
         """
+        # if self._rank >= 0:
+        #     torch.distributed.barrier()
         if epoch is None:
             epoch = self.get_last_epoch()
         if not epoch:
@@ -872,7 +876,6 @@ class TrainingStateController(object):
             # handles = []
             reduced_entries = sorted(self.reduced_entries)
             W = torch.distributed.get_world_size()
-            print(f"world size {W}")
             to_gpu = torch.distributed.get_backend() == torch.distributed.Backend.NCCL
             for name in reduced_entries:
                 val = torch.as_tensor(kwargs[name])
@@ -882,9 +885,7 @@ class TrainingStateController(object):
                 if reduce_op is None:
                     val = val / W
                     reduce_op = torch.distributed.ReduceOp.SUM
-                print(f"{self._rank} val in {val.item()}")
                 torch.distributed.all_reduce(val, reduce_op)
-                print(f"{self._rank} val out {val.item()}")
                 kwargs[name] = val.item()
             #     handles.append(
             #
