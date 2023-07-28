@@ -493,8 +493,15 @@ class TrainingStateController(object):
 
     def update_cache(self) -> None:
         """Update the cache with history stored in state_csv_path"""
+        if self._rank >= 0:
+            # make sure no one tries to read the history before it's written
+            print(f"{self._rank} update cache barrier in")
+            torch.distributed.barrier()
+            print(f"{self._rank} update cache barrier out")
+
         # add a dummy entry for epoch "0" just to make logic easier. We
         # won't save it
+
         self.cache_hist[0] = {
             "epoch": 0,
             "es_resume_cd": self.params.early_stopping_burnin,
@@ -531,10 +538,26 @@ class TrainingStateController(object):
                     self.cache_hist[epoch],
                 )
 
+    def _get_last_epoch(self) -> int:
+        return max(self.cache_hist)
+
     def get_last_epoch(self) -> int:
         """Return the last finished epoch from training, or 0 if no history"""
         self.update_cache()
-        return max(self.cache_hist)
+        return self._get_last_epoch()
+
+    def _get_best_epoch(self, train_met: bool) -> int:
+        ent = "train_met" if train_met else "val_met"
+        fmt = self.fmt_dict[ent]
+        min_epoch = 0
+        min_met = self.cache_hist[0][ent]
+        min_met = float(fmt.format(min_met))
+        for info in list(self.cache_hist.values()):
+            cur = float(fmt.format(info[ent]))
+            if cur < min_met:
+                min_epoch = info["epoch"]
+                min_met = cur
+        return min_epoch
 
     def get_best_epoch(self, train_met: bool = False) -> int:
         """Get the epoch that has lead to the best validation metric val so far
@@ -559,18 +582,8 @@ class TrainingStateController(object):
         metrics base 10. This is in contrast to early stopping criteria and learning
         rate annealing, whose thresholds are absolute.
         """
-        ent = "train_met" if train_met else "val_met"
-        fmt = self.fmt_dict[ent]
         self.update_cache()
-        min_epoch = 0
-        min_met = self.cache_hist[0][ent]
-        min_met = float(fmt.format(min_met))
-        for info in list(self.cache_hist.values()):
-            cur = float(fmt.format(info[ent]))
-            if cur < min_met:
-                min_epoch = info["epoch"]
-                min_met = cur
-        return min_epoch
+        return self._get_best_epoch(train_met)
 
     def load_model_for_epoch(
         self, model: torch.nn.Module, epoch: Optional[int] = None, strict: bool = True
@@ -815,11 +828,6 @@ class TrainingStateController(object):
                 if write_header:
                     wr.writerow(names)
                 wr.writerow([self.fmt_dict[k].format(info[k]) for k in names])
-        if self._rank >= 0:
-            # make sure no one tries to read the history before it's written
-            print(f"{self._rank} Save info to hist barrier in")
-            torch.distributed.barrier()
-            print(f"{self._rank} Save info to hist barrier out")
 
     def continue_training(self, epoch: Optional[int] = None) -> bool:
         """Return a boolean on whether to continue training
@@ -866,6 +874,7 @@ class TrainingStateController(object):
         train_met: float,
         val_met: float,
         epoch: Optional[int] = None,
+        best_is_train: bool = False,
         **kwargs,
     ) -> bool:
         """Update history, model, and optimizer after latest epoch results
@@ -883,6 +892,9 @@ class TrainingStateController(object):
         epoch
             The epoch that just finished. If unset, it is inferred to be one after the
             last epoch in the history.
+        best_is_train
+            Whether to just the best model in record by training set (:obj:`False` is
+            validation)
         **kwargs
             Additional keyword arguments can be used to specify the values of entries
             specified via :func:`add_entry`.
@@ -893,35 +905,37 @@ class TrainingStateController(object):
             Whether to continue training. This can be set to :obj:`False` either by
             hitting the max number of epochs or by early stopping.
         """
+        # ensure cache is updated before we do all comparisons. Then, don't update
+        # cache in case someone gets ahead
+        self.update_cache()
         if self._rank >= 0:
             kwargs["train_met"] = train_met
             kwargs["val_met"] = val_met
-            # handles = []
+            handles = []
             reduced_entries = sorted(self.reduced_entries)
             W = torch.distributed.get_world_size()
             to_gpu = torch.distributed.get_backend() == torch.distributed.Backend.NCCL
             for name in reduced_entries:
-                val = torch.as_tensor(kwargs[name])
-                if to_gpu and val.device.type != "cuda":
-                    val = val.cuda()
+                kwargs[name] = torch.as_tensor(kwargs[name])
+                if to_gpu and kwargs[name].device.type != "cuda":
+                    kwargs[name] = kwargs[name].cuda()
                 reduce_op = self.reduce_op
                 if reduce_op is None:
-                    val = val / W
+                    kwargs[name] = kwargs[name] / W
                     reduce_op = torch.distributed.ReduceOp.SUM
-                print(f"{self._rank} reducing {name}")
-                torch.distributed.all_reduce(val, reduce_op)
-                print(f"{self._rank} reduced {name}")
-                kwargs[name] = val.item()
-            # for handle in handles:
-            #     handle.wait()
-            # for name in reduced_entries:
-            #     kwargs[name] = kwargs[name].item()
+                handles.append(
+                    torch.distributed.all_reduce(kwargs[name], reduce_op, async_op=True)
+                )
+            for handle in handles:
+                handle.wait()
+            for name in reduced_entries:
+                kwargs[name] = kwargs[name].item()
             train_met = kwargs.pop("train_met")
             val_met = kwargs.pop("val_met")
         if epoch is None:
-            epoch = self.get_last_epoch() + 1
+            epoch = self._get_last_epoch() + 1
             print(f"{self._rank} retrieved epoch {epoch}")
-        last_best = self.get_best_epoch()
+        last_best = self._get_best_epoch(best_is_train)
         if not self.params.num_epochs:
             cont = True
         else:
@@ -931,14 +945,13 @@ class TrainingStateController(object):
         info = dict(self.get_info(epoch - 1, None))
         if info is None:
             raise ValueError(
-                "no entry for the previous epoch {}, so unable to update"
-                "".format(epoch)
+                f"no entry for the previous epoch {epoch}, so unable to update"
             )
         for key, value in list(kwargs.items()):
             if key not in self.user_entry_types:
                 raise TypeError(
                     "update_for_epoch() got an unexpected keyword argument "
-                    '"{}" (did you forget to add_entry()?)'.format(key)
+                    f"'{key}' (did you forget to add_entry()?)"
                 )
             elif not isinstance(value, self.user_entry_types[key]):
                 raise ValueError(
@@ -1011,7 +1024,7 @@ class TrainingStateController(object):
             )
             if self.params.keep_last_and_best_only:
                 self.cache_hist[epoch] = info
-                cur_best = self.get_best_epoch()
+                cur_best = self._get_best_epoch(best_is_train)
 
                 if cur_best != epoch:
                     best_info = self.get_info(cur_best)
