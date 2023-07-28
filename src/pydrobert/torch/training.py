@@ -510,9 +510,6 @@ class TrainingStateController(object):
             self.cache_hist[0]["lr"] = 10**self.params.log10_learning_rate
         if self.state_csv_path is None or not os.path.exists(self.state_csv_path):
             return
-        if self._rank >= 0:
-            # ensures rank 0 is done updating the file
-            torch.distributed.barrier()
         with open(self.state_csv_path) as f:
             reader = DictReader(f)
             for row in reader:
@@ -589,8 +586,10 @@ class TrainingStateController(object):
             Whether to strictly enforce that the keys in ``model.state_dict()`` match
             those that were saved.
         """
-        # if self._rank >= 0:
-        #     torch.distributed.barrier()
+        if self._rank >= 0:
+            print(f"{self._rank} load barrier in")
+            torch.distributed.barrier()
+            print(f"{self._rank} load barrier out")
         if epoch is None:
             epoch = self.get_best_epoch()
         if not epoch:
@@ -648,8 +647,10 @@ class TrainingStateController(object):
             Whether to strictly enforce that the keys in ``model.state_dict()``
             match those that were saved.
         """
-        # if self._rank >= 0:
-        #     torch.distributed.barrier()
+        if self._rank >= 0:
+            print(f"{self._rank} load barrier in")
+            torch.distributed.barrier()
+            print(f"{self._rank} load barrier out")
         if epoch is None:
             epoch = self.get_last_epoch()
         if not epoch:
@@ -775,7 +776,7 @@ class TrainingStateController(object):
                 optimizer.state_dict(), self.get_optimizer_path_with_info(info)
             )
 
-    def save_info_to_hist(self, info: dict) -> None:
+    def save_info_to_hist(self, info: dict):
         """Append history entries to the history csv
 
         This is called automatically during :func:`update_for_epoch`. Does not save if
@@ -787,7 +788,8 @@ class TrainingStateController(object):
         ----------
         info
         """
-        self.cache_hist[info["epoch"]] = info
+        epoch = info["epoch"]
+        self.cache_hist[epoch] = info
         if self.state_csv_path is None:
             return
         if self._rank <= 0:
@@ -808,6 +810,11 @@ class TrainingStateController(object):
                 if write_header:
                     wr.writerow(names)
                 wr.writerow([self.fmt_dict[k].format(info[k]) for k in names])
+        if self._rank >= 0:
+            # make sure no one tries to read the history before it's written
+            print(f"{self._rank} Save info to hist barrier in")
+            torch.distributed.barrier()
+            print(f"{self._rank} Save info to hist barrier out")
 
     def continue_training(self, epoch: Optional[int] = None) -> bool:
         """Return a boolean on whether to continue training
@@ -888,14 +895,10 @@ class TrainingStateController(object):
                 if reduce_op is None:
                     val = val / W
                     reduce_op = torch.distributed.ReduceOp.SUM
-                print(f"{self._rank} val in {val}")
+                print(f"{self._rank} reducing {name}")
                 torch.distributed.all_reduce(val, reduce_op)
-                print(f"{self._rank} val out {val}")
+                print(f"{self._rank} reduced {name}")
                 kwargs[name] = val.item()
-            #     handles.append(
-            #
-            #     )
-            #     kwargs[name] = val
             # for handle in handles:
             #     handle.wait()
             # for name in reduced_entries:
