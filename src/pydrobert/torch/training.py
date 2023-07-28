@@ -842,11 +842,19 @@ class TrainingStateController(object):
         if epoch is None:
             epoch = self.get_last_epoch()
         info = self[epoch]
+        print(f"{self._rank} checking whether to continue training with {info}")
         if not self.params.num_epochs:
+            print(f"{self._rank} no epochs - continue indefinitely?")
             cont = True
         else:
             cont = epoch < self.params.num_epochs
+            print(
+                f"{self._rank} epoch {epoch} < num_epochs {self.params.num_epochs}? {cont}"
+            )
         if self.params.early_stopping_threshold and not info["es_patience_cd"]:
+            print(
+                f"{self._rank} es threshold {self.params.early_stopping_threshold} and no more patience"
+            )
             cont = False
         return cont
 
