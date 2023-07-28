@@ -36,12 +36,11 @@ from pydrobert.torch.functional import (
 )
 from pydrobert.torch.distributions import SequentialLanguageModelDistribution
 
-from pydrobert.torch._compat import _v, script
+from pydrobert.torch._compat import _v
 
 
-@script
 class RNNLM(MixableSequentialLanguageModel):
-    def __init__(self, vocab_size, embed_size=128, hidden_size=256):
+    def __init__(self, vocab_size, embed_size=14, hidden_size=32):
         super().__init__(vocab_size)
         self.hidden_size = hidden_size
         self.embed = torch.nn.Embedding(
