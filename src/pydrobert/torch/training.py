@@ -885,7 +885,10 @@ class TrainingStateController(object):
                 if reduce_op is None:
                     val = val / W
                     reduce_op = torch.distributed.ReduceOp.SUM
+                torch.distributed.barrier()
+                print(f'{self._rank} val in {val}')
                 torch.distributed.all_reduce(val, reduce_op)
+                print(f'{self._rank} val out {val}')
                 kwargs[name] = val.item()
             #     handles.append(
             #
