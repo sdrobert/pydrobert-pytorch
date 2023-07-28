@@ -165,7 +165,7 @@ def populate_torch_dir():
 
 @pytest.fixture(
     params=[
-        "nojit",
+        pytest.param("nojit", marks=pytest.mark.nojit),
         pytest.param("trace", marks=pytest.mark.trace),
         pytest.param("script", marks=pytest.mark.script),
     ]
