@@ -510,6 +510,9 @@ class TrainingStateController(object):
             self.cache_hist[0]["lr"] = 10**self.params.log10_learning_rate
         if self.state_csv_path is None or not os.path.exists(self.state_csv_path):
             return
+        if self._rank >= 0:
+            # ensures rank 0 is done updating the file
+            torch.distributed.barrier()
         with open(self.state_csv_path) as f:
             reader = DictReader(f)
             for row in reader:
@@ -885,10 +888,9 @@ class TrainingStateController(object):
                 if reduce_op is None:
                     val = val / W
                     reduce_op = torch.distributed.ReduceOp.SUM
-                torch.distributed.barrier()
-                print(f'{self._rank} val in {val}')
+                print(f"{self._rank} val in {val}")
                 torch.distributed.all_reduce(val, reduce_op)
-                print(f'{self._rank} val out {val}')
+                print(f"{self._rank} val out {val}")
                 kwargs[name] = val.item()
             #     handles.append(
             #
