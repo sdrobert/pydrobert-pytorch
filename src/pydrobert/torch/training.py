@@ -866,7 +866,6 @@ class TrainingStateController(object):
             Whether to continue training. This can be set to :obj:`False` either by
             hitting the max number of epochs or by early stopping.
         """
-        print(f"I am rank {self._rank}")
         if self._rank >= 0:
             kwargs["train_met"] = train_met
             kwargs["val_met"] = val_met
@@ -883,7 +882,9 @@ class TrainingStateController(object):
                 if reduce_op is None:
                     val = val / W
                     reduce_op = torch.distributed.ReduceOp.SUM
+                print(f"{self._rank} val in {val.item()}")
                 torch.distributed.all_reduce(val, reduce_op)
+                print(f"{self._rank} val out {val.item()}")
                 kwargs[name] = val.item()
             #     handles.append(
             #
