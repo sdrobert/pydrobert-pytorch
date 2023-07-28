@@ -333,13 +333,14 @@ def _test_distributed_controller_helper(
     n = 10 // max(world_size, 1)
     assert n * max(world_size, 1) == N
     if device.type == "cuda":
-        if world_size:
-            torch.distributed.init_process_group(
-                "nccl", rank=rank, world_size=world_size
-            )
+        backend = "nccl"
         device = torch.device(rank)
-    elif world_size:
-        torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
+    else:
+        backend = "gloo"
+    if world_size:
+        print(f"initializing rank {rank}")
+        torch.distributed.init_process_group(backend, rank=rank, world_size=world_size)
+        print(f"initialized rank {rank}")
     if temp_dir is not None:
         state_csv = os.path.join(temp_dir, "hist.csv")
     else:
@@ -356,9 +357,11 @@ def _test_distributed_controller_helper(
     model = torch.nn.Linear(F, F)
     model.to(device)
     if world_size:
+        print(f"{rank} constructing model")
         model = torch.nn.parallel.DistributedDataParallel(
             model, [rank] if device.type == "cuda" else None
         )
+        print(f"{rank} constructed model")
     optim = torch.optim.SGD(model.parameters(), lr=1e-4)
 
     params = training.TrainingStateParams(num_epochs=num_epochs, seed=0)
@@ -368,9 +371,10 @@ def _test_distributed_controller_helper(
 
     while controller.continue_training():
         x_mean = 0
-        sampler.set_epoch(controller.get_last_epoch() + 1)
+        epoch = controller.get_last_epoch() + 1
+        sampler.set_epoch(epoch)
         train_loss = 0
-        print(f"{rank} training epoch {controller.get_last_epoch() + 1}")
+        print(f"{rank} training epoch {epoch}")
         for x_, y_ in dl:
             x_mean += x_.mean().item()
             x_, y_ = x_.to(device), y_.to(device)
@@ -382,15 +386,18 @@ def _test_distributed_controller_helper(
             optim.step()
         print(f"{rank} trained epoch")
         val_loss = 0
+        print(f"{rank} evaluating")
         with torch.no_grad():
             for x_, y_ in dl:
                 x_, y_ = x_.to(device), y_.to(device)
                 x_ = model(x_)
                 loss = val_loss_func(x_.flatten(), y_.flatten())
                 val_loss += loss.item()
+        print(f"{rank} evaluated")
         print(f"{rank} updating")
         controller.update_for_epoch(model, optim, train_loss, val_loss, x_mean=x_mean)
         print(f"{rank} updated")
+    print(f"{rank} done training")
 
     info = controller.get_info(controller.get_best_epoch())
     if out is None:
@@ -400,8 +407,7 @@ def _test_distributed_controller_helper(
         out[1] = info["val_met"]
         out[2] = info["x_mean"]
 
-    if world_size:
-        torch.distributed.destroy_process_group()
+    print(f"{rank} returning")
     return out
 
 

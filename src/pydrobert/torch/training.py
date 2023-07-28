@@ -297,7 +297,7 @@ class TrainingStateController(object):
     reduce_op
         The op to combine metrics and other reducable ops in a distributed environment.
         See the note below for more details.
-    
+
     Examples
     --------
     >>> params = TrainingStateParams(num_epochs=5)
@@ -319,8 +319,7 @@ class TrainingStateController(object):
     Warnings
     --------
     There's currently a `bug <https://github.com/sdrobert/pydrobert-pytorch/issues/71>`_
-    in the distributed environment. Please don't use in a distributed environment until
-    it's cleared up.
+    in the distributed environment. *Caveat emptor*
 
     Notes
     -----
@@ -334,7 +333,7 @@ class TrainingStateController(object):
     pool, initializing process group, and wrapping the model with
     :class:`DistributedDataParallel`). The controller should be created and
     :func:`update_for_epoch` called in each worker.
-    
+
     Each worker maintains its own separate cache of state history, only synchronizing
     the training and validation metrics across workers via a reduction operation in
     :func:`update_for_epoch`. No other default state information needs synchronization.
@@ -392,7 +391,15 @@ class TrainingStateController(object):
             int(math.log10(max(params.early_stopping_patience, 1))) + 1
         )
         self.fmt_dict["rlr_resume_cd"] = "{{:0{}d}}".format(
-            int(math.log10(max(params.reduce_lr_cooldown, params.reduce_lr_burnin, 1,)))
+            int(
+                math.log10(
+                    max(
+                        params.reduce_lr_cooldown,
+                        params.reduce_lr_burnin,
+                        1,
+                    )
+                )
+            )
             + 1
         )
         self.fmt_dict["rlr_patience_cd"] = "{{:0{}d}}".format(
@@ -500,7 +507,7 @@ class TrainingStateController(object):
         }
         self.cache_hist[0].update(dict((key, None) for key in self.user_entry_types))
         if self.params.log10_learning_rate is not None:
-            self.cache_hist[0]["lr"] = 10 ** self.params.log10_learning_rate
+            self.cache_hist[0]["lr"] = 10**self.params.log10_learning_rate
         if self.state_csv_path is None or not os.path.exists(self.state_csv_path):
             return
         with open(self.state_csv_path) as f:
@@ -582,21 +589,7 @@ class TrainingStateController(object):
         if epoch is None:
             epoch = self.get_best_epoch()
         if not epoch:
-            if self.params.seed is not None:
-                torch.manual_seed(self.params.seed)
-            if hasattr(model, "reset_parameters"):
-                model.reset_parameters()
-            elif (
-                self._rank >= 0
-                and hasattr(model, "module")
-                and hasattr(model.module, "reset_parameters")
-            ):
-                model.module.reset_parameters()
-            else:
-                warnings.warn(
-                    "model has no reset_parameters() method, so cannot "
-                    "reset parameters for epoch 0",
-                )
+            self._init_seed_and_model(model)
         elif self.state_dir is not None:
             model_pth = self.get_model_path_with_info(self.get_info(epoch))
             model_state_dict = torch.load(model_pth, map_location="cpu")
@@ -605,6 +598,25 @@ class TrainingStateController(object):
             warnings.warn(
                 "Unable to load model for epoch {}. No state directory!"
                 "".format(epoch)
+            )
+
+    def _init_seed_and_model(self, model):
+        if self.params.seed is not None:
+            torch.manual_seed(self.params.seed)
+        if hasattr(model, "reset_parameters"):
+            model.reset_parameters()
+        elif self._rank >= 0 and hasattr(model, "module"):
+            if hasattr(model.module, "reset_parameters"):
+                if self.params.seed is not None:
+                    model.module.reset_parameters()
+                else:
+                    warnings.warn(
+                        "Not resetting parameters in distributed mode without seed"
+                    )
+        else:
+            warnings.warn(
+                "model has no reset_parameters() method, so cannot "
+                "reset parameters for epoch 0",
             )
 
     def load_model_and_optimizer_for_epoch(
@@ -634,24 +646,10 @@ class TrainingStateController(object):
         if epoch is None:
             epoch = self.get_last_epoch()
         if not epoch:
-            if self.params.seed is not None:
-                torch.manual_seed(self.params.seed)
-            if hasattr(model, "reset_parameters"):
-                model.reset_parameters()
-            elif (
-                self._rank >= 0
-                and hasattr(model, "module")
-                and hasattr(model.module, "reset_parameters")
-            ):
-                model.module.reset_parameters()
-            else:
-                warnings.warn(
-                    "model has no reset_parameters() method, so cannot "
-                    "reset parameters for epoch 0"
-                )
+            self._init_seed_and_model(model)
             if self.params.log10_learning_rate is not None:
                 for param_group in optimizer.param_groups:
-                    param_group["lr"] = 10 ** self.params.log10_learning_rate
+                    param_group["lr"] = 10**self.params.log10_learning_rate
             # there is no public API for resetting the state dictionary, so
             # we create a new instance as best as possible and copy the state
             # over from there. Note that settings like weight decay are already
@@ -962,7 +960,7 @@ class TrainingStateController(object):
             if not info["rlr_patience_cd"]:
                 old_lr = info["lr"]
                 new_lr = old_lr * self.params.reduce_lr_factor
-                rlr_epsilon = 10 ** self.params.reduce_lr_log10_epsilon
+                rlr_epsilon = 10**self.params.reduce_lr_log10_epsilon
                 if old_lr - new_lr > rlr_epsilon:
                     info["lr"] = new_lr
                     for param_group in optimizer.param_groups:
