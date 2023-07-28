@@ -212,12 +212,12 @@ def test_ctc_prefix_search(device):
 def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
     if jit_type == "trace":
         pytest.xfail("trace unsupported for CTCPrefixSearch")
+    elif jit_type == "script" and shallow_fusion:
+        pytest.xfail("script unsupported for shallow_fusion")
     T, N, V, K = 31, 32, 33, 5
     assert K <= V
     lm = RNNLM(V)
     if jit_type == "script":
-        if shallow_fusion:
-            pytest.xfail("script unsupported for shallow_fusion")
         lm = torch.jit.script(lm)
     _train_rnnlm(lm)
     if shallow_fusion:
