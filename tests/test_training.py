@@ -390,6 +390,9 @@ def _test_distributed_controller_helper(
         out[0] = info["train_met"]
         out[1] = info["val_met"]
         out[2] = info["x_mean"]
+
+    if world_size:
+        torch.distributed.destroy_process_group()
     return out
 
 
