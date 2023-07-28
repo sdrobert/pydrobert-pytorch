@@ -222,12 +222,8 @@ def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
     _train_rnnlm(lm)
     if shallow_fusion:
         lm2 = RNNLM(V)
-        if jit_type == "script":
-            lm2 = torch.jit.script(lm2)
         _train_rnnlm(lm2)
         lm = MixableShallowFusionLanguageModel(lm, lm2)
-        if jit_type == "script":
-            lm = torch.jit.script(lm)
     search = CTCPrefixSearch(K, lm=lm).to(device)
     if jit_type == "script":
         search = torch.jit.script(search)
