@@ -872,6 +872,7 @@ class TrainingStateController(object):
             # handles = []
             reduced_entries = sorted(self.reduced_entries)
             W = torch.distributed.get_world_size()
+            print(f"world size {W}")
             to_gpu = torch.distributed.get_backend() == torch.distributed.Backend.NCCL
             for name in reduced_entries:
                 val = torch.as_tensor(kwargs[name])
