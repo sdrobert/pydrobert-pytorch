@@ -340,16 +340,6 @@ class TrainingStateController(object):
     each copy of the value by the world size and then summing the copies together via
     :obj:`torch.distributed.ReduceOp.SUM`. See :class:`torch.distributed.ReduceOp` for
     other options.
-
-    The following methods are synchronized (i.e. blocked until all workers get there):
-
-        1. :func:`update_for_epoch`
-        2. :func:`load_model_for_epoch`
-        3. :func:`load_model_and_optimizer_for_epoch`
-        4. :func:`update_cache`
-        5. :func:`add_entry`
-
-    Methods 4-5 are only blocked if `state_csv` is specified.
     """
 
     def __init__(
@@ -412,7 +402,6 @@ class TrainingStateController(object):
         else:
             self._rank = -1
         self.reduced_entries = {"train_met", "val_met"}
-        self.update_cache()
 
     """The number of digits in significand of scientific notation
 
@@ -533,9 +522,26 @@ class TrainingStateController(object):
                 for name, type_ in list(self.user_entry_types.items()):
                     self.cache_hist[epoch][name] = type_(row[name])
 
+    def _get_last_epoch(self) -> int:
+        return max(self.cache_hist)
+
     def get_last_epoch(self) -> int:
         """Return the last finished epoch from training, or 0 if no history"""
-        return max(self.cache_hist)
+        self.update_cache()
+        return self._get_last_epoch()
+
+    def _get_best_epoch(self, train_met: bool) -> int:
+        ent = "train_met" if train_met else "val_met"
+        fmt = self.fmt_dict[ent]
+        min_epoch = 0
+        min_met = self.cache_hist[0][ent]
+        min_met = float(fmt.format(min_met))
+        for info in list(self.cache_hist.values()):
+            cur = float(fmt.format(info[ent]))
+            if cur < min_met:
+                min_epoch = info["epoch"]
+                min_met = cur
+        return min_epoch
 
     def get_best_epoch(self, train_met: bool = False) -> int:
         """Get the epoch that has lead to the best validation metric val so far
@@ -560,17 +566,8 @@ class TrainingStateController(object):
         metrics base 10. This is in contrast to early stopping criteria and learning
         rate annealing, whose thresholds are absolute.
         """
-        ent = "train_met" if train_met else "val_met"
-        fmt = self.fmt_dict[ent]
-        min_epoch = 0
-        min_met = self.cache_hist[0][ent]
-        min_met = float(fmt.format(min_met))
-        for info in list(self.cache_hist.values()):
-            cur = float(fmt.format(info[ent]))
-            if cur < min_met:
-                min_epoch = info["epoch"]
-                min_met = cur
-        return min_epoch
+        self.update_cache()
+        return self._get_best_epoch(train_met)
 
     def load_model_for_epoch(
         self, model: torch.nn.Module, epoch: Optional[int] = None, strict: bool = True
@@ -879,6 +876,9 @@ class TrainingStateController(object):
             Whether to continue training. This can be set to :obj:`False` either by
             hitting the max number of epochs or by early stopping.
         """
+        # ensure cache is updated before we do all comparisons. Then, don't update
+        # cache in case someone gets ahead
+        self.update_cache()
         if self._rank >= 0:
             kwargs["train_met"] = train_met
             kwargs["val_met"] = val_met
@@ -904,20 +904,19 @@ class TrainingStateController(object):
             train_met = kwargs.pop("train_met")
             val_met = kwargs.pop("val_met")
         if epoch is None:
-            epoch = self.get_last_epoch() + 1
-        last_best = self.get_best_epoch(best_is_train)
+            epoch = self._get_last_epoch() + 1
+        last_best = self._get_best_epoch(best_is_train)
         if not self.params.num_epochs:
             cont = True
         else:
             cont = epoch < self.params.num_epochs
             if epoch > self.params.num_epochs:
                 warnings.warn("Training is continuing, despite passing num_epochs")
-        info = self.cache_hist.get(epoch - 1, None)
+        info = dict(self.get_info(epoch - 1, None))
         if info is None:
             raise ValueError(
                 f"no entry for the previous epoch {epoch}, so unable to update"
             )
-        info = dict(info.items())
         for key, value in list(kwargs.items()):
             if key not in self.user_entry_types:
                 raise TypeError(
@@ -944,7 +943,7 @@ class TrainingStateController(object):
         es_epoch = (
             epoch - self.params.early_stopping_patience + info["es_patience_cd"] - 1
         )
-        es_info = self.cache_hist[es_epoch]
+        es_info = self.get_info(es_epoch)
         if info["es_resume_cd"]:
             info["es_resume_cd"] -= 1
         elif (
@@ -964,7 +963,7 @@ class TrainingStateController(object):
         if self.params.early_stopping_threshold and not info["es_patience_cd"]:
             cont = False
         rlr_epoch = epoch - self.params.reduce_lr_patience + info["rlr_patience_cd"] - 1
-        rlr_info = self.cache_hist[rlr_epoch]
+        rlr_info = self.get_info(rlr_epoch)
         if info["rlr_resume_cd"]:
             info["rlr_resume_cd"] -= 1
         elif max(rlr_info["val_met"] - val_met, 0) < self.params.reduce_lr_threshold:
@@ -995,10 +994,10 @@ class TrainingStateController(object):
             )
             if self.params.keep_last_and_best_only:
                 self.cache_hist[epoch] = info
-                cur_best = self.get_best_epoch(best_is_train)
+                cur_best = self._get_best_epoch(best_is_train)
 
                 if cur_best != epoch:
-                    best_info = self.cache_hist[cur_best]
+                    best_info = self.get_info(cur_best)
                     best_model_pth = self.get_model_path_with_info(best_info)
                     best_optim_pth = self.get_optimizer_path_with_info(best_info)
                     if model_pth == best_model_pth:
@@ -1021,10 +1020,10 @@ class TrainingStateController(object):
                     self.save_model_and_optimizer_with_info(model, optimizer, info)
                     self.save_info_to_hist(info)
                 else:
-                    last_info = self.cache_hist[epoch - 1]
+                    last_info = self.get_info(epoch - 1)
                     last_model_pth = self.get_model_path_with_info(last_info)
                     last_optim_pth = self.get_optimizer_path_with_info(last_info)
-                    last_best_info = self.cache_hist[last_best]
+                    last_best_info = self.get_info(last_best)
                     last_best_model_pth = self.get_model_path_with_info(last_best_info)
                     last_best_optim_pth = self.get_optimizer_path_with_info(
                         last_best_info
