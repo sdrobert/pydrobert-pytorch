@@ -2,6 +2,7 @@
 
 ## v0.4.0
 
+- Added `best_is_train` flag to `TrainingController.update_for_epoch`
 - Refactored `get-torch-spect-data-dir-info` to be faster
 - `subset-torch-spect-data-dir` command has been added
 - `print-torch-{ali,ref}-data-dir-length-moments` commands have been added
