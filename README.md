@@ -1,4 +1,4 @@
-[![Build status](https://ci.appveyor.com/api/projects/status/shj64c2ddtswndhq/branch/master?svg=true)](https://ci.appveyor.com/project/sdrobert/pydrobert-pytorch/branch/master)
+[![tox](https://github.com/sdrobert/pydrobert-pytorch/actions/workflows/tox.yml/badge.svg)](https://github.com/sdrobert/pydrobert-pytorch/actions/workflows/tox.yml)
 [![Documentation Status](https://readthedocs.org/projects/pydrobert-pytorch/badge/?version=latest)](https://pydrobert-pytorch.readthedocs.io/en/latest/?badge=latest)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
@@ -49,7 +49,8 @@ The implementation of `pydrobert.torch._compat.check_methods` was taken
 directly from the CPython codebase, Copyright 2007 Google with additional
 notices at <https://docs.python.org/3/copyright.html?highlight=copyright>.
 
-The file `pydrobert.torch._textgrid,py` was taken directly from
+The file `pydrobert.torch._textgrid,py` was taken with some minor modifications
+from
 [nltk_contrib](https://github.com/nltk/nltk_contrib/blob/95d1806e2f4e89e960b76a685b1fba2eaa7d5142/nltk_contrib/textgrid.py#L1).
 It is Apache 2.0-licensed, with the specific license text saved to
 `LICENSE_nltk.txt`.

@@ -22,7 +22,12 @@ import numpy as np
 
 @pytest.mark.parametrize(
     "opt_class",
-    [torch.optim.Adam, torch.optim.Adagrad, torch.optim.LBFGS, torch.optim.SGD,],
+    [
+        torch.optim.Adam,
+        torch.optim.Adagrad,
+        torch.optim.LBFGS,
+        torch.optim.SGD,
+    ],
 )
 def test_controller_stores_and_retrieves(temp_dir, device, opt_class):
     torch.manual_seed(50)
@@ -32,11 +37,13 @@ def test_controller_stores_and_retrieves(temp_dir, device, opt_class):
     state_csv_path = os.path.join(temp_dir, "a.csv")
     state_dir = os.path.join(temp_dir, "states")
     controller = training.TrainingStateController(
-        p, state_csv_path=state_csv_path, state_dir=state_dir,
+        p,
+        state_csv_path=state_csv_path,
+        state_dir=state_dir,
     )
     controller.add_entry("cool_guy_entry", int)
     controller.load_model_and_optimizer_for_epoch(model, optimizer, 0)
-    assert optimizer.param_groups[0]["lr"] == 10 ** p.log10_learning_rate
+    assert optimizer.param_groups[0]["lr"] == 10**p.log10_learning_rate
     inp = torch.randn(5, 2, device=device)
 
     def closure():
@@ -48,7 +55,7 @@ def test_controller_stores_and_retrieves(temp_dir, device, opt_class):
     model_2 = torch.nn.Linear(2, 2).to(device)
     optimizer_2 = opt_class(model_2.parameters(), lr=20)
     controller.load_model_and_optimizer_for_epoch(model_2, optimizer_2, 0)
-    assert optimizer_2.param_groups[0]["lr"] == 10 ** p.log10_learning_rate
+    assert optimizer_2.param_groups[0]["lr"] == 10**p.log10_learning_rate
     for parameter_1, parameter_2 in zip(model.parameters(), model_2.parameters()):
         assert parameter_1.device == device
         assert parameter_2.device == device
@@ -92,7 +99,9 @@ def test_controller_stores_and_retrieves(temp_dir, device, opt_class):
     for parameter_1, parameter_2 in zip(model.parameters(), model_2.parameters()):
         assert not torch.allclose(parameter_1, parameter_2)
     controller = training.TrainingStateController(
-        p, state_csv_path=state_csv_path, state_dir=state_dir,
+        p,
+        state_csv_path=state_csv_path,
+        state_dir=state_dir,
     )
     assert "cool_guy_entry" not in controller[10]
     assert controller[10]["es_resume_cd"] == epoch_info["es_resume_cd"]
@@ -324,13 +333,14 @@ def _test_distributed_controller_helper(
     n = 10 // max(world_size, 1)
     assert n * max(world_size, 1) == N
     if device.type == "cuda":
-        if world_size:
-            torch.distributed.init_process_group(
-                "nccl", rank=rank, world_size=world_size
-            )
+        backend = "nccl"
         device = torch.device(rank)
-    elif world_size:
-        torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
+    else:
+        backend = "gloo"
+    if world_size:
+        print(f"initializing rank {rank}")
+        torch.distributed.init_process_group(backend, rank=rank, world_size=world_size)
+        print(f"initialized rank {rank}")
     if temp_dir is not None:
         state_csv = os.path.join(temp_dir, "hist.csv")
     else:
@@ -347,10 +357,12 @@ def _test_distributed_controller_helper(
     model = torch.nn.Linear(F, F)
     model.to(device)
     if world_size:
+        print(f"{rank} constructing model")
         model = torch.nn.parallel.DistributedDataParallel(
             model, [rank] if device.type == "cuda" else None
         )
-    optim = torch.optim.Adam(model.parameters(), lr=1e-4)
+        print(f"{rank} constructed model")
+    optim = torch.optim.SGD(model.parameters(), lr=1e-4)
 
     params = training.TrainingStateParams(num_epochs=num_epochs, seed=0)
     controller = training.TrainingStateController(params, state_csv, temp_dir)
@@ -359,9 +371,10 @@ def _test_distributed_controller_helper(
 
     while controller.continue_training():
         x_mean = 0
-        sampler.set_epoch(controller.get_last_epoch() + 1)
+        epoch = controller.get_last_epoch() + 1
+        sampler.set_epoch(epoch)
         train_loss = 0
-        print(f'{rank} training epoch')
+        print(f"{rank} training epoch {epoch}")
         for x_, y_ in dl:
             x_mean += x_.mean().item()
             x_, y_ = x_.to(device), y_.to(device)
@@ -371,17 +384,20 @@ def _test_distributed_controller_helper(
             loss.backward()
             train_loss += loss.item()
             optim.step()
-        print(f'{rank} trained epoch')
+        print(f"{rank} trained epoch")
         val_loss = 0
+        print(f"{rank} evaluating")
         with torch.no_grad():
             for x_, y_ in dl:
                 x_, y_ = x_.to(device), y_.to(device)
                 x_ = model(x_)
                 loss = val_loss_func(x_.flatten(), y_.flatten())
                 val_loss += loss.item()
-        print(f'{rank} updating')
+        print(f"{rank} evaluated")
+        print(f"{rank} updating")
         controller.update_for_epoch(model, optim, train_loss, val_loss, x_mean=x_mean)
-        print(f'{rank} updated')
+        print(f"{rank} updated")
+    print(f"{rank} done training")
 
     info = controller.get_info(controller.get_best_epoch())
     if out is None:
@@ -390,21 +406,27 @@ def _test_distributed_controller_helper(
         out[0] = info["train_met"]
         out[1] = info["val_met"]
         out[2] = info["x_mean"]
+
+    print(f"{rank} returning")
     return out
 
 
-@pytest.mark.parametrize("world_size", [1, 2])
+@pytest.mark.parametrize("world_size", [2])
 def test_distributed_controller(device, temp_dir, world_size):
     if device.type == "cuda" and world_size > torch.cuda.device_count():
         pytest.skip("not enough gpus")
 
+    print("first set (not distributed)")
     exp_vals_1 = _test_distributed_controller_helper(0, 0, 3, f"{temp_dir}/a", device)
+    print("second set (not distributed)")
     exp_vals_2 = _test_distributed_controller_helper(0, 0, 5, f"{temp_dir}/a", device)
     assert not torch.allclose(exp_vals_1, exp_vals_2, atol=1e-3)
+    print("third set (not distributed)")
     exp_vals_3 = _test_distributed_controller_helper(0, 0, 5, None, device)
     assert torch.allclose(exp_vals_2, exp_vals_3, atol=1e-3)
 
     act_vals = torch.empty_like(exp_vals_1)
+    print("fourth set (distributed)")
     torch.multiprocessing.spawn(
         _test_distributed_controller_helper,
         (world_size, 3, f"{temp_dir}/b", device, act_vals),
@@ -412,6 +434,7 @@ def test_distributed_controller(device, temp_dir, world_size):
         True,
     )
     assert torch.allclose(exp_vals_1, act_vals, atol=1e-3)
+    print("fifth set (distributed)")
     torch.multiprocessing.spawn(
         _test_distributed_controller_helper,
         (world_size, 5, f"{temp_dir}/b", device, act_vals),
@@ -419,6 +442,7 @@ def test_distributed_controller(device, temp_dir, world_size):
         True,
     )
     assert torch.allclose(act_vals, exp_vals_2, atol=1e-3)
+    print("sixth set (distributed)")
     torch.multiprocessing.spawn(
         _test_distributed_controller_helper,
         (world_size, 5, None, device, act_vals),

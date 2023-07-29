@@ -31,6 +31,7 @@ from ._compat import (
     jit_isinstance,
     SpoofPackedSequence,
     broadcast_shapes,
+    _v,
 )
 from ._string import _lens_from_eos, fill_after_eos
 from ._wrappers import functional_wrapper, proxy
@@ -403,6 +404,9 @@ class BeamSearch(torch.nn.Module):
         elif max_iters < 0:
             raise RuntimeError(f"max_iters must be non-negative, got {max_iters}")
 
+        pad_y = torch.full(
+            (1, N, self.width), self.pad_value, device=device, dtype=torch.long
+        )
         for t in range(max_iters):
             t = torch.tensor(t, device=device)
 
@@ -447,9 +451,10 @@ class BeamSearch(torch.nn.Module):
                 log_probs_t = log_probs_t.masked_fill(
                     eos_mask.unsqueeze(2), -float("inf")
                 )
-                eos_mask_ = eos_mask.unsqueeze(2).repeat(1, 1, self.lm.vocab_size)
-                eos_mask_[..., : self.eos] = False
-                eos_mask_[..., self.eos + 1 :] = False
+                eos_mask_ = eos_mask.unsqueeze(2) & torch.nn.functional.one_hot(
+                    torch.tensor(float(self.eos), dtype=torch.long, device=device),
+                    self.lm.vocab_size,
+                ).to(torch.bool)
                 log_probs_t = log_probs_t.masked_fill(eos_mask_, 0.0)
 
             # extend + prune
@@ -475,8 +480,8 @@ class BeamSearch(torch.nn.Module):
                 y_prev, log_probs_prev, y_prev_lens = self._to_width(
                     y_prev, log_probs_prev, y_prev_lens
                 )
-                y_next[:-1] = torch.where(done_mask.unsqueeze(0), y_prev, y_next[:-1])
-                y_next[-1:].masked_fill_(done_mask, self.pad_value)
+                y_prev = torch.cat([y_prev, pad_y], 0)
+                y_next = torch.where(done_mask.unsqueeze(0), y_prev, y_next)
                 log_probs_next = torch.where(done_mask, log_probs_prev, log_probs_next)
                 y_next_lens = torch.where(done_mask, y_prev_lens, y_next_lens)
 
@@ -525,7 +530,8 @@ def ctc_greedy_search(
         logits = logits.transpose(0, 1)
     max_, argmax = logits.max(2)
     keep_mask = argmax != blank_idx
-    keep_mask[:, 1:] = keep_mask[:, 1:] & (argmax[:, 1:] != argmax[:, :-1])
+    keep_mask_ = keep_mask[:, 1:] & (argmax[:, 1:] != argmax[:, :-1])
+    keep_mask = torch.cat([keep_mask[:, :1], keep_mask_], 1)
     seq_size = argmax.size(1)
     if in_lens is not None:
         in_len_mask = torch.arange(seq_size, device=argmax.device).unsqueeze(
@@ -937,10 +943,10 @@ class CTCPrefixSearch(torch.nn.Module):
     a new token math:`v` (:math:`v` is not blank) with the following equation
 
     .. math::
-        \log S(y_t=v|y_{1..t-1}) = \log P_{logits}(y_t=v) +
+        \log S(y_t=v|y_{1..t-1}) = \log P_{ctc}(y_t=v) +
                                                 \beta \log P_{lm}(y_t = v|y_{1..t-1})
 
-    The resulting value :math:`log S(y_t=v)` is not technically a probability.
+    The resulting value :math:`log S(y_t=v)` is not technically a log-probability.
 
     Parameters
     ----------
@@ -952,6 +958,17 @@ class CTCPrefixSearch(torch.nn.Module):
         If set, the language model used in shallow fusion. Specifying `lm` will
         restrict the extended vocabulary size of `logits` to be one more than that
         of `lm`: ``lm.vocab_size == V``.
+    valid_mixture
+        If :obj:`True`, an alternate equation for shallow fusion is employed:
+
+        .. math::
+
+            S(y_t|\ldots) = (1 - \beta) P_{ctc}(y_t=v) +
+                \beta P_{lm}(y_t=v|\ldots)
+                    \left(\sum_{v' \neq blank} P_{ctc}(y_t = v'|ldots)\right)
+        
+        for :math:`\beta \in [0, 1]`. Unlike in regular shallow fusion, the resulting
+        value is a log-probability over the extended vocabulary.
     
     Call Parameters
     ---------------
@@ -1000,25 +1017,28 @@ class CTCPrefixSearch(torch.nn.Module):
     the name from [graves2006]_ as it is entirely possible to apply a normal beam search
     to CTC logits, only removing blank labels after the search. Doing so would be faster
     and may not lead to much decrease in performance if `logits` is sufficiently
-    "peaky".
+    "peaky."
     """
 
-    __constants__ = ["width", "beta"]
+    __constants__ = "width", "beta", "valid_mixture"
 
     width: int
     beta: float
+    valid_mixture: bool
 
     def __init__(
         self,
         width: int,
         beta: float = 0.2,
         lm: Optional[MixableSequentialLanguageModel] = None,
+        valid_mixture: bool = False,
     ):
-        super().__init__()
         if width < 1:
             raise ValueError("width must be positive")
-        self.width = width
-        self.beta = beta
+        if valid_mixture and lm is not None and (beta < 0 or beta > 1):
+            raise ValueError("beta must be between [0,1] when valid_mixture is true")
+        super().__init__()
+        self.width, self.beta, self.valid_mixture = width, beta, valid_mixture
         if lm is None:
             self.add_module("lm", None)
         else:
@@ -1082,6 +1102,7 @@ class CTCPrefixSearch(torch.nn.Module):
         if self.lm is not None:
             prev = self.lm.update_input(prev, y_prev)
         prev_width = 1
+        pad_y = torch.zeros((1, N, self.width), device=device, dtype=torch.long)
         for t in range(len_max):
             valid_mask = None if t < len_min else (t < lens).unsqueeze(1)  # (N, 1)
             nonext_probs_t, blank_probs_t = nonext_probs[t], blank_probs[t]
@@ -1092,10 +1113,22 @@ class CTCPrefixSearch(torch.nn.Module):
                 lm_log_probs_t, in_next = self.lm.calc_idx_log_probs(
                     y_prev.flatten(1), prev, y_prev_lens.flatten()
                 )
-                lm_log_probs_t = lm_log_probs_t.log_softmax(-1)
-                lm_probs_t = (self.beta * lm_log_probs_t).exp().view(N, prev_width, V)
-                # note we're no longer in log space, so it's a product
-                ext_probs_t = lm_probs_t * nonext_probs_t.unsqueeze(1)
+                if self.valid_mixture:
+                    lm_probs_t = (
+                        self.beta
+                        * lm_log_probs_t.softmax(-1).view(N, prev_width, V)
+                        * (1 - blank_probs_t.view(N, 1, 1))
+                    )
+                    ext_probs_t = (1.0 - self.beta) * nonext_probs_t.unsqueeze(
+                        1
+                    ) + lm_probs_t
+                else:
+                    lm_log_probs_t = lm_log_probs_t.log_softmax(-1)
+                    lm_probs_t = (
+                        (self.beta * lm_log_probs_t).exp().view(N, prev_width, V)
+                    )
+                    # note we're no longer in log space, so it's a product
+                    ext_probs_t = lm_probs_t * nonext_probs_t.unsqueeze(1)
             (
                 y_next,
                 y_next_last,
@@ -1129,7 +1162,8 @@ class CTCPrefixSearch(torch.nn.Module):
                 y_prev_lens = y_next_lens
                 nb_probs_prev, b_probs_prev = nb_probs_next, b_probs_next
             else:
-                y_next[:-1] = torch.where(valid_mask.unsqueeze(0), y_next[:-1], y_prev)
+                y_prev = torch.cat([y_prev.expand(-1, -1, self.width), pad_y], 0)
+                y_next = torch.where(valid_mask.unsqueeze(0), y_next, y_prev)
                 y_prev_lens = torch.where(valid_mask, y_next_lens, y_prev_lens)
                 if prev_width < self.width:
                     assert prev_width == 1  # otherwise advance would've padded it
@@ -1447,9 +1481,10 @@ class RandomWalk(torch.nn.Module):
                 log_probs_t = log_probs_t.masked_fill(
                     eos_mask.unsqueeze(1), -float("inf")
                 )
-                eos_mask_ = eos_mask.unsqueeze(1).repeat(1, self.lm.vocab_size)
-                eos_mask_[..., : self.eos] = False
-                eos_mask_[..., self.eos + 1 :] = False
+                eos_mask_ = eos_mask.unsqueeze(1) & torch.nn.functional.one_hot(
+                    torch.tensor(float(self.eos), dtype=torch.long, device=device),
+                    self.lm.vocab_size,
+                ).to(torch.bool)
                 log_probs_t = log_probs_t.masked_fill(eos_mask_, 0.0)
 
             y, log_probs = random_walk_advance(log_probs_t, log_probs, y, y_lens)
@@ -1555,20 +1590,42 @@ def sequence_log_probs(
     ...
 
 
-@functional_wrapper("SequentialLogProbabilities")
-def sequence_log_probs(
-    logits: Any, hyp: torch.Tensor, dim: int = 0, eos: Optional[int] = None,
-) -> torch.Tensor:
-    if isinstance(logits, torch.Tensor):
-        return _sequence_log_probs_tensor(logits, hyp, dim, eos)
-    elif jit_isinstance(
-        logits,
-        Tuple[
-            torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor],
-        ],
-    ):
-        return _sequence_log_probs_ps(logits, hyp, dim)
-    raise RuntimeError("logits must be either a Tensor or PackedSequence")
+if _v < "1.8.0":
+
+    @functional_wrapper("SequentialLogProbabilities")
+    def sequence_log_probs(
+        logits: Any, hyp: torch.Tensor, dim: int = 0, eos: Optional[int] = None,
+    ) -> torch.Tensor:
+        if isinstance(logits, torch.Tensor):
+            return _sequence_log_probs_tensor(logits, hyp, dim, eos)
+        elif not torch.jit.is_scripting():
+            return _sequence_log_probs_ps(logits, hyp, dim)
+        elif torch.jit.is_scripting():
+            raise RuntimeError(
+                "logits must a Tensor (upgrade pytorch for PackedSequence!)"
+            )
+        raise RuntimeError("logits must be either a Tensor or PackedSequence")
+
+
+else:
+
+    @functional_wrapper("SequentialLogProbabilities")
+    def sequence_log_probs(
+        logits: Any, hyp: torch.Tensor, dim: int = 0, eos: Optional[int] = None,
+    ) -> torch.Tensor:
+        if isinstance(logits, torch.Tensor):
+            return _sequence_log_probs_tensor(logits, hyp, dim, eos)
+        elif jit_isinstance(
+            logits,
+            Tuple[
+                torch.Tensor,
+                torch.Tensor,
+                Optional[torch.Tensor],
+                Optional[torch.Tensor],
+            ],
+        ):
+            return _sequence_log_probs_ps(logits, hyp, dim)
+        raise RuntimeError("logits must be either a Tensor or PackedSequence")
 
 
 class SequenceLogProbabilities(torch.nn.Module):
@@ -1622,6 +1679,9 @@ class SequenceLogProbabilities(torch.nn.Module):
     by length. The sort is not guaranteed to be deterministic if some entries have equal
     length. To avoid the possibility that `logits` and `hyp` are sorted differently, we
     require `hyp` to always be a :class:`torch.Tensor`.
+
+    PyTorch < 1.8.0 cannot infer whether `logits` is a
+    :class:`torch.nn.utils.rnn.PackedSequence` in scripting mode.
     """
 
     __constants__ = ["dim", "eos"]

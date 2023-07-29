@@ -128,7 +128,7 @@ class FillAfterEndOfSequence(torch.nn.Module):
     __call__ = proxy(forward)
 
 
-@script
+@torch.jit.script
 def _lens_from_eos(tok: torch.Tensor, eos: int, dim: int) -> torch.Tensor:
     # length to first eos (exclusive)
     mask = tok.eq(eos)
@@ -154,13 +154,16 @@ def _string_matching(
     exclude_last: bool = False,
     padding: int = config.INDEX_PAD_VALUE,
     return_mistakes: bool = False,
-) -> torch.Tensor:
+):
     assert not return_mask or not return_prf_dsts
     assert not exclude_last or (return_mask or return_prf_dsts)
     if ref.dim() != 2 or hyp.dim() != 2:
         raise RuntimeError("ref and hyp must be 2 dimensional")
+    mult = 1.0
     if ins_cost == del_cost == sub_cost > 0.0:
         # results are equivalent and faster to return
+        if not return_mistakes:
+            mult = ins_cost
         ins_cost = del_cost = sub_cost = 1.0
         return_mistakes = False
     elif return_mistakes and warn:
@@ -172,7 +175,8 @@ def _string_matching(
     if batch_first:
         ref = ref.t()
         hyp = hyp.t()
-    mistakes = del_mat = mask = prefix_ers = torch.empty(0)
+    mistakes = del_mat = prefix_ers = torch.empty(0)
+    masks = []
     ref = ref.detach()
     hyp = hyp.detach()
     max_ref_steps, batch_size = ref.shape
@@ -206,28 +210,16 @@ def _string_matching(
                         "warning, set warn=False".format(eos)
                     )
                 hyp_lens = hyp_lens - hyp_eq_mask.to(hyp_lens.dtype)
+        # for n in range(batch_size):
+        #     print(n, "ref", ref[: ref_lens[n], n])
+        #     print(n, "hyp", hyp[: hyp_lens[n], n])
     else:
         ref_lens = torch.full(
-            (batch_size,), max_ref_steps, dtype=torch.long, device=ref.device
+            (batch_size,), max_ref_steps, device=ref.device, dtype=torch.long
         )
         hyp_lens = torch.full(
-            (batch_size,), max_hyp_steps, dtype=torch.long, device=ref.device
+            (batch_size,), max_hyp_steps, device=ref.device, dtype=torch.long
         )
-    if return_mask:
-        mask = torch.empty(
-            (max_hyp_steps + (0 if exclude_last else 1), max_ref_steps, batch_size),
-            device=device,
-            dtype=torch.bool,
-        )
-        mask[0, 0] = 1
-        mask[0, 1:] = 0
-    elif return_prf_dsts:
-        prefix_ers = torch.empty(
-            (max_hyp_steps + (0 if exclude_last else 1), batch_size),
-            device=device,
-            dtype=torch.float,
-        )
-        prefix_ers[0] = ref_lens * (1.0 if return_mistakes else del_cost)
     # direct row down corresponds to insertion
     # direct col right corresponds to a deletion
     #
@@ -257,17 +249,36 @@ def _string_matching(
     #
     # if we unroll the loop, we get the minimum of the elements of each row of the above
     # matrix
-    row = torch.arange(max_ref_steps + 1, device=device, dtype=torch.float)  # (R+1, N)
+    rrange = torch.arange(max_ref_steps + 1, device=device, dtype=torch.float)
     if return_mistakes:
-        mistakes = row.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
-        row = row * del_cost
+        mistakes = rrange.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
+        row = rrange * del_cost
     else:
-        row *= del_cost
+        row = rrange * del_cost
         del_mat = row.unsqueeze(1) - row
         del_mat = del_mat + torch.full_like(del_mat, float("inf")).triu(1)
         del_mat = del_mat.unsqueeze(-1)  # (R + 1, R + 1, 1)
+    # print("k", 0)
     row = row.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
+    # for n in range(batch_size):
+    #     print(n, "row", row[..., n])
+    if return_mask:
+        row_mask = torch.zeros(
+            (max_ref_steps, batch_size), device=device, dtype=torch.bool,
+        )
+        row_mask[0] = ref_lens > 0
+        # for n in range(batch_size):
+        #     print(n, "row_mask", row_mask[..., n])
+        masks.append(row_mask)
+    elif return_prf_dsts:
+        prefix_ers = torch.empty(
+            (max_hyp_steps + (0 if exclude_last else 1), batch_size),
+            device=device,
+            dtype=torch.float,
+        )
+        prefix_ers[0] = ref_lens * (1.0 if return_mistakes else del_cost)
     for hyp_idx in range(1, max_hyp_steps + (0 if exclude_last else 1)):
+        # print("k", hyp_idx)
         not_done = (hyp_idx - (0 if exclude_last else 1)) < hyp_lens
         last_row = row
         ins_mask = (hyp_lens >= hyp_idx).float()  # (N,)
@@ -275,7 +286,7 @@ def _string_matching(
         row = last_row + ins_cost * ins_mask
         sub_row = last_row[:-1] + sub_cost * neq_mask
         if return_mistakes:
-            # The kicker is substitutions over insertions or deletions.
+            # The kicker is substitutions over insertions over deletions.
             pick_sub = row[1:] >= sub_row
             row[1:] = torch.where(pick_sub, sub_row, row[1:])
             last_mistakes = mistakes
@@ -308,10 +319,18 @@ def _string_matching(
             # levenshtein matrix for one of these OCD targets (which is this matrix,
             # except for the final row), the minimal values on the final row sit on a
             # diagonal from the minimal values of the current row.
+            #
+            # N.B. AFAICT this is the only case where we actually care what goes on in
+            # the invalid range of the row. The below masking could always be applied,
+            # but it's wasted effort otherwise.
+            row = row.masked_fill(rrange.unsqueeze(1) > ref_lens, float("inf"))
             mins = row.min(0, keepdim=True)[0]
-            row_mask = row[:-1] == mins
-            row_mask = row_mask & not_done
-            mask[hyp_idx] = row_mask
+            row_mask = (row[:-1] == mins) & not_done
+            # for n in range(batch_size):
+            #     print(n, "row", row[..., n])
+            #     print(n, "mins", row_mask[..., n])
+            #     print(n, "row_mask", row_mask[..., n])
+            masks.append(row_mask)
         elif return_prf_dsts:
             if return_mistakes:
                 prefix_ers[hyp_idx] = mistakes.gather(0, ref_lens.unsqueeze(0)).squeeze(
@@ -320,19 +339,19 @@ def _string_matching(
             else:
                 prefix_ers[hyp_idx] = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
     if return_mask:
+        mask = torch.stack(masks, 0)
         mask = mask & (
-            (
-                torch.arange(max_ref_steps, device=device)
-                .unsqueeze(1)
-                .expand(max_ref_steps, batch_size)
-                < ref_lens
-            ).unsqueeze(0)
-        )
+            torch.arange(max_ref_steps, device=device)
+            .unsqueeze(1)
+            .expand(max_ref_steps, batch_size)
+            < ref_lens
+        ).unsqueeze(0)
         return mask
     elif return_prf_dsts:
+        prefix_ers = prefix_ers * mult
         if norm:
             prefix_ers = prefix_ers / ref_lens.to(row.dtype)
-            zero_mask = ref_lens.eq(0).unsqueeze(0)
+            zero_mask = (ref_lens == 0).unsqueeze(0)
             if zero_mask.any():
                 if warn:
                     warnings.warn(
@@ -366,6 +385,7 @@ def _string_matching(
         er = mistakes.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
     else:
         er = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
+    er = er * mult
     if norm:
         er = er / ref_lens.to(er.dtype)
         zero_mask = ref_lens.eq(0)
@@ -477,7 +497,8 @@ def optimal_completion(
     ref, src = ref.sort(1)
     mask = mask.gather(2, src.expand_as(mask))
     # set the mask to false for every duplicate token
-    mask[..., :-1] = mask[..., :-1] & (ref[:, :-1] != ref[:, 1:]).expand(H, -1, -1)
+    mask_ = mask[..., :-1] & (ref[:, :-1] != ref[:, 1:]).expand(H, -1, -1)
+    mask = torch.cat([mask_, mask[..., -1:]], 2)
     # scatter the tokens into the target buffer
     targets_flat = ref.expand_as(mask).masked_select(mask)
     counts = mask.sum(2)  # (H, N)
@@ -554,257 +575,6 @@ def prefix_edit_distances(
         padding=padding,
         return_mistakes=False,
     )
-
-
-@script
-def _string_matching(
-    ref: torch.Tensor,
-    hyp: torch.Tensor,
-    eos: Optional[int],
-    include_eos: bool,
-    batch_first: bool,
-    ins_cost: float,
-    del_cost: float,
-    sub_cost: float,
-    warn: bool,
-    norm: bool = False,
-    return_mask: bool = False,
-    return_prf_dsts: bool = False,
-    exclude_last: bool = False,
-    padding: int = config.INDEX_PAD_VALUE,
-    return_mistakes: bool = False,
-):
-    assert not return_mask or not return_prf_dsts
-    assert not exclude_last or (return_mask or return_prf_dsts)
-    if ref.dim() != 2 or hyp.dim() != 2:
-        raise RuntimeError("ref and hyp must be 2 dimensional")
-    mult = 1.0
-    if ins_cost == del_cost == sub_cost > 0.0:
-        # results are equivalent and faster to return
-        if not return_mistakes:
-            mult = ins_cost
-        ins_cost = del_cost = sub_cost = 1.0
-        return_mistakes = False
-    elif return_mistakes and warn:
-        warnings.warn(
-            "The behaviour for non-uniform error rates has changed after v0.3.0. "
-            "Please switch to edit_distance functions for old behaviour. Set "
-            "warn=False to suppress this warning"
-        )
-    if batch_first:
-        ref = ref.t()
-        hyp = hyp.t()
-    mistakes = del_mat = mask = prefix_ers = torch.empty(0)
-    ref = ref.detach()
-    hyp = hyp.detach()
-    max_ref_steps, batch_size = ref.shape
-    max_hyp_steps, batch_size_ = hyp.shape
-    device = ref.device
-    if batch_size != batch_size_:
-        raise RuntimeError(
-            "ref has batch size {}, but hyp has {}".format(batch_size, batch_size_)
-        )
-    if eos is not None:
-        ref_lens = _lens_from_eos(ref, eos, 0)
-        hyp_lens = _lens_from_eos(hyp, eos, 0)
-        if include_eos:
-            ref_eq_mask = ref_lens == max_ref_steps
-            ref_lens = ref_lens + 1
-            if ref_eq_mask.any():
-                if warn:
-                    warnings.warn(
-                        "include_eos=True, but a transcription in ref did not "
-                        "contain the eos symbol ({}). To suppress this "
-                        "warning, set warn=False".format(eos)
-                    )
-                ref_lens = ref_lens - ref_eq_mask.to(ref_lens.dtype)
-            hyp_eq_mask = hyp_lens == max_hyp_steps
-            hyp_lens = hyp_lens + 1
-            if hyp_eq_mask.any():
-                if warn:
-                    warnings.warn(
-                        "include_eos=True, but a transcription in hyp did not "
-                        "contain the eos symbol ({}). To suppress this "
-                        "warning, set warn=False".format(eos)
-                    )
-                hyp_lens = hyp_lens - hyp_eq_mask.to(hyp_lens.dtype)
-    else:
-        ref_lens = torch.full(
-            (batch_size,), max_ref_steps, device=ref.device, dtype=torch.long
-        )
-        hyp_lens = torch.full(
-            (batch_size,), max_hyp_steps, device=ref.device, dtype=torch.long
-        )
-    if return_mask:
-        mask = torch.empty(
-            (max_hyp_steps + (0 if exclude_last else 1), max_ref_steps, batch_size),
-            device=device,
-            dtype=torch.bool,
-        )
-        mask[0, 0] = ref_lens > 0
-        mask[0, 1:] = 0
-    elif return_prf_dsts:
-        prefix_ers = torch.empty(
-            (max_hyp_steps + (0 if exclude_last else 1), batch_size),
-            device=device,
-            dtype=torch.float,
-        )
-        prefix_ers[0] = ref_lens * (1.0 if return_mistakes else del_cost)
-    # direct row down corresponds to insertion
-    # direct col right corresponds to a deletion
-    #
-    # we vectorize as much as we can. Neither substitutions nor insertions require
-    # values from the current row to be computed, and since the last row can't be
-    # altered, we can easily vectorize there. To vectorize deletions, we use del_matrix.
-    # It has entries
-    #
-    # 0   inf inf inf ...
-    # d   0   inf inf ...
-    # 2d  d   0   inf ...
-    # ...
-    #
-    # Where "d" is del_cost. When we sum with the intermediate values of the next row
-    # "v" (containing the minimum of insertion and subs costs), we get
-    #
-    # v[0]    inf     inf     inf ...
-    # v[0]+d  v[1]    inf     inf ...
-    # v[0]+2d v[1]+d  v[2]    inf ...
-    # ...
-    #
-    # And we take the minimum of each row. The dynamic programming algorithm for
-    # levenshtein would usually handle deletions as:
-    #
-    # for i=1..|v|:
-    #     v[i] = min(v[i], v[i-1]+d)
-    #
-    # if we unroll the loop, we get the minimum of the elements of each row of the above
-    # matrix
-    rrange = torch.arange(max_ref_steps + 1, device=device, dtype=torch.float)
-    if return_mistakes:
-        mistakes = rrange.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
-        row = rrange * del_cost
-    else:
-        row = rrange * del_cost
-        del_mat = row.unsqueeze(1) - row
-        del_mat = del_mat + torch.full_like(del_mat, float("inf")).triu(1)
-        del_mat = del_mat.unsqueeze(-1)  # (R + 1, R + 1, 1)
-    row = row.unsqueeze(1).expand(max_ref_steps + 1, batch_size)
-    for hyp_idx in range(1, max_hyp_steps + (0 if exclude_last else 1)):
-        not_done = (hyp_idx - (0 if exclude_last else 1)) < hyp_lens
-        last_row = row
-        ins_mask = (hyp_lens >= hyp_idx).float()  # (N,)
-        neq_mask = (ref != hyp[hyp_idx - 1]).float()  # (R + 1, N)
-        row = last_row + ins_cost * ins_mask
-        sub_row = last_row[:-1] + sub_cost * neq_mask
-        if return_mistakes:
-            # The kicker is substitutions over insertions over deletions.
-            pick_sub = row[1:] >= sub_row
-            row[1:] = torch.where(pick_sub, sub_row, row[1:])
-            last_mistakes = mistakes
-            mistakes = last_mistakes + ins_mask
-            msub_row = last_mistakes[:-1] + neq_mask
-            mistakes[1:] = torch.where(pick_sub, msub_row, mistakes[1:])
-            # FIXME(sdrobert): the min function behaves non-determinically r.n.
-            # (regardless of what the 1.7.0 docs say!) so techniques for extracting
-            # indices from the min are a wash. If we can get determinism, we can flip
-            # the 1 dimension if (del_mat + row) before the min and get the least idx
-            # min, which should have the fewest number of deletions.
-            for ref_idx in range(1, max_ref_steps + 1):
-                del_ = row[ref_idx - 1] + del_cost
-                pick_sub = del_ >= row[ref_idx]
-                row[ref_idx] = torch.where(pick_sub, row[ref_idx], del_)
-                mistakes[ref_idx] = torch.where(
-                    pick_sub, mistakes[ref_idx], mistakes[ref_idx - 1] + 1.0
-                )
-            mistakes = torch.where(not_done, mistakes, last_mistakes)
-        else:
-            row[1:] = torch.min(row[1:], sub_row)
-            row, _ = (del_mat + row).min(1)
-        row = torch.where(not_done, row, last_row)
-        if return_mask:
-            # As proven in the OCD paper, the optimal targets are always the first
-            # character of a suffix of the reference transcript that remains to be
-            # aligned. The levenshtein operation corresponding to what we do with that
-            # target would be a matched substitution (i.e. hyp's next token is the OCD
-            # target, resulting in no change in cost from the prefix). Thus, given a
-            # levenshtein matrix for one of these OCD targets (which is this matrix,
-            # except for the final row), the minimal values on the final row sit on a
-            # diagonal from the minimal values of the current row.
-            #
-            # N.B. AFAICT this is the only case where we actually care what goes on in
-            # the invalid range of the row. The below masking could always be applied,
-            # but it's wasted effort otherwise.
-            row = row.masked_fill(rrange.unsqueeze(1) > ref_lens, float("inf"))
-            mins = row.min(0, keepdim=True)[0]
-            row_mask = (row[:-1] == mins) & not_done
-            mask[hyp_idx] = row_mask
-        elif return_prf_dsts:
-            if return_mistakes:
-                prefix_ers[hyp_idx] = mistakes.gather(0, ref_lens.unsqueeze(0)).squeeze(
-                    0
-                )
-            else:
-                prefix_ers[hyp_idx] = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
-    if return_mask:
-        # &= unsupported in scripting < 1.8
-        mask = mask & (
-            torch.arange(max_ref_steps, device=device)
-            .unsqueeze(1)
-            .expand(max_ref_steps, batch_size)
-            < ref_lens
-        ).unsqueeze(0)
-        return mask
-    elif return_prf_dsts:
-        prefix_ers = prefix_ers * mult
-        if norm:
-            prefix_ers = prefix_ers / ref_lens.to(row.dtype)
-            zero_mask = (ref_lens == 0).unsqueeze(0)
-            if zero_mask.any():
-                if warn:
-                    warnings.warn(
-                        "ref contains empty transcripts. Error rates will be "
-                        "0 for prefixes of length 0, 1 otherwise. To suppress "
-                        "this warning, set warn=False"
-                    )
-                prefix_ers = torch.where(
-                    zero_mask,
-                    (
-                        torch.arange(prefix_ers.size(0), device=device)
-                        .gt(0)
-                        .to(row.dtype)
-                        .unsqueeze(1)
-                        .expand_as(prefix_ers)
-                    ),
-                    prefix_ers,
-                )
-        prefix_ers = prefix_ers.masked_fill(
-            (
-                torch.arange(prefix_ers.size(0), device=device)
-                .unsqueeze(1)
-                .ge(hyp_lens + (0 if exclude_last else 1))
-            ),
-            padding,
-        )
-        if batch_first:
-            prefix_ers = prefix_ers.t()
-        return prefix_ers
-    if return_mistakes:
-        er = mistakes.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
-    else:
-        er = row.gather(0, ref_lens.unsqueeze(0)).squeeze(0)
-    er = er * mult
-    if norm:
-        er = er / ref_lens.to(er.dtype)
-        zero_mask = ref_lens.eq(0)
-        if zero_mask.any():
-            if warn:
-                warnings.warn(
-                    "ref contains empty transcripts. Error rates for entries "
-                    "will be 1 if any insertion and 0 otherwise. To suppress "
-                    "this warning, set warn=False"
-                )
-            er = torch.where(zero_mask, hyp_lens.gt(0).to(er.dtype), er)
-    return er
 
 
 _SM_PARAM_DICT = {
@@ -1324,7 +1094,7 @@ class OptimalCompletion(_StringMatching):
     Consider the reference text "foot" and the hypothesis text "bot". The below shows
     the matrix used to calculate edit distances between them::
 
-        \ _ f o o t
+        \\ _ f o o t
         _ 0 1 2 3 4
         b 1 1 2 3 4
         o 2 2 1 2 3
@@ -1709,7 +1479,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
 
     .. math::
 
-        \mathcal{{L}}(s, s^*) = \\frac{{Pr(s) ER(s, s^*)}}{{\\sum_{{s'}} Pr(s')}}
+        \\mathcal{{L}}(s, s^*) = \\frac{{Pr(s) ER(s, s^*)}}{{\\sum_{{s'}} Pr(s')}}
 
     This is an exact expectation over :math:`S` but not over :math:`P`. The larger the
     mass covered by :math:`S`, the closer the expectation is to the population -

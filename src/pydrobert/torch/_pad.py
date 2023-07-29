@@ -139,7 +139,7 @@ def pad_variable(
     right_mask = (new_lens.unsqueeze(1) > arange[:Tp]).unsqueeze(2).expand(N, Tp, F)
     len_mask = (lens.unsqueeze(1) > arange[:T]).unsqueeze(2).expand(N, T, F)
     padded = x.new_full((N, Tp, F), value)
-    x = x[len_mask]
+    x = x.masked_select(len_mask)
     padded = padded.masked_scatter(mid_mask & ~left_mask, x)
     if mode != "constant":
         padded = padded.masked_scatter(left_mask, left_buf)
@@ -423,7 +423,7 @@ def chunk_by_slices(
         .unsqueeze(-1)
         .expand(N, T, F)
     )
-    x = x[slice_mask]
+    x = x.masked_select(slice_mask)
     left_mask = (left_pad.unsqueeze(1) > arange[:Tp]).unsqueeze(2).expand(N, Tp, F)
     mid_mask = (
         ((left_pad + slice_lens).unsqueeze(1) > arange[:Tp])
@@ -448,11 +448,15 @@ def chunk_by_slices(
             offset = (start_ - lens).clamp_min_(0)
             keep = (offset > 0).view(N, 1, 1)
             right_pad -= offset
-            right_mask &= (
-                ((left_pad + slice_lens + offset).unsqueeze(1) <= arange[:Tp])
-                .unsqueeze(2)
-                .expand(N, Tp, F)
-            ) & keep
+            right_mask = (
+                right_mask
+                & (
+                    ((left_pad + slice_lens + offset).unsqueeze(1) <= arange[:Tp])
+                    .unsqueeze(2)
+                    .expand(N, Tp, F)
+                )
+                & keep
+            )
             right_buf = chunks[right_mask]
             right_mask = (
                 (right_pad.unsqueeze(1) > arange[:Tp]).unsqueeze(2).expand(N, Tp, F)

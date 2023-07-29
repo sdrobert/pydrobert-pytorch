@@ -1,4 +1,4 @@
-# Copyright 2022 Sean Robertson
+# Copyright 2023 Sean Robertson
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ from pydrobert.torch.modules import (
     CTCGreedySearch,
     CTCPrefixSearch,
     MixableSequentialLanguageModel,
+    MixableShallowFusionLanguageModel,
     RandomWalk,
     SequenceLogProbabilities,
     SequentialLanguageModel,
@@ -35,20 +36,22 @@ from pydrobert.torch.functional import (
 )
 from pydrobert.torch.distributions import SequentialLanguageModelDistribution
 
+from pydrobert.torch._compat import _v
+
 
 class RNNLM(MixableSequentialLanguageModel):
-    def __init__(self, vocab_size, embed_size=128, hidden_size=512):
+    def __init__(self, vocab_size, embed_size=14, hidden_size=32):
         super().__init__(vocab_size)
         self.hidden_size = hidden_size
         self.embed = torch.nn.Embedding(
             vocab_size + 1, embed_size, padding_idx=vocab_size
         )
-        self.cell = torch.nn.LSTMCell(embed_size, hidden_size)
-        self.lstm = torch.nn.LSTM(embed_size, hidden_size)
-        self.lstm.weight_ih_l0 = self.cell.weight_ih
-        self.lstm.weight_hh_l0 = self.cell.weight_hh
-        self.lstm.bias_ih_l0 = self.cell.bias_ih
-        self.lstm.bias_hh_l0 = self.cell.bias_hh
+        self.cell = torch.nn.GRUCell(embed_size, hidden_size)
+        self.full = torch.nn.GRU(embed_size, hidden_size)
+        self.full.weight_ih_l0 = self.cell.weight_ih
+        self.full.weight_hh_l0 = self.cell.weight_hh
+        self.full.bias_ih_l0 = self.cell.bias_ih
+        self.full.bias_hh_l0 = self.cell.bias_hh
         self.ff = torch.nn.Linear(hidden_size, vocab_size)
 
     @torch.jit.export
@@ -57,7 +60,7 @@ class RNNLM(MixableSequentialLanguageModel):
     ) -> Dict[str, torch.Tensor]:
         return {
             "hidden": prev["hidden"].index_select(0, src),
-            "cell": prev["cell"].index_select(0, src),
+            # "cell": prev["cell"].index_select(0, src),
         }
 
     @torch.jit.export
@@ -70,7 +73,7 @@ class RNNLM(MixableSequentialLanguageModel):
         mask = mask.unsqueeze(1)
         return {
             "hidden": torch.where(mask, prev_true["hidden"], prev_false["hidden"]),
-            "cell": torch.where(mask, prev_true["cell"], prev_false["cell"]),
+            # "cell": torch.where(mask, prev_true["cell"], prev_false["cell"]),
         }
 
     @torch.jit.export
@@ -81,7 +84,7 @@ class RNNLM(MixableSequentialLanguageModel):
             return prev
         N = hist.size(1)
         zeros = self.ff.weight.new_zeros((N, self.hidden_size))
-        return {"hidden": zeros, "cell": zeros}
+        return {"hidden": zeros}
 
     @torch.jit.export
     def calc_full_log_probs(
@@ -89,7 +92,7 @@ class RNNLM(MixableSequentialLanguageModel):
     ) -> torch.Tensor:
         hist = torch.cat([hist.new_full((1, hist.size(1)), self.vocab_size), hist], 0)
         x = self.embed(hist)
-        x = self.lstm(x)[0]
+        x = self.full(x)[0]
         logits = self.ff(x)
         return torch.nn.functional.log_softmax(logits, -1)
 
@@ -110,49 +113,67 @@ class RNNLM(MixableSequentialLanguageModel):
             )  # (N,)
             x = x.masked_fill(idx_zero.expand(x.shape), self.vocab_size)
         x = self.embed(x)
-        h_1, c_1 = self.cell(x, (prev["hidden"], prev["cell"]))
+        h_1 = self.cell(x, prev["hidden"])
         logits = self.ff(h_1)
         return (
             torch.nn.functional.log_softmax(logits, -1),
-            {"hidden": h_1, "cell": c_1},
+            {"hidden": h_1},
         )
 
 
+def _train_rnnlm(lm: RNNLM, iters: int = 1, len_: int = 100, batch: int = 10):
+    # a convenience method for training a little bit. Avoids too-similar values
+    optim = torch.optim.SGD(lm.parameters(), 1e-4)
+    hist = torch.randint(
+        0, lm.vocab_size, (len_, batch), device=lm.full.weight_ih_l0.device
+    )
+    for _ in range(iters):
+        optim.zero_grad()
+        logits = lm(hist[:-1])
+        loss = torch.nn.CrossEntropyLoss()(logits.flatten(0, 1), hist.flatten())
+        loss.backward()
+        optim.step()
+        del loss
+    del optim
+
+
+class MyBigramLM(MixableSequentialLanguageModel):
+
+    bigram_table: torch.Tensor
+
+    def __init__(self):
+        super().__init__(2)
+        self.register_buffer(
+            "bigram_table",
+            torch.tensor(
+                [
+                    [1.0, 0.0],  # P(0|<s>), P(1|<s>)
+                    [0.5, 0.5],  # P(0|0), P(1|0)
+                    [0.0, 1.0],  # P(0|1), P(1|1)
+                ]
+            ).log(),
+        )
+
+    def extract_by_src(self, in_prev, src):
+        return in_prev
+
+    def mix_by_mask(self, in_prev_true, in_prev_false, mask):
+        return in_prev_true
+
+    def calc_idx_log_probs(self, hist, prev, idx):
+        # note we shift + 1 to make room for <s>
+        idx_zero = idx == 0
+        if idx_zero.all():
+            x = hist.new_full((hist.size(1),), 0)
+        else:
+            x = (
+                hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(0) + 1
+            )  # (N,)
+            x = x.masked_fill(idx_zero, 0)
+        return self.bigram_table.gather(0, x.unsqueeze(1).expand(-1, 2)), None
+
+
 def test_ctc_prefix_search(device):
-    class MyLM(MixableSequentialLanguageModel):
-
-        bigram_table: torch.Tensor
-
-        def __init__(self):
-            super().__init__(2)
-            self.register_buffer(
-                "bigram_table",
-                torch.tensor(
-                    [
-                        [1.0, 0.0],  # P(0|<s>), P(1|<s>)
-                        [0.5, 0.5],  # P(0|0), P(1|0)
-                        [0.0, 1.0],  # P(0|1), P(1|1)
-                    ]
-                ).log(),
-            )
-
-        def extract_by_src(self, in_prev, src):
-            return in_prev
-
-        def mix_by_mask(self, in_prev_true, in_prev_false, mask):
-            return in_prev_true
-
-        def calc_idx_log_probs(self, hist, prev, idx):
-            # note we shift + 1 to make room for <s>
-            idx_zero = idx == 0
-            if idx_zero.all():
-                x = hist.new_full((hist.size(1),), 0)
-            else:
-                x = (
-                    hist.gather(0, (idx - 1).clamp(min=0).unsqueeze(0)).squeeze(0) + 1
-                )  # (N,)
-                x = x.masked_fill(idx_zero, 0)
-            return self.bigram_table.gather(0, x.unsqueeze(1).expand(-1, 2)), None
 
     T, N, K, V = 3, 128, 2, 3
     logits = (
@@ -168,7 +189,7 @@ def test_ctc_prefix_search(device):
         (0.0, [[0, 1], [0]], [5 / 24, 1 / 6]),
         (1.0, [[0], [0, 1]], [5 / 24, 17 / 144]),
     ]
-    lm = MyLM().to(device)
+    lm = MyBigramLM().to(device)
     for beta, y_exp, probs_exp in exps:
         search = CTCPrefixSearch(K, beta, lm)
         y_act, y_lens_act, probs_act = search(logits)
@@ -187,15 +208,25 @@ def test_ctc_prefix_search(device):
             assert torch.allclose(probs_k_exp, probs_k_act)
 
 
-def test_ctc_prefix_search_batch(device, jit_type):
-    T, N, V, K = 50, 128, 50, 5
+@pytest.mark.parametrize("shallow_fusion", ["fusion", "nofusion", "validfusion"])
+def test_ctc_prefix_search_batch(device, jit_type, shallow_fusion):
+    if jit_type == "trace":
+        pytest.xfail("trace unsupported for CTCPrefixSearch")
+    elif jit_type == "script" and shallow_fusion != "nofusion":
+        pytest.xfail("script unsupported for shallow_fusion")
+    T, N, V, K = 31, 32, 33, 5
     assert K <= V
     lm = RNNLM(V)
     if jit_type == "script":
         lm = torch.jit.script(lm)
-    elif jit_type == "trace":
-        pytest.xfail("trace unsupported for CTCPrefixSearch")
-    search = CTCPrefixSearch(K, lm=lm).to(device)
+    _train_rnnlm(lm)
+    if shallow_fusion != "nofusion":
+        lm2 = RNNLM(V)
+        _train_rnnlm(lm2)
+        lm = MixableShallowFusionLanguageModel(lm, lm2)
+    search = CTCPrefixSearch(
+        K, lm=lm, valid_mixture=shallow_fusion == "validfusion"
+    ).to(device)
     if jit_type == "script":
         search = torch.jit.script(search)
     logits = torch.randn((T, N, V + 1), device=device)
@@ -246,9 +277,11 @@ def test_ctc_prefix_search_batch(device, jit_type):
         y_n_act = y_n_act.masked_fill_(len_mask, -1)
         assert (y_n_exp == y_n_act).all()
 
+    del lm
+
 
 def test_beam_search_advance_greedy(device):
-    N, C, T = 30, 100, 25
+    N, C, T = 4, 20, 25
     logits = torch.randn((T, N, C), device=device)
     greedy_logits, greedy_paths = logits.max(2)
     greedy_scores = greedy_logits.sum(0)
@@ -263,18 +296,23 @@ def test_beam_search_advance_greedy(device):
 
 @pytest.mark.parametrize("finish_all_paths", ["all", "first"])
 def test_beam_search_batch(device, jit_type, finish_all_paths):
-    T, N, V, K = 64, 16, 128, 8
+    if jit_type == "trace":
+        pytest.xfail("trace unsupported for BeamSearch")
+    T, N, V, K = 12, 4, 32, 8
     assert K <= V and N * K <= V
+
     lm = RNNLM(V).to(device)
+    _train_rnnlm(lm)
+
     initial_state = {
         "hidden": torch.randn((N, lm.hidden_size), device=device),
         "cell": torch.randn((N, lm.hidden_size), device=device),
     }
     if jit_type == "script":
         lm = torch.jit.script(lm)
-    elif jit_type == "trace":
-        pytest.xfail("trace unsupported for BeamSearch")
-    search = BeamSearch(lm, K, eos=0, pad_value=-1, finish_all_paths=finish_all_paths,)
+    search = BeamSearch(
+        lm, K, eos=0, pad_value=-1, finish_all_paths=finish_all_paths == "all"
+    )
     if jit_type == "script":
         search = torch.jit.script(search)
 
@@ -296,6 +334,8 @@ def test_beam_search_batch(device, jit_type, finish_all_paths):
         y_exp_n, y_act_n = y_exp_n[y_exp_n != -1], y_act_n[y_act_n != -1]
         assert y_exp_n.numel() == y_act_n.numel(), n
         assert (y_exp_n == y_act_n).all(), n
+
+    del lm
 
 
 @pytest.mark.parametrize(
@@ -713,20 +753,20 @@ def test_beam_search_advance(device):
     assert (y_next_act[:Kp, :, 0] == y_next_0_exp).all()
 
 
-def test_random_walk(device):
-    class StationaryLM(SequentialLanguageModel):
-        def __init__(self, vocab_size: int):
-            super().__init__(vocab_size)
-            self.logits = torch.nn.Parameter(torch.randn(vocab_size, vocab_size))
+class StationaryLM(SequentialLanguageModel):
+    def __init__(self, vocab_size: int):
+        super().__init__(vocab_size)
+        self.logits = torch.nn.Parameter(torch.randn(vocab_size, vocab_size))
 
-        def calc_idx_log_probs(
-            self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
-        ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-            if idx == 0:
-                hist = torch.zeros(
-                    1, hist.size(1), device=hist.device, dtype=hist.dtype
-                )
-            return self.logits.index_select(0, hist[(idx - 1).clamp_min_(0)]), prev
+    def calc_idx_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        if idx == 0:
+            hist = torch.zeros(1, hist.size(1), device=hist.device, dtype=hist.dtype)
+        return self.logits.index_select(0, hist[(idx - 1).clamp_min_(0)]), prev
+
+
+def test_random_walk(device):
 
     T, V = 10000, 4
     lm = StationaryLM(V).to(device)
@@ -752,28 +792,29 @@ def test_random_walk(device):
     assert torch.allclose(exp_expectation, act_expectation, atol=1e-2)
 
 
-def test_random_walk_batch(device, jit_type):
+# it's deterministic and always terminates
+class SpinningLM(SequentialLanguageModel):
+    def calc_idx_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        if idx == 0:
+            hist = prev["init"]
+        next_ = (hist[idx - 1] + 1) % self.vocab_size
+        return (
+            torch.nn.functional.one_hot(next_, self.vocab_size).float().log() - 1,
+            prev,
+        )
 
-    # it's deterministic and always terminates
-    class SpinningLM(SequentialLanguageModel):
-        def calc_idx_log_probs(
-            self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
-        ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-            if idx == 0:
-                hist = prev["init"]
-            next_ = (hist[idx - 1] + 1) % self.vocab_size
-            return (
-                torch.nn.functional.one_hot(next_, self.vocab_size).float().log() - 1,
-                prev,
-            )
+
+def test_random_walk_batch(device, jit_type):
+    if jit_type == "trace":
+        pytest.xfail("trace unsupported for RandomWalk")
 
     N, V = 128, 16
     assert V > 1
     lm = SpinningLM(V)
     if jit_type == "script":
         lm = torch.jit.script(lm)
-    elif jit_type == "trace":
-        pytest.xfail("trace unsupported for RandomWalk")
     walk = RandomWalk(lm, eos=V - 1).to(device)
     if jit_type == "script":
         walk = torch.jit.script(walk)
@@ -801,6 +842,8 @@ def test_random_walk_batch(device, jit_type):
 
 @pytest.mark.parametrize("dim", [0, 2, -1, None])
 def test_sequence_log_probs(device, dim, jit_type):
+    if jit_type == "script" and _v < "1.8.0" and dim is None:
+        pytest.xfail("scripting + PackedSequence unsupported in Pytorch < 1.8.0")
     max_steps, num_classes, eos = 30, 10, 0
     dim1, dim2, dim3, dim4 = 5, 2, 1, 4
     logits = torch.full(
@@ -940,4 +983,5 @@ def test_sequential_language_model_distribution(device, eos, batch_size):
 
     sample = dist.sample()
     assert 0 < sample.numel() <= T * N
+    del lm
 

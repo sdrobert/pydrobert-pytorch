@@ -1,7 +1,14 @@
 # Change log
 
-## HEAD
+## v0.4.0
 
+- Added `best_is_train` flag to `TrainingController.update_for_epoch`
+- Refactored `get-torch-spect-data-dir-info` to be faster
+- `subset-torch-spect-data-dir` command has been added
+- `print-torch-{ali,ref}-data-dir-length-moments` commands have been added
+- `LookupLanguageMode.prob_list` has been renamed to `prob_dicts`
+- Added `ShallowFusionLanguageModel`, `ExtractableShallowFusionLanguageModel`,
+  and `MixableShallowFusionLanguageModel`
 - Slicing and chunking modules `SliceSpectData`, `ChunkBySlices`, and
   `ChunkTokenSequenceBySlices`, as well as the command
   `chunk-torch-spect-data-dir`, which puts them together.

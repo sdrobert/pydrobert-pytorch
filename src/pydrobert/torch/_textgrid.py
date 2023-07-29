@@ -1,15 +1,14 @@
-# This file was reformatted by black and this message updated slightly, but otherwise
-# taken verbatim from nltk_contrib
+# This file was reformatted by black, this message updated slightly, some regular
+# expression strings prefixed with r"", and the demo removed, but otherwise taken
+# verbatim from nltk_contrib
 #
 #  https://github.com/nltk/nltk_contrib/blob/95d1806e2f4e89e960b76a685b1fba2eaa7d5142/nltk_contrib/textgrid.py#L1
 #
 # Natural Language Toolkit: TextGrid analysis
 #
-# Copyright (C) 2001-2011 NLTK Project
-# Author: Margaret Mitchell <itallow@gmail.com>
-#         Steven Bird <sb@csse.unimelb.edu.au> (revisions)
-# URL: <http://www.nltk.org>
-# For license information, see LICENSE_nltk.TXT
+# Copyright (C) 2001-2011 NLTK Project Author: Margaret Mitchell <itallow@gmail.com>
+# Steven Bird <sb@csse.unimelb.edu.au> (revisions) URL: <http://www.nltk.org> For
+#         license information, see LICENSE_nltk.TXT
 #
 
 """
@@ -184,7 +183,7 @@ class TextGrid(object):
         if self.text_type == "ChronTextFile":
             m = re.compile(header)
             tier_headers = m.findall(self.read_file)
-            tier_re = ' \d+.?\d* \d+.?\d*[\r\n]+"[^"]*"'
+            tier_re = r' \d+.?\d* \d+.?\d*[\r\n]+"[^"]*"'
             for i in range(0, self.size):
                 tier_info = [tier_headers[i]] + re.findall(
                     str(i + 1) + tier_re, self.read_file
@@ -193,7 +192,7 @@ class TextGrid(object):
                 tiers.append(Tier(tier_info, self.text_type, self.t_time))
             return tiers
 
-        tier_re = header + "[\s\S]+?(?=" + header + "|$$)"
+        tier_re = header + r"[\s\S]+?(?=" + header + "|$$)"
         m = re.compile(tier_re)
         tier_iter = m.finditer(self.read_file)
         for iterator in tier_iter:
@@ -231,13 +230,13 @@ class TextGrid(object):
 
         if self.text_type == "ooTextFile":
             m = OOTEXTFILE
-            header = " +item ?\[[^]]*\]:"
+            header = r" +item ?\[[^]]*\]:"
         elif self.text_type == "ChronTextFile":
             m = CHRONTEXTFILE
-            header = '"\S+" ".*" \d+\.?\d* \d+\.?\d*'
+            header = r'"\S+" ".*" \d+\.?\d* \d+\.?\d*'
         elif self.text_type == "OldooTextFile":
             m = OLDOOTEXTFILE
-            header = '".*"[\r\n]+".*"'
+            header = r'".*"[\r\n]+".*"'
 
         file_info = m.findall(self.read_file)[0]
         self.xmin = float(file_info[0])
@@ -366,27 +365,27 @@ class Tier(object):
         class, name, xmin, xmax, transcript.
         """
 
-        trans = "([\S\s]*)"
+        trans = r"([\S\s]*)"
         if self.text_type == "ChronTextFile":
-            classid = '"(.*)" +'
-            nameid = '"(.*)" +'
-            xmin = "(\d+\.?\d*) +"
-            xmax = "(\d+\.?\d*) *[\r\n]+"
+            classid = r'"(.*)" +'
+            nameid = r'"(.*)" +'
+            xmin = r"(\d+\.?\d*) +"
+            xmax = r"(\d+\.?\d*) *[\r\n]+"
             # No size values are given in the Chronological Text File format.
             self.size = None
             size = ""
         elif self.text_type == "ooTextFile":
-            classid = ' +class = "(.*)" *[\r\n]+'
-            nameid = ' +name = "(.*)" *[\r\n]+'
-            xmin = " +xmin = (\d+\.?\d*) *[\r\n]+"
-            xmax = " +xmax = (\d+\.?\d*) *[\r\n]+"
-            size = " +\S+: size = (\d+) *[\r\n]+"
+            classid = r' +class = "(.*)" *[\r\n]+'
+            nameid = r' +name = "(.*)" *[\r\n]+'
+            xmin = r" +xmin = (\d+\.?\d*) *[\r\n]+"
+            xmax = r" +xmax = (\d+\.?\d*) *[\r\n]+"
+            size = r" +\S+: size = (\d+) *[\r\n]+"
         elif self.text_type == "OldooTextFile":
-            classid = '"(.*)" *[\r\n]+'
-            nameid = '"(.*)" *[\r\n]+'
-            xmin = "(\d+\.?\d*) *[\r\n]+"
-            xmax = "(\d+\.?\d*) *[\r\n]+"
-            size = "(\d+) *[\r\n]+"
+            classid = r'"(.*)" *[\r\n]+'
+            nameid = r'"(.*)" *[\r\n]+'
+            xmin = r"(\d+\.?\d*) *[\r\n]+"
+            xmax = r"(\d+\.?\d*) *[\r\n]+"
+            size = r"(\d+) *[\r\n]+"
         m = re.compile(classid + nameid + xmin + xmax + size + trans)
         self.tier_info = m.findall(self.tier)[0]
         self.classid = self.tier_info[0]
@@ -404,19 +403,19 @@ class Tier(object):
 
         if self.text_type == "ChronTextFile":
             trans_head = ""
-            trans_xmin = " (\S+)"
-            trans_xmax = " (\S+)[\r\n]+"
-            trans_text = '"([\S\s]*?)"'
+            trans_xmin = r" (\S+)"
+            trans_xmax = r" (\S+)[\r\n]+"
+            trans_text = r'"([\S\s]*?)"'
         elif self.text_type == "ooTextFile":
-            trans_head = " +\S+ \[\d+\]: *[\r\n]+"
-            trans_xmin = " +\S+ = (\S+) *[\r\n]+"
-            trans_xmax = " +\S+ = (\S+) *[\r\n]+"
-            trans_text = ' +\S+ = "([^"]*?)"'
+            trans_head = r" +\S+ \[\d+\]: *[\r\n]+"
+            trans_xmin = r" +\S+ = (\S+) *[\r\n]+"
+            trans_xmax = r" +\S+ = (\S+) *[\r\n]+"
+            trans_text = r' +\S+ = "([^"]*?)"'
         elif self.text_type == "OldooTextFile":
             trans_head = ""
-            trans_xmin = "(.*)[\r\n]+"
-            trans_xmax = "(.*)[\r\n]+"
-            trans_text = '"([\S\s]*?)"'
+            trans_xmin = r"(.*)[\r\n]+"
+            trans_xmax = r"(.*)[\r\n]+"
+            trans_text = r'"([\S\s]*?)"'
         if self.classid == TEXTTIER:
             trans_xmin = ""
         trans_m = re.compile(trans_head + trans_xmin + trans_xmax + trans_text)
@@ -480,210 +479,3 @@ class Tier(object):
             + "\n  "
             + "\n  ".join(" ".join(row) for row in self.simple_transcript)
         )
-
-
-def demo_TextGrid(demo_data):
-    print("** Demo of the TextGrid class. **")
-
-    fid = TextGrid(demo_data)
-    print("Tiers: %s" % (fid.size))
-
-    for i, tier in enumerate(fid):
-        print("\n***")
-        print("Tier: %s" % (i + 1))
-        print(tier)
-
-
-def demo():
-    # Each demo demonstrates different TextGrid formats.
-    print("Format 1")
-    demo_TextGrid(demo_data1)
-    print("\nFormat 2")
-    demo_TextGrid(demo_data2)
-    print("\nFormat 3")
-    demo_TextGrid(demo_data3)
-
-
-demo_data1 = """File type = "ooTextFile"
-Object class = "TextGrid"
-
-xmin = 0
-xmax = 2045.144149659864
-tiers? <exists>
-size = 3
-item []:
-    item [1]:
-        class = "IntervalTier"
-        name = "utterances"
-        xmin = 0
-        xmax = 2045.144149659864
-        intervals: size = 5
-        intervals [1]:
-            xmin = 0
-            xmax = 2041.4217474125382
-            text = ""
-        intervals [2]:
-            xmin = 2041.4217474125382
-            xmax = 2041.968276643991
-            text = "this"
-        intervals [3]:
-            xmin = 2041.968276643991
-            xmax = 2042.5281632653062
-            text = "is"
-        intervals [4]:
-            xmin = 2042.5281632653062
-            xmax = 2044.0487352585324
-            text = "a"
-        intervals [5]:
-            xmin = 2044.0487352585324
-            xmax = 2045.144149659864
-            text = "demo"
-    item [2]:
-        class = "TextTier"
-        name = "notes"
-        xmin = 0
-        xmax = 2045.144149659864
-        points: size = 3
-        points [1]:
-            time = 2041.4217474125382
-            mark = ".begin_demo"
-        points [2]:
-            time = 2043.8338291031832
-            mark = "voice gets quiet here"
-        points [3]:
-            time = 2045.144149659864
-            mark = ".end_demo"
-    item [3]:
-        class = "IntervalTier"
-        name = "phones"
-        xmin = 0
-        xmax = 2045.144149659864
-        intervals: size = 12
-        intervals [1]:
-            xmin = 0
-            xmax = 2041.4217474125382
-            text = ""
-        intervals [2]:
-            xmin = 2041.4217474125382
-            xmax = 2041.5438290324326
-            text = "D"
-        intervals [3]:
-            xmin = 2041.5438290324326
-            xmax = 2041.7321032910372
-            text = "I"
-        intervals [4]:
-            xmin = 2041.7321032910372
-            xmax = 2041.968276643991
-            text = "s"
-        intervals [5]:
-            xmin = 2041.968276643991
-            xmax = 2042.232189031843
-            text = "I"
-        intervals [6]:
-            xmin = 2042.232189031843
-            xmax = 2042.5281632653062
-            text = "z"
-        intervals [7]:
-            xmin = 2042.5281632653062
-            xmax = 2044.0487352585324
-            text = "eI"
-        intervals [8]:
-            xmin = 2044.0487352585324
-            xmax = 2044.2487352585324
-            text = "dc"
-        intervals [9]:
-            xmin = 2044.2487352585324
-            xmax = 2044.3102321849011
-            text = "d"
-        intervals [10]:
-            xmin = 2044.3102321849011
-            xmax = 2044.5748932104329
-            text = "E"
-        intervals [11]:
-            xmin = 2044.5748932104329
-            xmax = 2044.8329108578437
-            text = "m"
-        intervals [12]:
-            xmin = 2044.8329108578437
-            xmax = 2045.144149659864
-            text = "oU"
-"""
-
-demo_data2 = """File type = "ooTextFile"
-Object class = "TextGrid"
-
-0
-2.8
-<exists>
-2
-"IntervalTier"
-"utterances"
-0
-2.8
-3
-0
-1.6229213249309031
-""
-1.6229213249309031
-2.341428074708195
-"demo"
-2.341428074708195
-2.8
-""
-"IntervalTier"
-"phones"
-0
-2.8
-6
-0
-1.6229213249309031
-""
-1.6229213249309031
-1.6428291382019483
-"dc"
-1.6428291382019483
-1.65372183721983721
-"d"
-1.65372183721983721
-1.94372874328943728
-"E"
-1.94372874328943728
-2.13821938291038210
-"m"
-2.13821938291038210
-2.341428074708195
-"oU"
-2.341428074708195
-2.8
-""
-"""
-
-demo_data3 = """"Praat chronological TextGrid text file"
-0 2.8   ! Time domain.
-2   ! Number of tiers.
-"IntervalTier" "utterances" 0 2.8
-"IntervalTier" "utterances" 0 2.8
-1 0 1.6229213249309031
-""
-2 0 1.6229213249309031
-""
-2 1.6229213249309031 1.6428291382019483
-"dc"
-2 1.6428291382019483 1.65372183721983721
-"d"
-2 1.65372183721983721 1.94372874328943728
-"E"
-2 1.94372874328943728 2.13821938291038210
-"m"
-2 2.13821938291038210 2.341428074708195
-"oU"
-1 1.6229213249309031 2.341428074708195
-"demo"
-1 2.341428074708195 2.8
-""
-2 2.341428074708195 2.8
-""
-"""
-
-if __name__ == "__main__":
-    demo()

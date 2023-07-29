@@ -419,7 +419,6 @@ def slice_spect_data(
 
 
 @script
-@torch.no_grad()
 @functional_wrapper("SliceSpectData")
 def slice_spect_data(
     in_: torch.Tensor,
@@ -450,7 +449,7 @@ def slice_spect_data(
         shift = lobe_size + 1
         if valid_only and window_type == "symmetric":
             window_size = 2 * lobe_size + 1
-            starts = torch.arange(0, T - window_size + 1, shift, device=device)
+            starts = torch.arange(0, max(T - window_size + 1, 0), shift, device=device)
             ends = starts + window_size
             mids = ends - 1
         elif window_type == "symmetric":
@@ -462,7 +461,7 @@ def slice_spect_data(
             ends = starts + window_size
         elif valid_only:
             # the behaviour doesn't change with "causal" or "future" when valid_only
-            starts = torch.arange(0, T - lobe_size, shift, device=device)
+            starts = torch.arange(0, max(T - lobe_size, 0), shift, device=device)
             ends = starts + shift
             mids = ends - 1
         elif window_type == "causal":
@@ -505,7 +504,7 @@ def slice_spect_data(
         nonempty = (in_lens > 0).view(N, 1)
         starts = torch.cat([nonempty, mask], 1).nonzero()
         mask = torch.cat([torch.zeros_like(nonempty), mask], 1)
-        mask |= nonempty & (in_lens.view(N, 1) == arange)
+        mask = mask | (nonempty & (in_lens.view(N, 1) == arange))
         ends = mask.nonzero()
         sources = starts[:, 0]
         starts, ends = starts[:, 1], ends[:, 1]
@@ -555,16 +554,16 @@ def slice_spect_data(
                 f"Expected other_lens to have shape ({N},); got {other_lens.shape}"
             )
         mask = in_lens.view(N, 1) > torch.arange(T, device=device)
-        mask &= (in_[..., 1:] >= 0).all(2)
+        mask = mask & (in_[..., 1:] >= 0).all(2)
         if window_type in ("symmetric", "causal"):
             starts = starts - lobe_size
         if window_type in ("symmetric", "future"):
             ends = ends + lobe_size
         if valid_only:
-            mask &= (starts >= 0) & (ends <= other_lens.view(N, 1))
+            mask = mask & (starts >= 0) & (ends <= other_lens.view(N, 1))
         else:
-            mask &= (ends > 0) & (starts < other_lens.view(N, 1))
-        mask &= starts < ends
+            mask = mask & (ends > 0) & (starts < other_lens.view(N, 1))
+        mask = mask & (starts < ends)
         starts, ends, mask = starts.flatten(), ends.flatten(), mask.flatten()
         sources = torch.arange(N, device=device).view(N, 1).expand(N, T).flatten()
         starts = starts[mask]
@@ -784,7 +783,6 @@ class SliceSpectData(torch.nn.Module):
 
 
 @script
-@torch.no_grad()
 @functional_wrapper("ChunkTokenSequencesBySlices")
 def chunk_token_sequences_by_slices(
     refs: torch.Tensor,
@@ -797,8 +795,8 @@ def chunk_token_sequences_by_slices(
         return refs.new_empty((0, refs.size(1),)), slices.new_empty((0,))
     elif refs.ndim != 3 or refs.size(2) != 3:
         raise RuntimeError(
-            "Expected refs to be 2-dimensional or 3-dimensional with final dimension "
-            f"size 3. Got shape '{refs.shape}'"
+            "Expected refs to be 2-dimensional or 3-dimensional with final "
+            f"dimension size 3. Got shape '{refs.shape}'"
         )
     N, R = refs.size(0), refs.size(1)
     if slices.shape != (N, 2):
@@ -814,19 +812,19 @@ def chunk_token_sequences_by_slices(
         )
     else:
         mask = ref_lens.unsqueeze(1) > arange
-    mask &= (refs[..., 1:] >= 0).all(2) & (refs[..., 2] >= refs[..., 1])
+    mask = mask & (refs[..., 1:] >= 0).all(2) & (refs[..., 2] >= refs[..., 1])
     if partial:
         # slice_start < ref_end and slice_end > ref_start
-        mask &= (slices[..., :1] < refs[..., 2]) & (slices[..., 1:] > refs[..., 1])
+        mask = mask & (slices[..., :1] < refs[..., 2]) & (slices[..., 1:] > refs[..., 1])
     else:
         # slice_start <= ref_start and slice_end >= ref_end
-        mask &= (slices[..., :1] <= refs[..., 1]) & (slices[..., 1:] >= refs[..., 2])
+        mask = mask & (slices[..., :1] <= refs[..., 1]) & (slices[..., 1:] >= refs[..., 2])
     chunked_lens = mask.long().sum(1)
     refs = refs[mask.unsqueeze(2).expand_as(refs)]
     mask = (chunked_lens.unsqueeze(1) > arange).unsqueeze(2).expand(N, R, 3)
     chunked = refs.new_empty((N, R, 3)).masked_scatter_(mask, refs)
     if not retain:
-        chunked[..., 1:] += slices[..., 0].view(N, 1, 1)
+        chunked[..., 1:] += slices[..., 0].view(N, 1, 1).expand(N, R, 2)
     return chunked, chunked_lens
 
 
@@ -889,7 +887,7 @@ class ChunkTokenSequencesBySlices(torch.nn.Module):
         `feats` or `alis` from :class:`SpectDataSet`.
     """
 
-    __constants__ = ["partial", "retain"]
+    __constants__ = "partial", "retain"
 
     partial: bool
     retain: bool
@@ -919,4 +917,4 @@ class ChunkTokenSequencesBySlices(torch.nn.Module):
             ref, slices, ref_lens, self.partial, self.retain
         )
 
-    __call__ = proxy(forward)
+    # __call__ = proxy(forward)

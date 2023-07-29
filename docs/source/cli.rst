@@ -12,8 +12,7 @@ chunk-torch-spect-data-dir
                                     [--ali-subdir ALI_SUBDIR]
                                     [--ref-subdir REF_SUBDIR]
                                     [--num-workers NUM_WORKERS]
-                                    [--chunk-size CHUNK_SIZE]
-                                    [--timeout TIMEOUT]
+                                    [--mp-chunk-size MP_CHUNK_SIZE]
                                     [--policy {fixed,ali,ref}]
                                     [--lobe-size LOBE_SIZE]
                                     [--window-type {symmetric,causal,future}]
@@ -71,12 +70,10 @@ chunk-torch-spect-data-dir
     --num-workers NUM_WORKERS
                           The number of workers to spawn to process the data. 0
                           is serial. Defaults to the CPU count
-    --chunk-size CHUNK_SIZE
-                          The number of utterances that a worker will process at
-                          once. Impacts speed and memory consumption.
-    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
-                          without new data before terminating. The default is to
-                          wait indefinitely.
+    --mp-chunk-size MP_CHUNK_SIZE
+                          The number of utterances that a multiprocessing worker
+                          will process at once. Impacts speed and memory
+                          consumption.
     --policy {fixed,ali,ref}
                           The policy for determining slices from the data. See
                           SliceSpectData.
@@ -279,8 +276,7 @@ ctm-to-torch-token-data-dir
                                      [--file-suffix FILE_SUFFIX] [--swap]
                                      [--unk-symbol UNK_SYMBOL]
                                      [--num-workers NUM_WORKERS]
-                                     [--chunk-size CHUNK_SIZE]
-                                     [--timeout TIMEOUT]
+                                     [--mp-chunk-size MP_CHUNK_SIZE]
                                      [--skip-frame-times | --feat-sizing | --frame-shift-ms FRAME_SHIFT_MS]
                                      [--wc2utt WC2UTT | --utt2wc UTT2WC]
                                      ctm token2id dir
@@ -327,12 +323,10 @@ ctm-to-torch-token-data-dir
     --num-workers NUM_WORKERS
                           The number of workers to spawn to process the data. 0
                           is serial. Defaults to the CPU count
-    --chunk-size CHUNK_SIZE
-                          The number of utterances that a worker will process at
-                          once. Impacts speed and memory consumption.
-    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
-                          without new data before terminating. The default is to
-                          wait indefinitely.
+    --mp-chunk-size MP_CHUNK_SIZE
+                          The number of utterances that a multiprocessing worker
+                          will process at once. Impacts speed and memory
+                          consumption.
     --skip-frame-times    If true, will store token tensors of shape (R,)
                           instead of (R, 3), foregoing segment start and end
                           times.
@@ -369,7 +363,7 @@ get-torch-spect-data-dir-info
                                        [--feat-subdir FEAT_SUBDIR]
                                        [--ali-subdir ALI_SUBDIR]
                                        [--ref-subdir REF_SUBDIR]
-                                       [--strict | --fix]
+                                       [--strict | --fix [N]]
                                        dir [out_file]
   
   Write info about the specified SpectDataSet data dir
@@ -462,10 +456,216 @@ get-torch-spect-data-dir-info
     --strict              If set, validate the data directory before collecting
                           info. The process is described in
                           pydrobert.torch.data.validate_spect_data_set
-    --fix                 If set, validate the data directory before collecting
+    --fix [N]             If set, validate the data directory before collecting
                           info, potentially fixing small errors in the
-                          directory. The process is described in
-                          pydrobert.torch.validate_spect_data_set
+                          directory. An optional integer argument controls the
+                          cropping threshold for ali/ and ref/ (defaults to 1).
+                          The process is described in
+                          pydrobert.torch.validate_spect_data_set.
+
+print-torch-ali-data-dir-length-moments
+---------------------------------------
+
+::
+
+  usage: print-torch-ali-data-dir-length-moments [-h] [--precision PRECISION]
+                                                 [--bessel] [--std]
+                                                 [--exclude-ids EXCLUDE_IDS [EXCLUDE_IDS ...]]
+                                                 [--file-prefix FILE_PREFIX]
+                                                 [--file-suffix FILE_SUFFIX]
+                                                 [--num-workers NUM_WORKERS]
+                                                 [--mp-chunk-size MP_CHUNK_SIZE]
+                                                 dir [out]
+  
+  Compute the mean and variance of segment lengths from an ali data dir
+  
+  A segment in an "ali/" directory tensor is a maximal sequence of frames with the same
+  id. This command computes the mean and variance of segment lengths, printing them on one
+  line as
+  
+      <mean> (<var>)
+  
+  The input to this command is the "ali/" subdirectory of the SpectDataSet, not its root.
+  
+  See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
+  directory.
+  
+  positional arguments:
+    dir                   The ali/ dir (input)
+    out                   Where to print statistics. Defaults to stdout
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --precision PRECISION
+                          Precision with which to print stats
+    --bessel              Perform Bessel correction on the variance estimate
+    --std                 Print standard deviation instead of variance
+    --exclude-ids EXCLUDE_IDS [EXCLUDE_IDS ...]
+                          If specified, segments with ali ids in this list will
+                          be excluded fromcounts
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --num-workers NUM_WORKERS
+                          The number of workers to spawn to process the data. 0
+                          is serial. Defaults to the CPU count
+    --mp-chunk-size MP_CHUNK_SIZE
+                          The number of utterances that a multiprocessing worker
+                          will process at once. Impacts speed and memory
+                          consumption.
+
+print-torch-ref-data-dir-length-moments
+---------------------------------------
+
+::
+
+  usage: print-torch-ref-data-dir-length-moments [-h] [--strict | --quiet]
+                                                 [--precision PRECISION]
+                                                 [--bessel] [--std]
+                                                 [--exclude-ids EXCLUDE_IDS [EXCLUDE_IDS ...]]
+                                                 [--file-prefix FILE_PREFIX]
+                                                 [--file-suffix FILE_SUFFIX]
+                                                 [--num-workers NUM_WORKERS]
+                                                 [--mp-chunk-size MP_CHUNK_SIZE]
+                                                 dir [out]
+  
+  Compute the mean and variance of segment lengths from an ali data dir
+  
+  A segment in an "ali/" directory tensor is a maximal sequence of frames with the same
+  id. This command computes the mean and variance of segment lengths, printing them on one
+  line as
+  
+      <mean> (<var>)
+  
+  The input to this command is the "ali/" subdirectory of the SpectDataSet, not its root.
+  
+  See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
+  directory.
+  
+  positional arguments:
+    dir                   The ref/ dir (input)
+    out                   Where to print statistics. Defaults to stdout
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --strict              Error when boundary info is not available
+    --quiet               Suppress warnings about missing boundary info
+    --precision PRECISION
+                          Precision with which to print stats
+    --bessel              Perform Bessel correction on the variance estimate
+    --std                 Print standard deviation instead of variance
+    --exclude-ids EXCLUDE_IDS [EXCLUDE_IDS ...]
+                          If specified, segments with token ids in this list
+                          will be excluded fromcounts
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --num-workers NUM_WORKERS
+                          The number of workers to spawn to process the data. 0
+                          is serial. Defaults to the CPU count
+    --mp-chunk-size MP_CHUNK_SIZE
+                          The number of utterances that a multiprocessing worker
+                          will process at once. Impacts speed and memory
+                          consumption.
+
+subset-torch-spect-data-dir
+---------------------------
+
+::
+
+  usage: subset-torch-spect-data-dir [-h] [--copy | --symlink]
+                                     (--utt-list UTTID [UTTID ...] | --utt-list-file PATH | --first-n N | --first-ratio R | --last-n N | --last-ratio R | --shortest-n N | --shortest-ratio R | --longest-n N | --longest-ratio R | --rand-n N | --rand-ratio R)
+                                     [--only] [--seed SEED]
+                                     [--feat-subdir FEAT_SUBDIR]
+                                     [--ali-subdir ALI_SUBDIR]
+                                     [--ref-subdir REF_SUBDIR]
+                                     [--file-prefix FILE_PREFIX]
+                                     [--file-suffix FILE_SUFFIX]
+                                     [--num-workers NUM_WORKERS]
+                                     [--mp-chunk-size MP_CHUNK_SIZE]
+                                     src dest
+  
+  Make a new SpectDataDir from a subset of utterances of another
+  
+  This command determines a set of utterances via a flag, then hard links all files in the
+  "feat/", "ali/" and "ref/" subdirectories matching the utterance id to in the "src"
+  directory to the "dest" directory.
+  
+  See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
+  directory.
+  
+  positional arguments:
+    src                   The directory to extract from
+    dest                  The directory to extract to
+  
+  optional arguments:
+    -h, --help            show this help message and exit
+    --copy                Copy extracted files (instead of hard link)
+    --symlink             Symlink extracted files (instead of hard link).
+                          Symlinks will be relative to the destination.
+    --utt-list UTTID [UTTID ...]
+                          Extract the utterances listed directly after this flag
+    --utt-list-file PATH  Extract the utterances listed in the passed file, one-
+                          per-line
+    --first-n N           Extract this number of utterances listed first by id
+    --first-ratio R       Extract this ratio of utterances (rounding down)
+                          listed first by id
+    --last-n N            Extract this number of utterances listed last by id
+    --last-ratio R        Extract this ratio of utterances (rounding down)
+                          listed last by id
+    --shortest-n N        Extract this number of utterances listed first by
+                          increasing length, then by id
+    --shortest-ratio R    Extract this ratio of utterances listed first by
+                          increasing length, then by id
+    --longest-n N         Extract this number of utterances listed first by
+                          decreasing length, then by id
+    --longest-ratio R     Extract this ratio of utterances listed first by
+                          decreasing length, then by id
+    --rand-n N            Extract this number of utterances listed randomly
+    --rand-ratio R        Extract this ratio of utterances listed randomly
+    --only                If set, extract only the data directly stored in 'src'
+    --seed SEED           Seed used in --rand-* flags for determinism. If
+                          unspecified, non-deterministic
+    --feat-subdir FEAT_SUBDIR
+                          Subdirectory where features are stored.
+    --ali-subdir ALI_SUBDIR
+                          Subdirectory where per-frame alignments are stored.
+    --ref-subdir REF_SUBDIR
+                          Subdirectory where reference token sequences are
+                          stored.
+    --file-prefix FILE_PREFIX
+                          The file prefix indicating a torch data file
+    --file-suffix FILE_SUFFIX
+                          The file suffix indicating a torch data file
+    --num-workers NUM_WORKERS
+                          The number of workers to spawn to process the data. 0
+                          is serial. Defaults to the CPU count
+    --mp-chunk-size MP_CHUNK_SIZE
+                          The number of utterances that a multiprocessing worker
+                          will process at once. Impacts speed and memory
+                          consumption.
+  
+  Available utterances to extract are determined by the contents of the "feat/"
+  subdirectory, unless "--only" was specified. Any extra or missing utterances in "ali/"
+  and "ref/" will be ignored.
+  
+  If "--utt-list" or "--utt-list-file" is chosen, this command ignores any missing
+  utterances.
+  
+  When a criterion involves extracting some number of utterances which exceeds the total
+  number of utterances, that total is extracted instead.
+  
+  Ratios are rounded down to the nearest utterance.
+  
+  Sorting by id is performed according to python's sort method, i.e. by locale.
+  
+  When "--only" is paired with "--shortest-*" or "--longest-*", "src" is assumed to also
+  be the directory to extract lengths from. Otherwise it's "feat/".
+  
+  This command has a similar functionality to Kaldi's (https://github.com/kaldi-asr)
+  subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
 
 textgrids-to-torch-token-data-dir
 ---------------------------------
@@ -476,8 +676,7 @@ textgrids-to-torch-token-data-dir
                                            [--file-suffix FILE_SUFFIX] [--swap]
                                            [--unk-symbol UNK_SYMBOL]
                                            [--num-workers NUM_WORKERS]
-                                           [--chunk-size CHUNK_SIZE]
-                                           [--timeout TIMEOUT]
+                                           [--mp-chunk-size MP_CHUNK_SIZE]
                                            [--textgrid-suffix TEXTGRID_SUFFIX]
                                            [--fill-symbol FILL_SYMBOL]
                                            [--skip-frame-times | --feat-sizing | --frame-shift-ms FRAME_SHIFT_MS]
@@ -527,12 +726,10 @@ textgrids-to-torch-token-data-dir
     --num-workers NUM_WORKERS
                           The number of workers to spawn to process the data. 0
                           is serial. Defaults to the CPU count
-    --chunk-size CHUNK_SIZE
-                          The number of utterances that a worker will process at
-                          once. Impacts speed and memory consumption.
-    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
-                          without new data before terminating. The default is to
-                          wait indefinitely.
+    --mp-chunk-size MP_CHUNK_SIZE
+                          The number of utterances that a multiprocessing worker
+                          will process at once. Impacts speed and memory
+                          consumption.
     --textgrid-suffix TEXTGRID_SUFFIX
                           The file suffix in tg_dir indicating a TextGrid file.
     --fill-symbol FILL_SYMBOL
@@ -564,8 +761,7 @@ torch-ali-data-dir-to-torch-token-data-dir
                                                     [--file-prefix FILE_PREFIX]
                                                     [--file-suffix FILE_SUFFIX]
                                                     [--num-workers NUM_WORKERS]
-                                                    [--chunk-size CHUNK_SIZE]
-                                                    [--timeout TIMEOUT]
+                                                    [--mp-chunk-size MP_CHUNK_SIZE]
                                                     ali_dir ref_dir
   
   Convert an ali/ dir to a ref/ dir
@@ -592,12 +788,10 @@ torch-ali-data-dir-to-torch-token-data-dir
     --num-workers NUM_WORKERS
                           The number of workers to spawn to process the data. 0
                           is serial. Defaults to the CPU count
-    --chunk-size CHUNK_SIZE
-                          The number of utterances that a worker will process at
-                          once. Impacts speed and memory consumption.
-    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
-                          without new data before terminating. The default is to
-                          wait indefinitely.
+    --mp-chunk-size MP_CHUNK_SIZE
+                          The number of utterances that a multiprocessing worker
+                          will process at once. Impacts speed and memory
+                          consumption.
 
 torch-spect-data-dir-to-wds
 ---------------------------
@@ -608,8 +802,7 @@ torch-spect-data-dir-to-wds
                                      [--file-suffix FILE_SUFFIX]
                                      [--feat-subdir FEAT_SUBDIR]
                                      [--ali-subdir ALI_SUBDIR]
-                                     [--ref-subdir REF_SUBDIR] [--is-uri]
-                                     [--shard]
+                                     [--ref-subdir REF_SUBDIR] [--shard]
                                      [--max-samples-per-shard MAX_SAMPLES_PER_SHARD]
                                      [--max-size-per-shard MAX_SIZE_PER_SHARD]
                                      dir tar_path
@@ -674,8 +867,6 @@ torch-spect-data-dir-to-wds
     --ref-subdir REF_SUBDIR
                           Subdirectory where reference token sequences are
                           stored.
-    --is-uri              If set, tar_pattern will be treated as a URI rather
-                          than a path/
     --shard               Split samples among multiple tar files. 'tar_path'
                           will be extended with a suffix '.x', where x is the
                           shard number.
@@ -761,8 +952,7 @@ torch-token-data-dir-to-textgrids
                                            [--file-suffix FILE_SUFFIX] [--swap]
                                            [--frame-shift-ms FRAME_SHIFT_MS]
                                            [--num-workers NUM_WORKERS]
-                                           [--chunk-size CHUNK_SIZE]
-                                           [--timeout TIMEOUT]
+                                           [--mp-chunk-size MP_CHUNK_SIZE]
                                            [--textgrid-suffix TEXTGRID_SUFFIX]
                                            [--tier-name TIER_NAME]
                                            [--precision PRECISION] [--quiet]
@@ -840,19 +1030,17 @@ torch-token-data-dir-to-textgrids
     --num-workers NUM_WORKERS
                           The number of workers to spawn to process the data. 0
                           is serial. Defaults to the CPU count
-    --chunk-size CHUNK_SIZE
-                          The number of utterances that a worker will process at
-                          once. Impacts speed and memory consumption.
-    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
-                          without new data before terminating. The default is to
-                          wait indefinitely.
+    --mp-chunk-size MP_CHUNK_SIZE
+                          The number of utterances that a multiprocessing worker
+                          will process at once. Impacts speed and memory
+                          consumption.
     --textgrid-suffix TEXTGRID_SUFFIX
                           The file suffix in tg_dir indicating a TextGrid file.
     --tier-name TIER_NAME
                           The name to save the tier with
     --precision PRECISION
-                          Default precision with which to save floating point
-                          values in TextGrid files
+                          Precision with which to save floating point values in
+                          TextGrid files
     --quiet               If set, suppresses warnings when lengths cannot be
                           determined
     --force-method {1,2,3}
@@ -868,8 +1056,7 @@ torch-token-data-dir-to-torch-ali-data-dir
                                                     [--file-prefix FILE_PREFIX]
                                                     [--file-suffix FILE_SUFFIX]
                                                     [--num-workers NUM_WORKERS]
-                                                    [--chunk-size CHUNK_SIZE]
-                                                    [--timeout TIMEOUT]
+                                                    [--mp-chunk-size MP_CHUNK_SIZE]
                                                     ref_dir ali_dir
   
   Convert a ref/ dir to an ali/ dir
@@ -911,12 +1098,10 @@ torch-token-data-dir-to-torch-ali-data-dir
     --num-workers NUM_WORKERS
                           The number of workers to spawn to process the data. 0
                           is serial. Defaults to the CPU count
-    --chunk-size CHUNK_SIZE
-                          The number of utterances that a worker will process at
-                          once. Impacts speed and memory consumption.
-    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
-                          without new data before terminating. The default is to
-                          wait indefinitely.
+    --mp-chunk-size MP_CHUNK_SIZE
+                          The number of utterances that a multiprocessing worker
+                          will process at once. Impacts speed and memory
+                          consumption.
 
 torch-token-data-dir-to-trn
 ---------------------------
@@ -972,8 +1157,7 @@ trn-to-torch-token-data-dir
                                      [--file-suffix FILE_SUFFIX] [--swap]
                                      [--unk-symbol UNK_SYMBOL]
                                      [--num-workers NUM_WORKERS]
-                                     [--chunk-size CHUNK_SIZE]
-                                     [--timeout TIMEOUT]
+                                     [--mp-chunk-size MP_CHUNK_SIZE]
                                      [--skip-frame-times | --feat-sizing]
                                      trn token2id dir
   
@@ -1017,12 +1201,10 @@ trn-to-torch-token-data-dir
     --num-workers NUM_WORKERS
                           The number of workers to spawn to process the data. 0
                           is serial. Defaults to the CPU count
-    --chunk-size CHUNK_SIZE
-                          The number of utterances that a worker will process at
-                          once. Impacts speed and memory consumption.
-    --timeout TIMEOUT     When using multiple workers, how long (in seconds)
-                          without new data before terminating. The default is to
-                          wait indefinitely.
+    --mp-chunk-size MP_CHUNK_SIZE
+                          The number of utterances that a multiprocessing worker
+                          will process at once. Impacts speed and memory
+                          consumption.
     --skip-frame-times    If true, will store token tensors of shape (R,)
                           instead of (R, 3), foregoing segment start and end
                           times.

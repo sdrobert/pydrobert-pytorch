@@ -17,10 +17,9 @@ import os
 import math
 import socket
 
-from tempfile import mkdtemp
-from shutil import rmtree
 from zlib import adler32
 from contextlib import closing
+from shutil import rmtree
 
 import torch
 
@@ -31,18 +30,30 @@ import pydrobert.torch._compat as compat
 # command-line tests usually use relatively few utterances.
 # Make sure we're not putting them all on one thread.
 config.DEFT_CHUNK_SIZE = 10
+config.DEFT_NUM_WORKERS = 2
 
 if compat._v < "1.8.0":
     config.USE_JIT = True  # "trace" tests won't work otherwise
     compat.script = torch.jit.script
     compat.unflatten = torch.jit.script(compat.unflatten)
 
+    # don't re-script anything
+    # https://github.com/pytorch/pytorch/issues/51140
+    def script(obj, *args, **kwargs):
+        if isinstance(obj, torch.ScriptFunction) or isinstance(obj, torch.ScriptModule):
+            return obj
+        else:
+            return compat.script(obj)
+
+    torch.jit.script = script
+
 
 @pytest.fixture
-def temp_dir():
-    dir_name = mkdtemp()
-    yield dir_name
-    rmtree(dir_name)
+def temp_dir(tmp_path):
+    dir_ = tmp_path / "pytest"
+    dir_.mkdir()
+    yield os.fspath(dir_)
+    rmtree(os.fspath(dir_))
 
 
 @pytest.fixture(
@@ -73,6 +84,7 @@ def pytest_runtest_setup(item):
     if any(mark.name == "gpu" for mark in item.iter_markers()):
         if not CUDA_AVAIL:
             pytest.skip("cuda is not available")
+        torch.cuda.empty_cache()
     # implicitly seeds all tests for the sake of reproducibility
     torch.manual_seed(abs(adler32(bytes(item.name, "utf-8"))))
 
@@ -153,7 +165,7 @@ def populate_torch_dir():
 
 @pytest.fixture(
     params=[
-        "nojit",
+        pytest.param("nojit", marks=pytest.mark.nojit),
         pytest.param("trace", marks=pytest.mark.trace),
         pytest.param("script", marks=pytest.mark.script),
     ]

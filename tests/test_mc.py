@@ -184,7 +184,7 @@ def test_importance_sampling_estimator(device, self_normalize, is_log):
 
 
 def test_independent_metropolis_hastings_estimator(device, is_log):
-    N, T = int(1e4), 30
+    N, T = int(1e5 if device.type == "cuda" else 1e4), 30
     logits = torch.randn(T, device=device)
     mask = torch.randint(2, (T,), device=device) == 1
     probs = logits.sigmoid().masked_fill(mask, 0)

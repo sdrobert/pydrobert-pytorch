@@ -38,7 +38,7 @@ __all__ = [
     "DEFT_PDFS_SUBDIR",
     "DEFT_REF_SUBDIR",
     "DEFT_SUB_COST",
-    "DEFT_TEXTGRID_PRECISION",
+    "DEFT_FLOAT_PRINT_PRECISION",
     "DEFT_TEXTGRID_SUFFIX",
     "DEFT_TEXTGRID_TIER_ID",
     "DEFT_TEXTGRID_TIER_NAME",
@@ -105,14 +105,25 @@ DEFT_TEXTGRID_SUFFIX = ".TextGrid"
 DEFT_CHUNK_SIZE = 1000
 """Default number of units to process at once when performing multiprocessing"""
 
+
+def _cpu_count() -> int:
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    cpu_count = os.cpu_count()
+    return 0 if cpu_count is None else cpu_count
+
+
+DEFT_NUM_WORKERS = _cpu_count()
+"""Default number of workers when performing multiprocessing"""
+
 DEFT_FILE_PREFIX = ""
 """Default prefix of a torch data file"""
 
 DEFT_FILE_SUFFIX = ".pt"
 """Default suffix of a torch data file"""
 
-DEFT_TEXTGRID_PRECISION = 3
-"""Default precision to write floating point TextGrids with"""
+DEFT_FLOAT_PRINT_PRECISION = 3
+"""Default precision to write floating point values to file with"""
 
 DEFT_CTM_CHANNEL = "A"
 """Default channel to write to CTM files"""

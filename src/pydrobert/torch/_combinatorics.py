@@ -23,7 +23,6 @@ from ._compat import script, trunc_divide
 
 
 @script
-@torch.no_grad()
 def simple_random_sampling_without_replacement(
     total_count: torch.Tensor,
     given_count: torch.Tensor,
@@ -186,18 +185,32 @@ def binomial_coefficient(length: torch.Tensor, count: torch.Tensor) -> torch.Ten
     return binom
 
 
-@script
+# why bother with overloads? JIT. torch.dtype is technically an int right now. Later
+# versions of pytorch are able to quietly convert the type, but not 1.5.1
+# https://github.com/pytorch/pytorch/issues/65607
+
+
+@overload
 def enumerate_vocab_sequences(
     length: int,
     vocab_size: int,
     device: torch.device = torch.device("cpu"),
     dtype: torch.dtype = torch.long,
 ) -> torch.Tensor:
-    r"""Enumerate all sequences of a finite range of values of a fixed length
+    ...
+
+
+@script
+def enumerate_vocab_sequences(
+    length: int,
+    vocab_size: int,
+    device: torch.device = torch.device("cpu"),
+    dtype: int = torch.long,
+) -> torch.Tensor:
+    """Enumerate all sequences of a finite range of values of a fixed length
     
     This function generalizes :func:`enumerate_binary_sequences` to any positive
-    vocabulary size. Each step in each sequence takes on a value from :math:`[0,
-    vocab\_size)`.
+    vocabulary size. Each step in each sequence takes on a value from 0-`vocab_size`
 
     Parameters
     ----------
@@ -234,10 +247,17 @@ def enumerate_vocab_sequences(
     return support.T.contiguous()
 
 
+@overload
 def enumerate_binary_sequences(
     length: int,
     device: torch.device = torch.device("cpu"),
     dtype: torch.dtype = torch.long,
+) -> torch.Tensor:
+    ...
+
+
+def enumerate_binary_sequences(
+    length: int, device: torch.device = torch.device("cpu"), dtype: int = torch.long,
 ) -> torch.Tensor:
     """Enumerate all binary sequences of a fixed length
     
@@ -299,7 +319,7 @@ def enumerate_binary_sequences_with_cardinality(
 
 @script
 def _enumerate_binary_sequences_with_cardinality_int(
-    length: int, count: int, device: torch.device, dtype: torch.dtype
+    length: int, count: int, device: torch.device, dtype: int
 ) -> torch.Tensor:
     support = enumerate_binary_sequences(length, device, dtype)
     support = support[support.sum(1) == count]
@@ -335,7 +355,7 @@ def enumerate_binary_sequences_with_cardinality(
     length: Any,
     count: Any,
     device: torch.device = torch.device("cpu"),
-    dtype: torch.dtype = torch.long,
+    dtype: int = torch.long,
 ) -> Any:
     r"""Enumerate the configurations of binary sequences with fixed sum
     

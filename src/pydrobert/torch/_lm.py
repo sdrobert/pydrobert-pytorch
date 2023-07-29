@@ -15,6 +15,7 @@
 import abc
 
 from typing import Any, Dict, Optional, Sequence, Tuple, Union, overload
+import warnings
 
 import torch
 
@@ -544,13 +545,13 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         The start of sequence token. If specified, any prefix with fewer tokens than the
         maximum order of n-grams minus 1 will be prepended up to that length with this
         token.
-    prob_list
+    prob_dicts
         A list of dictionaries whose entry at index ``i`` corresponds to a table of
         ``i+1``-gram probabilities. Keys must all be ids, not strings. Unigram keys are
         just ids; for n > 1 keys are tuples of ids with the latest word last. Values in
-        the dictionary of the highest order n-gram dictionaries (last in `prob_list`)
+        the dictionary of the highest order n-gram dictionaries (last in `prob_dicts`)
         are the log-probabilities of the keys. Lower order dictionaries' values are
-        pairs of log-probability and log-backoff penalty. If `prob_list` is not
+        pairs of log-probability and log-backoff penalty. If `prob_dicts` is not
         specified, a unigram model with a uniform prior will be built
     
     Call Parameters
@@ -565,17 +566,17 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
 
     Notes
     -----
-    Initializing an instance from an `prob_list` is expensive. `prob_list` is converted
+    Initializing an instance from an `prob_dicts` is expensive. `prob_dicts` is converted
     to a trie (something like [heafield2011]_) so that it takes up less space in memory,
     which can take some time.
 
     Rather than re-initializing repeatedly, it is recommended you save and load this
     module's state dict. :func:`load_state_dict` as been overridden to support loading
-    different table sizes, avoiding the need for an accurate `prob_list` on
+    different table sizes, avoiding the need for an accurate `prob_dicts` on
     initialization:
 
     >>> # first time
-    >>> lm = LookupLanguageModel(vocab_size, sos, prob_list)  # slow
+    >>> lm = LookupLanguageModel(vocab_size, sos, prob_dicts)  # slow
     >>> state_dict = lm.state_dict()
     >>> # save state dict, quit, startup, then reload state dict
     >>> lm = LookupLanguageModel(vocab_size, sos)  # fast!
@@ -585,11 +586,13 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     --------
     pydrobert.util.parse_arpa_lm
         How to read a pretrained table of n-gram probabilities into
-        `prob_list`. The parameter `token2id` should be specified to ensure
+        `prob_dicts`. The parameter `token2id` should be specified to ensure
         id-based keys.
 
     Warnings
     --------
+    After 0.3.0, `prob_list` was renamed to `prob_dicts`. `prob_list` is deprecated
+
     After 0.3.0, `sos` became no longer optional. `pad_sos_to_n` was removed as an
     argument (implicitly true now). `eos` and `oov` were also removed as part of updates
     to :obj:`SequentialLanguageModel`
@@ -610,10 +613,30 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     # explore or not explore a path. In a massively parallel environment, I'm
     # not sure it's worth the effort...
 
+    @overload
     def __init__(
-        self, vocab_size: int, sos: int, prob_list: Optional[Sequence[dict]] = None,
+        self, vocab_size: int, sos: int, prob_dicts: Optional[Sequence[dict]] = None
+    ):
+        ...
+
+    def __init__(
+        self,
+        vocab_size: int,
+        sos: int,
+        prob_dicts: Optional[Sequence[dict]] = None,
+        prob_list: Optional[Sequence[dict]] = None,
     ):
         super().__init__(vocab_size)
+        if prob_list is not None:
+            if prob_dicts is None:
+                warnings.warn(
+                    "prob_list has been renamed to prob_dicts", DeprecationWarning
+                )
+                prob_dicts = prob_list
+            else:
+                raise ValueError(
+                    "prob_list and prob_dicts cannot be specified simultaneously"
+                )
         self.sos = sos
         if sos < 0 or sos > vocab_size:
             # we want sos to refer to an index but it's oov, so we'll shift all
@@ -621,7 +644,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             self.shift = 1
         else:
             self.shift = 0
-        if prob_list is None:
+        if prob_dicts is None:
             logs = -torch.full(
                 (self.shift + vocab_size,), vocab_size, dtype=torch.float
             ).log()
@@ -629,9 +652,9 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             self.max_ngram = 1
             self.max_ngram_nodes = self.shift + vocab_size
         else:
-            self.max_ngram = len(prob_list)
+            self.max_ngram = len(prob_dicts)
             self.max_ngram_nodes = -1  # changed by build_trie
-            logs, ids, pointers = self._build_trie(prob_list)
+            logs, ids, pointers = self._build_trie(prob_dicts)
         self.register_buffer("logs", logs)
         self.register_buffer("ids", ids)
         self.register_buffer("pointers", pointers)
@@ -731,33 +754,33 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         self.logs = torch.empty_like(logs, device=self.logs.device)
         return super(LookupLanguageModel, self).load_state_dict(state_dict, **kwargs)
 
-    def _build_trie(self, prob_list):
-        if not len(prob_list):
-            raise ValueError("prob_list must contain at least unigrams")
-        prob_list = [x.copy() for x in prob_list]
+    def _build_trie(self, prob_dicts):
+        if not len(prob_dicts):
+            raise ValueError("prob_dicts must contain at least unigrams")
+        prob_dicts = [prob_dict.copy() for prob_dict in prob_dicts]
         total_entries, nan, inf = 0, float("nan"), float("inf")
         unigrams = set(range(self.vocab_size))
         if self.shift:
             unigrams.add(self.sos)
         for n in range(self.max_ngram - 1, -1, -1):
-            dict_ = prob_list[n]
+            prob_dict = prob_dicts[n]
             is_last = n == self.max_ngram - 1
-            if is_last and not dict_:
-                raise ValueError("Final element in prob_list must not be empty")
+            if is_last and not prob_dict:
+                raise ValueError("Final element in prob_dicts must not be empty")
             if is_last:
                 dummy_value = -inf
             else:
                 dummy_value = -inf, 0.0
             if not n:
-                keys = set(dict_.keys())
+                keys = set(prob_dict.keys())
                 if keys - unigrams:
                     raise ValueError(
-                        "Unexpected unigrams in prob_list: {} (are these "
+                        "Unexpected unigrams in prob_dicts: {} (are these "
                         "ids?)".format(keys - unigrams)
                     )
-                dict_.update((key, dummy_value) for key in unigrams - keys)
+                prob_dict.update((key, dummy_value) for key in unigrams - keys)
             else:
-                for seq in dict_:
+                for seq in prob_dict:
                     if len(seq) != n + 1:
                         raise ValueError(
                             "Key {0} in {1}-gram is not a sequence of length "
@@ -765,27 +788,27 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                         )
                     if set(seq) - unigrams:
                         raise ValueError(
-                            "Unexpected tokens in {}-gram in prob_list: {} ("
+                            "Unexpected tokens in {}-gram in prob_dicts: {} ("
                             "are these ids?)"
                             "".format(n + 1, set(seq) - unigrams)
                         )
                     prefix = seq[:-1]
                     if len(prefix) == 1:
                         prefix = prefix[0]
-                    if prefix not in prob_list[n - 1]:
-                        prob_list[n - 1][prefix] = -inf, 0.0
-            total_entries += len(dict_)
+                    if prefix not in prob_dicts[n - 1]:
+                        prob_dicts[n - 1][prefix] = -inf, 0.0
+            total_entries += len(prob_dict)
             if is_last:
-                self.max_ngram_nodes = len(dict_)
+                self.max_ngram_nodes = len(prob_dict)
         if self.shift:
-            prob_list[0] = dict(
+            prob_dicts[0] = dict(
                 (0, v) if k == self.sos else (k + 1, v)
-                for (k, v) in list(prob_list[0].items())
+                for (k, v) in list(prob_dicts[0].items())
             )
             for n in range(1, self.max_ngram):
-                prob_list[n] = dict(
+                prob_dicts[n] = dict(
                     (tuple(t + 1 for t in k), v)
-                    for (k, v) in list(prob_list[n].items())
+                    for (k, v) in list(prob_dicts[n].items())
                 )
         N, G, V = self.max_ngram, self.max_ngram_nodes, self.vocab_size
         U, X = V + self.shift + (1 % N), total_entries - G + (N - 1)
@@ -806,7 +829,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             # from x to the next b is of size T, so the worst potential hop is
             # S + T - 1
             max_potential_offset = max(
-                len(prob_list[n]) + len(prob_list[n - 1]) - 1 for n in range(1, N)
+                len(prob_dicts[n]) + len(prob_dicts[n - 1]) - 1 for n in range(1, N)
             )
         else:
             max_potential_offset = 0  # no descendants
@@ -825,8 +848,8 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         pointers = torch.zeros(X, dtype=pointer_type)
         ids = torch.zeros(K, dtype=id_type)
         logs = torch.zeros(L, dtype=torch.float)
-        dict_ = prob_list.pop(0)
-        unigram_values = [dict_[x] for x in range(U - 1 % N)]
+        prob_dict = prob_dicts.pop(0)
+        unigram_values = [prob_dict[x] for x in range(U - 1 % N)]
         allocated = U - 1 % N
         if N == 1:
             logs.copy_(torch.tensor(unigram_values))
@@ -839,15 +862,15 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         parents = dict(((x,), x) for x in range(U - 1))
         N -= 1
         while N:
-            dict_ = prob_list.pop(0)
+            prob_dict = prob_dicts.pop(0)
             start = allocated
-            pointers[allocated] = len(dict_) + 1
+            pointers[allocated] = len(prob_dict) + 1
             logs[allocated] = logs[X + G + allocated] = nan
             allocated += 1
-            keys = sorted(dict_.keys())
+            keys = sorted(prob_dict.keys())
             children = dict()
             for key in keys:
-                value = dict_[key]
+                value = prob_dict[key]
                 children[key] = allocated
                 ids[allocated - U] = key[-1]
                 if N == 1:
@@ -877,3 +900,235 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         return logs, ids, pointers
 
     __call__ = proxy(SequentialLanguageModel.forward)
+
+
+class ShallowFusionLanguageModel(SequentialLanguageModel):
+    r"""Language model combining two language models with shallow fusion
+    
+    Shallow fusion [gulcehre2015]_ combines the predictions of two language models
+    by taking the weighted sum of their log probabilities:
+
+    .. math::
+        \log S(y_t=v|...) = \log P_{first}(y_t=v|...) +
+                                \beta \log P_{second}(y_t = v|...)
+
+    The resulting value :math:`log S(y_t=v)` is not technically a probability.
+
+    Parameters
+    ----------
+    first
+        The first language model
+    second
+        The second language model, whose log probabilities multiply with `beta`
+    beta
+        The value :math:`\beta`
+    first_prefix
+        Elements of the state dict for `first` will have `first_prefix` prepended to
+        their keys
+    second_prefix
+        Like `first_prefix`, but for `second`
+    
+    Warnings
+    --------
+    This class does not (and cannot) support JIT.
+
+    Notes
+    -----
+    If you intend to perform shallow fusion between CTC logits and an external language
+    model, you will not be able to do so via this class. CTC operates on an extended
+    vocabulary while an external language model does not. Fortunately,
+    :class:`CTCPrefixSearch` has built-in support for shallow fusion. Consult that
+    class for more information.
+
+    See Also
+    --------
+    MixableShallowFusionModel
+        A mixable subclass of this class. Applicable only if `first` and `second`
+        are both :class:`MixableSequentialLanguageModel` instances.
+    ExtractableShallowFusionModel
+        An extractable subclass of this class. Applicable only if `first` and `second`
+        are both :class:`ExtractableSequentialLanguageModel` instances.
+    """
+
+    __constants__ = "beta", "first_prefix", "second_prefix"
+    first: SequentialLanguageModel
+    second: SequentialLanguageModel
+    beta: float
+    first_prefix: str
+    second_prefix: str
+
+    def __init__(
+        self,
+        first: SequentialLanguageModel,
+        second: SequentialLanguageModel,
+        beta: float = 0.0,
+        first_prefix: str = "first.",
+        second_prefix: str = "second.",
+    ):
+        if first.vocab_size != second.vocab_size:
+            raise ValueError(
+                f"first's vocab_size ({first.vocab_size}) differs from second's "
+                f"vocab_size ({second.vocab_size})"
+            )
+        if not len(first_prefix) or not len(second_prefix):
+            raise ValueError(f"prefixes cannot be empty")
+        if first_prefix == second_prefix:
+            raise ValueError(f"first_prefix matches second_prefix ('{first_prefix}')")
+        super().__init__(first.vocab_size)
+        self.first, self.second, self.beta = first, second, beta
+        self.first_prefix, self.second_prefix = first_prefix, second_prefix
+
+    def extra_repr(self) -> str:
+        return super().extra_repr() + (
+            f", beta={self.beta}, first_prefix='{self.first_prefix}'"
+            f", second_prefix='{self.second_prefix}'"
+            f", first={self.first}, second={self.second}"
+        )
+
+    @torch.jit.export
+    def split_dicts(
+        self, prev: Dict[str, torch.Tensor]
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+        """Split state dicts into state dicts for first and second lms"""
+        prev_first: Dict[str, torch.Tensor] = dict()
+        prev_second: Dict[str, torch.Tensor] = dict()
+        for k, v in prev.items():
+            if k.startswith(self.first_prefix):
+                prev_first[k[len(self.first_prefix) :]] = v
+            elif k.startswith(self.second_prefix):
+                prev_second[k[len(self.second_prefix) :]] = v
+            else:
+                raise RuntimeError(
+                    f"key '{k}' from prev does not start with first_prefix "
+                    f"'{self.first_prefix}' nor second_prefix '{self.second_prefix}'"
+                )
+        return prev_first, prev_second
+
+    @torch.jit.export
+    def merge_dicts(
+        self, prev_first: Dict[str, torch.Tensor], prev_second: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """Merge state dicts from first and second lms into state dict"""
+        prev: Dict[str, torch.Tensor] = dict()
+        prev.update((self.first_prefix + k, v) for (k, v) in prev_first.items())
+        prev.update((self.second_prefix + k, v) for (k, v) in prev_second.items())
+        return prev
+
+    @torch.jit.export
+    def update_input(
+        self, prev: Dict[str, torch.Tensor], hist: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        prev_first, prev_second = self.split_dicts(prev)
+        prev_first = self.first.update_input(prev_first, hist)
+        prev_second = self.second.update_input(prev_second, hist)
+        return self.merge_dicts(prev_first, prev_second)
+
+    @torch.jit.export
+    def calc_idx_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        prev_first, prev_second = self.split_dicts(prev)
+        log_probs_first, cur_first = self.first.calc_idx_log_probs(
+            hist, prev_first, idx
+        )
+        log_probs_second, cur_second = self.second.calc_idx_log_probs(
+            hist, prev_second, idx
+        )
+        log_probs = log_probs_first + self.beta * log_probs_second
+        cur = self.merge_dicts(cur_first, cur_second)
+        return log_probs, cur
+
+    @torch.jit.export
+    def calc_full_log_probs(
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        prev_first, prev_second = self.split_dicts(prev)
+        log_probs_first = self.first.calc_full_log_probs(hist, prev_first)
+        log_probs_second = self.second.calc_full_log_probs(hist, prev_second)
+        return log_probs_first + self.beta * log_probs_second
+
+
+class ExtractableShallowFusionLanguageModel(
+    ShallowFusionLanguageModel, ExtractableSequentialLanguageModel
+):
+    """ShallowFusionLanguageModel which is also an ExtractableSequentialLanguageModel
+    
+    Both `first` and `second` must be :class:`ExtractableSequentialLanguageModel`
+    instances.
+
+    See Also
+    --------
+    ShallowFusionLanguageModel
+        For a description of shallow fusion and parameters. `first` and `second` may
+        not be extractable, but neither is :class:`ShallowFusionLanguageModel`.
+    MixableShallowFusionModel
+        A mixable subclass of this class. Applicable only if `first` and `second`
+        are both :class:`MixableSequentialLanguageModel` instances.
+    """
+
+    first: ExtractableSequentialLanguageModel
+    second: ExtractableSequentialLanguageModel
+
+    def __init__(
+        self,
+        first: ExtractableSequentialLanguageModel,
+        second: ExtractableSequentialLanguageModel,
+        beta: float = 0,
+        first_prefix: str = "first.",
+        second_prefix: str = "second.",
+    ):
+        super().__init__(first, second, beta, first_prefix, second_prefix)
+
+    @torch.jit.export
+    def extract_by_src(
+        self, prev: Dict[str, torch.Tensor], src: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        prev_first, prev_second = self.split_dicts(prev)
+        prev_first = self.first.extract_by_src(prev_first, src)
+        prev_second = self.second.extract_by_src(prev_second, src)
+        return self.merge_dicts(prev_first, prev_second)
+
+
+class MixableShallowFusionLanguageModel(
+    ExtractableShallowFusionLanguageModel, MixableSequentialLanguageModel
+):
+    """ShallowFusionLanguageModel which is also a MixableSequentialLanguageModel
+    
+    Both `first` and `second` must be :class:`ExtractableSequentialLanguageModel`
+    instances.
+
+    See Also
+    --------
+    ShallowFusionLanguageModel
+        For a description of shallow fusion and parameters. `first` and `second` may
+        not be mixable, but neither is :class:`ShallowFusionLanguageModel`.
+    ExtractableSequentialLanguageModel
+        An extractable superclass of this class. Applicable if `first` and `second`
+        are both :class:`ExtractableSequentialLanguageModel` instances.
+    """
+
+    first: MixableSequentialLanguageModel
+    second: MixableSequentialLanguageModel
+
+    def __init__(
+        self,
+        first: MixableSequentialLanguageModel,
+        second: MixableSequentialLanguageModel,
+        beta: float = 0,
+        first_prefix: str = "first.",
+        second_prefix: str = "second.",
+    ):
+        super().__init__(first, second, beta, first_prefix, second_prefix)
+
+    @torch.jit.export
+    def mix_by_mask(
+        self,
+        prev_true: Dict[str, torch.Tensor],
+        prev_false: Dict[str, torch.Tensor],
+        mask: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        prev_first_true, prev_second_true = self.split_dicts(prev_true)
+        prev_first_false, prev_second_false = self.split_dicts(prev_false)
+        prev_first = self.first.mix_by_mask(prev_first_true, prev_first_false, mask)
+        prev_second = self.second.mix_by_mask(prev_second_true, prev_second_false, mask)
+        return self.merge_dicts(prev_first, prev_second)

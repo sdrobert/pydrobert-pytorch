@@ -89,9 +89,9 @@ def test_pad_masked_sequence(device, batch_first, jit_type):
 def test_chunk_by_slice(device, mode, another_dim, jit_type):
     N, Tmax, Tmin, F = 30, 20, 5, 7 if another_dim else 1
     lens = torch.randint(Tmin, Tmax + 1, (N,), device=device)
-    starts = torch.randint(-Tmax + 1, Tmax, (N,))
+    starts = torch.randint(-Tmax + 1, Tmax, (N,), device=device)
     starts = torch.max(starts, -lens + 1)
-    ends = starts + torch.randint(-1, Tmax - 1, (N,))  # -1 to allow empty slices
+    ends = starts + torch.randint(-1, Tmax - 1, (N,), device=device)
     ends = torch.min(ends, 2 * lens - 1)
     slices = torch.stack([starts, ends], 1)
     x = torch.arange(N * Tmax * F, device=device, dtype=torch.float).view(N, Tmax, F)

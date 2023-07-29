@@ -1,4 +1,4 @@
-# Copyright 2022 Sean Robertson
+# Copyright 2023 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,8 @@ import os
 import argparse
 import abc
 
-from typing import Dict, Optional, TypeVar, Generic, Type
+from pathlib import PurePath
+from typing import Dict, Optional, TypeVar, Generic, Type, Union
 from typing_extensions import Literal
 
 import torch
@@ -31,6 +32,58 @@ from ._dataloaders import (
     SpectDataLoaderParams,
     LangDataLoaderParams,
 )
+
+
+StrPath = Union[str, os.PathLike]
+
+
+class MyPath(param.Parameter):
+
+    __slots__ = ["always_exists", "type"]
+
+    always_exists: bool
+    type: Optional[Literal["dir", "file"]]
+
+    def __init__(
+        self,
+        default: Optional[StrPath] = None,
+        always_exists: bool = True,
+        type: Optional[Literal["dir", "file"]] = None,
+        **params,
+    ):
+        if type not in {"dir", "file", None}:
+            raise ValueError(
+                f"type must be one of 'dir', 'file', or None; got '{type}'"
+            )
+        self.always_exists = always_exists
+        self.type = type
+        super().__init__(default=default, **params)
+
+    def __get__(self, obj, objtype) -> Optional[str]:
+        path: Optional[StrPath] = super().__get__(obj, objtype)
+        if path is not None:
+            path = os.path.normpath(path)
+            if os.path.exists(path):
+                if self.type is not None and (
+                    os.path.isdir(path) != (self.type == "dir")
+                    or os.path.isfile(path) != (self.type == "file")
+                ):
+                    raise IOError(f"'{path}' is not a {self.type}")
+            elif self.always_exists:
+                raise IOError(f"'{path}' does not exist")
+        return path
+
+    @classmethod
+    def serialize(cls, value: Optional[StrPath]) -> Optional[str]:
+        if value is None:
+            return value
+        return PurePath(value).as_posix()
+
+    @classmethod
+    def deserialize(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or value == "null":
+            return None
+        return os.path.normpath(value)
 
 
 class LitDataModuleParamsMetaclass(pabc.AbstractParameterizedMetaclass):
@@ -82,14 +135,10 @@ class LitDataModuleParams(
         doc="Prediction data loader parameters. If set, cannot instantiate common",
     )
 
-    train_dir: Optional[str] = param.Foldername(
-        None, doc="Path to training data directory"
-    )
-    val_dir: Optional[str] = param.Foldername(
-        None, doc="Path to validation data directory"
-    )
-    test_dir: Optional[str] = param.Foldername(None, doc="Path to test data directory")
-    predict_dir: Optional[str] = param.Foldername(
+    train_dir: Optional[str] = MyPath(None, doc="Path to training data directory")
+    val_dir: Optional[str] = MyPath(None, doc="Path to validation data directory")
+    test_dir: Optional[str] = MyPath(None, doc="Path to test data directory")
+    predict_dir: Optional[str] = MyPath(
         None,
         doc="Path to prediction data directory (leave empty to use test_dir if avail.)",
     )
@@ -168,15 +217,18 @@ class LitDataModuleParams(
         else:
             self.common = params
 
-    def initialize_set_parameters(self, include_predict: bool = False):
+    def initialize_missing(self, include_predict: bool = False):
         if self._use_split():
             with param.parameterized.batch_call_watchers(self):
-                self.train = self.pclass(name="train")
-                self.val = self.pclass(name="val")
-                self.test = self.pclass(name="test")
+                if self.train is None:
+                    self.train = self.pclass(name="train")
+                if self.val is None:
+                    self.val = self.pclass(name="val")
+                if self.test is None:
+                    self.test = self.pclass(name="test")
                 if include_predict:
                     self.predict = self.pclass(name="predict")
-        else:
+        elif self.common is None:
             self.common = self.pclass(name="common")
 
     @property
@@ -215,6 +267,8 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
     _num_workers: Optional[int]
     _pin_memory: Optional[bool]
 
+    params: LitDataModuleParams[P]
+
     def __init__(
         self,
         params: LitDataModuleParams[P],
@@ -225,6 +279,8 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
             raise ValueError(f"Incorrect parameter class {type(params)}")
         super().__init__()
 
+        self.params = params
+
         # The member is a "local copy" of the hyperparameter. The default changes
         # depending on the node we're running on, so we don't want to propagate them
         # back to the module state
@@ -233,13 +289,10 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
 
         self.train_set = self.predict_set = self.test_set = self.val_set = None
 
-        # XXX(sdrobert): save_hyperparameters saves unused arguments to self.hparams
-        self.save_hyperparameters()
-
-    @property
-    def params(self) -> LitDataModuleParams[P]:
-        """the data module parameters"""
-        return self.hparams.params
+    # @property
+    # def params(self) -> LitDataModuleParams[P]:
+    #     """the data module parameters"""
+    #     return self.hparams.params
 
     @property
     def num_workers(self) -> Optional[int]:
@@ -285,14 +338,17 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
     def setup(self, stage: Optional[str] = None):
 
         if self._num_workers is None:
-            # FIXME(sdrobert): DDP and such
-            self._num_workers = torch.multiprocessing.cpu_count()
+            if self.trainer is not None and isinstance(
+                self.trainer.strategy, pl.strategies.DDPSpawnStrategy
+            ):
+                self._num_workers = 1
+            else:
+                self._num_workers = torch.multiprocessing.cpu_count()
 
         if self._pin_memory is None:
             if self.trainer is not None:
                 self._pin_memory = isinstance(
-                    self.trainer.accelerator,
-                    pl.accelerators.accelerator.CUDAAccelerator,
+                    self.trainer.accelerator, pl.accelerators.CUDAAccelerator,
                 )
             else:
                 self._pin_memory = True
@@ -381,12 +437,20 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
         parser: argparse.ArgumentParser,
         split: bool = True,
         include_overloads: bool = True,
+        read_format_str: str = "--read-data-{file_format}",
+        print_format_str: Optional[str] = None,
     ):
         pobj = cls.pclass(name="data_params")
         pobj.prefer_split = split
-        pobj.initialize_set_parameters()
+        pobj.initialize_missing()
+
+        if print_format_str is not None:
+            pargparse.add_serialization_group_to_parser(
+                parser, pobj, reckless=True, flag_format_str=print_format_str
+            )
+
         grp = pargparse.add_deserialization_group_to_parser(
-            parser, pobj, "data_params", reckless=True
+            parser, pobj, "data_params", reckless=True, flag_format_str=read_format_str,
         )
 
         if include_overloads:
@@ -427,6 +491,7 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
         cls, namespace: argparse.Namespace, **kwargs,
     ):
         data_params = namespace.data_params
+        data_params.initialize_missing()
         for overload in ("train_dir", "val_dir", "test_dir", "predict_dir"):
             value = getattr(namespace, overload, None)
             if value is not None:
@@ -442,11 +507,9 @@ class LitLangDataModuleParams(LitDataModuleParams[LangDataLoaderParams]):
     vocab_size: Optional[int] = param.Integer(
         None, bounds=(1, None), doc="Vocabulary size",
     )
-    info_path: Optional[str] = param.Filename(
+    info_path: Optional[str] = MyPath(
         None,
-        doc="Path to output of get-torch-spect-data-dir-info command on train_dir/.., "
-        "if train_dir happens to be a subdirectory of a SpectDataSet. Can be "
-        "used to infer the vocabulary size.",
+        doc="Path to output of get-torch-spect-data-dir-info command on train_dir/",
     )
 
 
@@ -477,11 +540,11 @@ class LitSpectDataModuleParams(LitDataModuleParams[SpectDataLoaderParams]):
 
     pclass = SpectDataLoaderParams
 
-    info_path: Optional[str] = param.Filename(
+    info_path: Optional[str] = MyPath(
         None, doc="Path to output of get-torch-spect-data-dir-info command on train_dir"
     )
 
-    mvn_path: Optional[str] = param.Filename(
+    mvn_path: Optional[str] = MyPath(
         None,
         doc="Path to output of compute-mvn-stats-for-torch-feat-data-dir on train_dir",
     )
@@ -494,6 +557,14 @@ class LitSpectDataModule(
 
     pclass = LitSpectDataModuleParams
     params: LitSpectDataModuleParams
+    batch_first: bool
+    sort_batch: bool
+    suppress_alis: bool
+    tokens_only: bool
+    suppress_uttids: Optional[bool]
+    shuffle: Optional[bool]
+    warn_on_missing: bool
+    on_uneven_distributed: Literal["raise", "uneven", "ignore"]
 
     _num_filts: Optional[int]
     _info_dict: Optional[Dict[str, int]]
@@ -502,63 +573,36 @@ class LitSpectDataModule(
 
     def __init__(
         self,
-        params: LitSpectDataModuleParams,
+        data_params: LitSpectDataModuleParams,
         batch_first: bool = False,
         sort_batch: bool = False,
         suppress_alis: bool = True,
         tokens_only: bool = True,
+        suppress_uttids: Optional[bool] = None,
+        shuffle: Optional[bool] = None,
         num_workers: Optional[int] = None,
         pin_memory: Optional[bool] = None,
         warn_on_missing: bool = True,
         on_uneven_distributed: Literal["raise", "uneven", "ignore"] = "raise",
     ) -> None:
-        super().__init__(params, num_workers, pin_memory)
+        super().__init__(data_params, num_workers, pin_memory)
 
+        self.batch_first = batch_first
+        self.sort_batch = sort_batch
+        self.suppress_alis = suppress_alis
+        self.tokens_only = tokens_only
+        self.suppress_uttids = suppress_uttids
+        self.shuffle = shuffle
+        self.warn_on_missing = warn_on_missing
+        self.on_uneven_distributed = on_uneven_distributed
         self._info_dict = None
-
-        self.save_hyperparameters()
-
-    @property
-    def batch_first(self) -> bool:
-        """bool : whether dataloaders present data with the batch dimension first"""
-        return self.hparams.batch_first
-
-    @property
-    def sort_batch(self) -> bool:
-        """bool : whether dataloaders sort batch elements by number of features"""
-        return self.hparams.sort_batch
-
-    @property
-    def suppress_alis(self) -> bool:
-        """bool : whether dataloaders suppress alignment info"""
-        return self.hparams.suppress_alis
-
-    @property
-    def tokens_only(self) -> bool:
-        """bool : whether dataloaders suppress segment info in token seqs if avail."""
-        return self.hparams.tokens_only
-
-    @property
-    def warn_on_missing(self) -> bool:
-        """bool : whether to issue a warning if utterances are missing in subdirs"""
-        return self.hparams.warn_on_missing
-
-    @property
-    def on_uneven_distributed(self) -> Literal["raise", "uneven", "ignore"]:
-        """str : how to handle uneven batch sizes in the distributed environment
-        
-        - 'raise': throw a :class:`ValueError`
-        - 'uneven': allow some processes to make fewer or smaller batches.
-        - 'ignore': ignore the distributed environment. Each process yields all batches.
-        """
-        return self.hparams.on_uneven_distributed
 
     def get_info_dict_value(
         self, key: str, default: Optional[int] = None
     ) -> Optional[int]:
         """Get a value from the info dict
 
-        The info dict is gathered in :func:`prepare_data` if ``params.info_path`` is not
+        The info dict is gathered in :func:`setup` if ``params.info_path`` is not
         :obj:`None`.
         """
         return None if self._info_dict is None else self._info_dict.get(key, default)
@@ -570,6 +614,19 @@ class LitSpectDataModule(
         Alias of ``max_ref_class + 1``.
         """
         return None if self.max_ref_class is None else self.max_ref_class + 1
+
+    @property
+    def batch_size(self) -> int:
+        """int : training batch size
+        
+        This property is just the value of ``self.params.train_params.batch_size``.
+        It is exposed in case ``auto_scale_batch_size`` is desired.
+        """
+        return self.params.train_params.batch_size
+
+    @batch_size.setter
+    def batch_size(self, batch_size: int):
+        self.params.train_params.batch_size = batch_size
 
     @property
     def feat_size(self) -> Optional[int]:
@@ -590,7 +647,7 @@ class LitSpectDataModule(
     def max_ali_class(self) -> Optional[int]:
         """int: the maximum token id in the ali/ subdirectory (usually of training)
         
-        Determined in :func:`prepare_data` if `params.info_path` is not :obj:`None`.
+        Determined in :func:`setup` if `params.info_path` is not :obj:`None`.
         """
         return self.get_info_dict_value("max_ali_class")
 
@@ -598,22 +655,9 @@ class LitSpectDataModule(
     def num_filts(self) -> Optional[int]:
         """int : size of the last dimension of tensors in feat/
         
-        Determined in :func:`prepare_data` if `params.info_path` is not :obj:`None`.
+        Determined in :func:`setup` if `params.info_path` is not :obj:`None`.
         """
         return None if self._info_dict is None else self._info_dict["num_filts"]
-
-    def prepare_data(self):
-        if self.params.info_path is not None and self._info_dict is None:
-            self._info_dict = dict()
-            with open(self.params.info_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    key, value = line.split()
-                    value = int(value)
-                    if value != -1:
-                        self._info_dict[key] = value
 
     def construct_dataset(
         self,
@@ -621,7 +665,9 @@ class LitSpectDataModule(
         path: str,
         params: SpectDataLoaderParams,
     ) -> SpectDataSet:
-        suppress_uttids = partition != "predict"
+        suppress_uttids = self.suppress_uttids
+        if suppress_uttids is None:
+            suppress_uttids = partition != "predict"
         return SpectDataSet(
             path,
             warn_on_missing=self.warn_on_missing,
@@ -634,6 +680,19 @@ class LitSpectDataModule(
         )
 
     def setup(self, stage: Optional[str] = None):
+
+        if self.params.info_path is not None and self._info_dict is None:
+            self._info_dict = dict()
+            with open(self.params.info_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    key, value = line.split()
+                    value = int(value)
+                    if value != -1:
+                        self._info_dict[key] = value
+
         if (
             self.params.mvn_path is not None
             and self._mvn_mean is None
@@ -642,6 +701,7 @@ class LitSpectDataModule(
             dict_ = torch.load(self.params.mvn_path, "cpu")
             self._mvn_mean = dict_["mean"]
             self._mvn_std = dict_["std"]
+
         super().setup(stage)
 
     def construct_dataloader(
@@ -650,10 +710,13 @@ class LitSpectDataModule(
         ds: SpectDataSet,
         params: SpectDataLoaderParams,
     ) -> SpectDataLoader:
+        shuffle = self.shuffle
+        if shuffle is None:
+            shuffle = partition == "train"
         return SpectDataLoader(
             ds,
             params,
-            shuffle=partition == "train",
+            shuffle=shuffle,
             batch_first=self.batch_first,
             sort_batch=self.sort_batch,
             init_epoch=0 if self.trainer is None else self.trainer.current_epoch,
@@ -668,8 +731,12 @@ class LitSpectDataModule(
         parser: argparse.ArgumentParser,
         split: bool = True,
         include_overloads: bool = True,
+        read_format_str: str = "--read-data-{file_format}",
+        print_format_str: Optional[str] = None,
     ):
-        grp = super().add_argparse_args(parser, split, include_overloads)
+        grp = super().add_argparse_args(
+            parser, split, include_overloads, read_format_str, print_format_str
+        )
         if include_overloads:
             grp.add_argument(
                 "--mvn-path",

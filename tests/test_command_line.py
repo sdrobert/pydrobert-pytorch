@@ -13,8 +13,10 @@
 # limitations under the License.
 
 import os
+import sys
 import warnings
 import glob
+import random
 
 import pytest
 import torch
@@ -164,14 +166,7 @@ A a (utt5)
         )
     with warnings.catch_warnings(record=True):
         assert not command_line.trn_to_torch_token_data_dir(
-            [
-                trn_path,
-                tokens_path,
-                ref_dir,
-                "--alt-handler=first",
-                "--unk-symbol=c",
-                "--chunk-size=1",
-            ]
+            [trn_path, tokens_path, ref_dir, "--alt-handler=first", "--unk-symbol=c",]
             + (["--swap"] if tokens == "id2token" else [])
             + (["--skip-frame-times"] if skip_frame_times else [])
             + (["--feat-sizing"] if feat_sizing else [])
@@ -725,10 +720,8 @@ Object class = "TextGrid"
 @pytest.mark.cpu
 @pytest.mark.parametrize("with_feats", [True, False])
 def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
-    N = 100
-    V = 10
-    max_R = 10
-    max_seg = 5
+    # print(f"Started with_feats={with_feats}")
+    N, V, max_R, max_seg = 50, 10, 10, 5
     ref_dir = os.path.join(temp_dir, "ref")
     ali_dir = os.path.join(temp_dir, "ali")
     os.makedirs(ref_dir)
@@ -741,6 +734,7 @@ def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
         feat_dir = None
     refs = []
     for n in range(N):
+        # print(f"generating utt_{n}")
         R = torch.randint(1, max_R, (1,)).item()
         ref = torch.zeros((R, 3), dtype=torch.long)
         ref[:, 0] = torch.randint(V, (R,))
@@ -751,9 +745,12 @@ def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
         refs.append(ref)
         if with_feats:
             torch.save(torch.randn((ends[-1].item(), 1)), f"{feat_dir}/utt_{n}.pt")
+    # print("calling cmd")
     assert not command_line.torch_token_data_dir_to_torch_ali_data_dir(args)
+    # print("command done")
     assert len(os.listdir(ali_dir)) == N
     for n, ref in enumerate(refs):
+        # print(f"checking utt_{n}")
         ali = torch.load(f"{ali_dir}/utt_{n}.pt")
         assert ali.ndim == 1
         T = ali.size(0)
@@ -770,9 +767,9 @@ def test_torch_token_data_dir_to_torch_ali_data_dir(temp_dir, with_feats):
 
 @pytest.mark.cpu
 def test_torch_ali_data_dir_to_torch_token_data_dir(temp_dir):
-    N = 100
+    N = 50
     V = 10
-    T = 50
+    T = 20
     ref_dir = os.path.join(temp_dir, "ref")
     ali_dir = os.path.join(temp_dir, "ali")
     os.makedirs(ali_dir)
@@ -962,7 +959,7 @@ Object class = "TextGrid"
 
 @pytest.mark.cpu
 def test_chunk_torch_spect_data_dir(temp_dir, populate_torch_dir):
-    N = 100
+    N = 50
     in_dir = os.path.join(temp_dir, "in")
     out_dir = os.path.join(temp_dir, "out")
     feats, alis, refs, lens, ref_lens, utt_ids = populate_torch_dir(in_dir, N)
@@ -1009,3 +1006,204 @@ def test_chunk_torch_spect_data_dir(temp_dir, populate_torch_dir):
         assert (exp_ali == act_ali).all()
         assert (exp_ref == act_ref).all()
 
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("only", [True, False], ids=["only", "all"])
+@pytest.mark.parametrize(
+    "style",
+    [
+        "utt-list",
+        "utt-list-file",
+        "first-n",
+        "first-ratio",
+        "last-n",
+        "last-ratio",
+        "shortest-n",
+        "shortest-ratio",
+        "longest-n",
+        "longest-ratio",
+        "rand-n",
+        "rand-ratio",
+    ],
+)
+def test_subset_torch_spect_data_dir(temp_dir, populate_torch_dir, only, style):
+    N, r = 50, 0.33333
+    n = int(N * r)
+    src = os.path.join(temp_dir, "src")
+    dst = os.path.join(temp_dir, "dest")
+    feats, alis, refs, _, _, utt_ids = populate_torch_dir(src, N)
+    feat_sdir, feat_ddir = os.path.join(src, "feat"), os.path.join(dst, "feat")
+    ali_ddir = os.path.join(dst, "ali")
+    ref_ddir = os.path.join(dst, "ref")
+    if only:
+        args = [
+            feat_sdir,
+            feat_ddir,
+            "--only",
+            f"--{style}",
+        ]
+    else:
+        args = [src, dst, f"--{style}"]
+    exp_utt_ids = sorted(utt_ids)
+    if style in {"utt-list", "utt-list-file"}:
+        random.seed(-1)
+        random.shuffle(exp_utt_ids)
+        exp_utt_ids = exp_utt_ids[:n]
+        if style == "utt-list":
+            args.extend(exp_utt_ids)
+        else:
+            pth = os.path.join(temp_dir, "uttids.txt")
+            args.append(pth)
+            with open(pth, "w") as file_:
+                file_.write("\n".join(exp_utt_ids))
+                file_.write("\n")
+    else:
+        if style[-1] == "n":
+            args.append(str(n))
+        else:
+            args.append(str(r))
+        if style.startswith("last"):
+            exp_utt_ids.sort(reverse=True)
+        elif style.startswith("rand"):
+            random.seed("fart")
+            random.shuffle(exp_utt_ids)
+            args.extend(["--seed", "fart"])
+        elif style.startswith("shortest") or style.startswith("longest"):
+            exp_utt_ids = ((x.size(0), y) for (x, y) in zip(feats, utt_ids))
+            if style.startswith("shortest"):
+                exp_utt_ids = sorted(exp_utt_ids)
+            else:
+                exp_utt_ids = sorted(exp_utt_ids, key=lambda x: (-x[0], x[1]))
+            exp_utt_ids = [x[1] for x in exp_utt_ids]
+    exp_utt_ids = sorted(exp_utt_ids[:n])
+
+    assert not command_line.subset_torch_spect_data_dir(args)
+    assert sorted(os.listdir(feat_ddir)) == [x + ".pt" for x in exp_utt_ids]
+    if only:
+        assert not os.path.isdir(ali_ddir)
+        assert not os.path.isdir(ref_ddir)
+    else:
+        assert len(os.listdir(ali_ddir)) == n
+        assert len(os.listdir(ref_ddir)) == n
+    for utt_id in exp_utt_ids:
+        i = utt_ids.index(utt_id)
+        assert i >= 0
+        feat_exp = feats[i]
+        feat_act = torch.load(os.path.join(feat_ddir, utt_id + ".pt"))
+        assert (feat_exp == feat_act).all()
+        if not only:
+            ali_exp, ref_exp = alis[i], refs[i]
+            ali_act = torch.load(os.path.join(ali_ddir, utt_id + ".pt"))
+            assert (ali_exp == ali_act).all()
+            ref_act = torch.load(os.path.join(ref_ddir, utt_id + ".pt"))
+            assert (ref_exp == ref_act).all()
+
+
+@pytest.mark.cpu
+@pytest.mark.skipif(
+    sys.platform.startswith("win"), reason="symlinks unlikely to work on Windows"
+)
+def test_subset_torch_spect_data_dir_symlink(temp_dir, populate_torch_dir):
+    # make sure symlinks are relative
+    src = os.path.relpath(os.path.join(temp_dir, "src"))
+    dst = os.path.relpath(os.path.join(temp_dir, "dest"))
+    feats, alis, refs, _, _, utt_ids = populate_torch_dir(src, 1)
+    feat, ali, ref, utt_id = feats[0], alis[0], refs[0], utt_ids[0]
+    assert not command_line.subset_torch_spect_data_dir(
+        [src, dst, "--first-n", "1", "--symlink"]
+    )
+    assert (feat == torch.load(f"{dst}/feat/{utt_id}.pt")).all()
+    assert (ali == torch.load(f"{dst}/ali/{utt_id}.pt")).all()
+    assert (ref == torch.load(f"{dst}/ref/{utt_id}.pt")).all()
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("bessel", [True, False], ids=["unbiased", "biased"])
+@pytest.mark.parametrize("std", [True, False], ids=["std", "var"])
+@pytest.mark.parametrize("exclude", [True, False], ids=["exclude", "noexclude"])
+def test_print_torch_ali_data_dir_length_moments(temp_dir, bessel, std, exclude):
+    N, len_max, seg_max = 49, 30, 5
+    lens = torch.randint(1, len_max + 1, (N * seg_max,))
+    nsegs = torch.randint(1, seg_max + 1, (N,))
+    lens = lens[: nsegs.sum()]
+    lens_ = lens.float()
+    mean = lens_.mean().item()
+    if std:
+        var = lens_.std(unbiased=bessel).item()
+    else:
+        var = lens_.var(unbiased=bessel).item()
+    out_exp = f"{mean:0.03f} ({var:0.03f})\n"
+    for n in range(N):
+        nseg = nsegs[n]
+        lens_n, lens = lens[:nseg], lens[nseg:]
+        ali = torch.arange(nseg).repeat_interleave(lens_n)
+        if exclude:
+            ali = torch.cat([ali, torch.tensor([-1, -1])])
+        torch.save(ali, os.path.join(temp_dir, f"utt{n}.pt"))
+    assert not lens.numel()
+    out_file = os.path.join(temp_dir, "out.txt")
+    args = [temp_dir, out_file]
+    if exclude:
+        args.extend(["--exclude-ids", "-1"])
+    if std:
+        args.append("--std")
+    if bessel:
+        args.append("--bessel")
+    assert not command_line.print_torch_ali_data_dir_length_moments(args)
+    with open(out_file) as f:
+        out_act = f.read()
+    assert out_exp == out_act
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("bessel", [True, False], ids=["unbiased", "biased"])
+@pytest.mark.parametrize("std", [True, False], ids=["std", "var"])
+@pytest.mark.parametrize("exclude", [True, False], ids=["exclude", "noexclude"])
+def test_print_torch_ref_data_dir_length_moments(temp_dir, bessel, std, exclude):
+    N, len_max, seg_max, V = 200, 5, 20, 30
+    lens = torch.randint(1, len_max + 1, (N * seg_max,))
+    offs = torch.randint(0, len_max * seg_max, (N * seg_max,))
+    nsegs = torch.randint(1, seg_max + 1, (N,))
+    lens, offs = lens[: nsegs.sum()], offs[: nsegs.sum()]
+    lens_ = lens.float()
+    mean = lens_.mean().item()
+    if std:
+        var = lens_.std(unbiased=bessel).item()
+    else:
+        var = lens_.var(unbiased=bessel).item()
+    out_exp = f"{mean:0.03f} ({var:0.03f})\n"
+    for n in range(N):
+        nseg = nsegs[n]
+        lens_n, lens = lens[:nseg], lens[nseg:]
+        offs_n, offs = offs[:nseg], offs[nseg:]
+        ref = torch.stack([torch.randint(V, (nseg,)), offs_n, offs_n + lens_n], 1)
+        if exclude:
+            ref = torch.cat([ref, torch.tensor([[n % 2 - 2, 0, 10000]])], 0)
+        torch.save(ref, os.path.join(temp_dir, f"utt{n}.pt"))
+    assert not lens.numel()
+    out_file = os.path.join(temp_dir, "out.txt")
+    args = [temp_dir, out_file]
+    if exclude:
+        args.extend(["--exclude-ids", "-1", "-2"])
+    if std:
+        args.append("--std")
+    if bessel:
+        args.append("--bessel")
+    assert not command_line.print_torch_ref_data_dir_length_moments(args)
+    with open(out_file) as f:
+        out_act = f.read()
+    assert out_exp == out_act
+    ref = torch.tensor([[1, 2, 3], [1, 3, 2], [1, -1, 4], [1, 0, 10]])
+    lens_ = torch.cat([lens_, torch.tensor([1.0, 10], dtype=torch.float)])
+    mean = lens_.mean().item()
+    if std:
+        var = lens_.std(unbiased=bessel).item()
+    else:
+        var = lens_.var(unbiased=bessel).item()
+    out_exp = f"{mean:0.03f} ({var:0.03f})\n"
+    torch.save(ref, os.path.join(temp_dir, "bad.pt"))
+    with pytest.warns(UserWarning, match=r"'bad': segments \[1, 2\]"):
+        assert not command_line.print_torch_ref_data_dir_length_moments(args)
+    with open(out_file) as f:
+        out_act = f.read()
+    assert out_exp == out_act

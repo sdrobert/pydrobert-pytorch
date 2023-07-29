@@ -42,6 +42,7 @@ from typing import (
 )
 
 import torch
+import torch.jit.annotations
 
 from . import config
 
@@ -271,9 +272,9 @@ if _v < "1.8.0":
             return any(_jit_isinstance(obj, y) for y in args)
         return False
 
-    def jit_isinstance(obj: Any, x: type) -> bool:
+    def jit_isinstance(obj: Any, x: Any) -> bool:
         if torch.jit.is_scripting():
-            return isinstance(obj, x)
+            raise RuntimeError("Refinement isn't possible with this version of pytorch")
         else:
             return _jit_isinstance(obj, x)
 
@@ -346,7 +347,6 @@ else:
     logaddexp = torch.logaddexp
 
 
-@torch.no_grad()
 def broadcast_shapes(a: List[int], b: List[int]) -> List[int]:
     scalar = torch.zeros((), device="cpu")
     tensor_a = scalar.expand(a)

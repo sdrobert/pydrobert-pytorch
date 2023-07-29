@@ -12,19 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
 import os
 import sys
 import argparse
 import math
-from typing_extensions import Literal
 import warnings
 import itertools
 import tarfile
 import io
+import random
+import shutil
 
 from pathlib import Path
 from collections import defaultdict, OrderedDict
-from typing import Dict, Optional, Sequence
+from typing import Any, Callable, Dict, Optional, Sequence, Type, TypeVar
+from typing_extensions import Literal
 
 import torch
 
@@ -32,6 +35,45 @@ from . import data, modules, config
 from ._feats import SliceSpectData, ChunkTokenSequencesBySlices
 from ._pad import ChunkBySlices
 from ._string import error_rate
+from ._datasets import _info_and_validate
+
+
+def rdir(x: str) -> str:
+    if not os.path.isdir(x):
+        raise TypeError(f"'{x}' is not a directory")
+    return x
+
+
+R = TypeVar("R")
+
+
+def bounded(
+    x: str,
+    type: Type[R],
+    lower: Optional[R] = None,
+    upper: Optional[R] = None,
+    inclusive_lower: bool = True,
+    inclusive_upper: bool = True,
+) -> R:
+    x: R = type(x)
+    if lower is not None:
+        if inclusive_lower and x < lower:
+            raise TypeError(f"Expected {x} >= {lower}")
+        elif not inclusive_lower and x <= lower:
+            raise TypeError(f"Expected {x} > {lower}")
+    if upper is not None:
+        if inclusive_upper and x > upper:
+            raise TypeError(f"Expected {x} <= {upper}")
+        elif not inclusive_upper and x >= upper:
+            raise TypeError(f"Expected {x} < {upper}")
+    return x
+
+
+nat = lambda x: bounded(x, int, 1)
+nat0 = lambda x: bounded(x, int, 0)
+pos = lambda x: bounded(x, float, 0, inclusive_lower=False)
+open01 = lambda x: bounded(x, float, 0.0, 1.0, False, False)
+closed01 = lambda x: bounded(x, float, 0.0, 1.0)
 
 
 _COMMON_ARGS = {
@@ -57,7 +99,7 @@ _COMMON_ARGS = {
     },
     "--num-workers": {
         "type": int,
-        "default": torch.multiprocessing.cpu_count(),
+        "default": config.DEFT_NUM_WORKERS,
         "help": "The number of workers to spawn to process the data. 0 is serial. "
         "Defaults to the CPU count",
     },
@@ -71,7 +113,7 @@ _COMMON_ARGS = {
         "help": "If set, will map out-of-vocabulary tokens to this symbol",
     },
     "--frame-shift-ms": {
-        "type": float,
+        "type": pos,
         "default": config.DEFT_FRAME_SHIFT_MS,
         "help": "The number of milliseconds that have passed between consecutive "
         "frames. Used to convert between time in seconds and frame index. If your "
@@ -91,17 +133,11 @@ _COMMON_ARGS = {
         "have). The extra dimension will allow data in this directory to be "
         "loaded as features in a SpectDataSet.",
     },
-    "--chunk-size": {
-        "type": int,
+    "--mp-chunk-size": {
+        "type": nat,
         "default": config.DEFT_CHUNK_SIZE,
-        "help": "The number of utterances that a worker will process at once. Impacts "
-        "speed and memory consumption.",
-    },
-    "--timeout": {
-        "type": int,
-        "default": None,
-        "help": "When using multiple workers, how long (in seconds) without new data "
-        "before terminating. The default is to wait indefinitely.",
+        "help": "The number of utterances that a multiprocessing worker will process "
+        "at once. Impacts speed and memory consumption.",
     },
     "--textgrid-suffix": {
         "default": config.DEFT_TEXTGRID_SUFFIX,
@@ -202,7 +238,7 @@ integers."""
         description=get_torch_spect_data_dir_info.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("dir", type=str, help="The torch data directory")
+    parser.add_argument("dir", type=rdir, help="The torch data directory")
     parser.add_argument(
         "out_file",
         nargs="?",
@@ -225,20 +261,21 @@ integers."""
     )
     group.add_argument(
         "--fix",
-        action="store_true",
-        default=False,
+        nargs="?",
+        metavar="N",
+        type=nat0,
+        const=1,
+        default=None,
         help="If set, validate the data directory before collecting info, potentially "
-        "fixing small errors in the directory. The process is described in "
-        "pydrobert.torch.validate_spect_data_set",
+        "fixing small errors in the directory. An optional integer argument controls "
+        "the cropping threshold for ali/ and ref/ (defaults to 1). The process is "
+        "described in pydrobert.torch.validate_spect_data_set.",
     )
     try:
         options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
 
-    if not os.path.isdir(options.dir):
-        print(f"'{options.dir}' is not a directory", file=sys.stderr)
-        return 1
     data_set = data.SpectDataSet(
         options.dir,
         file_prefix=options.file_prefix,
@@ -249,64 +286,10 @@ integers."""
         suppress_alis=False,
         tokens_only=False,
     )
-    if options.strict or options.fix:
-        data.validate_spect_data_set(data_set, options.fix)
 
-    info_dict = {
-        "num_utterances": len(data_set),
-        "total_frames": 0,
-        "max_ali_class": -1,
-        "max_ref_class": -1,
-    }
-    counts, segs, rcounts, rsegs = dict(), dict(), dict(), dict()
-    for feat, ali, ref in data_set:
-        info_dict["num_filts"] = feat.size()[1]
-        info_dict["total_frames"] += feat.size()[0]
-        if ali is not None:
-            class_idxs, counts_ = ali.unique_consecutive(return_counts=True)
-            for class_idx, count in zip(class_idxs.tolist(), counts_.tolist()):
-                if class_idx < 0:
-                    raise ValueError("Got a negative ali class idx")
-                info_dict["max_ali_class"] = max(class_idx, info_dict["max_ali_class"])
-                counts[class_idx] = counts.get(class_idx, 0) + count
-                segs[class_idx] = segs.get(class_idx, 0) + 1
-        if ref is not None:
-            if ref.ndim == 1:
-                ref = ref.unsqueeze(1)
-                ref = torch.cat(
-                    [ref, torch.full((ref.size(0), 2), -1, dtype=torch.long)], 1
-                )
-            for tok, start, end in ref.tolist():
-                if tok < 0:
-                    raise ValueError(f"Got a negative reference token index '{tok}'")
-                info_dict["total_tokens"] = info_dict.get("total_tokens", 0) + 1
-                info_dict["max_ref_class"] = max(info_dict["max_ref_class"], tok)
-                rcount = rcounts.get(tok, 0)
-                if rcount >= 0 and end > start >= 0:
-                    rcounts[tok] = rcount + end - start
-                else:
-                    rcounts[tok] = -1
-                rsegs[tok] = rsegs.get(tok, 0) + 1
-
-    info_dict.setdefault("total_tokens", -1)
-
-    max_ali_class = info_dict["max_ali_class"]
-    if max_ali_class >= 0:
-        digits = int(math.log10(max(max_ali_class, 1))) + 1
-        count_fmt_str = f"count_{{:0{digits}d}}"
-        seg_fmt_str = f"segs_{{:0{digits}d}}"
-        for class_idx in range(max_ali_class + 1):
-            info_dict[count_fmt_str.format(class_idx)] = counts.get(class_idx, 0)
-            info_dict[seg_fmt_str.format(class_idx)] = segs.get(class_idx, 0)
-
-    max_ref_class = info_dict["max_ref_class"]
-    if max_ref_class >= 0:
-        digits = int(math.log10(max(max_ref_class, 1))) + 1
-        count_fmt_str = f"rcount_{{:0{digits}d}}"
-        seg_fmt_str = f"rsegs_{{:0{digits}d}}"
-        for class_idx in range(max_ref_class + 1):
-            info_dict[count_fmt_str.format(class_idx)] = rcounts.get(class_idx, -1)
-            info_dict[seg_fmt_str.format(class_idx)] = rsegs.get(class_idx, 0)
+    info_dict = _info_and_validate(
+        data_set, True, options.strict or options.fix, options.fix
+    )
 
     info_list = sorted(info_dict.items())
     for key, value in info_list:
@@ -346,16 +329,16 @@ def _parse_token2id(file, swap, return_swap):
 
 
 def _save_transcripts_to_dir_do_work(
-    transcripts, token2id, dir_, frame_shift_ms, unk, skip_frame_times, feat_sizing,
+    bt, token2id, dir_, frame_shift_ms, unk, skip_frame_times, feat_sizing,
 ):
-    for basename, transcript in transcripts:
-        tok = data.transcript_to_token(
-            transcript, token2id, frame_shift_ms, unk, skip_frame_times or feat_sizing,
-        )
-        if feat_sizing:
-            tok = tok.unsqueeze(-1)
-        path = os.path.join(dir_, basename)
-        torch.save(tok, path)
+    basename, transcript = bt
+    tok = data.transcript_to_token(
+        transcript, token2id, frame_shift_ms, unk, skip_frame_times or feat_sizing,
+    )
+    if feat_sizing:
+        tok = tok.unsqueeze(-1)
+    path = os.path.join(dir_, basename)
+    torch.save(tok, path)
 
 
 def trn_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
@@ -395,8 +378,7 @@ with the "ref/" directory of a SpectDataSet. See the command
     _add_common_arg(parser, "--swap")
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
-    _add_common_arg(parser, "--timeout")
+    _add_common_arg(parser, "--mp-chunk-size")
     size_group = parser.add_mutually_exclusive_group()
     _add_common_arg(size_group, "--skip-frame-times")
     _add_common_arg(size_group, "--feat-sizing")
@@ -452,9 +434,9 @@ class _DirectoryDataset(torch.utils.data.Dataset):
     def __init__(self, dir_, file_prefix, file_suffix):
         super().__init__()
         fpl = len(file_prefix)
-        neg_fsl = -len(file_suffix)
+        fsl = len(file_suffix)
         self.utt_ids = sorted(
-            x[fpl:neg_fsl]
+            x[fpl : len(x) - fsl]
             for x in os.listdir(dir_)
             if x.startswith(file_prefix) and x.endswith(file_suffix)
         )
@@ -542,7 +524,9 @@ info about a SpectDataSet directory."""
         description=torch_token_data_dir_to_trn.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("dir", help="The directory to read token sequences from")
+    parser.add_argument(
+        "dir", type=rdir, help="The directory to read token sequences from"
+    )
     _add_common_arg(parser, "id2token")
     parser.add_argument(
         "trn",
@@ -558,9 +542,6 @@ info about a SpectDataSet directory."""
         options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
-    if not os.path.isdir(options.dir):
-        print(f"'{options.dir}' is not a directory", file=sys.stderr)
-        return 1
     id2token = _parse_token2id(options.id2token, not options.swap, options.swap)
     transcripts = _load_transcripts_from_data_dir(
         options.dir,
@@ -642,8 +623,7 @@ with the "ref/" directory of a SpectDataSet. See the command
     _add_common_arg(parser, "--swap")
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
-    _add_common_arg(parser, "--timeout")
+    _add_common_arg(parser, "--mp-chunk-size")
     size_group = parser.add_mutually_exclusive_group()
     _add_common_arg(size_group, "--skip-frame-times")
     _add_common_arg(size_group, "--feat-sizing")
@@ -733,7 +713,9 @@ directory."""
         description=textgrids_to_torch_token_data_dir.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("tg_dir", help="The directory containing the TextGrid files")
+    parser.add_argument(
+        "tg_dir", type=rdir, help="The directory containing the TextGrid files"
+    )
     _add_common_arg(parser, "token2id")
     parser.add_argument(
         "dir",
@@ -745,8 +727,7 @@ directory."""
     _add_common_arg(parser, "--swap")
     _add_common_arg(parser, "--unk-symbol")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
-    _add_common_arg(parser, "--timeout")
+    _add_common_arg(parser, "--mp-chunk-size")
     _add_common_arg(parser, "--textgrid-suffix")
     parser.add_argument(
         "--fill-symbol",
@@ -773,8 +754,6 @@ directory."""
         options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
-    if not os.path.isdir(options.tg_dir):
-        raise ValueError(f"'{options.tg_dir}' is not a directory")
     token2id = _parse_token2id(options.token2id, options.swap, options.swap)
     if options.unk_symbol is not None and options.unk_symbol not in token2id:
         print(f"Unk symbol '{options.unk_symbol}' is not in token2id", file=sys.stderr)
@@ -843,7 +822,9 @@ SpectDataSet directory."""
         description=torch_token_data_dir_to_ctm.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("dir", help="The directory to read token sequences from")
+    parser.add_argument(
+        "dir", type=rdir, help="The directory to read token sequences from"
+    )
     _add_common_arg(parser, "id2token")
     parser.add_argument(
         "ctm",
@@ -933,6 +914,7 @@ performing these computations."""
     )
     parser.add_argument(
         "dir",
+        type=rdir,
         help="If the 'hyp' argument is not specified, this is the "
         "parent directory of two subdirectories, 'ref/' and 'hyp/', which "
         "contain the reference and hypothesis transcripts, respectively. If "
@@ -940,7 +922,11 @@ performing these computations."""
         "transcript directory",
     )
     parser.add_argument(
-        "hyp", nargs="?", default=None, help="The hypothesis transcript directory",
+        "hyp",
+        nargs="?",
+        type=rdir,
+        default=None,
+        help="The hypothesis transcript directory",
     )
     parser.add_argument(
         "out",
@@ -1001,7 +987,7 @@ performing these computations."""
     )
     parser.add_argument(
         "--batch-size",
-        type=int,
+        type=nat,
         default=100,
         help="The number of error rates to compute at once. Reduce if you "
         "run into memory errors",
@@ -1247,19 +1233,13 @@ This command does not require WebDataset to be installed."""
         description=torch_spect_data_dir_to_wds.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("dir", help="The torch data directory")
+    parser.add_argument("dir", type=rdir, help="The torch data directory")
     parser.add_argument("tar_path", help="The path to store files to")
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--feat-subdir")
     _add_common_arg(parser, "--ali-subdir")
     _add_common_arg(parser, "--ref-subdir")
-    parser.add_argument(
-        "--is-uri",
-        action="store_true",
-        default=False,
-        help="If set, tar_pattern will be treated as a URI rather than a path/",
-    )
     parser.add_argument(
         "--shard",
         action="store_true",
@@ -1269,14 +1249,14 @@ This command does not require WebDataset to be installed."""
     )
     parser.add_argument(
         "--max-samples-per-shard",
-        type=int,
+        type=nat,
         default=1e5,
         help="If sharding ('--shard' is specified), dictates the number of samples in "
         "each file.",
     )
     parser.add_argument(
         "--max-size-per-shard",
-        type=int,
+        type=nat,
         default=3e9,
         help="If sharding ('--shard' is specified), dictates the maximum size in bytes "
         "of each file.",
@@ -1286,9 +1266,6 @@ This command does not require WebDataset to be installed."""
     except SystemExit as ex:
         return ex.code
 
-    if not os.path.isdir(options.dir):
-        print(f"'{options.dir}' is not a directory", file=sys.stderr)
-        return 1
     data_set = data.SpectDataSet(
         options.dir,
         file_prefix=options.file_prefix,
@@ -1391,7 +1368,7 @@ pickled, nested dictionary
 of the statistics of all groups.
 """,
     )
-    parser.add_argument("dir", help="The feature directory")
+    parser.add_argument("dir", type=rdir, help="The feature directory")
     parser.add_argument("out", help="Output path")
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
@@ -1480,33 +1457,29 @@ of the statistics of all groups.
 
 
 def _torch_token_data_dir_to_torch_ali_dir_do_work(
-    basenames: Sequence[str],
-    ref_dir: str,
-    ali_dir: str,
-    feat_dir: Optional[str] = None,
+    basename: str, ref_dir: str, ali_dir: str, feat_dir: Optional[str] = None,
 ):
-    for basename in basenames:
-        ref_path = os.path.join(ref_dir, basename)
-        ref = torch.load(ref_path)
-        err_msg = f"Error converting '{ref_path}' to ali:"
-        if ref.ndim != 2 or ref.size(0) == 0 or ref.size(1) != 3:
-            raise ValueError(f"{err_msg} invalid size '{ref.shape}'")
-        if (ref[:, 1:] < 0).any():
-            raise ValueError(f"{err_msg} some token boundaries missing")
-        if ref[0, 1] != 0:
-            raise ValueError(f"{err_msg} starts at frame {ref[0, 1].item()}, not 0")
-        if (ref[:-1, 2] != ref[1:, 1]).any():
-            raise ValueError(f"{err_msg} not all boundaries are contiguous")
-        if feat_dir is not None:
-            feat_path = os.path.join(feat_dir, basename)
-            T = torch.load(feat_path).size(0)
-            if ref[-1, 2] != T:
-                raise ValueError(
-                    f"{err_msg} feats at '{feat_path}' report {T} frames. ref "
-                    f"ends with {ref[-1, 2].item()}"
-                )
-        ali = torch.repeat_interleave(ref[:, 0], ref[:, 2] - ref[:, 1])
-        torch.save(ali, os.path.join(ali_dir, basename))
+    ref_path = os.path.join(ref_dir, basename)
+    ref = torch.load(ref_path)
+    err_msg = f"Error converting '{ref_path}' to ali:"
+    if ref.ndim != 2 or ref.size(0) == 0 or ref.size(1) != 3:
+        raise ValueError(f"{err_msg} invalid size '{ref.shape}'")
+    if (ref[:, 1:] < 0).any():
+        raise ValueError(f"{err_msg} some token boundaries missing")
+    if ref[0, 1] != 0:
+        raise ValueError(f"{err_msg} starts at frame {ref[0, 1].item()}, not 0")
+    if (ref[:-1, 2] != ref[1:, 1]).any():
+        raise ValueError(f"{err_msg} not all boundaries are contiguous")
+    if feat_dir is not None:
+        feat_path = os.path.join(feat_dir, basename)
+        T = torch.load(feat_path).size(0)
+        if ref[-1, 2] != T:
+            raise ValueError(
+                f"{err_msg} feats at '{feat_path}' report {T} frames. ref "
+                f"ends with {ref[-1, 2].item()}"
+            )
+    ali = torch.repeat_interleave(ref[:, 0], ref[:, 2] - ref[:, 1])
+    torch.save(ali, os.path.join(ali_dir, basename))
 
 
 def torch_token_data_dir_to_torch_ali_data_dir(args: Optional[Sequence[str]] = None):
@@ -1537,7 +1510,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "ref_dir", help="The token sequence data directory (input)",
+        "ref_dir", type=rdir, help="The token sequence data directory (input)",
     )
     parser.add_argument(
         "ali_dir", help="The frame alignment data directory (output)",
@@ -1552,16 +1525,12 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
-    _add_common_arg(parser, "--timeout")
+    _add_common_arg(parser, "--mp-chunk-size")
     try:
         options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
 
-    if not os.path.isdir(options.ref_dir):
-        print(f"'{options.ref_dir}' is not a directory", file=sys.stderr)
-        return 1
     basenames = (
         x
         for x in os.listdir(options.ref_dir)
@@ -1580,17 +1549,16 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
 
 
 def _torch_ali_dir_to_torch_token_dir_do_work(
-    basenames: Sequence[str], ali_dir: str, ref_dir: str,
+    basename: str, ali_dir: str, ref_dir: str,
 ):
     zeros_ = torch.zeros(1, dtype=torch.long)
-    for basename in basenames:
-        ali_path = os.path.join(ali_dir, basename)
-        ali = torch.load(ali_path)
-        tok, c = ali.unique_consecutive(return_counts=True)
-        c = torch.cat([zeros_, c]).cumsum(0)
-        start, end = c[:-1], c[1:]
-        ref = torch.stack([tok, start, end], -1)
-        torch.save(ref, os.path.join(ref_dir, basename))
+    ali_path = os.path.join(ali_dir, basename)
+    ali = torch.load(ali_path)
+    tok, c = ali.unique_consecutive(return_counts=True)
+    c = torch.cat([zeros_, c]).cumsum(0)
+    start, end = c[:-1], c[1:]
+    ref = torch.stack([tok, start, end], -1)
+    torch.save(ref, os.path.join(ref_dir, basename))
 
 
 def torch_ali_data_dir_to_torch_token_data_dir(args: Optional[Sequence[str]] = None):
@@ -1610,7 +1578,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "ali_dir", help="The frame alignment data directory (input)",
+        "ali_dir", type=rdir, help="The frame alignment data directory (input)",
     )
     parser.add_argument(
         "ref_dir", help="The token sequence data directory (output)",
@@ -1618,15 +1586,11 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
-    _add_common_arg(parser, "--timeout")
+    _add_common_arg(parser, "--mp-chunk-size")
     try:
         options = parser.parse_args(args)
     except SystemExit as ex:
         return ex.code
-    if not os.path.isdir(options.ali_dir):
-        print(f"'{options.ali_dir}' is not a directory", file=sys.stderr)
-        return 1
 
     basenames = (
         x
@@ -1645,7 +1609,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
 
 
 def _torch_token_data_dir_to_textgrids_do_work(
-    utt_ids: Sequence[str],
+    utt_id: str,
     ref_dir: str,
     id2token: Dict[int, str],
     feat_dir: Optional[str],
@@ -1658,80 +1622,75 @@ def _torch_token_data_dir_to_textgrids_do_work(
     quiet: bool,
     force_method: Optional[Literal[1, 2, 3]],
 ):
-    for utt_id in utt_ids:
-        in_name = utt_id + in_suffix
-        ref_name = os.path.join(ref_dir, in_name)
-        ref = torch.load(ref_name)
-        err_msg = f"Failure converting '{ref_name}' to TextGrid:"
-        T = -1
-        has_segment_index = ref.ndim == 2 and ref.size(1) == 3
-        if not has_segment_index and ref.ndim != 1:
-            raise ValueError(f"{err_msg} tensor is an invalid size")
-        if feat_dir is not None:
-            feat_name = os.path.join(feat_dir, in_name)
-            if not os.path.isfile(feat_name):
-                raise ValueError(
-                    f"{err_msg} corresponding feature file '{feat_name}' does not exist"
-                )
-            feat = torch.load(feat_name)
-            if feat.ndim != 2:
-                raise ValueError(f"{err_msg} feature tensor is an invalid size")
-            T = feat.size(0)
-        elif has_segment_index:
-            T = ref[..., 1:].max()
-        else:
-            if not quiet:
-                warnings.warn(
-                    f"Could not determine length of '{ref_name}'. Setting to 0"
-                )
-            T = 0
-        T = (T * frame_shift_ms) / 1000
-        try_method = force_method if force_method else 1
-        if try_method == 1:
-            if (
-                has_segment_index
-                and ((ref[..., 2] > ref[..., 1]) & (ref[..., 1] >= 0)).all()
-            ):
-                point_tier = False
-            elif force_method:
-                raise ValueError(f"{err_msg} does not have enough info for method 1")
-            else:
-                try_method += 1
-        if try_method == 2:
-            if has_segment_index:
-                maxes = ref[..., 1:].max(1)[0]
-            else:
-                maxes = torch.tensor(-1)
-            if (maxes >= 0).all():
-                ref[..., 1:] = maxes.unsqueeze(1)
-                point_tier = True
-            elif force_method:
-                raise ValueError(f"{err_msg} does not have enough info for method 2")
-            else:
-                try_method += 1
-        if try_method == 3:
-            if ref.ndim != 1:
-                ref = ref[..., 0]
-            transcript = [
-                (" ".join(id2token.get(x.item(), x.item()) for x in ref), 0.0, T)
-            ]
-            point_tier = False
-        else:
-            transcript = data.token_to_transcript(ref, id2token, frame_shift_ms)
-        if any(isinstance(x[0], int) for x in transcript):
-            raise ValueError(f"{err_msg} not all ids exist in '{id2token.name}'")
-        try:
-            data.write_textgrid(
-                transcript,
-                os.path.join(tg_dir, utt_id + out_suffix),
-                0.0,
-                T,
-                tier_name,
-                point_tier,
-                precision,
+    in_name = utt_id + in_suffix
+    ref_name = os.path.join(ref_dir, in_name)
+    ref = torch.load(ref_name)
+    err_msg = f"Failure converting '{ref_name}' to TextGrid:"
+    T = -1
+    has_segment_index = ref.ndim == 2 and ref.size(1) == 3
+    if not has_segment_index and ref.ndim != 1:
+        raise ValueError(f"{err_msg} tensor is an invalid size")
+    if feat_dir is not None:
+        feat_name = os.path.join(feat_dir, in_name)
+        if not os.path.isfile(feat_name):
+            raise ValueError(
+                f"{err_msg} corresponding feature file '{feat_name}' does not exist"
             )
-        except Exception as e:
-            raise ValueError(f"{err_msg} could not write textgrid") from e
+        feat = torch.load(feat_name)
+        if feat.ndim != 2:
+            raise ValueError(f"{err_msg} feature tensor is an invalid size")
+        T = feat.size(0)
+    elif has_segment_index:
+        T = ref[..., 1:].max()
+    else:
+        if not quiet:
+            warnings.warn(f"Could not determine length of '{ref_name}'. Setting to 0")
+        T = 0
+    T = (T * frame_shift_ms) / 1000
+    try_method = force_method if force_method else 1
+    if try_method == 1:
+        if (
+            has_segment_index
+            and ((ref[..., 2] > ref[..., 1]) & (ref[..., 1] >= 0)).all()
+        ):
+            point_tier = False
+        elif force_method:
+            raise ValueError(f"{err_msg} does not have enough info for method 1")
+        else:
+            try_method += 1
+    if try_method == 2:
+        if has_segment_index:
+            maxes = ref[..., 1:].max(1)[0]
+        else:
+            maxes = torch.tensor(-1)
+        if (maxes >= 0).all():
+            ref[..., 1:] = maxes.unsqueeze(1)
+            point_tier = True
+        elif force_method:
+            raise ValueError(f"{err_msg} does not have enough info for method 2")
+        else:
+            try_method += 1
+    if try_method == 3:
+        if ref.ndim != 1:
+            ref = ref[..., 0]
+        transcript = [(" ".join(id2token.get(x.item(), x.item()) for x in ref), 0.0, T)]
+        point_tier = False
+    else:
+        transcript = data.token_to_transcript(ref, id2token, frame_shift_ms)
+    if any(isinstance(x[0], int) for x in transcript):
+        raise ValueError(f"{err_msg} not all ids exist in '{id2token.name}'")
+    try:
+        data.write_textgrid(
+            transcript,
+            os.path.join(tg_dir, utt_id + out_suffix),
+            0.0,
+            T,
+            tier_name,
+            point_tier,
+            precision,
+        )
+    except Exception as e:
+        raise ValueError(f"{err_msg} could not write textgrid") from e
 
 
 def torch_token_data_dir_to_textgrids(args: Optional[Sequence[str]] = None):
@@ -1783,7 +1742,9 @@ directory."""
         description=torch_token_data_dir_to_textgrids.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("ref_dir", help="The token sequence data directory (input)")
+    parser.add_argument(
+        "ref_dir", type=rdir, help="The token sequence data directory (input)"
+    )
     _add_common_arg(parser, "id2token")
     parser.add_argument("tg_dir", help="The TextGrid directory (output)")
     len_opt = parser.add_mutually_exclusive_group(required=True)
@@ -1799,18 +1760,16 @@ directory."""
     _add_common_arg(parser, "--swap")
     _add_common_arg(parser, "--frame-shift-ms")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
-    _add_common_arg(parser, "--timeout")
+    _add_common_arg(parser, "--mp-chunk-size")
     _add_common_arg(parser, "--textgrid-suffix")
     parser.add_argument(
         "--tier-name", default="transcript", help="The name to save the tier with"
     )
     parser.add_argument(
         "--precision",
-        type=int,
-        default=config.DEFT_TEXTGRID_PRECISION,
-        help="Default precision with which to save floating point values in "
-        "TextGrid files",
+        type=nat0,
+        default=config.DEFT_FLOAT_PRINT_PRECISION,
+        help="Precision with which to save floating point values in TextGrid files",
     )
     parser.add_argument(
         "--quiet",
@@ -1862,7 +1821,7 @@ directory."""
 
 
 def _chunk_torch_spect_data_dir_do_work(
-    utt_ids: Sequence[str],
+    utt_id: str,
     in_feat_dir: str,
     in_ali_dir: Optional[str],
     in_ref_dir: Optional[str],
@@ -1884,45 +1843,42 @@ def _chunk_torch_spect_data_dir_do_work(
     slicer = SliceSpectData(policy, window_type, pad_mode is None, lobe_size)
     chunker = ChunkBySlices("constant" if pad_mode is None else pad_mode, pad_constant)
     ref_chunker = ChunkTokenSequencesBySlices(partial_tokens, retain_token_boundaries)
-    for utt_id in utt_ids:
-        in_basename = file_prefix + utt_id + file_suffix
-        feats = torch.load(os.path.join(in_feat_dir, in_basename)).unsqueeze(0)
-        if in_ali_dir is None:
-            alis = None
-        else:
-            alis = torch.load(os.path.join(in_ali_dir, in_basename)).unsqueeze(0)
-        if in_ref_dir is None:
-            refs = None
-        else:
-            refs = torch.load(os.path.join(in_ref_dir, in_basename)).unsqueeze(0)
-        if policy == "fixed":
-            slices, _ = slicer(feats)
-        elif policy == "ali":
-            slices, _ = slicer(alis)
-        else:
-            slices, _ = slicer(refs)
-        M = slices.size(0)
-        new_utt_ids = [
-            format_utt.format(utt_id=utt_id, idx=n, start=x[0], end=x[1])
-            for (n, x) in enumerate(slices.tolist())
-        ]
-        if not quiet and len(set(new_utt_ids)) != M:
-            warnings.warn(f"new utterance names for '{utt_id}' are not unique")
-        feats, lens = chunker(feats.expand(M, -1, -1), slices)
+    in_basename = file_prefix + utt_id + file_suffix
+    feats = torch.load(os.path.join(in_feat_dir, in_basename)).unsqueeze(0)
+    if in_ali_dir is None:
+        alis = None
+    else:
+        alis = torch.load(os.path.join(in_ali_dir, in_basename)).unsqueeze(0)
+    if in_ref_dir is None:
+        refs = None
+    else:
+        refs = torch.load(os.path.join(in_ref_dir, in_basename)).unsqueeze(0)
+    if policy == "fixed":
+        slices, _ = slicer(feats)
+    elif policy == "ali":
+        slices, _ = slicer(alis)
+    else:
+        slices, _ = slicer(refs)
+    M = slices.size(0)
+    new_utt_ids = [
+        format_utt.format(utt_id=utt_id, idx=n, start=x[0], end=x[1])
+        for (n, x) in enumerate(slices.tolist())
+    ]
+    if not quiet and len(set(new_utt_ids)) != M:
+        warnings.warn(f"new utterance names for '{utt_id}' are not unique")
+    feats, lens = chunker(feats.expand(M, -1, -1), slices)
+    if alis is not None:
+        alis, lens_ = chunker(alis.expand(M, -1), slices)
+        assert (lens == lens_).all()
+    if refs is not None:
+        refs, ref_lens = ref_chunker(refs.expand(M, *refs.shape[1:]), slices)
+    for n, new_utt_id in enumerate(new_utt_ids):
+        out_basename = file_prefix + new_utt_id + file_suffix
+        torch.save(feats[n, : lens[n]], os.path.join(out_feat_dir, out_basename))
         if alis is not None:
-            alis, lens_ = chunker(alis.expand(M, -1), slices)
-            assert (lens == lens_).all()
+            torch.save(alis[n, : lens[n]], os.path.join(out_ali_dir, out_basename))
         if refs is not None:
-            refs, ref_lens = ref_chunker(refs.expand(M, *refs.shape[1:]), slices)
-        for n, new_utt_id in enumerate(new_utt_ids):
-            out_basename = file_prefix + new_utt_id + file_suffix
-            torch.save(feats[n, : lens[n]], os.path.join(out_feat_dir, out_basename))
-            if alis is not None:
-                torch.save(alis[n, : lens[n]], os.path.join(out_ali_dir, out_basename))
-            if refs is not None:
-                torch.save(
-                    refs[n, : ref_lens[n]], os.path.join(out_ref_dir, out_basename)
-                )
+            torch.save(refs[n, : ref_lens[n]], os.path.join(out_ref_dir, out_basename))
 
 
 def chunk_torch_spect_data_dir(args: Optional[Sequence[str]] = None):
@@ -1957,7 +1913,9 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         description=chunk_torch_spect_data_dir.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("in_dir", help="The torch data directory to chunk (input)")
+    parser.add_argument(
+        "in_dir", type=rdir, help="The torch data directory to chunk (input)"
+    )
     parser.add_argument(
         "out_dir", help="The torch data directory to store chunks (output)"
     )
@@ -1967,8 +1925,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     _add_common_arg(parser, "--ali-subdir")
     _add_common_arg(parser, "--ref-subdir")
     _add_common_arg(parser, "--num-workers")
-    _add_common_arg(parser, "--chunk-size")
-    _add_common_arg(parser, "--timeout")
+    _add_common_arg(parser, "--mp-chunk-size")
     parser.add_argument(
         "--policy",
         default="fixed",
@@ -1977,7 +1934,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     )
     parser.add_argument(
         "--lobe-size",
-        type=int,
+        type=nat0,
         default=0,
         help="Size of a side lobe of a slice. See SliceSpectData.",
     )
@@ -2099,30 +2056,571 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     )
 
 
-def _worker_func(queue, timeout, do_work_func, *args):
-    x = queue.get(True, timeout)
-    while x is not None:
-        do_work_func(x, *args)
-        del x
-        x = queue.get(True, timeout)
+def _copy_spect_data_dir_do_work(
+    basename: str,
+    src_dir: str,
+    dest_dir: str,
+    cp: int,
+    feat_subdir: Optional[str],
+    ali_subdir: Optional[str],
+    ref_subdir: Optional[str],
+):
+    if cp == 0:
+        cp = shutil.copy
+    elif cp == 1:
+
+        def cp(src, dst):
+            src = os.path.relpath(src, os.path.dirname(dst))
+            return os.symlink(src, dst)
+
+    else:
+        cp = os.link
+    if feat_subdir is None:
+        cp(os.path.join(src_dir, basename), os.path.join(dest_dir, basename))
+    else:
+        for x in (feat_subdir, ali_subdir, ref_subdir):
+            if x is not None:
+                src = os.path.join(src_dir, x, basename)
+                if os.path.exists(src):
+                    cp(src, os.path.join(dest_dir, x, basename))
+
+
+def subset_torch_spect_data_dir(args: Optional[Sequence[str]] = None):
+    """Make a new SpectDataDir from a subset of utterances of another
+
+This command determines a set of utterances via a flag, then hard links all files in the
+"feat/", "ali/" and "ref/" subdirectories matching the utterance id to in the "src"
+directory to the "dest" directory.
+
+See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
+directory.
+"""
+    parser = argparse.ArgumentParser(
+        description=subset_torch_spect_data_dir.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Available utterances to extract are determined by the contents of the "feat/"
+subdirectory, unless "--only" was specified. Any extra or missing utterances in "ali/"
+and "ref/" will be ignored.
+
+If "--utt-list" or "--utt-list-file" is chosen, this command ignores any missing
+utterances.
+
+When a criterion involves extracting some number of utterances which exceeds the total
+number of utterances, that total is extracted instead.
+
+Ratios are rounded down to the nearest utterance.
+
+Sorting by id is performed according to python's sort method, i.e. by locale.
+
+When "--only" is paired with "--shortest-*" or "--longest-*", "src" is assumed to also
+be the directory to extract lengths from. Otherwise it's "feat/".
+
+This command has a similar functionality to Kaldi's (https://github.com/kaldi-asr)
+subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
+""",
+    )
+    parser.add_argument("src", type=rdir, help="The directory to extract from")
+    parser.add_argument("dest", help="The directory to extract to")
+    style = parser.add_mutually_exclusive_group()
+    style.add_argument(
+        "--copy",
+        action="store_true",
+        default=False,
+        help="Copy extracted files (instead of hard link)",
+    )
+    style.add_argument(
+        "--symlink",
+        action="store_true",
+        default=False,
+        help="Symlink extracted files (instead of hard link). Symlinks will be "
+        "relative to the destination.",
+    )
+    criteria = parser.add_mutually_exclusive_group(required=True)
+    criteria.add_argument(
+        "--utt-list",
+        nargs="+",
+        metavar="UTTID",
+        default=None,
+        help="Extract the utterances listed directly after this flag",
+    )
+    criteria.add_argument(
+        "--utt-list-file",
+        type=argparse.FileType("r"),
+        metavar="PATH",
+        default=None,
+        help="Extract the utterances listed in the passed file, one-per-line",
+    )
+    criteria.add_argument(
+        "--first-n",
+        type=nat0,
+        metavar="N",
+        default=None,
+        help="Extract this number of utterances listed first by id",
+    )
+    criteria.add_argument(
+        "--first-ratio",
+        type=closed01,
+        metavar="R",
+        default=None,
+        help="Extract this ratio of utterances (rounding down) listed first by id",
+    )
+    criteria.add_argument(
+        "--last-n",
+        type=nat0,
+        metavar="N",
+        default=None,
+        help="Extract this number of utterances listed last by id",
+    )
+    criteria.add_argument(
+        "--last-ratio",
+        type=closed01,
+        metavar="R",
+        default=None,
+        help="Extract this ratio of utterances (rounding down) listed last by id",
+    )
+    criteria.add_argument(
+        "--shortest-n",
+        type=nat0,
+        metavar="N",
+        default=None,
+        help="Extract this number of utterances listed first by increasing length, "
+        "then by id",
+    )
+    criteria.add_argument(
+        "--shortest-ratio",
+        type=closed01,
+        metavar="R",
+        default=None,
+        help="Extract this ratio of utterances listed first by increasing length, "
+        "then by id",
+    )
+    criteria.add_argument(
+        "--longest-n",
+        type=nat0,
+        metavar="N",
+        default=None,
+        help="Extract this number of utterances listed first by decreasing length, "
+        "then by id",
+    )
+    criteria.add_argument(
+        "--longest-ratio",
+        type=closed01,
+        metavar="R",
+        default=None,
+        help="Extract this ratio of utterances listed first by decreasing length, "
+        "then by id",
+    )
+    criteria.add_argument(
+        "--rand-n",
+        type=nat0,
+        metavar="N",
+        default=None,
+        help="Extract this number of utterances listed randomly",
+    )
+    criteria.add_argument(
+        "--rand-ratio",
+        type=closed01,
+        metavar="R",
+        default=None,
+        help="Extract this ratio of utterances listed randomly",
+    )
+    parser.add_argument(
+        "--only",
+        action="store_true",
+        default=False,
+        help="If set, extract only the data directly stored in 'src'",
+    )
+    parser.add_argument(
+        "--seed",
+        default=None,
+        help="Seed used in --rand-* flags for determinism. If unspecified, "
+        "non-deterministic",
+    )
+    _add_common_arg(parser, "--feat-subdir")
+    _add_common_arg(parser, "--ali-subdir")
+    _add_common_arg(parser, "--ref-subdir")
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--mp-chunk-size")
+    try:
+        options = parser.parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+
+    if options.only:
+        options.feat_subdir = options.ali_subdir = options.ref_subdir = None
+        feat_dir = options.src
+    else:
+        feat_dir = os.path.join(options.src, options.feat_subdir)
+        if not os.path.isdir(feat_dir):
+            print(f"'{feat_dir}' does not exist", file=sys.stderr)
+            return 1
+        if not os.path.isdir(os.path.join(options.src, options.ali_subdir)):
+            options.ali_subdir = None
+        if not os.path.isdir(os.path.join(options.src, options.ref_subdir)):
+            options.ref_subdir = None
+
+    ds = _DirectoryDataset(feat_dir, options.file_prefix, options.file_suffix)
+    if any(
+        x is not None
+        for x in (
+            options.shortest_n,
+            options.shortest_ratio,
+            options.longest_n,
+            options.longest_ratio,
+        )
+    ):
+        dl = torch.utils.data.DataLoader(
+            ds, batch_size=1, num_workers=options.num_workers, collate_fn=_noop_collate
+        )
+        pairs = [(x[1].size(0), x[0]) for x in dl]
+        if options.shortest_n is not None or options.shortest_ratio is not None:
+            pairs.sort()
+        else:
+            pairs.sort(key=lambda x: (-x[0], x[1]))
+        all_utt_ids = [x[1] for x in pairs]
+        del ds, dl, pairs
+    else:
+        all_utt_ids = ds.utt_ids
+        del ds
+        if options.last_n is not None or options.last_ratio is not None:
+            all_utt_ids.sort(reverse=True)
+        elif options.rand_n is not None or options.rand_ratio is not None:
+            random.seed(options.seed)
+            random.shuffle(all_utt_ids)
+
+    if options.utt_list is not None or options.utt_list_file is not None:
+        all_utt_ids = set(all_utt_ids)
+        if options.utt_list_file is not None:
+            utt_ids = (x.strip() for x in options.utt_list_file)
+        else:
+            utt_ids = options.utt_list
+        utt_ids = (x for x in utt_ids if x in all_utt_ids)
+    else:
+        a = (
+            0 if x is None else x
+            for x in (
+                options.shortest_n,
+                options.longest_n,
+                options.first_n,
+                options.last_n,
+                options.rand_n,
+            )
+        )
+        b = (
+            0 if x is None else int(len(all_utt_ids) * x)
+            for x in (
+                options.shortest_ratio,
+                options.longest_ratio,
+                options.first_ratio,
+                options.last_ratio,
+                options.rand_ratio,
+            )
+        )
+        n = max(itertools.chain(a, b))
+        utt_ids = iter(all_utt_ids[:n])
+    basenames = (options.file_prefix + x + options.file_suffix for x in utt_ids)
+
+    if options.copy:
+        cp = 0
+    elif options.symlink:
+        cp = 1
+    else:
+        cp = 2  # hard link
+
+    os.makedirs(options.dest, exist_ok=True)
+    for x in (options.feat_subdir, options.ali_subdir, options.ref_subdir):
+        if x is not None:
+            os.makedirs(os.path.join(options.dest, x), exist_ok=True)
+
+    _multiprocessor_pattern(
+        basenames,
+        options,
+        _copy_spect_data_dir_do_work,
+        options.src,
+        options.dest,
+        cp,
+        options.feat_subdir,
+        options.ali_subdir,
+        options.ref_subdir,
+    )
+
+
+def _print_torch_ali_data_dir_length_moments(file_name, exclude_ids):
+    x = torch.load(file_name)
+    counts, lens = x.unique_consecutive(return_counts=True)
+    if exclude_ids is not None:
+        not_excluded = (counts.unsqueeze(1) != exclude_ids).all(1)
+        lens = lens[not_excluded]
+    s, ss, c = lens.sum().item(), lens.square().sum().item(), lens.numel()
+    return s, ss, c
+
+
+def _do_mv_printing(s, ss, c, options):
+    if c > 0:
+        float_fmt_str = f"{{:0.0{options.precision}f}}"
+        mean = s / c
+        var = ss / c - mean ** 2
+        mean = float_fmt_str.format(mean)
+        if options.bessel and c == 1:
+            var = "n/a"
+        else:
+            if options.bessel:
+                var *= c / (c - 1)
+            if options.std:
+                var = math.sqrt(var)
+            var = float_fmt_str.format(var)
+        out_str = f"{mean} ({var})\n"
+    else:
+        out_str = "n/a (n/a)\n"
+    options.out.write(out_str)
+
+
+def print_torch_ali_data_dir_length_moments(args: Optional[Sequence[str]] = None):
+    """Compute the mean and variance of segment lengths from an ali data dir
+
+A segment in an "ali/" directory tensor is a maximal sequence of frames with the same
+id. This command computes the mean and variance of segment lengths, printing them on one
+line as
+
+    <mean> (<var>)
+
+The input to this command is the "ali/" subdirectory of the SpectDataSet, not its root.
+
+See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
+directory."""
+    parser = argparse.ArgumentParser(
+        description=print_torch_ali_data_dir_length_moments.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("dir", type=rdir, help="The ali/ dir (input)")
+    parser.add_argument(
+        "out",
+        nargs="?",
+        type=argparse.FileType("w"),
+        default=sys.stdout,
+        help="Where to print statistics. Defaults to stdout",
+    )
+    parser.add_argument(
+        "--precision",
+        type=nat0,
+        default=config.DEFT_FLOAT_PRINT_PRECISION,
+        help="Precision with which to print stats",
+    )
+    parser.add_argument(
+        "--bessel",
+        action="store_true",
+        default=False,
+        help="Perform Bessel correction on the variance estimate",
+    )
+    parser.add_argument(
+        "--std",
+        action="store_true",
+        default=False,
+        help="Print standard deviation instead of variance",
+    )
+    parser.add_argument(
+        "--exclude-ids",
+        type=int,
+        nargs="+",
+        default=None,
+        help="If specified, segments with ali ids in this list will be excluded from"
+        "counts",
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--mp-chunk-size")
+    try:
+        options = parser.parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+
+    filenames = (
+        os.path.join(options.dir, x)
+        for x in os.listdir(options.dir)
+        if x.startswith(options.file_prefix) and x.endswith(options.file_suffix)
+    )
+
+    exclude_ids = options.exclude_ids
+    if exclude_ids is not None:
+        exclude_ids = torch.tensor(list(set(exclude_ids)))
+
+    s = 0
+    ss = 0
+    c = 0
+    for s_, ss_, c_ in _multiprocessor_pattern_generator(
+        filenames, options, _print_torch_ali_data_dir_length_moments, exclude_ids
+    ):
+        s += s_
+        ss += ss_
+        c += c_
+
+    _do_mv_printing(s, ss, c, options)
+
+
+def _print_torch_ref_data_dir_length_moments(utt_id, dir_, prefix, suffix, exclude_ids):
+    ref = torch.load(os.path.join(dir_, prefix + utt_id + suffix))
+    eprefix = f"Utterance '{utt_id}':"
+    if ref.ndim != 2 or ref.size(1) != 3:
+        err_msg = f"{eprefix} expected tensor of shape '(R, 3)'; got '{ref.shape}'"
+        return 0, 0, 0, err_msg
+    lens = ref[:, 2] - ref[:, 1]
+    valid = (0 <= ref[:, 1]) & (ref[:, 1] <= ref[:, 2])
+    if exclude_ids is not None:
+        not_excluded = (ref[:, :1] != exclude_ids).all(1)
+    else:
+        not_excluded = torch.ones_like(valid)
+    invalid_and_not_excluded = ~valid & not_excluded
+    if invalid_and_not_excluded.long().sum() != 0:
+        idxs = invalid_and_not_excluded.nonzero().flatten().tolist()
+        err_msg = f"{eprefix} segments {idxs} are invalid or missing"
+    else:
+        err_msg = None
+    lens = lens[valid & not_excluded]
+    s, ss, c = lens.sum().item(), lens.square().sum().item(), lens.numel()
+    return s, ss, c, err_msg
+
+
+def print_torch_ref_data_dir_length_moments(args: Optional[Sequence[str]] = None):
+    """Compute the mean and variance of segment lengths from a ref data dir
+
+Segment lengths from "ref/" directory tensors are computed from token segment boundaries
+(end - start). For this to be computed, a token must include those boundaries. Those
+utterances or segments without boundaries are discarded with a warning. This command
+computes the mean and variance of segment lengths, printing them on one line as
+
+    <mean> (<var>)
+
+The input to this command is the "ref/" subdirectory of the SpectDataSet, not its root.
+
+See the command "get-torch-spect-data-dir-info" for more info about a SpectDataSet
+directory."""
+    parser = argparse.ArgumentParser(
+        description=print_torch_ali_data_dir_length_moments.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("dir", type=rdir, help="The ref/ dir (input)")
+    parser.add_argument(
+        "out",
+        nargs="?",
+        type=argparse.FileType("w"),
+        default=sys.stdout,
+        help="Where to print statistics. Defaults to stdout",
+    )
+    err_grp = parser.add_mutually_exclusive_group()
+    err_grp.add_argument(
+        "--strict",
+        action="store_true",
+        default=False,
+        help="Error when boundary info is not available",
+    )
+    err_grp.add_argument(
+        "--quiet",
+        action="store_true",
+        default=False,
+        help="Suppress warnings about missing boundary info",
+    )
+    parser.add_argument(
+        "--precision",
+        type=nat0,
+        default=config.DEFT_FLOAT_PRINT_PRECISION,
+        help="Precision with which to print stats",
+    )
+    parser.add_argument(
+        "--bessel",
+        action="store_true",
+        default=False,
+        help="Perform Bessel correction on the variance estimate",
+    )
+    parser.add_argument(
+        "--std",
+        action="store_true",
+        default=False,
+        help="Print standard deviation instead of variance",
+    )
+    parser.add_argument(
+        "--exclude-ids",
+        type=int,
+        nargs="+",
+        default=None,
+        help="If specified, segments with token ids in this list will be excluded from"
+        "counts",
+    )
+    _add_common_arg(parser, "--file-prefix")
+    _add_common_arg(parser, "--file-suffix")
+    _add_common_arg(parser, "--num-workers")
+    _add_common_arg(parser, "--mp-chunk-size")
+    try:
+        options = parser.parse_args(args)
+    except SystemExit as ex:
+        return ex.code
+
+    utt_ids = (
+        x[len(options.file_prefix) : len(x) - len(options.file_suffix)]
+        for x in os.listdir(options.dir)
+        if x.startswith(options.file_prefix) and x.endswith(options.file_suffix)
+    )
+
+    exclude_ids = options.exclude_ids
+    if exclude_ids is not None:
+        exclude_ids = torch.tensor(list(set(exclude_ids)))
+
+    s = 0
+    ss = 0
+    c = 0
+    for s_, ss_, c_, err_msg in _multiprocessor_pattern_generator(
+        utt_ids,
+        options,
+        _print_torch_ref_data_dir_length_moments,
+        options.dir,
+        options.file_prefix,
+        options.file_suffix,
+        exclude_ids,
+    ):
+        if err_msg is not None:
+            if options.strict:
+                raise ValueError(err_msg)
+            elif not options.quiet:
+                warnings.warn(err_msg)
+        s += s_
+        ss += ss_
+        c += c_
+
+    _do_mv_printing(s, ss, c, options)
+
+
+global _mp_args
+global _mp_func
+
+
+def _worker_init(func, *args):
+    global _mp_args
+    global _mp_func
+    _mp_args = args
+    _mp_func = func
+
+
+def _worker_func(x_n):
+    global _mp_func
+    global _mp_args
+    return _mp_func(x_n, *_mp_args)
 
 
 def _multiprocessor_pattern(x, options, do_work_func, *args):
-    if options.num_workers:
-        queue = torch.multiprocessing.Queue(options.num_workers)
-        with torch.multiprocessing.Pool(
-            options.num_workers,
-            _worker_func,
-            (queue, options.timeout, do_work_func, *args),
-        ) as pool:
-            chunk = tuple(itertools.islice(x, options.chunk_size))
-            while len(chunk):
-                queue.put(chunk)
-                chunk = tuple(itertools.islice(x, options.chunk_size))
-            for _ in range(options.num_workers):
-                queue.put(None)
-            pool.close()
-            pool.join()
-    else:
-        do_work_func(x, *args)
+    collections.deque(
+        iter(_multiprocessor_pattern_generator(x, options, do_work_func, *args)),
+        maxlen=1,
+    )
 
+
+def _multiprocessor_pattern_generator(x, options, do_work_func, *args):
+    if options.num_workers:
+        with torch.multiprocessing.get_context("spawn").Pool(
+            options.num_workers, _worker_init, (do_work_func, *args),
+        ) as pool:
+            yield from pool.imap_unordered(_worker_func, x, options.mp_chunk_size)
+    else:
+        yield from (do_work_func(x_n, *args) for x_n in x)

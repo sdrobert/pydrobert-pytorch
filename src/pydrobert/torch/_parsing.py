@@ -73,10 +73,10 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
 
     Returns
     -------
-    prob_list : list
+    prob_dicts : list
         A list of the same length as there are orders of n-grams in the
         file (e.g. if the file contains up to tri-gram probabilities then
-        `prob_list` will be of length 3). Each element is a dictionary whose
+        `prob_dicts` will be of length 3). Each element is a dictionary whose
         key is the word sequence (earliest word first). For 1-grams, this is
         just the word. For n > 1, this is a tuple of words. Values are either
         a tuple of ``logp, logb`` of the log-probability and backoff
@@ -109,7 +109,7 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
         if len(ngram_counts) < n:
             ngram_counts.extend(0 for _ in range(n - len(ngram_counts)))
         ngram_counts[n - 1] = count
-    prob_list = [dict() for _ in ngram_counts]
+    prob_dicts = [dict() for _ in ngram_counts]
     ngram_header_pattern = re.compile(r"^\\(\d+)-grams:$")
     ngram_entry_pattern = re.compile(r"^(-?\d+(?:\.\d+)?)\s+(.*)$")
     while line != "\\end\\":
@@ -121,7 +121,7 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
             raise IOError(
                 "{}-grams count was not listed, but found entry" "".format(ngram)
             )
-        dict_ = prob_list[ngram - 1]
+        dict_ = prob_dicts[ngram - 1]
         for line in file_:
             line = line.strip()
             if not line:
@@ -134,7 +134,7 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
             # IRSTLM and SRILM allow for implicit backoffs on non-final
             # n-grams, but final n-grams must not have backoffs
             logb = 0.0
-            if len(tokens) == ngram + 1 and ngram < len(prob_list):
+            if len(tokens) == ngram + 1 and ngram < len(prob_dicts):
                 try:
                     logb = float(tokens[-1])
                     tokens = tokens[:-1]
@@ -154,12 +154,12 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
                 dict_[tokens] = float(logp)
     if line != "\\end\\":
         raise IOError("Could not find \\end\\ line")
-    for ngram_m1, (ngram_count, dict_) in enumerate(zip(ngram_counts, prob_list)):
+    for ngram_m1, (ngram_count, dict_) in enumerate(zip(ngram_counts, prob_dicts)):
         if len(dict_) != ngram_count:
             raise IOError(
                 "Expected {} {}-grams, got {}".format(ngram_count, ngram_m1, len(dict_))
             )
-    return prob_list
+    return prob_dicts
 
 
 class _AltTree(object):
@@ -620,7 +620,7 @@ def write_textgrid(
     end_time: Optional[float] = None,
     tier_name: str = config.DEFT_TEXTGRID_TIER_NAME,
     point_tier: Optional[bool] = None,
-    precision: int = config.DEFT_TEXTGRID_PRECISION,
+    precision: int = config.DEFT_FLOAT_PRINT_PRECISION,
 ) -> None:
     """Write a transcription as a TextGrid file
     

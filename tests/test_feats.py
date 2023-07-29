@@ -171,7 +171,7 @@ def test_slice_spect_data(
                 slices_exp = torch.tensor([
                     [0, 7],  # n=0
                     [0, 6], [4, 7], [5, 9],  # n=2
-                ])
+                ], device=device)
                 # fmt: on
                 sources_exp = torch.tensor([0, 2, 2, 2], device=device)
             elif window_type == "causal":
