@@ -14,15 +14,28 @@
 
 """Functions and classes which interface with :mod:`pytorch_lightning`
 
+This functionality is WIP.
+
+See `scpc <https://github.com/sdrobert/scpc>`_ for a working example.
+
 Raises
 ------
 ImportError
     If :mod:`pytorch_lightning` is not installed.
 """
 
-from ._pl_data import LitSpectDataModuleParams, LitSpectDataModule
+from ._pl_data import (
+    LitDataModule,
+    LitDataModuleParams,
+    LitDataModuleParamsMetaclass,
+    LitSpectDataModule,
+    LitSpectDataModuleParams,
+)
 
 __all__ = [
+    "LitDataModule",
+    "LitDataModuleParams",
+    "LitDataModuleParamsMetaclass",
     "LitSpectDataModule",
     "LitSpectDataModuleParams",
 ]

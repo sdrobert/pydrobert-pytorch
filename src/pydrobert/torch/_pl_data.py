@@ -37,7 +37,16 @@ from ._dataloaders import (
 StrPath = Union[str, os.PathLike]
 
 
-class MyPath(param.Parameter):
+class PosixPath(param.Parameter):
+    """POSIX-style path parameter
+
+    Parameters
+    ----------
+    default
+        Default value
+    always_exists
+        If :obj:`True`, setting to 
+    """
 
     __slots__ = ["always_exists", "type"]
 
@@ -87,6 +96,8 @@ class MyPath(param.Parameter):
 
 
 class LitDataModuleParamsMetaclass(pabc.AbstractParameterizedMetaclass):
+    """ABC for LitDataModuleParams"""
+
     def __init__(mcs: "LitDataModuleParams", name, bases, dict_):
         pclass = dict_["pclass"]
         super().__init__(name, bases, dict_)
@@ -103,6 +114,7 @@ P = TypeVar("P", bound=param.Parameterized)
 class LitDataModuleParams(
     param.Parameterized, Generic[P], metaclass=LitDataModuleParamsMetaclass
 ):
+    """Base class LitDataModule parameters"""
 
     pclass: Type[P] = param.Parameterized
 
@@ -135,10 +147,10 @@ class LitDataModuleParams(
         doc="Prediction data loader parameters. If set, cannot instantiate common",
     )
 
-    train_dir: Optional[str] = MyPath(None, doc="Path to training data directory")
-    val_dir: Optional[str] = MyPath(None, doc="Path to validation data directory")
-    test_dir: Optional[str] = MyPath(None, doc="Path to test data directory")
-    predict_dir: Optional[str] = MyPath(
+    train_dir: Optional[str] = PosixPath(None, doc="Path to training data directory")
+    val_dir: Optional[str] = PosixPath(None, doc="Path to validation data directory")
+    test_dir: Optional[str] = PosixPath(None, doc="Path to test data directory")
+    predict_dir: Optional[str] = PosixPath(
         None,
         doc="Path to prediction data directory (leave empty to use test_dir if avail.)",
     )
@@ -233,7 +245,6 @@ class LitDataModuleParams(
 
     @property
     def dev_dir(self) -> str:
-        """Alias of val_dir"""
         return self.val_dir
 
     @dev_dir.setter
@@ -242,7 +253,6 @@ class LitDataModuleParams(
 
     @property
     def dev_params(self) -> Optional[P]:
-        """Alias of val_params"""
         return self.val_params
 
     def _use_split(self) -> bool:
@@ -256,13 +266,13 @@ DL = TypeVar("DL", bound=torch.utils.data.DataLoader)
 
 
 class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.ABCMeta):
+    """An ABC handling DataLoader parameterizations and partitions for lightning"""
 
     pclass: Type[LitDataModuleParams[P]]
 
     train_set: Optional[DS]
     predict_set: Optional[DS]
     test_set: Optional[DS]
-    predict_set: Optional[DS]
 
     _num_workers: Optional[int]
     _pin_memory: Optional[bool]
@@ -415,7 +425,6 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
         )
 
     def dev_dataloader(self) -> DL:
-        """Alias of val_dataloader"""
         return self.val_dataloader()
 
     def test_dataloader(self) -> DL:
@@ -501,13 +510,14 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
 
 
 class LitLangDataModuleParams(LitDataModuleParams[LangDataLoaderParams]):
+    """Params for a LitLangDataModule"""
 
     pclass = LangDataLoaderParams
 
     vocab_size: Optional[int] = param.Integer(
         None, bounds=(1, None), doc="Vocabulary size",
     )
-    info_path: Optional[str] = MyPath(
+    info_path: Optional[str] = PosixPath(
         None,
         doc="Path to output of get-torch-spect-data-dir-info command on train_dir/",
     )
@@ -540,11 +550,11 @@ class LitSpectDataModuleParams(LitDataModuleParams[SpectDataLoaderParams]):
 
     pclass = SpectDataLoaderParams
 
-    info_path: Optional[str] = MyPath(
+    info_path: Optional[str] = PosixPath(
         None, doc="Path to output of get-torch-spect-data-dir-info command on train_dir"
     )
 
-    mvn_path: Optional[str] = MyPath(
+    mvn_path: Optional[str] = PosixPath(
         None,
         doc="Path to output of compute-mvn-stats-for-torch-feat-data-dir on train_dir",
     )
@@ -553,7 +563,7 @@ class LitSpectDataModuleParams(LitDataModuleParams[SpectDataLoaderParams]):
 class LitSpectDataModule(
     LitDataModule[SpectDataLoaderParams, SpectDataSet, SpectDataLoader]
 ):
-    """A LightningDataModule for SpectDataLoaders"""
+    """A LitDataModule for SpectDataLoaders"""
 
     pclass = LitSpectDataModuleParams
     params: LitSpectDataModuleParams

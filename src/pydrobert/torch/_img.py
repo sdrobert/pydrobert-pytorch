@@ -881,19 +881,19 @@ class SparseImageWarp(torch.nn.Module):
 @script
 @functional_wrapper("RandomShift")
 def random_shift(
-    in_: torch.Tensor,
+    input: torch.Tensor,
     in_lens: torch.Tensor,
     prop: Tuple[float, float],
     mode: str,
     value: float,
     training: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if in_.dim() < 2:
-        raise RuntimeError(f"in_ must be at least 2 dimensional")
-    if in_lens.dim() != 1 or in_lens.size(0) != in_.size(0):
+    if input.dim() < 2:
+        raise RuntimeError(f"input must be at least 2 dimensional")
+    if in_lens.dim() != 1 or in_lens.size(0) != input.size(0):
         raise RuntimeError(
-            f"For in_ of shape {in_.shape}, expected in_lens to be of shape "
-            f"({in_.size(0)}), got {in_lens.shape}"
+            f"For input of shape {input.shape}, expected in_lens to be of shape "
+            f"({input.size(0)}), got {in_lens.shape}"
         )
     if training:
         in_lens_ = in_lens.float()
@@ -901,9 +901,9 @@ def random_shift(
         pad *= torch.rand_like(pad)
         pad = pad.long()
         out_lens = in_lens + pad.sum(0)
-        return pad_variable(in_, in_lens, pad, mode, value), out_lens
+        return pad_variable(input, in_lens, pad, mode, value), out_lens
     else:
-        return in_, in_lens
+        return input, in_lens
 
 
 class RandomShift(torch.nn.Module):
@@ -935,17 +935,17 @@ class RandomShift(torch.nn.Module):
     
     Call Parameters
     ---------------
-    in_ : torch.Tensor
+    input : torch.Tensor
         A tensor of shape ``(N, T, *)`` where ``N`` is the batch dimension and ``T`` is
         the sequence dimension; `in_lens` is a long tensor of shape ``(N,)``.
     in_lens : torch.Tensor
         A tensor of shape ``(N,)`` containing the lengths of the sequences in `in_`.
-        For batch element ``n``, only the values ``in_[n, in_lens[n]]`` are valid.
+        For batch element ``n``, only the values ``input[n, in_lens[n]]`` are valid.
     
     Returns
     -------
     out : torch.Tensor
-        A tensor of the same type as ``in_`` of shape ``(N, T', *)``.
+        A tensor of the same type as ``input`` of shape ``(N, T', *)``.
     out_lens : torch.Tensor
         A tensor of shape ``(N,)`` containing the lengths of the sequences in `out`.
 
@@ -959,7 +959,7 @@ class RandomShift(torch.nn.Module):
     Notes
     -----
     Padding is only applied if this layer is in training mode. If testing, ``out,
-    out_lens = in_, in_lens``.
+    out_lens = input, in_lens``.
 
     See Also
     --------
@@ -1012,10 +1012,10 @@ class RandomShift(torch.nn.Module):
         pass
 
     def forward(
-        self, in_: torch.Tensor, in_lens: torch.Tensor
+        self, input: torch.Tensor, in_lens: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         return random_shift(
-            in_, in_lens, self.prop, self.mode, self.value, self.training
+            input, in_lens, self.prop, self.mode, self.value, self.training
         )
 
     __call__ = proxy(forward)
@@ -1312,7 +1312,7 @@ class SpecAugment(torch.nn.Module):
         A tensor of shape ``(N, T, F)`` where ``N`` is the batch dimension, ``T`` is the
         time (frames) dimension, and ``F`` is the frequency (coefficients per frame)
         dimension. The original feature tensor.
-    lengths : torch.Tensor or None, optional
+    lengths : Optional[torch.Tensor], optional
         A long tensor of shape ``(N,)`` specifying the actual number of frames before
         right-padding per batch element. That is, for batch index ``n``, only ``feats[n,
         :lengths[n]]`` are valid.

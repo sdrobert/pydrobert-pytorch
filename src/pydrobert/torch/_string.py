@@ -61,7 +61,7 @@ class FillAfterEndOfSequence(torch.nn.Module):
     ---------------
     tokens : torch.Tensor
         The token sequences. Of arbitrary shape, but must have dimension `dim`.
-    value : torch.Tensor or None, optional
+    value : Optional[torch.Tensor], optional
         `value` may be optionally specified as a tensor other than `tokens` to fill. It
         must broadcast with `tokens` if specified. Otherwise `value` will be assumed to
         be `tokens`.

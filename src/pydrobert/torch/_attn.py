@@ -82,7 +82,7 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
     value : torch.Tensor
         A tensor of shape ``(B*, T, C*, D*)`` representing the values. ``(B*, C*)``
         must broadcast with ``(A*)`` from `query`.
-    mask : torch.Tensor or None, optional
+    mask : Optional[torch.Tensor]
         An optional boolean tensor of shape ``(B*, T, C*)`` which indicates which values
         of the key should be kept (:obj:`False` means zero-out). If unset, assumed to
         be entirely :obj:`True`.
@@ -249,13 +249,9 @@ class DotProductSoftAttention(GlobalSoftAttention):
     Call Parameters
     ---------------
     query : torch.Tensor
-        A tensor of shape ``(A*, size)`` representing the queries. ``(A*)`` must
-        broadcast with ``(B*, C*)`` from `key`, `value`, and `mask`.
     key : torch.Tensor
-        A tensor of shape ``(B*, T, C*, size)`` representing the keys. ``(B*, C*)``
-        must broadcast with ``(A*)`` from `query`.
     value : torch.Tensor
-    mask : torch.Tensor or None, optional
+    mask : Optional[torch.Tensor]
     
     Returns
     -------
@@ -267,7 +263,7 @@ class DotProductSoftAttention(GlobalSoftAttention):
         For a description of how to call this module, how it works, etc.
     """
 
-    __constants__ = ["query_size", "key_size", "dim", "scale_factor"]
+    __constants__ = "query_size", "key_size", "dim", "scale_factor"
 
     scale_factor: float
 
@@ -311,7 +307,7 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
     query : torch.Tensor
     key : torch.Tensor
     value : torch.Tensor
-    mask : torch.Tensor or None, optional
+    mask : Optional[torch.Tensor]
     
     Returns
     -------
@@ -392,7 +388,7 @@ class ConcatSoftAttention(GlobalSoftAttention):
     query : torch.Tensor
     key : torch.Tensor
     value : torch.Tensor
-    mask : torch.Tensor or None, optional
+    mask : Optional[torch.Tensor]
     
     Returns
     -------
@@ -481,10 +477,6 @@ class MultiHeadedAttention(GlobalSoftAttention):
     With a learnable matrix :math:`W^C` of shape ``(d_v * num_heads, out_size)``. `out`
     has a shape ``(..., out_size)``
 
-    This module has the following signature when called
-
-        attention(query, key, value[, mask])
-
     Parameters
     ----------
     query_size
@@ -503,30 +495,28 @@ class MultiHeadedAttention(GlobalSoftAttention):
         processing a head. `single_head_attention` attention will be used to derive the
         sequence dimension (``dim``) of `key` via ``single_head_attention.dim``, the
         size of a head's query ``d_k`` via ``single_head_attention.query_size``, and the
-        size of a head's key via ``single_head_attention.key_size``
+        size of a head's key via ``single_head_attention.key_size``.
     out_size
         The size of the last dimension of `out`. If unset, the default is to match
-        `value_size`
+        `value_size`.
     d_v
         The size of the last dimension of a head's value. If unset, will default to
-        ``max(1, value_size // num_heads)``
+        ``max(1, value_size // num_heads)``.
     bias_WQ
-        Whether to add a bias term to :math:`W^Q`
+        Whether to add a bias term to :math:`W^Q`.
     bias_WK
-        Whether to add a bias term to :math:`W^K`
+        Whether to add a bias term to :math:`W^K`.
     bias_WV
-        Whether to add a bias term to :math:`W^V`
+        Whether to add a bias term to :math:`W^V`.
     bias_WC
-        Whether to add a bias term to :math:`W^C`
+        Whether to add a bias term to :math:`W^C`.
 
     Call Parameters
     ---------------
     query : torch.Tensor
     key : torch.Tensor
     value : torch.Tensor
-        A tensor of shape ``(B*, T, C*, D*, value_size)`` representing the values.
-        ``(B*, C*)`` must broadcast with ``(A*)`` from `query`.
-    mask : torch.Tensor or None, optional
+    mask : Optional[torch.Tensor]
     
     Returns
     -------
@@ -535,7 +525,7 @@ class MultiHeadedAttention(GlobalSoftAttention):
         is the result of broadcasting ``(A*)`` with ``(B*, C*)``.
     """
 
-    __constants__ = [
+    __constants__ = (
         "query_size",
         "key_size",
         "dim",
@@ -543,7 +533,7 @@ class MultiHeadedAttention(GlobalSoftAttention):
         "num_heads",
         "out_size",
         "d_v",
-    ]
+    )
 
     value_size: int
     num_heads: int

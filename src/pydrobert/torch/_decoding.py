@@ -188,15 +188,15 @@ class BeamSearch(torch.nn.Module):
     
     Call Parameters
     ---------------
-    initial_state : dict, optional
+    initial_state : Dict[str, torch.Tensor], optional
         Whatever state info must be initially passed to the `lm` before any sequences
         are generated.
-    batch_size : int or None, optional
+    batch_size : Optional[int], optional
         Specifies the batch size ``(N*,)``. If set, ``(N*,) == (batch_size,)`` and
         a beam search will be run separately over each of the batch elements. If
         unset, ``(N*,) == (,)`` and a single search will be performed. See the below
         note for more information.
-    max_iters
+    max_iters : Optional[int], optional
         The maximum number of tokens to generate in the paths before returning. Either
         `eos` or `max_iters` must be set.
     
@@ -963,9 +963,11 @@ class CTCPrefixSearch(torch.nn.Module):
 
         .. math::
 
-            S(y_t|\ldots) = (1 - \beta) P_{ctc}(y_t=v) +
-                \beta P_{lm}(y_t=v|\ldots)
-                    \left(\sum_{v' \neq blank} P_{ctc}(y_t = v'|ldots)\right)
+            \begin{multline}
+            S(y_t|\ldots) = (1 - \beta) P_{ctc}(y_t=v) \hfill \\
+                    + \beta P_{lm}(y_t=v|\ldots)
+                        \sum_{v' \neq blank} P_{ctc}(y_t = v'|\ldots)
+            \end{multline}
         
         for :math:`\beta \in [0, 1]`. Unlike in regular shallow fusion, the resulting
         value is a log-probability over the extended vocabulary.
@@ -977,11 +979,11 @@ class CTCPrefixSearch(torch.nn.Module):
         unnormalized log-probabilities over the extended vocabulary (including blanks)
         at step ``t`` of batch element ``n``. The blank type logits are assumed to be
         stored in the final index of the vocabulary: ``logits[..., V]``.
-    logit_lens : torch.Tensor or None, optional
+    logit_lens : Optional[torch.Tensor]
         An optional tensor of shape ``(N,)`` s.t., for a given batch index ``n``, only
         the values in the slice ``logits[:lens[n], n]`` are valid. If unset then all
         sequences are assumed to be of length ``T``.
-    initial_state : Dict[str, torch.Tensor] or None, optional
+    initial_state : Optional[Dict[str, torch.Tensor]]
         Whatever state info must be passed to the `lm` prior to generating sequences, if
         specified.
     
@@ -1304,12 +1306,12 @@ class RandomWalk(torch.nn.Module):
     initial_state : dict, optional
         Whatever state info must be initially passed to the `lm` before any sequences
         are generated.
-    batch_size : int or None, optional
+    batch_size : Optional[int], optional
         Specifies the batch size ``(N*,)``. If set, ``(N*,) == (batch_size,)`` and a
         walk will be performed for each batch element independently. If unset, ``(N*,)
         == (,)`` and a single walk will be performed. See the below note for more
         information.
-    max_iters : int or None, optional
+    max_iters : Optional[int], optional
         Specifies the maximum number of steps to take in the walk. Either `eos` or
         `max_iters` must be set.
     

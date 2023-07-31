@@ -57,6 +57,7 @@ except TypeError:
 
 
 class AbstractEpochSampler(_BaseSampler, metaclass=abc.ABCMeta):
+    """ABC for sampling based on epoch"""
 
     epoch: int  #:
     _rank: int
