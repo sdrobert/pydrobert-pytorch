@@ -40,7 +40,7 @@ def simple_random_sampling_without_replacement(
     given_count
         The cardinalities of the individual binary vectors. Must broadcast with
         and not exceed the values of `total_count`.
-    out_size : int or None, optional
+    out_size
         The vector size. Must be at least the value of ``total_count.max()``. If unset,
         will default to that value.
     

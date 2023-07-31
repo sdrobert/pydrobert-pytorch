@@ -1312,7 +1312,7 @@ class SpecAugment(torch.nn.Module):
         A tensor of shape ``(N, T, F)`` where ``N`` is the batch dimension, ``T`` is the
         time (frames) dimension, and ``F`` is the frequency (coefficients per frame)
         dimension. The original feature tensor.
-    lengths : torch.Tensor or None, optional
+    lengths : Optional[torch.Tensor], optional
         A long tensor of shape ``(N,)`` specifying the actual number of frames before
         right-padding per batch element. That is, for batch index ``n``, only ``feats[n,
         :lengths[n]]`` are valid.

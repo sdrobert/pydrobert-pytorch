@@ -68,7 +68,10 @@ autodoc_inherit_docstrings = False
 napoleon_preprocess_types = True
 typehints_document_rtype = False
 napoleon_use_rtype = False
-napoleon_custom_sections = [("Call Parameters", "param_style")]
+napoleon_custom_sections = [
+    ("Call Parameters", "returns_style"),
+    ("Variables", "returns_style"),
+]
 
 # -- Options for HTML output -------------------------------------------------
 

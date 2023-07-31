@@ -56,7 +56,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         can be used in the computation. It may contain static input (e.g. a tensor of
         encoder output in neural machine translation) and/or dynamic input from prior
         calls to the LM (e.g. the previous hidden state in an RNN-based language model).
-    idx : int or torch.Tensor or None, optional
+    idx : Optional[Union[int, torch.Tensor]], optional
         If specified, it is either a single integer or a long tensor of shape ``(N,)``
         specifying the indices of the tokens with which to return a distribution over.
         See the return value below.
@@ -558,7 +558,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     ---------------
     hist : torch.Tensor
     prev : Dict[str, torch.Tensor], optional
-    idx : int or torch.Tensor or None, optional
+    idx : Optional[Union[int, torch.Tensor]], optional
 
     Returns
     -------
