@@ -1,5 +1,7 @@
-Sphinx>=4.4
+docutils>=0.17
 myst-parser
 param
-sphinx-autodoc-typehints
 sphinx_rtd_theme>=0.5
+sphinx-autodoc-typehints
+Sphinx>=4.4
+typing_extensions

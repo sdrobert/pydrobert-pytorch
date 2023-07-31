@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.abspath("../../src"))
 # -- Project information -----------------------------------------------------
 
 project = "pydrobert-pytorch"
-copyright = "2022, Sean Robertson"
+copyright = "2023, Sean Robertson"
 author = "Sean Robertson"
 
 language = "en"
@@ -43,28 +43,6 @@ extensions = [
     "sphinx_autodoc_typehints",
 ]
 
-napoleon_numpy_docstring = True
-napoleon_google_docstring = False
-napoleon_include_init_with_doc = True
-napoleon_custom_sections = {
-    ("Call Parameters", "params_style"),
-    ("Variables", "params_style"),
-}
-autodoc_mock_imports = ["numpy", "torch"]
-# autodoc_member_order = "bysource"
-# autodoc_type_aliases = napoleon_type_aliases = {
-#     "pydrobert.torch._mc.MonteCarloEstimator": "pydrobert.torch.estimators.MonteCarloEstimator",
-#     "pydrobert.torch._straight_through.Density": "pydrobert.torch.distributions.Density",
-# }
-autodoc_typehints = "none"
-autodoc_inherit_docstrings = False
-# autodoc_preserve_defaults = True
-napoleon_preprocess_types = True
-# napoleon_use_param = True
-typehints_document_rtype = False
-# typehints_defaults = "comma"  # when this works consistently, uncomment!
-napoleon_use_rtype = False
-
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
 
@@ -73,13 +51,23 @@ templates_path = ["_templates"]
 # This pattern also affects html_static_path and html_extra_path.
 exclude_patterns = []
 
-intersphinx_mapping = {
-    "torch": ("https://pytorch.org/docs/stable/", None),
-    "python": ("https://docs.python.org/", None),
-    "numpy": ("https://docs.scipy.org/doc/numpy/", None),
-    "pydrobert.param": ("https://pydrobert-param.readthedocs.io/en/stable/", None),
-}
-
+napoleon_numpy_docstring = True
+napoleon_google_docstring = False
+napoleon_include_init_with_doc = True
+autodoc_mock_imports = [
+    "numpy",
+    "matplotlib.axes",
+    "matplotlib.colors",
+    "matplotlib.figure",
+    "matplotlib",
+    "torch",
+]
+autodoc_typehints = "none"
+autodoc_type_aliases = napoleon_type_aliases = {"np.ndarray": "numpy.ndarray"}
+autodoc_inherit_docstrings = False
+napoleon_preprocess_types = True
+typehints_document_rtype = False
+napoleon_use_rtype = False
 
 # -- Options for HTML output -------------------------------------------------
 
