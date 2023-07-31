@@ -539,8 +539,8 @@ def read_textgrid(
 ) -> Tuple[List[Tuple[str, float, float]], float, float]:
     """Read TextGrid file as a transcription
     
-    TextGrid is the transcription format of `Praat
-    <https://www.fon.hum.uva.nl/praat/>`__.
+    TextGrid is the transcription format of
+    `Praat <https://www.fon.hum.uva.nl/praat/>`_.
 
     Parameters
     ----------
@@ -550,15 +550,15 @@ def read_textgrid(
         Either the name of the tier (first occurence) or the index of the tier to
         extract.
     fill_token
-        If :obj:`True`, any intervals missing from the tier will be filled with an
-        interval of this token before being returned.
+        If set, any intervals missing from the tier will be filled with an interval of
+        this token before being returned.
 
     Returns
     -------
     transcript : list
-        A list of triples of ``token, start, end``, token` being the token (a string),
+        A list of triples of ``token, start, end``, `token` being the token (a string),
         `start` being a float of the start time of the token (in seconds), and `end`
-        being the end time of the token. If the tier is a PointTier, `the start and
+        being the end time of the token. If the tier is a PointTier, the start and
         end times will be the same.
     start_time : float
         The start time of the tier (in seconds)
@@ -624,8 +624,8 @@ def write_textgrid(
 ) -> None:
     """Write a transcription as a TextGrid file
     
-    TextGrid is the transcription format of `Praat
-    <https://www.fon.hum.uva.nl/praat/>`__.
+    TextGrid is the transcription format of
+    `Praat <https://www.fon.hum.uva.nl/praat/>`_.
 
     This function saves `transcript` as a tier within a TextGrid file.
 
