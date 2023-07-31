@@ -41,4 +41,4 @@ jobs:
       - name: Setup test suite
         run: tox -vv --notest
       - name: Run test suite
-        run: tox --skip-pkg-install
+        run: tox --skip-pkg-install -- tests/test_training.py

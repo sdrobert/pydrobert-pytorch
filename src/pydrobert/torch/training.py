@@ -316,6 +316,17 @@ class TrainingStateController(object):
     ...             model, optimizer, train_loss, val_loss):
     >>>         break  # early stopping
 
+    Warnings
+    --------
+    Prior to `v0.4.0`, the cache of history was updated automatically (reading from
+    `state_csv`) whenever :func:`get_last_epoch`, :func:`get_best_epoch`,
+    :func:`add_entry`, or :func:`get_info` (when the info was missing from the cache)
+    was called. Now, the cache is only updated automatically on initialization and with
+    calls to :func:`add_entry`. The cache may still be updated manually via
+    :func:`update_cache`. There was no good reason to continuously update the cache
+    as any updates to the underlying file by other processes could ruin the control
+    flow anyways.
+
     Notes
     -----
     :class:`TrainingStateController` has rudimentary support for distributed training
@@ -380,15 +391,7 @@ class TrainingStateController(object):
             int(math.log10(max(params.early_stopping_patience, 1))) + 1
         )
         self.fmt_dict["rlr_resume_cd"] = "{{:0{}d}}".format(
-            int(
-                math.log10(
-                    max(
-                        params.reduce_lr_cooldown,
-                        params.reduce_lr_burnin,
-                        1,
-                    )
-                )
-            )
+            int(math.log10(max(params.reduce_lr_cooldown, params.reduce_lr_burnin, 1,)))
             + 1
         )
         self.fmt_dict["rlr_patience_cd"] = "{{:0{}d}}".format(
@@ -402,6 +405,7 @@ class TrainingStateController(object):
         else:
             self._rank = -1
         self.reduced_entries = {"train_met", "val_met"}
+        self.update_cache()
 
     """The number of digits in significand of scientific notation
 
@@ -410,6 +414,55 @@ class TrainingStateController(object):
     strings in ``self.fmt_dict`` on initialization
     """
     SCIENTIFIC_PRECISION = 5
+
+    # XXX(sdrobert): barriers are generally performed on both entry and exit of reads,
+    # i.e. when the cache is updated by reading the history or a model/optimizer loaded.
+    # Modification of disk isn't (i.e. writing history or adding/removing state dicts)
+    # since those don't affect the state of the controller.
+    def _barrier(self) -> None:
+        if self._rank >= 0:
+            torch.distributed.barrier()
+
+    def update_cache(self) -> None:
+        """Update the cache with history stored in state_csv_path"""
+        # add a dummy entry for epoch "0" just to make logic easier. We
+        # won't save it
+        self.cache_hist[0] = {
+            "epoch": 0,
+            "es_resume_cd": self.params.early_stopping_burnin,
+            "es_patience_cd": self.params.early_stopping_patience,
+            "rlr_resume_cd": self.params.reduce_lr_burnin,
+            "rlr_patience_cd": self.params.reduce_lr_patience,
+            "train_met": float("inf"),
+            "val_met": float("inf"),
+            "lr": None,
+        }
+        self.cache_hist[0].update(dict((key, None) for key in self.user_entry_types))
+        if self.params.log10_learning_rate is not None:
+            self.cache_hist[0]["lr"] = 10 ** self.params.log10_learning_rate
+        if self.state_csv_path is None:
+            return
+        self._barrier()
+        if not os.path.exists(self.state_csv_path):
+            self._barrier()
+            return
+        with open(self.state_csv_path) as f:
+            reader = DictReader(f)
+            for row in reader:
+                epoch = int(row["epoch"])
+                self.cache_hist[epoch] = {
+                    "epoch": epoch,
+                    "es_resume_cd": int(row["es_resume_cd"]),
+                    "es_patience_cd": int(row["es_patience_cd"]),
+                    "rlr_resume_cd": int(row["rlr_resume_cd"]),
+                    "rlr_patience_cd": int(row["rlr_patience_cd"]),
+                    "lr": float(row["lr"]),
+                    "train_met": float(row["train_met"]),
+                    "val_met": float(row["val_met"]),
+                }
+                for name, type_ in list(self.user_entry_types.items()):
+                    self.cache_hist[epoch][name] = type_(row[name])
+        self._barrier()
 
     def add_entry(
         self, name: str, typ: type = str, fmt: str = "{}", reduce: bool = False
@@ -480,68 +533,9 @@ class TrainingStateController(object):
             self.reduced_entries.add(name)
         self.update_cache()
 
-    def update_cache(self) -> None:
-        """Update the cache with history stored in state_csv_path"""
-        # add a dummy entry for epoch "0" just to make logic easier. We
-        # won't save it
-        self.cache_hist[0] = {
-            "epoch": 0,
-            "es_resume_cd": self.params.early_stopping_burnin,
-            "es_patience_cd": self.params.early_stopping_patience,
-            "rlr_resume_cd": self.params.reduce_lr_burnin,
-            "rlr_patience_cd": self.params.reduce_lr_patience,
-            "train_met": float("inf"),
-            "val_met": float("inf"),
-            "lr": None,
-        }
-        self.cache_hist[0].update(dict((key, None) for key in self.user_entry_types))
-        if self.params.log10_learning_rate is not None:
-            self.cache_hist[0]["lr"] = 10**self.params.log10_learning_rate
-        if self.state_csv_path is None:
-            return
-        if self._rank >= 0:
-            # don't try to read before we're guaranteed rank 0 wrote it. This includes
-            # creation (which is why we split the return below)
-            torch.distributed.barrier()
-        if not os.path.exists(self.state_csv_path):
-            return
-        with open(self.state_csv_path) as f:
-            reader = DictReader(f)
-            for row in reader:
-                epoch = int(row["epoch"])
-                self.cache_hist[epoch] = {
-                    "epoch": epoch,
-                    "es_resume_cd": int(row["es_resume_cd"]),
-                    "es_patience_cd": int(row["es_patience_cd"]),
-                    "rlr_resume_cd": int(row["rlr_resume_cd"]),
-                    "rlr_patience_cd": int(row["rlr_patience_cd"]),
-                    "lr": float(row["lr"]),
-                    "train_met": float(row["train_met"]),
-                    "val_met": float(row["val_met"]),
-                }
-                for name, type_ in list(self.user_entry_types.items()):
-                    self.cache_hist[epoch][name] = type_(row[name])
-
-    def _get_last_epoch(self) -> int:
-        return max(self.cache_hist)
-
     def get_last_epoch(self) -> int:
         """Return the last finished epoch from training, or 0 if no history"""
-        self.update_cache()
-        return self._get_last_epoch()
-
-    def _get_best_epoch(self, train_met: bool) -> int:
-        ent = "train_met" if train_met else "val_met"
-        fmt = self.fmt_dict[ent]
-        min_epoch = 0
-        min_met = self.cache_hist[0][ent]
-        min_met = float(fmt.format(min_met))
-        for info in list(self.cache_hist.values()):
-            cur = float(fmt.format(info[ent]))
-            if cur < min_met:
-                min_epoch = info["epoch"]
-                min_met = cur
-        return min_epoch
+        return max(self.cache_hist)
 
     def get_best_epoch(self, train_met: bool = False) -> int:
         """Get the epoch that has lead to the best validation metric val so far
@@ -566,8 +560,17 @@ class TrainingStateController(object):
         metrics base 10. This is in contrast to early stopping criteria and learning
         rate annealing, whose thresholds are absolute.
         """
-        self.update_cache()
-        return self._get_best_epoch(train_met)
+        ent = "train_met" if train_met else "val_met"
+        fmt = self.fmt_dict[ent]
+        min_epoch = 0
+        min_met = self.cache_hist[0][ent]
+        min_met = float(fmt.format(min_met))
+        for info in list(self.cache_hist.values()):
+            cur = float(fmt.format(info[ent]))
+            if cur < min_met:
+                min_epoch = info["epoch"]
+                min_met = cur
+        return min_epoch
 
     def load_model_for_epoch(
         self, model: torch.nn.Module, epoch: Optional[int] = None, strict: bool = True
@@ -587,8 +590,7 @@ class TrainingStateController(object):
             Whether to strictly enforce that the keys in ``model.state_dict()`` match
             those that were saved.
         """
-        if self._rank >= 0:
-            torch.distributed.barrier()
+        self._barrier()
         if epoch is None:
             epoch = self.get_best_epoch()
         if not epoch:
@@ -602,6 +604,7 @@ class TrainingStateController(object):
                 "Unable to load model for epoch {}. No state directory!"
                 "".format(epoch)
             )
+        self._barrier()
 
     def _init_seed_and_model(self, model):
         if self.params.seed is not None:
@@ -646,15 +649,14 @@ class TrainingStateController(object):
             Whether to strictly enforce that the keys in ``model.state_dict()``
             match those that were saved.
         """
-        if self._rank >= 0:
-            torch.distributed.barrier()
+        self._barrier()
         if epoch is None:
             epoch = self.get_last_epoch()
         if not epoch:
             self._init_seed_and_model(model)
             if self.params.log10_learning_rate is not None:
                 for param_group in optimizer.param_groups:
-                    param_group["lr"] = 10**self.params.log10_learning_rate
+                    param_group["lr"] = 10 ** self.params.log10_learning_rate
             # there is no public API for resetting the state dictionary, so
             # we create a new instance as best as possible and copy the state
             # over from there. Note that settings like weight decay are already
@@ -675,6 +677,7 @@ class TrainingStateController(object):
             warnings.warn(
                 f"Unable to load model and optimizer for epoch {epoch}. No state_dir!"
             )
+        self._barrier()
 
     def _clean_up_files(self, *pths):
         if self._rank <= 0:
@@ -716,24 +719,19 @@ class TrainingStateController(object):
         method, it raises a :class:`KeyError`. If an additional argument was passed to
         this method, return it.
         """
-        if len(default) > 1:
-            raise TypeError("expected at most 2 arguments, got 3")
-        if epoch in self.cache_hist:
-            return self.cache_hist[epoch]
-        self.update_cache()
         return self.cache_hist.get(epoch, *default)
 
     def __getitem__(self, epoch: int) -> dict:
         return self.get_info(epoch)
 
     def _safe_write(self, obj, pth: str):
-        assert self._rank <= 0
-        dir_ = os.path.dirname(pth)
-        os.makedirs(dir_, exist_ok=True)
-        with tempfile.NamedTemporaryFile("wb", dir=dir_, delete=False) as f:
-            torch.save(obj, f)
-            fname = f.name
-        os.replace(fname, pth)
+        if self._rank <= 0:
+            dir_ = os.path.dirname(pth)
+            os.makedirs(dir_, exist_ok=True)
+            with tempfile.NamedTemporaryFile("wb", dir=dir_, delete=False) as f:
+                torch.save(obj, f)
+                fname = f.name
+            os.replace(fname, pth)
 
     def get_model_path_with_info(self, info: dict) -> str:
         return os.path.join(self.state_dir, self.params.saved_model_fmt.format(**info))
@@ -765,13 +763,12 @@ class TrainingStateController(object):
         """
         if self.state_dir is None:
             return
-        if self._rank <= 0:
-            # FIXME(sdrobert): figure out a means to ensure these only commit at the
-            # same time
-            self._safe_write(model.state_dict(), self.get_model_path_with_info(info))
-            self._safe_write(
-                optimizer.state_dict(), self.get_optimizer_path_with_info(info)
-            )
+        # FIXME(sdrobert): figure out a means to ensure these only commit at the
+        # same time
+        self._safe_write(model.state_dict(), self.get_model_path_with_info(info))
+        self._safe_write(
+            optimizer.state_dict(), self.get_optimizer_path_with_info(info)
+        )
 
     def save_info_to_hist(self, info: dict):
         """Append history entries to the history csv
@@ -829,7 +826,7 @@ class TrainingStateController(object):
         """
         if epoch is None:
             epoch = self.get_last_epoch()
-        info = self[epoch]
+        info = self.get_info(epoch)
         if not self.params.num_epochs:
             cont = True
         else:
@@ -876,9 +873,6 @@ class TrainingStateController(object):
             Whether to continue training. This can be set to :obj:`False` either by
             hitting the max number of epochs or by early stopping.
         """
-        # ensure cache is updated before we do all comparisons. Then, don't update
-        # cache in case someone gets ahead
-        self.update_cache()
         if self._rank >= 0:
             kwargs["train_met"] = train_met
             kwargs["val_met"] = val_met
@@ -904,8 +898,8 @@ class TrainingStateController(object):
             train_met = kwargs.pop("train_met")
             val_met = kwargs.pop("val_met")
         if epoch is None:
-            epoch = self._get_last_epoch() + 1
-        last_best = self._get_best_epoch(best_is_train)
+            epoch = self.get_last_epoch() + 1
+        last_best = self.get_best_epoch(best_is_train)
         if not self.params.num_epochs:
             cont = True
         else:
@@ -971,7 +965,7 @@ class TrainingStateController(object):
             if not info["rlr_patience_cd"]:
                 old_lr = info["lr"]
                 new_lr = old_lr * self.params.reduce_lr_factor
-                rlr_epsilon = 10**self.params.reduce_lr_log10_epsilon
+                rlr_epsilon = 10 ** self.params.reduce_lr_log10_epsilon
                 if old_lr - new_lr > rlr_epsilon:
                     info["lr"] = new_lr
                     for param_group in optimizer.param_groups:
@@ -994,7 +988,7 @@ class TrainingStateController(object):
             )
             if self.params.keep_last_and_best_only:
                 self.cache_hist[epoch] = info
-                cur_best = self._get_best_epoch(best_is_train)
+                cur_best = self.get_best_epoch(best_is_train)
 
                 if cur_best != epoch:
                     best_info = self.get_info(cur_best)
