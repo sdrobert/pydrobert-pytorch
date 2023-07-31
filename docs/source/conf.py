@@ -108,7 +108,10 @@ ipython_colours = {
 
 def docstring_handler(app, what, name, obj, options, lines):
     if "Params" in name.split(".")[-1]:
-        pdict = obj.param.objects(instance=False)
+        try:
+            pdict = obj.param.objects(instance=False)
+        except:
+            return
         del pdict["name"]
         new_lines = []
         for name, p in pdict.items():
