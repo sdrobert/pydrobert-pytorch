@@ -724,15 +724,6 @@ class TrainingStateController(object):
     def __getitem__(self, epoch: int) -> dict:
         return self.get_info(epoch)
 
-    def _safe_write(self, obj, pth: str):
-        if self._rank <= 0:
-            dir_ = os.path.dirname(pth)
-            os.makedirs(dir_, exist_ok=True)
-            with tempfile.NamedTemporaryFile("wb", dir=dir_, delete=False) as f:
-                torch.save(obj, f)
-                fname = f.name
-            os.replace(fname, pth)
-
     def get_model_path_with_info(self, info: dict) -> str:
         return os.path.join(self.state_dir, self.params.saved_model_fmt.format(**info))
 
@@ -763,12 +754,23 @@ class TrainingStateController(object):
         """
         if self.state_dir is None:
             return
-        # FIXME(sdrobert): figure out a means to ensure these only commit at the
-        # same time
-        self._safe_write(model.state_dict(), self.get_model_path_with_info(info))
-        self._safe_write(
-            optimizer.state_dict(), self.get_optimizer_path_with_info(info)
-        )
+        if self._rank <= 0:
+            # defensive write which makes sure we have enough space on the drive before
+            # overwriting anything. Create in new file, then move into position
+            write_pairs = (
+                (model.state_dict(), self.get_model_path_with_info(info)),
+                (optimizer.state_dict(), self.get_optimizer_path_with_info(info)),
+            )
+            replaces = []
+            for obj, path in write_pairs:
+                dir_ = os.path.dirname(path)
+                os.makedirs(dir_, exist_ok=True)
+                with tempfile.NamedTemporaryFile("wb", dir=dir_, delete=False) as f:
+                    torch.save(obj, f)
+                    replaces.append((f.name, path))
+            for src, dst in replaces:
+                os.replace(src, dst)
+            del write_pairs, replaces
 
     def save_info_to_hist(self, info: dict):
         """Append history entries to the history csv
