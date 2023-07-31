@@ -56,10 +56,6 @@ napoleon_google_docstring = False
 napoleon_include_init_with_doc = True
 autodoc_mock_imports = [
     "numpy",
-    "matplotlib.axes",
-    "matplotlib.colors",
-    "matplotlib.figure",
-    "matplotlib",
     "torch",
 ]
 autodoc_typehints = "none"
@@ -72,6 +68,15 @@ napoleon_custom_sections = [
     ("Call Parameters", "returns_style"),
     ("Variables", "returns_style"),
 ]
+
+intersphinx_mapping = {
+    "numpy": ("https://docs.scipy.org/doc/numpy/", None),
+    "pydrobert.kaldi": ("https://pydrobert-kaldi.readthedocs.io/en/latest", None),
+    "pydrobert.param": ("https://pydrobert-param.readthedocs.io/en/latest", None),
+    "pydrobert.speech": ("https://pydrobert-speech.readthedocs.io/en/latest", None),
+    "python": ("https://docs.python.org/", None),
+    "torch": ("https://pytorch.org/docs/stable/", None),
+}
 
 # -- Options for HTML output -------------------------------------------------
 
