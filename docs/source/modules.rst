@@ -14,5 +14,6 @@ pydrobert.torch API
    pydrobert.torch.distributions
    pydrobert.torch.estimators
    pydrobert.torch.functional
+   pydrobert.torch.lightning
    pydrobert.torch.modules
    pydrobert.torch.training

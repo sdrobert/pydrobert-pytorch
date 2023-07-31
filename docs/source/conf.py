@@ -57,6 +57,7 @@ napoleon_include_init_with_doc = True
 autodoc_mock_imports = [
     "numpy",
     "torch",
+    "pytorch_lightning",
 ]
 autodoc_typehints = "none"
 autodoc_type_aliases = napoleon_type_aliases = {"np.ndarray": "numpy.ndarray"}
@@ -80,11 +81,11 @@ intersphinx_mapping = {
 
 # -- Options for HTML output -------------------------------------------------
 
-# on_rtd = os.environ.get("READTHEDOCS") == "True"
-# if on_rtd:
-#     html_theme = "default"
-# else:
-html_theme = "sphinx_rtd_theme"
+on_rtd = os.environ.get("READTHEDOCS") == "True"
+if on_rtd:
+    html_theme = "default"
+else:
+    html_theme = "sphinx_rtd_theme"
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,

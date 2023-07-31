@@ -14,6 +14,10 @@
 
 """Functions and classes which interface with :mod:`pytorch_lightning`
 
+This functionality is WIP.
+
+See `scpc <https://github.com/sdrobert/scpc>`_ for a working example.
+
 Raises
 ------
 ImportError
