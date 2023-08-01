@@ -2,6 +2,7 @@
 
 ## v0.4.0
 
+- `parse_arpa` can handle log-probs in scientific notation (e.g. `1e4`)
 - Added `best_is_train` flag to `TrainingController.update_for_epoch`
 - Refactored `get-torch-spect-data-dir-info` to be faster
 - `subset-torch-spect-data-dir` command has been added
