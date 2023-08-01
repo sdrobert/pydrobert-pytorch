@@ -111,7 +111,7 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
         ngram_counts[n - 1] = count
     prob_dicts = [dict() for _ in ngram_counts]
     ngram_header_pattern = re.compile(r"^\\(\d+)-grams:$")
-    ngram_entry_pattern = re.compile(r"^(-?\d+(?:\.\d+)?)\s+(.*)$")
+    ngram_entry_pattern = re.compile(r"^(-?\d+(?:\.\d+)?(?:[Ee]-?\d+)?)\s+(.*)$")
     while line != "\\end\\":
         match = ngram_header_pattern.match(line)
         if match is None:

@@ -26,8 +26,8 @@ def test_parse_arpa_lm():
     file_ = SpooledTemporaryFile(mode="w+")
     file_.write(
         r"""\
-This is from https://cmusphinx.github.io/wiki/arpaformat/
-I've removed the backoff for </s> b/c IRSTLM likes to do things like that
+This is modified from https://cmusphinx.github.io/wiki/arpaformat/
+I've removed the backoff for </s> b/c IRSTLM likes to do things like that.
 
 \data\
 ngram 1=7
@@ -39,14 +39,14 @@ ngram 2=7
 -1.0000 </s>
 -0.6990 wood	 -0.2553
 -0.6990 cindy	-0.2553
--0.6990 pittsburgh		-0.2553
+-6.990e-01 pittsburgh		-0.2553
 -0.6990 jean	 -0.1973
 
 \2-grams:
 -0.2553 <unk> wood
 -0.2553 <s> <unk>
 -0.2553 wood pittsburgh
--0.2553 cindy jean
+-2.553E-1 cindy jean
 -0.2553 pittsburgh cindy
 -0.5563 jean </s>
 -0.5563 jean wood
@@ -76,6 +76,7 @@ ngram 2=7
         ("jean", "wood"),
     }
     assert abs(ngram_list[0]["cindy"][0] + 0.6990) < 1e-4
+    assert abs(ngram_list[0]["pittsburgh"][0] + 0.6990) < 1e-4
     assert abs(ngram_list[0]["jean"][1] + 0.1973) < 1e-4
     assert abs(ngram_list[1][("cindy", "jean")] + 0.2553) < 1e-4
     file_.seek(0)
