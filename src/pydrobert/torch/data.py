@@ -47,6 +47,7 @@ from ._dataloaders import (
     SpectDataLoaderParams,
     SpectEvaluationDataLoader,  # deprecated
     SpectTrainingDataLoader,  # deprecated
+    OnUnevenDistributed,
 )
 from ._parsing import (
     parse_arpa_lm,

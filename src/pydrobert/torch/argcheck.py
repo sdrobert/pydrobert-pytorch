@@ -32,7 +32,12 @@ from typing_extensions import ParamSpec, Concatenate
 
 import torch
 
-from ._compat import script
+from ._compat import _v, script as _script
+
+if _v < "1.10.0":
+    script = torch.jit.ignore(drop=True)
+else:
+    script = _script
 
 V = TypeVar("V")
 P = ParamSpec("P")
