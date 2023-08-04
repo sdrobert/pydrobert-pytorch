@@ -1618,8 +1618,6 @@ class MinimumErrorRateLoss(torch.nn.Module):
         ins_cost = argcheck.is_float(ins_cost, "ins_cost")
         del_cost = argcheck.is_float(del_cost, "del_cost")
         sub_cost = argcheck.is_float(sub_cost, "sub_cost")
-        if weight is not None:
-            weight = argcheck.is_tensor(weight, "weight")
         reduction = argcheck.is_in(reduction, get_args(Reduction), "reduction")
         super().__init__()
         self.eos, self.include_eos, self.sub_avg = eos, include_eos, sub_avg
