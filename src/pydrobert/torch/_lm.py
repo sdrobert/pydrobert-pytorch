@@ -441,11 +441,11 @@ def _lookup_calc_idx_log_probs(
         hist = hist.gather(0, idx)
     assert hist.size(0) == N - 1
     if shift:
-        hist = hist.masked_fill(hist.eq(sos), -shift)
-        hist = hist + shift
+        hist = hist.masked_fill(hist.eq(sos), V)
+        # hist = hist + shift
 
     # add the possible extensions to the history
-    cur_step = torch.arange(shift, V + shift, dtype=torch.long, device=device)
+    cur_step = torch.arange(0, V, dtype=torch.long, device=device)
     cur_step = cur_step.view(1, 1, V).expand(1, B, V)
     hist = torch.cat([hist.unsqueeze(2).expand(N - 1, B, V), cur_step], 0)
 
@@ -803,12 +803,12 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                 self.max_ngram_nodes = len(prob_dict)
         if self.shift:
             prob_dicts[0] = dict(
-                (0, v) if k == self.sos else (k + 1, v)
+                (self.vocab_size, v) if k == self.sos else (k, v)
                 for (k, v) in list(prob_dicts[0].items())
             )
             for n in range(1, self.max_ngram):
                 prob_dicts[n] = dict(
-                    (tuple(t + 1 for t in k), v)
+                    (tuple(self.vocab_size if t == self.sos else t for t in k), v)
                     for (k, v) in list(prob_dicts[n].items())
                 )
         N, G, V = self.max_ngram, self.max_ngram_nodes, self.vocab_size
