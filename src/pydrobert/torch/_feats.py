@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from typing import Optional, Tuple, overload
-from typing_extensions import Literal
+from typing_extensions import Literal, get_args
 
 import torch
 
@@ -297,6 +297,9 @@ def feat_deltas(
     return x
 
 
+PadMode = Literal["replicate", "constant", "reflect", "circular"]
+
+
 class FeatureDeltas(torch.nn.Module):
     r"""Compute deltas of features
 
@@ -370,16 +373,14 @@ class FeatureDeltas(torch.nn.Module):
         concatenate: bool = True,
         order: int = 2,
         width: int = 2,
-        pad_mode: Literal["replicate", "constant", "reflect", "circular"] = "replicate",
+        pad_mode: PadMode = "replicate",
         value: float = config.DEFT_PAD_VALUE,
     ):
         dim = argcheck.is_int(dim, "dim")
         time_dim = argcheck.is_int(time_dim, "time_dim")
         concatenate = argcheck.is_bool(concatenate, "concatenate")
         order = argcheck.is_nonnegi(order, "order")
-        pad_mode = argcheck.is_in(
-            pad_mode, {"replicate", "constant", "reflect", "circular"}, pad_mode
-        )
+        pad_mode = argcheck.is_in(pad_mode, get_args(PadMode), pad_mode)
         super().__init__()
         self.register_buffer("filters", _feat_delta_filters(order, width))
         self.dim, self.time_dim, self.value = dim, time_dim, value
@@ -409,13 +410,17 @@ class FeatureDeltas(torch.nn.Module):
     __call__ = proxy(forward)
 
 
+Policy = Literal["fixed", "ali", "ref"]
+WindowType = Literal["symmetric", "causal", "future"]
+
+
 @overload
 def slice_spect_data(
     input: torch.Tensor,
     in_lens: Optional[torch.Tensor] = None,
     other_lens: Optional[torch.Tensor] = None,
-    policy: Literal["fixed", "ali", "ref"] = None,
-    window_type: Literal["symmmetric", "causal", "future"] = "symmetric",
+    policy: Policy = "fixed",
+    window_type: WindowType = "symmetric",
     valid_only: bool = True,
     lobe_size: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -744,15 +749,13 @@ class SliceSpectData(torch.nn.Module):
 
     def __init__(
         self,
-        policy: Literal["fixed", "ali", "ref"] = "fixed",
-        window_type: Literal["symmetric", "causal", "future"] = "symmetric",
+        policy: Policy = "fixed",
+        window_type: WindowType = "symmetric",
         valid_only: bool = True,
         lobe_size: int = 0,
     ) -> None:
-        policy = argcheck.is_in(policy, ["fixed", "ali", "ref"], "policy")
-        window_type = argcheck.is_in(
-            window_type, ["symmnetric", "causal", "future"], "window_type"
-        )
+        policy = argcheck.is_in(policy, get_args(Policy), "policy")
+        window_type = argcheck.is_in(window_type, get_args(WindowType), "window_type")
         valid_only = argcheck.is_bool(valid_only, "valid_only")
         lobe_size = argcheck.is_nonnegi(lobe_size, "lobe_size")
         super().__init__()

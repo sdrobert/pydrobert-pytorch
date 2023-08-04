@@ -57,80 +57,88 @@ def _is_check_factory(t: Type[V], *ts: type):
     ts = (t,) + ts
     suf = "n" if t.__name__.startswith(("a", "e", "i", "o", "u")) else ""
 
-    @script
-    def _is_check(val: t, name: Optional[str] = None) -> t:
+    def _is_check(
+        val: t, name: Optional[str] = None, _type_name: str = t.__name__
+    ) -> t:
         if torch.jit.is_scripting():
             return val
         elif isinstance(val, ts):
             return val if isinstance(val, t) else t(val)
         else:
-            raise ValueError(f"{_nv(name, val)} is not a{suf} {t.__name__}")
+            raise ValueError(f"{_nv(name, val)} is not a{suf} {_type_name}")
 
     return _is_check
 
 
-is_str = _is_check_factory(str)
-is_int = _is_check_factory(int)
-is_bool = _is_check_factory(bool, int, float)
-is_float = _is_check_factory(float, int)
-is_pathlike = _is_check_factory(os.PathLike)
-is_path = _is_check_factory(Path)
-is_tensor = _is_check_factory(torch.Tensor)
+is_str = script(_is_check_factory(str))
+is_int = script(_is_check_factory(int))
+is_bool = script(_is_check_factory(bool, int, float))
+is_float = script(_is_check_factory(float, int))
+is_tensor = script(_is_check_factory(torch.Tensor))
+is_pathlike = torch.jit.unused(_is_check_factory(os.PathLike))
+is_path = torch.jit.unused(_is_check_factory(Path))
 
 
 def _is_numcheck_factory(t: Type[NumLike], *ts: Type[NumLike]):
     ts = (t,) + ts
 
-    @script
-    def _is_poscheck(val: t, name: Optional[str] = None) -> t:
+    def _is_poscheck(
+        val: t, name: Optional[str] = None, _type_name: str = t.__name__
+    ) -> t:
         if not torch.jit.is_scripting():
             if isinstance(val, ts):
                 val = t(val)
             else:
-                raise ValueError(f"{_nv(name, val)} is not a positive {t.__name__}")
+                raise ValueError(f"{_nv(name, val)} is not a positive {_type_name}")
         if val <= 0:
-            raise ValueError(f"{_nv(name, val)} is not a positive {t.__name__}")
+            raise ValueError(f"{_nv(name, val)} is not a positive {_type_name}")
         return val
 
-    @script
-    def _is_negcheck(val: t, name: Optional[str] = None) -> t:
+    def _is_negcheck(
+        val: t, name: Optional[str] = None, _type_name: str = t.__name__
+    ) -> t:
         if not torch.jit.is_scripting():
             if isinstance(val, ts):
                 val = t(val)
             else:
-                raise ValueError(f"{_nv(name, val)} is not a negative {t.__name__}")
+                raise ValueError(f"{_nv(name, val)} is not a negative {_type_name}")
         if val >= 0:
-            raise ValueError(f"{_nv(name, val)} is not a negative {t.__name__}")
+            raise ValueError(f"{_nv(name, val)} is not a negative {_type_name}")
         return val
 
-    @script
-    def _is_nonposcheck(val: t, name: Optional[str] = None) -> t:
+    def _is_nonposcheck(
+        val: t, name: Optional[str] = None, _type_name: str = t.__name__
+    ) -> t:
         if not torch.jit.is_scripting():
             if isinstance(val, ts):
                 val = t(val)
             else:
-                raise ValueError(f"{_nv(name, val)} is not a non-positive {t.__name__}")
+                raise ValueError(f"{_nv(name, val)} is not a non-positive {_type_name}")
         if val > 0:
-            raise ValueError(f"{_nv(name, val)} is not a non-positive {t.__name__}")
+            raise ValueError(f"{_nv(name, val)} is not a non-positive {_type_name}")
         return val
 
-    @script
-    def _is_nonnegcheck(val: t, name: Optional[str] = None) -> t:
+    def _is_nonnegcheck(
+        val: t, name: Optional[str] = None, _type_name: str = t.__name__
+    ) -> t:
         if not torch.jit.is_scripting():
             if isinstance(val, ts):
                 val = t(val)
             else:
-                raise ValueError(f"{_nv(name, val)} is not a non-negative {t.__name__}")
+                raise ValueError(f"{_nv(name, val)} is not a non-negative {_type_name}")
         if val < 0:
-            raise ValueError(f"{_nv(name, val)} is not a non-negative {t.__name__}")
+            raise ValueError(f"{_nv(name, val)} is not a non-negative {_type_name}")
         return val
 
     return _is_poscheck, _is_negcheck, _is_nonposcheck, _is_nonnegcheck
 
 
 is_posi, is_negi, is_nonposi, is_nonnegi = _is_numcheck_factory(int)
-is_nat = is_posi
+is_posi, is_negi = script(is_posi), script(is_negi)
+is_nonposi, is_nonnegi, is_nat = script(is_nonposi), script(is_nonnegi), is_posi
 is_posf, is_negf, is_nonposf, is_nonnegf = _is_numcheck_factory(float, int)
+is_posf, is_negf = script(is_posf), script(is_negf)
+is_nonposf, is_nonnegf = script(is_nonposf), script(is_nonnegf)
 
 
 @script

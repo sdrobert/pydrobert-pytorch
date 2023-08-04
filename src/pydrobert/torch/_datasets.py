@@ -1144,7 +1144,7 @@ class ContextWindowDataSet(SpectDataSet):
         if params is None:
             params = ContextWindowDataParams()
         else:
-            params = argcheck.is_a(params, ContextWindowDataSet, "params")
+            params = argcheck.is_a(params, ContextWindowDataParams, "params")
         if left is not None:
             left = argcheck.is_nonnegi(left, "left")
             warnings.warn(
