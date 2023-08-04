@@ -288,7 +288,8 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
         pin_memory: Optional[bool] = None,
     ) -> None:
         params = argcheck.is_a(params, self.pclass, "params")
-        num_workers = argcheck.is_nonnegi(num_workers, "num_workers", True)
+        if num_workers is not None:
+            num_workers = argcheck.is_nonnegi(num_workers, "num_workers")
         pin_memory = argcheck.is_bool(pin_memory, "pin_memory", True)
         super().__init__()
 
