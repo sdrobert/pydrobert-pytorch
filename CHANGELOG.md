@@ -2,6 +2,8 @@
 
 ## v0.4.0
 
+- Added `pydrobert.torch.argcheck` and standardized module argument checking a
+  bit
 - `parse_arpa` can handle log-probs in scientific notation (e.g. `1e4`)
 - Added `best_is_train` flag to `TrainingController.update_for_epoch`
 - Refactored `get-torch-spect-data-dir-info` to be faster

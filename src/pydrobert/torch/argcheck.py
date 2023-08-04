@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Boilerplate for checking argument values"""
+"""Boilerplate for checking argument values
+
+These functions are intended for use primarily in :class:`torch.Module` definitions
+and are not :mod:`torch.jit` safe.
+"""
 
 import os
 import string
@@ -145,6 +149,7 @@ def is_a(
 
 
 def is_a(val, t, name=None, allow_none=False):
+    assert not issubclass(t, torch.nn.Module), f"what if {t} is scripted?"
     if allow_none and val is None:
         return None
     if not isinstance(val, t):
@@ -181,6 +186,14 @@ def is_in(val, collection, name=None, allow_none=False):
     return val
 
 
+def is_exactly(
+    val: V, other: V, name: Optional[str] = None, other_name: Optional[str] = None
+) -> V:
+    if val is not other:
+        raise ValueError(f"{_nv(name, val)} is not {_nv(other_name, other)}")
+    return val
+
+
 def is_pos(val: N, name: Optional[str] = None) -> N:
     val_ = torch.as_tensor(is_numlike(val, name))
     if (val_ <= 0).any():
@@ -210,14 +223,6 @@ def is_nonneg(val: N, name: Optional[str] = None) -> N:
     if (val_ < 0).any():
         x = "entirely " if val_.numel() > 1 else ""
         raise ValueError(f"{_nv(name, val)} is not {x}non-negative")
-    return val
-
-
-def is_exactly(
-    val: V, other: V, name: Optional[str] = None, other_name: Optional[str] = None
-) -> V:
-    if val is not other:
-        raise ValueError(f"{_nv(name, val)} is not {_nv(other_name, other)}")
     return val
 
 

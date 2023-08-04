@@ -410,21 +410,16 @@ class SpectDataSet(torch.utils.data.Dataset):
         file_prefix = argcheck.is_str(file_prefix, "file_prefix")
         file_suffix = argcheck.is_str(file_suffix, "file_suffix")
         warn_on_missing = argcheck.is_bool(warn_on_missing, "warn_on_missing")
-        if sos is not None:
-            sos = argcheck.is_int(sos, "sos")
-        if eos is not None:
-            sos = argcheck.is_int(eos, "eos")
+        sos = argcheck.is_int(sos, "sos", True)
+        eos = argcheck.is_int(eos, "eos", True)
         feat_subdir = argcheck.is_str(feat_subdir, "feat_subdir")
-        if ali_subdir is not None:
-            ali_subdir = argcheck.is_str(ali_subdir, "ali_subdir")
-        if ref_subdir is not None:
-            ref_subdir = argcheck.is_str(ref_subdir, "ref_subdir")
+        ali_subdir = argcheck.is_str(ali_subdir, "ali_subdir", True)
+        ref_subdir = argcheck.is_str(ref_subdir, "ref_subdir", True)
         if params is None:
             params = SpectDataParams()
         else:
             params = argcheck.is_a(params, SpectDataParams, "params")
-        if feat_mean is not None:
-            feat_mean = argcheck.is_tensor(feat_mean, "feat_mean")
+        feat_mean = argcheck.is_tensor(feat_mean, "feat_mean", True)
 
         if suppress_alis is None:
             warnings.warn(

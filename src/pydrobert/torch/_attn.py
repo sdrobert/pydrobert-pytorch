@@ -565,9 +565,6 @@ class MultiHeadedAttention(GlobalSoftAttention):
         else:
             out_size = argcheck.is_nat(out_size, "out_size")
         num_heads = argcheck.is_nat(num_heads, "num_heads")
-        single_head_attention = argcheck.is_a(
-            single_head_attention, GlobalSoftAttention, "single_head_attention"
-        )
         if single_head_attention.dim < 0:
             raise ValueError(
                 "Negative dimensions are ambiguous for multi-headed attention"

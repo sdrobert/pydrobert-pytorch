@@ -1873,7 +1873,6 @@ class SequentialLanguageModelDistribution(
         cache_samples: bool = False,
         validate_args: Optional[bool] = None,
     ):
-        random_walk = argcheck.is_a(random_walk, RandomWalk, "random_walk")
         if batch_size is None:
             batch_shape = torch.Size([])
         else:

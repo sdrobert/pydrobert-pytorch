@@ -64,10 +64,8 @@ class PosixPath(param.Parameter):
         type: Optional[FileType] = None,
         **params,
     ):
-        if default is not None:
-            default = argcheck.is_str(default, "default")
-        if type is not None:
-            type = argcheck.is_in(type, get_args(FileType), "type")
+        default = argcheck.is_str(default, "default", True)
+        type = argcheck.is_in(type, get_args(FileType), "type", True)
         always_exists = argcheck.is_bool(always_exists, "always_exists")
         super().__init__(default=default, **params)
         self.always_exists = always_exists
@@ -290,10 +288,8 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
         pin_memory: Optional[bool] = None,
     ) -> None:
         params = argcheck.is_a(params, self.pclass, "params")
-        if num_workers is not None:
-            num_workers = argcheck.is_nonnegi(num_workers, "num_workers")
-        if pin_memory is not None:
-            pin_memory = argcheck.is_bool(pin_memory, "pin_memory")
+        num_workers = argcheck.is_nonnegi(num_workers, "num_workers", True)
+        pin_memory = argcheck.is_bool(pin_memory, "pin_memory", True)
         super().__init__()
 
         self.params = params
@@ -596,10 +592,8 @@ class LitSpectDataModule(
         sort_batch = argcheck.is_bool(sort_batch, "sort_batch")
         suppress_alis = argcheck.is_bool(suppress_alis, "suppress_alis")
         tokens_only = argcheck.is_bool(tokens_only, "tokens_only")
-        if suppress_uttids is not None:
-            suppress_uttids = argcheck.is_bool(suppress_uttids, "suppress_uttids")
-        if shuffle is not None:
-            shuffle = argcheck.is_bool(shuffle, "shuffle")
+        suppress_uttids = argcheck.is_bool(suppress_uttids, "suppress_uttids", True)
+        shuffle = argcheck.is_bool(shuffle, "shuffle", True)
         warn_on_missing = argcheck.is_bool(warn_on_missing, "warn_on_missing")
         on_uneven_distributed = argcheck.is_in(
             on_uneven_distributed,

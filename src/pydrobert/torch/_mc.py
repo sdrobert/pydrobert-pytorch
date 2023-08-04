@@ -138,8 +138,7 @@ class DirectEstimator(MonteCarloEstimator):
         cv_mean: Optional[torch.Tensor] = None,
         is_log: bool = False,
     ):
-        if cv_mean is not None:
-            cv_mean = argcheck.is_tensor(cv_mean, "cv_mean")
+        cv_mean = argcheck.is_tensor(cv_mean, "cv_mean", True)
         super().__init__(proposal, func, mc_samples, is_log)
         self.cv, self.cv_mean = cv, cv_mean
 

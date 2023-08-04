@@ -699,8 +699,7 @@ class _StringMatching(torch.nn.Module, metaclass=abc.ABCMeta):
     def __init__(
         self, eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
     ):
-        if eos is not None:
-            eos = argcheck.is_int(eos, "eos")
+        eos = argcheck.is_int(eos, "eos", True)
         include_eos = argcheck.is_bool(include_eos, "include_eos")
         batch_first = argcheck.is_bool(batch_first, "batch_first")
         ins_cost = argcheck.is_float(ins_cost, "ins_cost")
@@ -1338,15 +1337,13 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         reduction: Reduction = "mean",
         ignore_index: int = config.INDEX_PAD_VALUE,
     ):
-        if eos is not None:
-            eos = argcheck.is_int(eos, "eos")
+        eos = argcheck.is_int(eos, "eos", True)
         include_eos = argcheck.is_bool(include_eos, "include_eos")
         batch_first = argcheck.is_bool(batch_first, "batch_first")
         ins_cost = argcheck.is_float(ins_cost, "ins_cost")
         del_cost = argcheck.is_float(del_cost, "del_cost")
         sub_cost = argcheck.is_float(sub_cost, "sub_cost")
-        if weight is not None:
-            weight = argcheck.is_tensor(weight, "weight")
+        weight = argcheck.is_tensor(weight, "weight", True)
         reduction = argcheck.is_in(reduction, get_args(Reduction), "reduction")
         ignore_index = argcheck.is_int(ignore_index, "ignore_index")
         super().__init__()
@@ -1609,8 +1606,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
         sub_cost: float = config.DEFT_SUB_COST,
         reduction: Literal["mean", "none", "sum"] = "mean",
     ):
-        if eos is not None:
-            eos = argcheck.is_int(eos, "eos")
+        eos = argcheck.is_int(eos, "eos", True)
         include_eos = argcheck.is_bool(include_eos, "include_eos")
         sub_avg = argcheck.is_bool(sub_avg, "sub_avg")
         batch_first = argcheck.is_bool(batch_first, "batch_first")
