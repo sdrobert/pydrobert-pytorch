@@ -72,6 +72,7 @@ _COMMON_ARGS = {
     },
     "--unk-symbol": {
         "default": None,
+        "type": argcheck.is_token,
         "help": "If set, will map out-of-vocabulary tokens to this symbol",
     },
     "--frame-shift-ms": {
@@ -815,6 +816,7 @@ SpectDataSet directory."""
     )
     utt_group.add_argument(
         "--channel",
+        type=argcheck.is_token,
         default=config.DEFT_CTM_CHANNEL,
         help='If neither "--wc2utt" nor "--utt2wc" is specified, utterance '
         "IDs are treated as wavefile names and are given the value of this "

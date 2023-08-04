@@ -35,7 +35,7 @@ from ._compat import (
 )
 from ._string import _lens_from_eos, fill_after_eos
 from ._wrappers import functional_wrapper, proxy
-from . import config
+from . import config, argcheck
 
 
 @script
@@ -274,16 +274,16 @@ class BeamSearch(torch.nn.Module):
         finish_all_paths: bool = False,
         pad_value: int = config.INDEX_PAD_VALUE,
     ):
-        super().__init__()
-        if width < 1:
-            raise ValueError("width must be positive")
+        width = argcheck.is_posi(width, "width")
         if eos is not None:
-            if eos < -lm.vocab_size or eos > lm.vocab_size - 1:
-                raise ValueError(
-                    f"Expected eos to be in the range [{-lm.vocab_size}, "
-                    f"{lm.vocab_size - 1}], got {eos}"
-                )
+            eos = argcheck.is_int(eos, "eos")
+            eos = argcheck.is_btw(
+                eos, -lm.vocab_size, lm.vocab_size, name="eos", left_inclusive=True
+            )
             eos = (eos + lm.vocab_size) % lm.vocab_size
+        finish_all_paths = argcheck.is_bool(finish_all_paths, "finish_all_paths")
+        pad_value = argcheck.is_int(pad_value, "pad_value")
+        super().__init__()
         self.lm = lm
         self.width = width
         self.eos = eos
@@ -517,7 +517,7 @@ def ctc_greedy_search(
         raise RuntimeError("logits must be 3-dimensional")
     V = logits.size(2)
     if blank_idx < -V or blank_idx > (V - 1):
-        raise IndexError(
+        raise RuntimeError(
             "Blank index out of range (expected to be in the range of "
             f"[-{V},{V-1}], but got {blank_idx})"
         )
@@ -605,7 +605,7 @@ class CTCGreedySearch(torch.nn.Module):
         this range are undefined.
     """
 
-    __constants__ = ["blank_idx", "batch_first", "is_probs"]
+    __constants__ = "blank_idx", "batch_first", "is_probs"
 
     blank_idx: int
     batch_first: bool
@@ -614,6 +614,9 @@ class CTCGreedySearch(torch.nn.Module):
     def __init__(
         self, blank_idx: int = -1, batch_first: bool = False, is_probs: bool = False
     ):
+        blank_idx = argcheck.is_int(blank_idx, "blank_idx")
+        batch_first = argcheck.is_bool(batch_first, "batch_first")
+        is_probs = argcheck.is_bool(is_probs, "is_probs")
         super().__init__()
         self.blank_idx = blank_idx
         self.batch_first = batch_first
@@ -1035,10 +1038,9 @@ class CTCPrefixSearch(torch.nn.Module):
         lm: Optional[MixableSequentialLanguageModel] = None,
         valid_mixture: bool = False,
     ):
-        if width < 1:
-            raise ValueError("width must be positive")
-        if valid_mixture and lm is not None and (beta < 0 or beta > 1):
-            raise ValueError("beta must be between [0,1] when valid_mixture is true")
+        width = argcheck.is_posi(width, name="width")
+        beta = argcheck.is_closed01(beta, name="beta")
+        valid_mixture = argcheck.is_bool(valid_mixture, "valid_mixture")
         super().__init__()
         self.width, self.beta, self.valid_mixture = width, beta, valid_mixture
         if lm is None:
@@ -1358,19 +1360,20 @@ class RandomWalk(torch.nn.Module):
         a distribution.
     """
 
-    __constants__ = ["eos"]
+    __constants__ = ("eos",)
 
     eos: Optional[int]
 
     def __init__(self, lm: SequentialLanguageModel, eos: Optional[int] = None):
-        super().__init__()
         if eos is not None:
+            eos = argcheck.is_int(eos, "eos")
             if eos < -lm.vocab_size or eos > lm.vocab_size - 1:
                 raise ValueError(
                     f"Expected eos to be in the range [{-lm.vocab_size}, "
                     f"{lm.vocab_size - 1}], got {eos}"
                 )
             eos = (eos + lm.vocab_size) % lm.vocab_size
+        super().__init__()
         self.lm = lm
         self.eos = eos
         device = None
@@ -1686,11 +1689,14 @@ class SequenceLogProbabilities(torch.nn.Module):
     :class:`torch.nn.utils.rnn.PackedSequence` in scripting mode.
     """
 
-    __constants__ = ["dim", "eos"]
+    __constants__ = "dim", "eos"
     dim: int
     eos: Optional[int]
 
     def __init__(self, dim: int = 0, eos: Optional[int] = None):
+        dim = argcheck.is_int(dim, "dim")
+        if eos is not None:
+            eos = argcheck.is_int(eos, "eos")
         super().__init__()
         self.dim = dim
         self.eos = eos
@@ -1741,8 +1747,13 @@ class TokenSequenceConstraint(constraints.Constraint):
         eos: Optional[int] = None,
         max_iters: Optional[int] = None,
     ) -> None:
+        vocab_size = argcheck.is_posi(vocab_size, "vocab_size")
         if eos is None and max_iters is None:
             raise ValueError("At least one of max_iters or eos must be non-none")
+        if eos is not None:
+            eos = argcheck.is_int(eos, "eos")
+        if max_iters is not None:
+            max_iters = argcheck.is_nonnegi(max_iters, "max_iters")
         super().__init__()
         self.vocab_size = vocab_size
         self.eos = eos
@@ -1862,27 +1873,34 @@ class SequentialLanguageModelDistribution(
         cache_samples: bool = False,
         validate_args: Optional[bool] = None,
     ):
+        random_walk = argcheck.is_a(random_walk, RandomWalk, "random_walk")
+        if batch_size is None:
+            batch_shape = torch.Size([])
+        else:
+            batch_size = argcheck.is_posi(batch_size, "batch_size")
+            batch_shape = torch.Size([batch_size])
+        if max_iters is None:
+            if random_walk.eos is None:
+                raise ValueError("random_walk.eos must be set if max_iters isn't")
+            event_shape = torch.Size([1])
+        else:
+            max_iters = argcheck.is_nonnegi(max_iters, "max_iters")
+            event_shape = torch.Size([max_iters])
+        cache_samples = argcheck.is_bool(cache_samples, "cache_samples")
+        if validate_args is not None:
+            validate_args = argcheck.is_bool(validate_args, "validate_args")
         self.random_walk = random_walk
+        super().__init__(batch_shape, event_shape, validate_args)
         self.initial_state = dict() if initial_state is None else initial_state
         self.cache_samples = cache_samples
         self._samples_cache = None
         self._log_probs_cache = None
         self.max_iters = max_iters
-        batch_shape = torch.Size([]) if batch_size is None else torch.Size([batch_size])
-        event_shape = torch.Size([1 if random_walk.eos is not None else max_iters])
-        super().__init__(batch_shape, event_shape, validate_args)
-        if self._validate_args:
-            if max_iters is not None and max_iters < 0:
-                raise ValueError("max_iters must be non-negative")
-            if batch_size is not None and batch_size < 1:
-                raise ValueError("batch_size must be positive")
-            if not isinstance(random_walk, RandomWalk):
-                raise ValueError("random_walk is not a RandomWalk instance")
-            if not all(
-                isinstance(x, str) and isinstance(y, torch.Tensor)
-                for (x, y) in self.initial_state.items()
-            ):
-                raise ValueError("initial_state is not a dictionary of str:Tensor")
+        if self._validate_args and not all(
+            isinstance(x, str) and isinstance(y, torch.Tensor)
+            for (x, y) in self.initial_state.items()
+        ):
+            raise ValueError("initial_state is not a dictionary of str:Tensor")
 
     def _validate_sample(self, value: torch.Tensor):
         # event dimension can be dynamically-sized. That's checked in the support check

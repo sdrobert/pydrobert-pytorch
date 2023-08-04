@@ -28,6 +28,7 @@ from typing_extensions import Literal
 
 import torch
 
+from . import argcheck
 from ._pad import pad_variable
 from ._compat import meshgrid, script, linalg_solve
 from ._wrappers import functional_wrapper, proxy
@@ -198,7 +199,7 @@ class PolyharmonicSpline(torch.nn.Module):
         points (linearly independent). See the Wikipedia entry on splnes for more info.
     """
 
-    __constants__ = ["order", "regularization_weight", "full_matrix"]
+    __constants__ = "order", "regularization_weight", "full_matrix"
 
     order: int
     regularization_weight: float
@@ -207,9 +208,12 @@ class PolyharmonicSpline(torch.nn.Module):
     def __init__(
         self, order: int, regularization_weight: float = 0.0, full_matrix: bool = True
     ):
+        order = argcheck.is_posi(order, "order")
+        regularization_weight = argcheck.is_float(
+            regularization_weight, "regularization_weight"
+        )
+        full_matrix = argcheck.is_bool(full_matrix, "full_matrix")
         super().__init__()
-        if order <= 0:
-            raise ValueError(f"order must be positive, got {order}")
         self.order = order
         self.regularization_weight = regularization_weight
         self.full_matrix = full_matrix
@@ -347,9 +351,12 @@ class Warp1DGrid(torch.nn.Module):
     max_length: Optional[int]
 
     def __init__(self, max_length: Optional[int] = None, interpolation_order: int = 1):
+        if max_length is not None:
+            max_length = argcheck.is_nonnegi(max_length, "max_length")
+        interpolation_order = argcheck.is_posi(
+            interpolation_order, "interpolation_order"
+        )
         super().__init__()
-        if max_length is not None and max_length < 0:
-            raise ValueError("max_length must be non-negative")
         self.max_length = max_length
         self.interpolation_order = interpolation_order
 
@@ -487,21 +494,13 @@ class DenseImageWarp(torch.nn.Module):
         mode: Literal["bilinear", "nearest"] = "bilinear",
         padding_mode: Literal["border", "zeros", "reflection"] = "border",
     ):
+        indexing = argcheck.is_in(indexing, ["hw", "wh"], "indexing")
+        mode = argcheck.is_in(mode, ["bilinear", "nearest"], "mode")
+        padding_mode = argcheck.is_in(
+            padding_mode, ["border", "zeros", "reflection"], "padding_mode"
+        )
         super().__init__()
-        if indexing not in {"hw", "wh"}:
-            raise ValueError(f"indexing must be either 'hw' or 'wh', got '{indexing}'")
-        if mode not in {"bilinear", "nearest"}:
-            raise ValueError(
-                f"mode must be either 'bilinear' or 'nearest', got '{mode}'"
-            )
-        if padding_mode not in {"border", "zeros", "reflection"}:
-            raise ValueError(
-                "padding_mode must be one of 'border', 'zeros', or 'relection', got "
-                f"'{padding_mode}'"
-            )
-        self.indexing = indexing
-        self.mode = mode
-        self.padding_mode = padding_mode
+        self.indexing, self.mode, self.padding_mode = indexing, mode, padding_mode
 
     def forward(self, image: torch.Tensor, flow: torch.Tensor) -> torch.Tensor:
         return dense_image_warp(
@@ -811,29 +810,27 @@ class SparseImageWarp(torch.nn.Module):
         dense_padding_mode: Literal["border", "zero", "reflection"] = "border",
         include_flow: bool = True,
     ):
+        indexing = argcheck.is_in(indexing, ["hw", "wh"], "indexing")
+        field_interpolation_order = argcheck.is_posi(
+            field_interpolation_order, "field_interpolation_order"
+        )
+        field_regularization_weight = argcheck.is_float(
+            field_regularization_weight, "field_regularization_weight"
+        )
+        field_full_matrix = argcheck.is_bool(field_full_matrix, "field_ful_matrix")
+        pinned_boundary_points = argcheck.is_nonnegi(
+            pinned_boundary_points, "pinned_boundary_points"
+        )
+        dense_interpolation_mode = argcheck.is_in(
+            dense_interpolation_mode,
+            ["bilinear", "nearest"],
+            "dense_interpolation_mode",
+        )
+        dense_padding_mode = argcheck.is_in(
+            dense_padding_mode, ["border", "zero", "reflection"], dense_padding_mode
+        )
+        include_flow = argcheck.is_bool(include_flow, "include_flow")
         super().__init__()
-        if field_interpolation_order <= 0:
-            raise ValueError(
-                "field_interpolation_order must be positive, got "
-                f"{field_interpolation_order}"
-            )
-        if pinned_boundary_points < 0:
-            raise ValueError(
-                "pinned_boundary_points must be non-negative, got "
-                f"{pinned_boundary_points}"
-            )
-        if indexing not in {"hw", "wh"}:
-            raise ValueError(f"indexing must be either 'hw' or 'wh', got '{indexing}'")
-        if dense_interpolation_mode not in {"bilinear", "nearest"}:
-            raise ValueError(
-                "dense_interpolation_mode must be either 'bilinear' or 'nearest', got "
-                f"'{dense_interpolation_mode}'"
-            )
-        if dense_padding_mode not in {"border", "zeros", "reflection"}:
-            raise ValueError(
-                "dense_padding_mode must be one of 'border', 'zeros', or 'relection', "
-                f"got '{dense_padding_mode}'"
-            )
         self.indexing = indexing
         self.field_interpolation_order = field_interpolation_order
         self.field_regularization_weight = field_regularization_weight
@@ -980,9 +977,8 @@ class RandomShift(torch.nn.Module):
         mode: Literal["reflect", "constant", "replicate"] = "reflect",
         value: float = 0.0,
     ):
-        super().__init__()
         try:
-            prop = (float(prop), float(prop))
+            prop = (argcheck.is_float(prop, "prop"), float(prop))
         except TypeError:
             prop = tuple(prop)
         if len(prop) != 2:
@@ -991,19 +987,15 @@ class RandomShift(torch.nn.Module):
             )
         if prop[0] < 0.0 or prop[1] < 0.0:
             raise ValueError("prop values must be non-negative")
+        mode = argcheck.is_in(mode, ["reflect", "constant", "replicate"], "mode")
         if mode == "reflect":
             if prop[0] > 1.0 or prop[1] > 1.0:
                 raise NotImplementedError(
                     "if 'mode' is 'reflect', values in 'prop' must be <= 1"
                 )
-        elif mode not in {"constant", "replicate"}:
-            raise ValueError(
-                "'mode' must be one of 'reflect', 'constant', or 'replicate', got "
-                f"'{mode}'"
-            )
-        self.mode = mode
-        self.prop = prop
-        self.value = value
+        value = argcheck.is_float(value, "value")
+        super().__init__()
+        self.mode, self.prop, self.value = mode, prop, value
 
     def extra_repr(self) -> str:
         return f"prop={self.prop}, mode={self.mode}, value={self.value}"
@@ -1359,7 +1351,7 @@ class SpecAugment(torch.nn.Module):
     of frequency that occurred due to the 2D warp was unintentional.
     """
 
-    __constants__ = [
+    __constants__ = (
         "max_time_warp",
         "max_freq_warp",
         "max_time_mask",
@@ -1369,7 +1361,7 @@ class SpecAugment(torch.nn.Module):
         "num_time_mask_proportion",
         "num_freq_mask",
         "interpolation_order",
-    ]
+    )
 
     max_time_warp: float
     max_freq_warp: float
@@ -1393,9 +1385,24 @@ class SpecAugment(torch.nn.Module):
         num_freq_mask: int = 2,
         interpolation_order: int = 1,
     ):
+        max_time_warp = argcheck.is_nonnegf(max_time_warp, "max_time_warp")
+        max_freq_warp = argcheck.is_nonnegf(max_freq_warp, "max_freq_warp")
+        max_time_mask = argcheck.is_nonnegi(max_time_mask, "max_time_mask")
+        max_freq_mask = argcheck.is_nonnegi(max_freq_mask, "max_freq_mask")
+        max_time_mask_proportion = argcheck.is_closed01(
+            max_time_mask_proportion, "max_time_mask_proportion"
+        )
+        num_time_mask = argcheck.is_nonnegi(num_time_mask, "num_time_mask")
+        num_time_mask_proportion = argcheck.is_closed01(
+            num_time_mask_proportion, "num_time_mask_proportion"
+        )
+        num_freq_mask = argcheck.is_nonnegi(num_freq_mask, "num_freq_mask")
+        interpolation_order = argcheck.is_posi(
+            interpolation_order, "interpolation_order"
+        )
         super().__init__()
-        self.max_time_warp = float(max_time_warp)
-        self.max_freq_warp = float(max_freq_warp)
+        self.max_time_warp = max_time_warp
+        self.max_freq_warp = max_freq_warp
         self.max_time_mask = max_time_mask
         self.max_freq_mask = max_freq_mask
         self.max_time_mask_proportion = max_time_mask_proportion

@@ -21,7 +21,7 @@ from typing import Container, Optional, Set, Tuple, Union
 import torch
 import param
 
-from . import config
+from . import config, argcheck
 from ._feats import MeanVarianceNormalization, FeatureDeltas
 
 
@@ -161,11 +161,14 @@ class LangDataSet(torch.utils.data.Dataset):
         suppress_uttids: bool = True,
         tokens_only: bool = True,
     ):
-        if not os.path.isdir(data_dir):
-            raise ValueError(f"'{data_dir}' is not a directory")
-        super().__init__()
+        data_dir = argcheck.is_dir(data_dir, name="data_dir")
         if params is None:
             params = LangDataParams()
+        else:
+            params = argcheck.is_a(params, LangDataParams, "params")
+        file_prefix = argcheck.is_str(file_prefix, "file_prefix")
+        file_suffix = argcheck.is_str(file_suffix, "file_suffix")
+        super().__init__()
         self.data_dir = data_dir
         self.params = params
         self.file_prefix, self.file_suffix = file_prefix, file_suffix
@@ -403,7 +406,26 @@ class SpectDataSet(torch.utils.data.Dataset):
         suppress_uttids: bool = True,
         tokens_only: bool = None,
     ):
-        super().__init__()
+        data_dir = argcheck.is_dir(data_dir, "data_dir")
+        file_prefix = argcheck.is_str(file_prefix, "file_prefix")
+        file_suffix = argcheck.is_str(file_suffix, "file_suffix")
+        warn_on_missing = argcheck.is_bool(warn_on_missing, "warn_on_missing")
+        if sos is not None:
+            sos = argcheck.is_int(sos, "sos")
+        if eos is not None:
+            sos = argcheck.is_int(eos, "eos")
+        feat_subdir = argcheck.is_str(feat_subdir, "feat_subdir")
+        if ali_subdir is not None:
+            ali_subdir = argcheck.is_str(ali_subdir, "ali_subdir")
+        if ref_subdir is not None:
+            ref_subdir = argcheck.is_str(ref_subdir, "ref_subdir")
+        if params is None:
+            params = SpectDataParams()
+        else:
+            params = argcheck.is_a(params, SpectDataParams, "params")
+        if feat_mean is not None:
+            feat_mean = argcheck.is_tensor(feat_mean, "feat_mean")
+
         if suppress_alis is None:
             warnings.warn(
                 "A future version of pydrobert-pytorch will set suppress_alis=True by "
@@ -412,6 +434,8 @@ class SpectDataSet(torch.utils.data.Dataset):
                 stacklevel=2,
             )
             suppress_alis = False
+        else:
+            suppress_alis = argcheck.is_bool(suppress_alis, "suppress_alis")
         if tokens_only is None:
             warnings.warn(
                 "A future version of pydrobert-pytorch will set tokens_only=True by "
@@ -420,6 +444,9 @@ class SpectDataSet(torch.utils.data.Dataset):
                 stacklevel=2,
             )
             tokens_only = False
+        else:
+            tokens_only = argcheck.is_bool(tokens_only, "tokens_only")
+        super().__init__()
         self.data_dir = data_dir
         self.feat_subdir = feat_subdir
         self.ali_subdir = ali_subdir
@@ -429,8 +456,6 @@ class SpectDataSet(torch.utils.data.Dataset):
         self.suppress_alis = suppress_alis
         self.suppress_uttids = suppress_uttids
         self.tokens_only = tokens_only
-        if params is None:
-            params = SpectDataParams()
         self.params = params
         self.sos = params.sos
         self.eos = params.eos
@@ -1004,21 +1029,21 @@ class ContextWindowDataParams(SpectDataParams):
     # context windows are more model parameters than data parameters, but
     # we're going to extract them as part of the data loading process, which
     # is easily parallelized by the DataLoader
-    context_left = param.Integer(
+    context_left: int = param.Integer(
         4,
         bounds=(0, None),
         softbounds=(3, 8),
         doc="How many frames to the left of (before) the current frame are "
         "included when determining the class of the current frame",
     )
-    context_right = param.Integer(
+    context_right: int = param.Integer(
         4,
         bounds=(0, None),
         softbounds=(3, 8),
         doc="How many frames to the right of (after) the current frame are "
         "included when determining the class of the current frame",
     )
-    reverse = param.Boolean(
+    reverse: bool = param.Boolean(
         False,
         doc="Whether to reverse each context window along the time/frame dimension",
     )
@@ -1096,6 +1121,8 @@ class ContextWindowDataSet(SpectDataSet):
     """
 
     params: ContextWindowDataParams
+    left: int
+    right: int
 
     def __init__(
         self,
@@ -1116,32 +1143,34 @@ class ContextWindowDataSet(SpectDataSet):
     ):
         if params is None:
             params = ContextWindowDataParams()
+        else:
+            params = argcheck.is_a(params, ContextWindowDataSet, "params")
         if left is not None:
+            left = argcheck.is_nonnegi(left, "left")
             warnings.warn(
                 "Specifying left by argument is deprecated. Please use "
                 "params.context_left",
                 DeprecationWarning,
             )
-            self.left = left
         else:
-            self.left = params.context_left
+            left = params.context_left
         if right is not None:
+            right = argcheck.is_nonnegi(right, "right")
             warnings.warn(
                 "Specifying right by argument is deprecated. Please use "
                 "params.context_right",
                 DeprecationWarning,
             )
-            self.right = right
         else:
-            self.right = params.context_right
+            right = params.context_right
         if reverse is not None:
+            reverse = argcheck.is_bool(reverse, "reverse")
             warnings.warn(
                 "Specifying reverse by argument is deprecated. Please use "
                 "params.reverse"
             )
-            self.reverse = reverse
         else:
-            self.reverse = params.reverse
+            reverse = params.reverse
         super().__init__(
             data_dir,
             file_prefix,
@@ -1160,6 +1189,7 @@ class ContextWindowDataSet(SpectDataSet):
             suppress_uttids,
             False,
         )
+        self.left, self.right, self.reverse = left, right, reverse
 
     def get_utterance_tuple(self, idx) -> Tuple[Union[torch.Tensor, str, None], ...]:
         tup = super().get_utterance_tuple(idx)

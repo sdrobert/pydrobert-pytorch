@@ -19,6 +19,7 @@ from typing_extensions import TypeAlias
 
 import torch
 
+from . import argcheck
 
 FunctionOnSample: TypeAlias = Callable[[torch.Tensor], torch.Tensor]
 
@@ -93,6 +94,10 @@ class Estimator(metaclass=abc.ABCMeta):
         func: FunctionOnSample,
         is_log: bool = False,
     ):
+        proposal = argcheck.is_a(
+            proposal, torch.distributions.distribution.Distribution, "proposal"
+        )
+        is_log = argcheck.is_bool(is_log, "is_log")
         super().__init__()
         self.proposal = proposal
         self.func = func
