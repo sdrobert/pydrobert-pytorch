@@ -28,7 +28,6 @@ from typing import (
     TYPE_CHECKING,
 )
 from pathlib import Path
-from typing_extensions import ParamSpec, Concatenate
 
 import torch
 
@@ -40,7 +39,6 @@ else:
     script = _script
 
 V = TypeVar("V")
-P = ParamSpec("P")
 NumLike = TypeVar("NumLike", float, int, torch.Tensor)
 StrPathLike = TypeVar("StrPathLike", str, os.PathLike, Path)
 
@@ -224,6 +222,9 @@ def is_a(val: V, t: Type[V], name: Optional[str] = None) -> V:
 
 if TYPE_CHECKING:
 
+    def is_numlike(val: NumLike, name: Optional[str] = None) -> NumLike:
+        ...
+
     def is_pos(val: NumLike, name: Optional[str] = None) -> NumLike:
         ...
 
@@ -301,8 +302,26 @@ if TYPE_CHECKING:
     def is_in(val: V, choices: Collection[Any], name: Optional[str] = None) -> V:
         ...
 
+    def is_open01(val: NumLike, name: Optional[str] = None) -> NumLike:
+        ...
+
+    def is_closed01(val: NumLike, name: Optional[str] = None) -> NumLike:
+        ...
+
 
 else:
+
+    @script
+    def is_numlike(val: Any, name: Optional[str] = None) -> Any:
+        if (
+            not isinstance(val, int)
+            and not isinstance(val, float)
+            and not isinstance(val, torch.Tensor)
+        ):
+            raise ValueError(
+                f"{_nv(name, val)} is not number-like (float, int, or Tensor)"
+            )
+        return val
 
     @script
     def is_pos(val: Any, name: Optional[str] = None) -> Any:
@@ -312,8 +331,8 @@ else:
         if isinstance(val, (float, int)):
             okay = val > 0
         if okay is None:
-            raise TypeError("type not implemented for is_pos")
-        elif not okay:
+            raise ValueError(f"{_nv(name, val)} is not num-like")
+        if not okay:
             raise ValueError(f"{_nv(name, val)} is not positive")
         return val
 
@@ -325,8 +344,8 @@ else:
         if isinstance(val, (float, int)):
             okay = val < 0
         if okay is None:
-            raise TypeError("type not implemented for is_neg")
-        elif not okay:
+            raise ValueError(f"{_nv(name, val)} is not num-like")
+        if not okay:
             raise ValueError(f"{_nv(name, val)} is not negative")
         return val
 
@@ -338,8 +357,8 @@ else:
         if isinstance(val, (float, int)):
             okay = val <= 0
         if okay is None:
-            raise TypeError("type not implemented for is_nonpos")
-        elif not okay:
+            raise ValueError(f"{_nv(name, val)} is not num-like")
+        if not okay:
             raise ValueError(f"{_nv(name, val)} is positive")
         return val
 
@@ -351,8 +370,8 @@ else:
         if isinstance(val, (float, int)):
             okay = val >= 0
         if okay is None:
-            raise TypeError("type not implemented for is_nonneg")
-        elif not okay:
+            raise ValueError(f"{_nv(name, val)} is not num-like")
+        if not okay:
             raise ValueError(f"{_nv(name, val)} is not negative")
         return val
 
@@ -373,7 +392,7 @@ else:
         if isinstance(val, (float, int)) and isinstance(other, (float, int)):
             okay = float(val) == float(other)
         if okay is None:
-            raise TypeError("type not implemented for is_equal")
+            raise ValueError(f"{_nv(name, val)} is not num-like")
         elif not okay:
             raise ValueError(
                 f"{_nv(name, val)} does not equal {_nv(other_name, other)}"
@@ -421,7 +440,9 @@ else:
             if isinstance(val, (float, int)) and isinstance(other, (float, int)):
                 okay = float(val) < float(other)
         if okay is None:
-            raise TypeError("type not implemented for is_lt")
+            raise ValueError(
+                f"{_nv(name, val)} or {_nv(other_name, other)} is not num-like"
+            )
         if not okay:
             raise ValueError(f"{_nv(name, val)} {comp} {_nv(other_name, other)}")
         return val
@@ -464,7 +485,9 @@ else:
             if isinstance(val, (float, int)) and isinstance(other, (float, int)):
                 okay = float(val) > float(other)
         if okay is None:
-            raise TypeError("type not implemented for is_gt")
+            raise ValueError(
+                f"{_nv(name, val)} or {_nv(other_name, other)} is not num-like"
+            )
         if not okay:
             raise ValueError(f"{_nv(name, val)} {comp} {_nv(other_name, other)}")
         return val
@@ -504,69 +527,13 @@ else:
             raise ValueError(f"{_nv(name, val)} not in {list(choices)}")
         return val
 
+    @script
+    def is_open01(val: Any, name: Optional[str] = None) -> Any:
+        return is_btw(val, 0.0, 1.0, name)
 
-def is_posi(val: int, name: Optional[str] = None) -> int:
-    return val
-
-
-is_nat = is_posi
-
-
-def is_negi(val: int, name: Optional[str] = None) -> int:
-    val = is_int(val, name)
-    is_neg(val, name)
-    return val
-
-
-def is_nonposi(val: int, name: Optional[str] = None) -> int:
-    val = is_int(val, name)
-    is_nonpos(val, name)
-    return val
-
-
-def is_nonnegi(val: int, name: Optional[str] = None) -> int:
-    val = is_int(val, name)
-    is_nonneg(val, name)
-    return val
-
-
-def is_posi(val: int, name: Optional[str] = None) -> int:
-    val = is_int(val, name)
-    is_pos(val, name)
-    return val
-
-
-is_nat = is_posi
-
-
-def is_negi(val: int, name: Optional[str] = None) -> int:
-    val = is_int(val, name)
-    is_neg(val, name)
-    return val
-
-
-def is_nonposi(val: int, name: Optional[str] = None) -> int:
-    val = is_int(val, name)
-    is_nonpos(val, name)
-    return val
-
-
-def is_nonnegi(val: int, name: Optional[str] = None) -> int:
-    val = is_int(val, name)
-    is_nonneg(val, name)
-    return val
-
-
-def is_open01(val: float, name: Optional[str] = None) -> float:
-    is_float(val, name)
-    is_btw(val, 0.0, 1.0, name)
-    return val
-
-
-def is_closed01(val: float, name: Optional[str] = None) -> float:
-    is_float(val, name)
-    is_btw(val, 0.0, 1.0, name, left_inclusive=True, right_inclusive=True)
-    return val
+    @script
+    def is_closed01(val: Any, name: Optional[str] = None) -> Any:
+        return is_btw(val, 0.0, 1.0, name, left_inclusive=True, right_inclusive=True)
 
 
 @torch.jit.unused

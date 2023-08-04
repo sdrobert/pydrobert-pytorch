@@ -26,7 +26,7 @@ import shutil
 
 from pathlib import Path
 from collections import defaultdict, OrderedDict
-from typing import Dict, Optional, Sequence, Type, TypeVar
+from typing import Dict, Optional, Sequence
 from typing_extensions import Literal
 
 import torch

@@ -289,8 +289,11 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
         num_workers: Optional[int] = None,
         pin_memory: Optional[bool] = None,
     ) -> None:
-        if not isinstance(params, self.pclass):
-            raise ValueError(f"Incorrect parameter class {type(params)}")
+        params = argcheck.is_a(params, self.pclass, "params")
+        if num_workers is not None:
+            num_workers = argcheck.is_nonnegi(num_workers, "num_workers")
+        if pin_memory is not None:
+            pin_memory = argcheck.is_bool(pin_memory, "pin_memory")
         super().__init__()
 
         self.params = params
@@ -597,10 +600,6 @@ class LitSpectDataModule(
             suppress_uttids = argcheck.is_bool(suppress_uttids, "suppress_uttids")
         if shuffle is not None:
             shuffle = argcheck.is_bool(shuffle, "shuffle")
-        if num_workers is not None:
-            num_workers = argcheck.is_nonnegi(num_workers, "num_workers")
-        if pin_memory is not None:
-            pin_memory = argcheck.is_bool(pin_memory, "pin_memory")
         warn_on_missing = argcheck.is_bool(warn_on_missing, "warn_on_missing")
         on_uneven_distributed = argcheck.is_in(
             on_uneven_distributed,

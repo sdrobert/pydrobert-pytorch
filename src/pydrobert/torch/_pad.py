@@ -13,13 +13,15 @@
 # limitations under the License.
 
 from typing import Optional, Tuple, overload
-from typing_extensions import Literal
+from typing_extensions import Literal, get_args
 
 import torch
 
-from . import config
+from . import config, argcheck
 from ._compat import script
 from ._wrappers import functional_wrapper, proxy
+
+PadMode = Literal["constant", "reflect", "replicate"]
 
 
 @overload
@@ -27,7 +29,7 @@ def pad_variable(
     x: torch.Tensor,
     lens: torch.Tensor,
     pad: torch.Tensor,
-    mode: Literal["constant", "reflect", "replicate"] = "constant",
+    mode: PadMode = "constant",
     value: float = config.DEFT_PAD_VALUE,
 ) -> torch.Tensor:
     ...
@@ -225,24 +227,18 @@ class PadVariable(torch.nn.Module):
     tensor([5, 5, 6, 7, 8, 8, 8, 8])
     """
 
-    __constants__ = ["mode", "value"]
+    __constants__ = "mode", "value"
 
     mode: str
     value: float
 
     def __init__(
-        self,
-        mode: Literal["constant", "reflect", "replicate"] = "constant",
-        value: float = config.DEFT_PAD_VALUE,
+        self, mode: PadMode = "constant", value: float = config.DEFT_PAD_VALUE,
     ):
+        mode = argcheck.is_in(mode, get_args(PadMode), "mode")
+        value = argcheck.is_float(value, "value")
         super().__init__()
-        if mode not in {"constant", "reflect", "replicate"}:
-            raise ValueError(
-                "mode should be one of 'constant', 'reflect', or 'replicate', got "
-                f"'{mode}'"
-            )
-        self.mode = mode
-        self.value = value
+        self.mode, self.value = mode, value
 
     def extra_repr(self) -> str:
         s = f"mode={self.mode}"
@@ -350,16 +346,17 @@ class PadMaskedSequence(torch.nn.Module):
             [-1, -1]]])
     """
 
-    __constants__ = ["batch_first", "padding_value"]
+    __constants__ = "batch_first", "padding_value"
     batch_first: bool
     padding_value: float
 
     def __init__(
         self, batch_first: bool = False, padding_value: float = config.DEFT_PAD_VALUE
     ):
+        batch_first = argcheck.is_bool(batch_first, "batch_first")
+        padding_value = argcheck.is_float(padding_value, "padding_value")
         super().__init__()
-        self.batch_first = batch_first
-        self.padding_value = padding_value
+        self.batch_first, self.padding_value = batch_first, padding_value
 
     def extra_repr(self) -> str:
         return f"batch_first={self.batch_first}, padding_value={self.padding_value}"
@@ -377,7 +374,7 @@ def chunk_by_slices(
     x: torch.Tensor,
     slices: torch.Tensor,
     lens: Optional[torch.Tensor] = None,
-    mode: Literal["constant", "reflect", "replicate"] = "constant",
+    mode: PadMode = "constant",
     value: float = config.DEFT_PAD_VALUE,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     ...
@@ -522,23 +519,17 @@ class ChunkBySlices(torch.nn.Module):
         :class:`SpectDataSet`.
     """
 
-    __constants__ = ["mode", "value"]
+    __constants__ = "mode", "value"
     mode: str
     value: float
 
     def __init__(
-        self,
-        mode: Literal["constant", "reflect", "replicate"] = "constant",
-        value: float = config.DEFT_PAD_VALUE,
+        self, mode: PadMode = "constant", value: float = config.DEFT_PAD_VALUE,
     ) -> None:
+        mode = argcheck.is_in(mode, get_args(PadMode), "mode")
+        value = argcheck.is_float(value, "value")
         super().__init__()
-        if mode not in {"constant", "reflect", "replicate"}:
-            raise ValueError(
-                "mode should be one of 'constant', 'reflect', or 'replicate', got "
-                f"'{mode}'"
-            )
-        self.mode = mode
-        self.value = value
+        self.mode, self.value = mode, value
 
     def extra_repr(self) -> str:
         s = f"mode={self.mode}"

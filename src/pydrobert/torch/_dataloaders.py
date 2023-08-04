@@ -34,7 +34,7 @@ from typing import (
     TypeVar,
     Union,
 )
-from typing_extensions import Literal
+from typing_extensions import Literal, get_args
 
 import param
 import numpy as np
@@ -78,7 +78,7 @@ class AbstractEpochSampler(_BaseSampler, metaclass=abc.ABCMeta):
         self.epoch = argcheck.is_int(init_epoch, name="init_epoch")
         on_uneven_distributed = argcheck.is_in(
             on_uneven_distributed,
-            {"raise", "drop", "uneven", "ignore"},
+            get_args(OnUnevenDistributed),
             "on_uneven_distributed",
         )
         if (

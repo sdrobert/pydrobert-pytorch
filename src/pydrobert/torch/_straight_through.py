@@ -39,6 +39,7 @@ from torch.distributions.utils import (
     probs_to_logits,
 )
 
+from . import argcheck
 from ._compat import check_methods, euler_constant, one_hot
 
 
@@ -239,11 +240,11 @@ class Density(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
         ...
-    
+
     @classmethod
     def __subclasshook__(cls, C) -> bool:
         if cls is Density:
-            return check_methods(C, 'log_prob')
+            return check_methods(C, "log_prob")
         return NotImplemented
 
 
@@ -297,12 +298,12 @@ class LogisticBernoulli(ConditionalStraightThrough):
         logits: Optional[torch.Tensor] = None,
         validate_args: Optional[bool] = None,
     ):
-        if (probs is None) == (logits is None):
+        if (probs is None) is (logits is None):
             raise ValueError("Either probs or logits must be specified, not both")
         if probs is not None:
-            self._param = self.probs = probs
+            self._param = self.probs = argcheck.is_tensor(probs, "probs")
         else:
-            self._param = self.logits = logits
+            self._param = self.logits = argcheck.is_tensor(logits, "logits")
         super(LogisticBernoulli, self).__init__(
             self._param.shape, validate_args=validate_args
         )
@@ -467,13 +468,15 @@ class GumbelOneHotCategorical(ConditionalStraightThrough):
         probs: Optional[torch.Tensor] = None,
         validate_args: Optional[bool] = None,
     ):
-        if (probs is None) == (logits is None):
+        if (probs is None) is (logits is None):
             raise ValueError("Either probs or logits must be specified, not both")
         if probs is not None:
+            probs = argcheck.is_tensor(probs, "probs")
             if probs.dim() < 1:
                 raise ValueError("probs must be at least 1 dimensional")
             self._param = self.probs = probs / probs.sum(-1, keepdim=True)
         else:
+            logits = argcheck.is_tensor(logits, "logits")
             if logits.dim() < 1:
                 raise ValueError("logits must be at least 1 dimensional")
             self._param = self.logits = logits.log_softmax(-1)

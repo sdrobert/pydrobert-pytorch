@@ -99,9 +99,7 @@ class Estimator(metaclass=abc.ABCMeta):
         )
         is_log = argcheck.is_bool(is_log, "is_log")
         super().__init__()
-        self.proposal = proposal
-        self.func = func
-        self.is_log = is_log
+        self.proposal, self.func, self.is_log = proposal, func, is_log
 
     @abc.abstractmethod
     def __call__(self) -> torch.Tensor:

@@ -24,7 +24,7 @@
 import math
 
 from typing import Any, Optional, Tuple, Union, overload
-from typing_extensions import Literal
+from typing_extensions import Literal, get_args
 
 import torch
 
@@ -32,6 +32,11 @@ from . import argcheck
 from ._pad import pad_variable
 from ._compat import meshgrid, script, linalg_solve
 from ._wrappers import functional_wrapper, proxy
+
+DenseInterpolationMode = Literal["bilinear", "nearest"]
+DensePaddingMode = Literal["border", "zero", "reflection"]
+SparseIndexing = Literal["hw", "wh"]
+RandomShiftMode = Literal["reflect", "constant", "replicate"]
 
 
 @script
@@ -345,7 +350,7 @@ class Warp1DGrid(torch.nn.Module):
     surrounding batched images.
     """
 
-    __constants__ = ["max_length", "interpolation_order"]
+    __constants__ = "max_length", "interpolation_order"
 
     interpolation_order: int
     max_length: Optional[int]
@@ -379,8 +384,8 @@ def dense_image_warp(
     image: torch.Tensor,
     flow: torch.Tensor,
     indexing: str = "hw",
-    mode: Literal["bilinear", "nearest"] = "bilinear",
-    padding_mode: Literal["border", "zeros", "reflection"] = "border",
+    mode: DenseInterpolationMode = "bilinear",
+    padding_mode: DensePaddingMode = "border",
 ) -> torch.Tensor:
     ...
 
@@ -482,7 +487,7 @@ class DenseImageWarp(torch.nn.Module):
     `flow` is not an optical flow. Please consult the TF documentation for more details.
     """
 
-    __constants__ = ["indexing", "mode", "padding_mode"]
+    __constants__ = "indexing", "mode", "padding_mode"
 
     indexing: str
     mode: str
@@ -490,14 +495,14 @@ class DenseImageWarp(torch.nn.Module):
 
     def __init__(
         self,
-        indexing: Literal["hw", "wh"] = "hw",
-        mode: Literal["bilinear", "nearest"] = "bilinear",
-        padding_mode: Literal["border", "zeros", "reflection"] = "border",
+        indexing: SparseIndexing = "hw",
+        mode: DenseInterpolationMode = "bilinear",
+        padding_mode: DensePaddingMode = "border",
     ):
-        indexing = argcheck.is_in(indexing, ["hw", "wh"], "indexing")
-        mode = argcheck.is_in(mode, ["bilinear", "nearest"], "mode")
+        indexing = argcheck.is_in(indexing, get_args(SparseIndexing), "indexing")
+        mode = argcheck.is_in(mode, get_args(DenseInterpolationMode), "mode")
         padding_mode = argcheck.is_in(
-            padding_mode, ["border", "zeros", "reflection"], "padding_mode"
+            padding_mode, get_args(DensePaddingMode), "padding_mode"
         )
         super().__init__()
         self.indexing, self.mode, self.padding_mode = indexing, mode, padding_mode
@@ -655,13 +660,13 @@ def sparse_image_warp(
     image: torch.Tensor,
     source_points: torch.Tensor,
     dest_points: torch.Tensor,
-    indexing: Literal["hw", "wh"] = "hw",
+    indexing: SparseIndexing = "hw",
     field_interpolation_order: int = 2,
     field_regularization_weight: float = 0.0,
     field_full_matrix: bool = True,
     pinned_boundary_points: int = 0,
-    dense_interpolation_mode: Literal["bilinear", "nearest"] = "bilinear",
-    dense_padding_mode: Literal["border", "zero", "reflection"] = "border",
+    dense_interpolation_mode: DenseInterpolationMode = "bilinear",
+    dense_padding_mode: DensePaddingMode = "border",
     include_flow: bool = True,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     ...
@@ -801,16 +806,16 @@ class SparseImageWarp(torch.nn.Module):
 
     def __init__(
         self,
-        indexing: Literal["hw", "wh"] = "hw",
+        indexing: SparseIndexing = "hw",
         field_interpolation_order: int = 2,
         field_regularization_weight: float = 0.0,
         field_full_matrix: bool = True,
         pinned_boundary_points: int = 0,
-        dense_interpolation_mode: Literal["bilinear", "nearest"] = "bilinear",
-        dense_padding_mode: Literal["border", "zero", "reflection"] = "border",
+        dense_interpolation_mode: DenseInterpolationMode = "bilinear",
+        dense_padding_mode: DensePaddingMode = "border",
         include_flow: bool = True,
     ):
-        indexing = argcheck.is_in(indexing, ["hw", "wh"], "indexing")
+        indexing = argcheck.is_in(indexing, get_args(SparseIndexing), "indexing")
         field_interpolation_order = argcheck.is_posi(
             field_interpolation_order, "field_interpolation_order"
         )
@@ -823,11 +828,11 @@ class SparseImageWarp(torch.nn.Module):
         )
         dense_interpolation_mode = argcheck.is_in(
             dense_interpolation_mode,
-            ["bilinear", "nearest"],
+            get_args(DenseInterpolationMode),
             "dense_interpolation_mode",
         )
         dense_padding_mode = argcheck.is_in(
-            dense_padding_mode, ["border", "zero", "reflection"], dense_padding_mode
+            dense_padding_mode, get_args(DensePaddingMode), dense_padding_mode
         )
         include_flow = argcheck.is_bool(include_flow, "include_flow")
         super().__init__()
@@ -974,7 +979,7 @@ class RandomShift(torch.nn.Module):
     def __init__(
         self,
         prop: Union[float, Tuple[float, float]],
-        mode: Literal["reflect", "constant", "replicate"] = "reflect",
+        mode: RandomShiftMode = "reflect",
         value: float = 0.0,
     ):
         try:
@@ -987,7 +992,7 @@ class RandomShift(torch.nn.Module):
             )
         if prop[0] < 0.0 or prop[1] < 0.0:
             raise ValueError("prop values must be non-negative")
-        mode = argcheck.is_in(mode, ["reflect", "constant", "replicate"], "mode")
+        mode = argcheck.is_in(mode, get_args(RandomShiftMode), "mode")
         if mode == "reflect":
             if prop[0] > 1.0 or prop[1] > 1.0:
                 raise NotImplementedError(
