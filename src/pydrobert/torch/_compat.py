@@ -189,8 +189,8 @@ else:
         script = torch.jit.script_if_tracing
     except AttributeError:
 
-        def script(obj, *args, **kwargs):
-            return obj
+        def script(func):
+            return func
 
 
 if _v < "1.10.0":

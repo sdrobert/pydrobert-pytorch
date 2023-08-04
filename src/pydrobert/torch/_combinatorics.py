@@ -19,6 +19,7 @@ import torch
 from torch.distributions import constraints
 from torch.distributions.utils import lazy_property
 
+from . import argcheck
 from ._compat import script, trunc_divide
 
 
@@ -96,16 +97,19 @@ class BinaryCardinalityConstraint(constraints.Constraint):
         tmax: int,
         total_count: Optional[torch.Tensor] = None,
     ) -> None:
-        self.given_count = given_count
+        tmax = argcheck.is_nat(tmax, "tmax")
+        given_count = argcheck.is_nonnegt(given_count, "given_count")
         if total_count is None:
-            self.total_count_mask = torch.zeros(
+            total_count_mask = torch.zeros(
                 1, dtype=torch.bool, device=given_count.device
             )
         else:
-            self.total_count_mask = total_count.unsqueeze(-1) <= torch.arange(
+            total_count = argcheck.is_nonnegt(total_count, "total_count")
+            total_count_mask = total_count.unsqueeze(-1) <= torch.arange(
                 tmax, device=total_count.device
             )
         super().__init__()
+        self.given_count, self.total_count_mask = given_count, total_count_mask
 
     def check(self, value: torch.Tensor) -> torch.Tensor:
         is_bool = ((value == 0) | (value == 1)).all(-1)
@@ -480,15 +484,10 @@ class SimpleRandomSamplingWithoutReplacement(torch.distributions.ExponentialFami
         self.total_count, self.given_count = total_count, given_count
         super().__init__(batch_shape, event_shape, validate_args)
         if self._validate_args:
-            if (total_count < 0).any():
-                raise ValueError("total_count must be nonnegative")
-            if (given_count > total_count).any():
-                raise ValueError("given_count cannot exceed total count")
-            if out_size < total_count_max:
-                raise ValueError(
-                    f"out_size ({out_size}) must not be less than max of total_count "
-                    f"({total_count_max})"
-                )
+            given_count = argcheck.is_nonnegt(given_count, "given_count")
+            total_count = argcheck.is_nonnegt(total_count, "total_count")
+            argcheck.is_lte(given_count, total_count, "given_count", "total_count")
+            argcheck.is_gte(out_size, total_count, "out_size", "total_count")
 
     @constraints.dependent_property
     def support(self):

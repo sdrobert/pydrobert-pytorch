@@ -14,6 +14,7 @@
 
 import torch
 
+from . import argcheck
 from ._compat import script
 from ._wrappers import functional_wrapper, proxy
 
@@ -75,15 +76,16 @@ class TimeDistributedReturn(torch.nn.Module):
         A tensor of shape ``(T, N)`` of the time-distributed rewards.
     """
 
-    __constants__ = ["gamma", "batch_first"]
+    __constants__ = "gamma", "batch_first"
 
     gamma: float
     batch_first: bool
 
     def __init__(self, gamma: float, batch_first: bool):
+        gamma = argcheck.is_float(gamma, "gamma")
+        batch_first = argcheck.is_bool(batch_first, "batch_first")
         super().__init__()
-        self.gamma = gamma
-        self.batch_first = batch_first
+        self.gamma, self.batch_first = gamma, batch_first
 
     def extra_repr(self) -> str:
         return f"gamma={self.gamma},batch_first={self.batch_first}"

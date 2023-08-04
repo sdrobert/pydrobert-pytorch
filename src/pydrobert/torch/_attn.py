@@ -18,6 +18,7 @@ from typing import Optional
 
 import torch
 
+from . import argcheck
 from ._compat import broadcast_shapes, script, unflatten
 from ._wrappers import proxy
 
@@ -137,10 +138,11 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
     dim: int
 
     def __init__(self, query_size: int, key_size: int, dim: int = 0):
+        query_size = argcheck.is_nat(query_size, name="query_size")
+        key_size = argcheck.is_nat(key_size, name="key_size")
+        dim = argcheck.is_int(dim, name="dim")
         super().__init__()
-        self.query_size = query_size
-        self.key_size = key_size
-        self.dim = dim
+        self.query_size, self.key_size, self.dim = query_size, key_size, dim
 
     @abc.abstractmethod
     def score(self, query: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
@@ -167,28 +169,27 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
             A tensor of scores of shape ``(E*, T, F*)``, where ``(E*)`` is the
             result of broadcasting ``(A*)`` with ``(B*, C*)``.
         """
-        raise NotImplementedError()
+        ...
 
-    @torch.jit.export
     def check_input(
         self,
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
-    ):
+    ) -> None:
         """Check if input is properly formatted, RuntimeError otherwise"""
         key_dim = key.dim()
         if query.dim() != key_dim - 1:
-            raise RuntimeError("query must have one fewer dimension than key")
+            raise ValueError("query must have one fewer dimension than key")
         if key_dim != value.dim():
-            raise RuntimeError("key must have same number of dimensions as value")
+            raise ValueError("key must have same number of dimensions as value")
         if query.shape[-1] != self.query_size:
-            raise RuntimeError("Last dimension of query must match query_size")
+            raise ValueError("Last dimension of query must match query_size")
         if key.shape[-1] != self.key_size:
-            raise RuntimeError("Last dimension of key must match key_size")
+            raise ValueError("Last dimension of key must match key_size")
         if self.dim > key_dim - 2 or key_dim == -1 or self.dim < -key_dim + 1:
-            raise RuntimeError(
+            raise ValueError(
                 f"dim must be in the range [{-key_dim + 1}, {key_dim - 2}] and not -1"
             )
         e_shape = broadcast_shapes(query.unsqueeze(self.dim).shape[:-1], key.shape[:-1])
@@ -268,6 +269,7 @@ class DotProductSoftAttention(GlobalSoftAttention):
     scale_factor: float
 
     def __init__(self, size: int, dim: int = 0, scale_factor: float = 1.0):
+        scale_factor = argcheck.is_float(scale_factor, name="scale_factor")
         super().__init__(size, size, dim)
         self.scale_factor = scale_factor
 
@@ -322,6 +324,7 @@ class GeneralizedDotProductSoftAttention(GlobalSoftAttention):
     def __init__(
         self, query_size: int, key_size: int, dim: int = 0, bias: bool = False
     ):
+        bias = argcheck.is_bool(bias, "bias")
         super().__init__(query_size, key_size, dim)
         self.weight = torch.nn.parameter.Parameter(torch.empty(query_size, key_size))
         if bias:
@@ -408,6 +411,8 @@ class ConcatSoftAttention(GlobalSoftAttention):
         bias: bool = False,
         hidden_size: int = 1000,
     ):
+        hidden_size = argcheck.is_nat(hidden_size, name="hidden_size")
+        bias = argcheck.is_bool(bias, name="bias")
         super().__init__(query_size, key_size, dim)
         self.weight = torch.nn.parameter.Parameter(
             torch.empty(hidden_size, query_size + key_size)
@@ -554,24 +559,37 @@ class MultiHeadedAttention(GlobalSoftAttention):
         bias_WV: bool = False,
         bias_WC: bool = False,
     ):
-        super().__init__(query_size, key_size, dim=single_head_attention.dim)
-        if self.dim < 0:
+        value_size = argcheck.is_nat(value_size, "value_size")
+        if out_size is None:
+            out_size = value_size
+        else:
+            out_size = argcheck.is_nat(out_size, "out_size")
+        num_heads = argcheck.is_nat(num_heads, "num_heads")
+        if single_head_attention.dim < 0:
             raise ValueError(
                 "Negative dimensions are ambiguous for multi-headed attention"
             )
-        self.value_size = value_size
-        self.out_size = value_size if out_size is None else out_size
-        self.num_heads = num_heads
+        if d_v is None:
+            d_v = max(1, value_size // num_heads)
+        else:
+            d_v = argcheck.is_nat(d_v, "d_v")
+        bias_WQ = argcheck.is_bool(bias_WQ, "bias_WQ")
+        bias_WK = argcheck.is_bool(bias_WQ, "bias_WK")
+        bias_WV = argcheck.is_bool(bias_WQ, "bias_WV")
+        bias_WC = argcheck.is_bool(bias_WC, "bias_WC")
+        super().__init__(query_size, key_size, dim=single_head_attention.dim)
+        self.value_size, self.out_size, self.num_heads = value_size, out_size, num_heads
+        self.single_head_attention = single_head_attention
         self.single_head_attention = single_head_attention
         # we don't keep these in sync in case someone's using
         # single_head_attention
         self.d_q = single_head_attention.query_size
         self.d_k = single_head_attention.key_size
-        self.d_v = max(1, value_size // num_heads) if d_v is None else d_v
+        self.d_v = d_v
         self.WQ = torch.nn.Linear(query_size, num_heads * self.d_q, bias=bias_WQ)
         self.WK = torch.nn.Linear(key_size, num_heads * self.d_k, bias=bias_WK)
-        self.WV = torch.nn.Linear(value_size, num_heads * self.d_v, bias=bias_WV)
-        self.WC = torch.nn.Linear(self.d_v * num_heads, self.out_size, bias=bias_WC)
+        self.WV = torch.nn.Linear(value_size, num_heads * d_v, bias=bias_WV)
+        self.WC = torch.nn.Linear(d_v * num_heads, out_size, bias=bias_WC)
         single_head_attention.reset_parameters()
 
     def check_input(
@@ -622,8 +640,9 @@ class MultiHeadedAttention(GlobalSoftAttention):
             # if the dimension is correct, a tensor of shape (1, ...) should always
             # broadcast
             mask_ = torch.ones((1,), device=query.device, dtype=torch.bool)
-            self.check_input(query, key, value, mask_)
-        else:
+            if not torch.jit.is_scripting():
+                self.check_input(query, key, value, mask_)
+        elif not torch.jit.is_scripting():
             self.check_input(query, key, value, mask)
         query_heads = self.WQ(query)
         query_heads = unflatten(query_heads, -1, [self.num_heads, self.d_q])

@@ -16,13 +16,15 @@ import abc
 import warnings
 
 from typing import Optional, overload
-from typing_extensions import Literal
+from typing_extensions import Literal, get_args
 
 import torch
 
-from . import config
+from . import config, argcheck
 from ._compat import script
 from ._wrappers import functional_wrapper, proxy
+
+Reduction = Literal["mean", "sum", "none"]
 
 
 @functional_wrapper("FillAfterEndOfSequence")
@@ -108,17 +110,21 @@ class FillAfterEndOfSequence(torch.nn.Module):
         [-1., -1., -1., -1., -1., -1., -1., -1., -1., -1.]])
     """
 
-    __constants__ = ["eos", "dim", "fill"]
+    __constants__ = "eos", "dim", "fill"
 
     dim: int
     eos: int
     fill: float
 
     def __init__(self, eos: int, dim: int = 0, fill: Optional[float] = None) -> None:
+        eos = argcheck.is_int(eos, "eos")
+        dim = argcheck.is_int(dim, "dim")
+        if fill is None:
+            fill = float(eos)
+        else:
+            fill = argcheck.is_float(fill, "fill")
         super().__init__()
-        self.eos = eos
-        self.dim = dim
-        self.fill = float(eos) if fill is None else fill
+        self.eos, self.dim, self.fill = eos, dim, fill
 
     def forward(
         self, tokens: torch.Tensor, value: Optional[torch.Tensor] = None
@@ -672,7 +678,7 @@ sub_avg
 
 
 class _StringMatching(torch.nn.Module, metaclass=abc.ABCMeta):
-    __constants__ = [
+    __constants__ = (
         "eos",
         "include_eos",
         "batch_first",
@@ -680,7 +686,7 @@ class _StringMatching(torch.nn.Module, metaclass=abc.ABCMeta):
         "del_cost",
         "sub_cost",
         "warn",
-    ]
+    )
 
     eos: Optional[int]
     include_eos: bool
@@ -693,13 +699,16 @@ class _StringMatching(torch.nn.Module, metaclass=abc.ABCMeta):
     def __init__(
         self, eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
     ):
+        eos = argcheck.is_int(eos, "eos", True)
+        include_eos = argcheck.is_bool(include_eos, "include_eos")
+        batch_first = argcheck.is_bool(batch_first, "batch_first")
+        ins_cost = argcheck.is_float(ins_cost, "ins_cost")
+        del_cost = argcheck.is_float(del_cost, "del_cost")
+        sub_cost = argcheck.is_float(sub_cost, "sub_cost")
+        warn = argcheck.is_bool(warn, "warn")
         super().__init__()
-        self.eos = eos
-        self.include_eos = include_eos
-        self.batch_first = batch_first
-        self.ins_cost = ins_cost
-        self.del_cost = del_cost
-        self.sub_cost = sub_cost
+        self.eos, self.include_eos, self.batch_first = eos, include_eos, batch_first
+        self.ins_cost, self.del_cost, self.sub_cost = ins_cost, del_cost, sub_cost
         self.warn = warn
 
     def extra_repr(self) -> str:
@@ -711,7 +720,7 @@ class _StringMatching(torch.nn.Module, metaclass=abc.ABCMeta):
 
 
 class EditDistance(_StringMatching):
-    __constants__ = [
+    __constants__ = (
         "eos",
         "include_eos",
         "norm",
@@ -720,7 +729,7 @@ class EditDistance(_StringMatching):
         "del_cost",
         "sub_cost",
         "warn",
-    ]
+    )
 
     norm: bool
 
@@ -735,6 +744,7 @@ class EditDistance(_StringMatching):
         sub_cost: float = config.DEFT_SUB_COST,
         warn: bool = True,
     ):
+        norm = argcheck.is_bool(norm, "norm")
         super().__init__(
             eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
         )
@@ -789,7 +799,7 @@ class EditDistance(_StringMatching):
 
 class PrefixEditDistances(_StringMatching):
 
-    __constants__ = [
+    __constants__ = (
         "eos",
         "include_eos",
         "norm",
@@ -800,7 +810,7 @@ class PrefixEditDistances(_StringMatching):
         "padding",
         "exclude_last",
         "warn",
-    ]
+    )
 
     norm: bool
     padding: int
@@ -819,12 +829,13 @@ class PrefixEditDistances(_StringMatching):
         exclude_last: bool = False,
         warn: bool = True,
     ):
+        norm = argcheck.is_bool(norm, "norm")
+        padding = argcheck.is_int(padding, "padding")
+        exclude_last = argcheck.is_bool(exclude_last, "exclude_last")
         super().__init__(
             eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
         )
-        self.norm = norm
-        self.padding = padding
-        self.exclude_last = exclude_last
+        self.norm, self.padding, self.exclude_last = norm, padding, exclude_last
 
     __doc__ = f"""Compute the edit distance between ref and each prefix of hyp
 
@@ -875,7 +886,7 @@ class PrefixEditDistances(_StringMatching):
 
 
 class ErrorRate(_StringMatching):
-    __constants__ = [
+    __constants__ = (
         "eos",
         "include_eos",
         "norm",
@@ -884,7 +895,7 @@ class ErrorRate(_StringMatching):
         "del_cost",
         "sub_cost",
         "warn",
-    ]
+    )
 
     norm: bool
 
@@ -899,6 +910,7 @@ class ErrorRate(_StringMatching):
         sub_cost: float = config.DEFT_SUB_COST,
         warn: bool = True,
     ):
+        norm = argcheck.is_bool(norm, "norm")
         super().__init__(
             eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
         )
@@ -986,12 +998,13 @@ class PrefixErrorRates(_StringMatching):
         exclude_last: bool = False,
         warn: bool = True,
     ):
+        norm = argcheck.is_bool(norm, "norm")
+        padding = argcheck.is_int(padding, "padding")
+        exclude_last = argcheck.is_bool(exclude_last, "exclude_last")
         super().__init__(
             eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
         )
-        self.norm = norm
-        self.padding = padding
-        self.exclude_last = exclude_last
+        self.norm, self.padding, self.exclude_last = norm, padding, exclude_last
 
     __doc__ = f"""Compute the error rate between ref and each prefix of hyp
 
@@ -1037,7 +1050,7 @@ class PrefixErrorRates(_StringMatching):
 
 
 class OptimalCompletion(_StringMatching):
-    __constants__ = [
+    __constants__ = (
         "eos",
         "include_eos",
         "batch_first",
@@ -1047,7 +1060,7 @@ class OptimalCompletion(_StringMatching):
         "padding",
         "exclude_last",
         "warn",
-    ]
+    )
 
     padding: int
     exclude_last: bool
@@ -1064,11 +1077,12 @@ class OptimalCompletion(_StringMatching):
         exclude_last: bool = False,
         warn: bool = True,
     ):
+        padding = argcheck.is_int(padding, "padding")
+        exclude_last = argcheck.is_bool(exclude_last, "exclude_last")
         super().__init__(
             eos, include_eos, batch_first, ins_cost, del_cost, sub_cost, warn
         )
-        self.padding = padding
-        self.exclude_last = exclude_last
+        self.padding, self.exclude_last = padding, exclude_last
 
     __doc__ = f"""Return a mask of next tokens of a minimum edit distance prefix
     
@@ -1164,7 +1178,7 @@ def hard_optimal_completion_distillation_loss(
     del_cost: float = config.DEFT_DEL_COST,
     sub_cost: float = config.DEFT_SUB_COST,
     weight: Optional[torch.Tensor] = None,
-    reduction: Literal["mean", "sum", "none"] = "mean",
+    reduction: Reduction = "mean",
     ignore_index: int = -2,
     warn: bool = True,
 ) -> torch.Tensor:
@@ -1238,7 +1252,7 @@ def hard_optimal_completion_distillation_loss(
 
 
 class HardOptimalCompletionDistillationLoss(torch.nn.Module):
-    __constants__ = [
+    __constants__ = (
         "eos",
         "include_eos",
         "batch_first",
@@ -1247,7 +1261,7 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         "sub_cost",
         "reduction",
         "ignore_index",
-    ]
+    )
 
     __doc__ = f"""A categorical loss function over optimal next tokens
 
@@ -1320,18 +1334,22 @@ class HardOptimalCompletionDistillationLoss(torch.nn.Module):
         del_cost: float = config.DEFT_DEL_COST,
         sub_cost: float = config.DEFT_SUB_COST,
         weight: Optional[torch.Tensor] = None,
-        reduction: Literal["mean", "sum", "none"] = "mean",
-        ignore_index: int = -100,
+        reduction: Reduction = "mean",
+        ignore_index: int = config.INDEX_PAD_VALUE,
     ):
+        eos = argcheck.is_int(eos, "eos", True)
+        include_eos = argcheck.is_bool(include_eos, "include_eos")
+        batch_first = argcheck.is_bool(batch_first, "batch_first")
+        ins_cost = argcheck.is_float(ins_cost, "ins_cost")
+        del_cost = argcheck.is_float(del_cost, "del_cost")
+        sub_cost = argcheck.is_float(sub_cost, "sub_cost")
+        weight = argcheck.is_tensor(weight, "weight", True)
+        reduction = argcheck.is_in(reduction, get_args(Reduction), "reduction")
+        ignore_index = argcheck.is_int(ignore_index, "ignore_index")
         super().__init__()
-        self.eos = eos
-        self.include_eos = include_eos
-        self.batch_first = batch_first
-        self.ins_cost = ins_cost
-        self.del_cost = del_cost
-        self.sub_cost = sub_cost
-        self.reduction = reduction
-        self.ignore_index = ignore_index
+        self.eos, self.include_eos, self.batch_first = eos, include_eos, batch_first
+        self.ins_cost, self.del_cost, self.sub_cost = ins_cost, del_cost, sub_cost
+        self.reduction, self.ignore_index = reduction, ignore_index
         self.register_buffer("weight", weight)
 
     def forward(
@@ -1373,7 +1391,7 @@ def minimum_error_rate_loss(
     ins_cost: float = config.DEFT_INS_COST,
     del_cost: float = config.DEFT_DEL_COST,
     sub_cost: float = config.DEFT_SUB_COST,
-    reduction: Literal["mean", "sum", "none"] = "mean",
+    reduction: Reduction = "mean",
     warn: bool = True,
 ) -> torch.Tensor:
     ...
@@ -1456,7 +1474,7 @@ def minimum_error_rate_loss(
 
 class MinimumErrorRateLoss(torch.nn.Module):
 
-    __constants__ = [
+    __constants__ = (
         "eos",
         "include_eos",
         "sub_avg",
@@ -1466,7 +1484,7 @@ class MinimumErrorRateLoss(torch.nn.Module):
         "del_cost",
         "sub_cost",
         "reduction",
-    ]
+    )
 
     __doc__ = f"""Error rate expectation normalized over some number of transcripts
 
@@ -1588,16 +1606,19 @@ class MinimumErrorRateLoss(torch.nn.Module):
         sub_cost: float = config.DEFT_SUB_COST,
         reduction: Literal["mean", "none", "sum"] = "mean",
     ):
+        eos = argcheck.is_int(eos, "eos", True)
+        include_eos = argcheck.is_bool(include_eos, "include_eos")
+        sub_avg = argcheck.is_bool(sub_avg, "sub_avg")
+        batch_first = argcheck.is_bool(batch_first, "batch_first")
+        norm = argcheck.is_bool(norm, "norm")
+        ins_cost = argcheck.is_float(ins_cost, "ins_cost")
+        del_cost = argcheck.is_float(del_cost, "del_cost")
+        sub_cost = argcheck.is_float(sub_cost, "sub_cost")
+        reduction = argcheck.is_in(reduction, get_args(Reduction), "reduction")
         super().__init__()
-        self.eos = eos
-        self.include_eos = include_eos
-        self.sub_avg = sub_avg
-        self.batch_first = batch_first
-        self.norm = norm
-        self.ins_cost = ins_cost
-        self.del_cost = del_cost
-        self.sub_cost = sub_cost
-        self.reduction = reduction
+        self.eos, self.include_eos, self.sub_avg = eos, include_eos, sub_avg
+        self.batch_first, self.norm, self.reduction = batch_first, norm, reduction
+        self.ins_cost, self.del_cost, self.sub_cost = ins_cost, del_cost, sub_cost
 
     def forward(
         self,

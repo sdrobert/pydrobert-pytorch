@@ -18,7 +18,7 @@ import abc
 
 from pathlib import PurePath
 from typing import Dict, Optional, TypeVar, Generic, Type, Union
-from typing_extensions import Literal
+from typing_extensions import Literal, get_args
 
 import torch
 import param
@@ -26,6 +26,7 @@ import pytorch_lightning as pl
 import pydrobert.param.abc as pabc
 import pydrobert.param.argparse as pargparse
 
+from . import argcheck
 from ._datasets import SpectDataSet
 from ._dataloaders import (
     SpectDataLoader,
@@ -35,6 +36,9 @@ from ._dataloaders import (
 
 
 StrPath = Union[str, os.PathLike]
+FileType = Literal["dir", "file"]
+OnUnevenDistributed = Literal["raise", "uneven", "ignore"]
+P = TypeVar("P", bound=param.Parameterized)
 
 
 class PosixPath(param.Parameter):
@@ -48,25 +52,24 @@ class PosixPath(param.Parameter):
         If :obj:`True`, setting to 
     """
 
-    __slots__ = ["always_exists", "type"]
+    __slots__ = "always_exists", "type"
 
     always_exists: bool
-    type: Optional[Literal["dir", "file"]]
+    type: Optional[FileType]
 
     def __init__(
         self,
         default: Optional[StrPath] = None,
         always_exists: bool = True,
-        type: Optional[Literal["dir", "file"]] = None,
+        type: Optional[FileType] = None,
         **params,
     ):
-        if type not in {"dir", "file", None}:
-            raise ValueError(
-                f"type must be one of 'dir', 'file', or None; got '{type}'"
-            )
+        default = argcheck.is_str(default, "default", True)
+        type = argcheck.is_in(type, get_args(FileType), "type", True)
+        always_exists = argcheck.is_bool(always_exists, "always_exists")
+        super().__init__(default=default, **params)
         self.always_exists = always_exists
         self.type = type
-        super().__init__(default=default, **params)
 
     def __get__(self, obj, objtype) -> Optional[str]:
         path: Optional[StrPath] = super().__get__(obj, objtype)
@@ -106,9 +109,6 @@ class LitDataModuleParamsMetaclass(pabc.AbstractParameterizedMetaclass):
         mcs.param.params()["val"].class_ = pclass
         mcs.param.params()["test"].class_ = pclass
         mcs.param.params()["predict"].class_ = pclass
-
-
-P = TypeVar("P", bound=param.Parameterized)
 
 
 class LitDataModuleParams(
@@ -264,6 +264,8 @@ class LitDataModuleParams(
 DS = TypeVar("DS", bound=torch.utils.data.Dataset)
 DL = TypeVar("DL", bound=torch.utils.data.DataLoader)
 
+Partition = Literal["train", "val", "test", "predict"]
+
 
 class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.ABCMeta):
     """An ABC handling DataLoader parameterizations and partitions for lightning"""
@@ -285,8 +287,10 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
         num_workers: Optional[int] = None,
         pin_memory: Optional[bool] = None,
     ) -> None:
-        if not isinstance(params, self.pclass):
-            raise ValueError(f"Incorrect parameter class {type(params)}")
+        params = argcheck.is_a(params, self.pclass, "params")
+        if num_workers is not None:
+            num_workers = argcheck.is_nonnegi(num_workers, "num_workers")
+        pin_memory = argcheck.is_bool(pin_memory, "pin_memory", True)
         super().__init__()
 
         self.params = params
@@ -323,19 +327,11 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
         return self._pin_memory
 
     @abc.abstractmethod
-    def construct_dataset(
-        self,
-        partition: Literal["train", "val", "test", "predict"],
-        path: str,
-        params: P,
-    ) -> DS:
+    def construct_dataset(self, partition: Partition, path: str, params: P,) -> DS:
         ...
 
     def _construct_dataset_with_checks(
-        self,
-        partition: Literal["train", "val", "test", "predict"],
-        path: Optional[str],
-        params: Optional[P],
+        self, partition: Partition, path: Optional[str], params: Optional[P],
     ) -> DS:
         if path is None:
             raise ValueError(f"Cannot construct {partition} dataset: no data directory")
@@ -391,16 +387,11 @@ class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.AB
             )
 
     @abc.abstractmethod
-    def construct_dataloader(
-        self, partition: Literal["train", "val", "test", "predict"], ds: DS, params: P
-    ) -> DL:
+    def construct_dataloader(self, partition: Partition, ds: DS, params: P) -> DL:
         ...
 
     def _construct_dataloader_with_checks(
-        self,
-        partition: Literal["train", "val", "test", "predict"],
-        ds: Optional[DS],
-        params: Optional[P],
+        self, partition: Partition, ds: Optional[DS], params: Optional[P],
     ) -> DL:
         if params is None:
             raise ValueError(
@@ -574,12 +565,12 @@ class LitSpectDataModule(
     suppress_uttids: Optional[bool]
     shuffle: Optional[bool]
     warn_on_missing: bool
-    on_uneven_distributed: Literal["raise", "uneven", "ignore"]
+    on_uneven_distributed: OnUnevenDistributed
 
     _num_filts: Optional[int]
     _info_dict: Optional[Dict[str, int]]
-    _mvn_mean = Optional[torch.Tensor]
-    _mvn_std = Optional[torch.Tensor]
+    _mvn_mean: Optional[torch.Tensor]
+    _mvn_std: Optional[torch.Tensor]
 
     def __init__(
         self,
@@ -593,8 +584,23 @@ class LitSpectDataModule(
         num_workers: Optional[int] = None,
         pin_memory: Optional[bool] = None,
         warn_on_missing: bool = True,
-        on_uneven_distributed: Literal["raise", "uneven", "ignore"] = "raise",
+        on_uneven_distributed: OnUnevenDistributed = "raise",
     ) -> None:
+        data_params = argcheck.is_a(
+            data_params, LitSpectDataModuleParams, "data_params"
+        )
+        batch_first = argcheck.is_bool(batch_first, "batch_first")
+        sort_batch = argcheck.is_bool(sort_batch, "sort_batch")
+        suppress_alis = argcheck.is_bool(suppress_alis, "suppress_alis")
+        tokens_only = argcheck.is_bool(tokens_only, "tokens_only")
+        suppress_uttids = argcheck.is_bool(suppress_uttids, "suppress_uttids", True)
+        shuffle = argcheck.is_bool(shuffle, "shuffle", True)
+        warn_on_missing = argcheck.is_bool(warn_on_missing, "warn_on_missing")
+        on_uneven_distributed = argcheck.is_in(
+            on_uneven_distributed,
+            get_args(OnUnevenDistributed),
+            "on_uneven_distributed",
+        )
         super().__init__(data_params, num_workers, pin_memory)
 
         self.batch_first = batch_first
@@ -605,7 +611,7 @@ class LitSpectDataModule(
         self.shuffle = shuffle
         self.warn_on_missing = warn_on_missing
         self.on_uneven_distributed = on_uneven_distributed
-        self._info_dict = None
+        self._info_dict = self._mvn_mean = self._mvn_std = None
 
     def get_info_dict_value(
         self, key: str, default: Optional[int] = None
@@ -670,10 +676,7 @@ class LitSpectDataModule(
         return None if self._info_dict is None else self._info_dict["num_filts"]
 
     def construct_dataset(
-        self,
-        partition: Literal["train", "val", "test", "predict"],
-        path: str,
-        params: SpectDataLoaderParams,
+        self, partition: Partition, path: str, params: SpectDataLoaderParams,
     ) -> SpectDataSet:
         suppress_uttids = self.suppress_uttids
         if suppress_uttids is None:
@@ -709,16 +712,14 @@ class LitSpectDataModule(
             and self._mvn_std is None
         ):
             dict_ = torch.load(self.params.mvn_path, "cpu")
+
             self._mvn_mean = dict_["mean"]
             self._mvn_std = dict_["std"]
 
         super().setup(stage)
 
     def construct_dataloader(
-        self,
-        partition: Literal["train", "val", "test", "predict"],
-        ds: SpectDataSet,
-        params: SpectDataLoaderParams,
+        self, partition: Partition, ds: SpectDataSet, params: SpectDataLoaderParams,
     ) -> SpectDataLoader:
         shuffle = self.shuffle
         if shuffle is None:

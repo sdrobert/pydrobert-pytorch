@@ -34,13 +34,13 @@ from typing import (
     TypeVar,
     Union,
 )
-from typing_extensions import Literal
+from typing_extensions import Literal, get_args
 
 import param
 import numpy as np
 import torch
 
-from . import config
+from . import config, argcheck
 from ._datasets import (
     ContextWindowDataParams,
     ContextWindowDataSet,
@@ -56,6 +56,9 @@ except TypeError:
     _BaseSampler = torch.utils.data.sampler.Sampler
 
 
+OnUnevenDistributed = Literal["raise", "drop", "uneven", "ignore"]
+
+
 class AbstractEpochSampler(_BaseSampler, metaclass=abc.ABCMeta):
     """ABC for sampling based on epoch"""
 
@@ -69,10 +72,15 @@ class AbstractEpochSampler(_BaseSampler, metaclass=abc.ABCMeta):
         self,
         data_source: Sized,
         init_epoch: int = 0,
-        on_uneven_distributed: Literal["raise", "drop", "uneven", "ignore"] = "raise",
+        on_uneven_distributed: OnUnevenDistributed = "raise",
     ):
         self.effective_total = self.total = len(data_source)
-        self.epoch = init_epoch
+        self.epoch = argcheck.is_int(init_epoch, name="init_epoch")
+        on_uneven_distributed = argcheck.is_in(
+            on_uneven_distributed,
+            get_args(OnUnevenDistributed),
+            "on_uneven_distributed",
+        )
         if (
             on_uneven_distributed != "ignore"
             and torch.distributed.is_available()
@@ -90,12 +98,8 @@ class AbstractEpochSampler(_BaseSampler, metaclass=abc.ABCMeta):
                     )
                 elif on_uneven_distributed == "drop":
                     self.effective_total = self.total - (self.total % self._world_size)
-                elif on_uneven_distributed != "uneven":
-                    raise ValueError(
-                        "Unknown on_uneven_distributed value "
-                        f"'{on_uneven_distributed}'. Expected one of 'ignore', "
-                        "'raise', or 'drop'"
-                    )
+                else:
+                    assert on_uneven_distributed == "uneven"
         else:
             self._rank = 0
             self._world_size = 1
@@ -191,8 +195,9 @@ class EpochRandomSampler(AbstractEpochSampler):
             # torch so that we'll be deterministic with a prior call to
             # torch.manual_seed(...)
             base_seed = torch.randint(max_, (1,)).long().item()
-        if base_seed >= max_:
-            raise ValueError(f"base_seed is too high! Pick something less than {max_}")
+        else:
+            base_seed = argcheck.is_int(base_seed, "base_seed")
+            base_seed = argcheck.is_lte(base_seed, max_, "base_seed")
         self.base_seed = base_seed
 
     def get_samples_for_epoch_ignoring_distributed(self, epoch: int) -> Iterable[int]:
@@ -335,7 +340,7 @@ class BucketBatchSampler(_BaseSampler):
         self.sampler = sampler
         self.idx2bucket = idx2bucket
         self.bucket2size = bucket2size
-        self.drop_incomplete = drop_incomplete
+        self.drop_incomplete = argcheck.is_bool(drop_incomplete, "drop_incomplete")
 
     def __iter__(self) -> Iterator[List[int]]:
         batches: Dict[H, List[int]] = dict()
@@ -617,12 +622,13 @@ class LangDataLoader(torch.utils.data.DataLoader):
                 dl_kwargs[key] = val
         if data_params is None:
             data_params = params
-        self.batch_first, self.sort_batch = batch_first, sort_batch
+        batch_first = argcheck.is_bool(batch_first, "batch_first")
+        sort_batch = argcheck.is_bool(sort_batch, "sort_batch")
         if isinstance(data, LangDataSet):
             dataset = data
         else:
             dataset = LangDataSet(data, params=data_params, **ds_kwargs,)
-        utt_sampler_kwargs = {"init_epoch": init_epoch}
+        utt_sampler_kwargs = {"init_epoch": argcheck.is_int(init_epoch, "init_epoch")}
         if params.drop_last:
             utt_sampler_kwargs["on_uneven_distributed"] = "drop"
         else:
@@ -647,13 +653,13 @@ class LangDataLoader(torch.utils.data.DataLoader):
             batch_sampler = torch.utils.data.BatchSampler(
                 utt_sampler, params.batch_size, drop_last=params.drop_last
             )
-        self._len = None
         super().__init__(
             dataset,
             batch_sampler=batch_sampler,
             collate_fn=self.collate_fn,
             **dl_kwargs,
         )
+        self._len, self.batch_first, self.sort_batch = None, batch_first, sort_batch
 
     def collate_fn(self, seq):
         return lang_seq_to_batch(
@@ -1025,7 +1031,8 @@ class SpectDataLoader(torch.utils.data.DataLoader):
                     DeprecationWarning,
                 )
                 data_params.subset_ids = subset_ids
-        self.batch_first, self.sort_batch = batch_first, sort_batch
+        batch_first = argcheck.is_bool(batch_first, "batch_first")
+        sort_batch = argcheck.is_bool(sort_batch, "sort_batch")
         if isinstance(data, SpectDataSet):
             dataset = data
         else:
@@ -1063,13 +1070,13 @@ class SpectDataLoader(torch.utils.data.DataLoader):
             batch_sampler = torch.utils.data.BatchSampler(
                 utt_sampler, params.batch_size, drop_last=params.drop_last
             )
-        self._len = None
         super().__init__(
             dataset,
             batch_sampler=batch_sampler,
             collate_fn=self.collate_fn,
             **dl_kwargs,
         )
+        self._len, self.batch_first, self.sort_batch = None, batch_first, sort_batch
 
     def collate_fn(self, seq):
         return spect_seq_to_batch(

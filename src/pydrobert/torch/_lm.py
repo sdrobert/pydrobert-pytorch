@@ -19,6 +19,7 @@ import warnings
 
 import torch
 
+from . import argcheck
 from ._compat import script
 from ._wrappers import proxy
 
@@ -108,15 +109,14 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         For a tutorial on how to build and use a language model.
     """
 
-    __constants__ = ["vocab_size"]
+    __constants__ = ("vocab_size",)
 
     vocab_size: int
 
     def __init__(self, vocab_size: int):
+        vocab_size = argcheck.is_posi(vocab_size, "vocab_size")
         super().__init__()
         self.vocab_size = vocab_size
-        if vocab_size < 1:
-            raise ValueError("vocab_size must be positive")
 
     @torch.jit.export
     def update_input(
@@ -600,7 +600,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     JIT scripting is possible with this module, but not tracing.
     """
 
-    __constants__ = ["vocab_size", "sos", "max_ngram", "max_ngram_nodes", "shift"]
+    __constants__ = ("vocab_size", "sos", "max_ngram", "max_ngram_nodes", "shift")
 
     sos: int
     max_ngram: int
@@ -626,7 +626,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         prob_dicts: Optional[Sequence[dict]] = None,
         prob_list: Optional[Sequence[dict]] = None,
     ):
-        super().__init__(vocab_size)
+        sos = argcheck.is_int(sos, "sos")
         if prob_list is not None:
             if prob_dicts is None:
                 warnings.warn(
@@ -637,6 +637,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                 raise ValueError(
                     "prob_list and prob_dicts cannot be specified simultaneously"
                 )
+        super().__init__(vocab_size)
         self.sos = sos
         if sos < 0 or sos > vocab_size:
             # we want sos to refer to an index but it's oov, so we'll shift all
@@ -965,6 +966,9 @@ class ShallowFusionLanguageModel(SequentialLanguageModel):
         first_prefix: str = "first.",
         second_prefix: str = "second.",
     ):
+        beta = argcheck.is_float(beta, "beta")
+        first_prefix = argcheck.is_str(first_prefix, "first_prefix")
+        second_prefix = argcheck.is_str(second_prefix, "second_prefix")
         if first.vocab_size != second.vocab_size:
             raise ValueError(
                 f"first's vocab_size ({first.vocab_size}) differs from second's "

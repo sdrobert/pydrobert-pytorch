@@ -1,4 +1,4 @@
-# Copyright 2021 Sean Robertson
+# Copyright 2023 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,54 +26,16 @@ import shutil
 
 from pathlib import Path
 from collections import defaultdict, OrderedDict
-from typing import Any, Callable, Dict, Optional, Sequence, Type, TypeVar
+from typing import Dict, Optional, Sequence
 from typing_extensions import Literal
 
 import torch
 
-from . import data, modules, config
+from . import data, modules, config, argcheck
 from ._feats import SliceSpectData, ChunkTokenSequencesBySlices
 from ._pad import ChunkBySlices
 from ._string import error_rate
 from ._datasets import _info_and_validate
-
-
-def rdir(x: str) -> str:
-    if not os.path.isdir(x):
-        raise TypeError(f"'{x}' is not a directory")
-    return x
-
-
-R = TypeVar("R")
-
-
-def bounded(
-    x: str,
-    type: Type[R],
-    lower: Optional[R] = None,
-    upper: Optional[R] = None,
-    inclusive_lower: bool = True,
-    inclusive_upper: bool = True,
-) -> R:
-    x: R = type(x)
-    if lower is not None:
-        if inclusive_lower and x < lower:
-            raise TypeError(f"Expected {x} >= {lower}")
-        elif not inclusive_lower and x <= lower:
-            raise TypeError(f"Expected {x} > {lower}")
-    if upper is not None:
-        if inclusive_upper and x > upper:
-            raise TypeError(f"Expected {x} <= {upper}")
-        elif not inclusive_upper and x >= upper:
-            raise TypeError(f"Expected {x} < {upper}")
-    return x
-
-
-nat = lambda x: bounded(x, int, 1)
-nat0 = lambda x: bounded(x, int, 0)
-pos = lambda x: bounded(x, float, 0, inclusive_lower=False)
-open01 = lambda x: bounded(x, float, 0.0, 1.0, False, False)
-closed01 = lambda x: bounded(x, float, 0.0, 1.0)
 
 
 _COMMON_ARGS = {
@@ -98,7 +60,7 @@ _COMMON_ARGS = {
         'used to swap the expected ordering (i.e. to "<token> <id>")',
     },
     "--num-workers": {
-        "type": int,
+        "type": argcheck.as_nonnegi,
         "default": config.DEFT_NUM_WORKERS,
         "help": "The number of workers to spawn to process the data. 0 is serial. "
         "Defaults to the CPU count",
@@ -110,10 +72,11 @@ _COMMON_ARGS = {
     },
     "--unk-symbol": {
         "default": None,
+        "type": argcheck.is_token,
         "help": "If set, will map out-of-vocabulary tokens to this symbol",
     },
     "--frame-shift-ms": {
-        "type": pos,
+        "type": argcheck.as_posf,
         "default": config.DEFT_FRAME_SHIFT_MS,
         "help": "The number of milliseconds that have passed between consecutive "
         "frames. Used to convert between time in seconds and frame index. If your "
@@ -134,7 +97,7 @@ _COMMON_ARGS = {
         "loaded as features in a SpectDataSet.",
     },
     "--mp-chunk-size": {
-        "type": nat,
+        "type": argcheck.as_nat,
         "default": config.DEFT_CHUNK_SIZE,
         "help": "The number of utterances that a multiprocessing worker will process "
         "at once. Impacts speed and memory consumption.",
@@ -238,7 +201,7 @@ integers."""
         description=get_torch_spect_data_dir_info.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("dir", type=rdir, help="The torch data directory")
+    parser.add_argument("dir", type=argcheck.as_dir, help="The torch data directory")
     parser.add_argument(
         "out_file",
         nargs="?",
@@ -263,7 +226,7 @@ integers."""
         "--fix",
         nargs="?",
         metavar="N",
-        type=nat0,
+        type=argcheck.as_nonnegi,
         const=1,
         default=None,
         help="If set, validate the data directory before collecting info, potentially "
@@ -308,9 +271,7 @@ def _parse_token2id(file, swap, return_swap):
             continue
         ls = line.split()
         if len(ls) != 2 or not ls[1 - int(swap)].lstrip("-").isdigit():
-            raise ValueError(
-                "Cannot parse line {} of {}".format(line_no + 1, file.name)
-            )
+            raise ValueError(f"Cannot parse line {line_no + 1} of {file.name}")
         key, value = ls
         key, value = (int(key), value) if swap else (key, int(value))
         if key in ret:
@@ -409,7 +370,7 @@ with the "ref/" directory of a SpectDataSet. See the command
                 if isinstance(x, str):
                     transcript.append(x)
                 elif options.alt_handler == "error":
-                    raise ValueError('Cannot handle alternate in "{}"'.format(utt_id))
+                    raise ValueError(f"Cannot handle alternate in '{utt_id}'")
                 else:  # first
                     x[0].extend(old_transcript)
                     old_transcript = x[0]
@@ -476,8 +437,7 @@ class _TranscriptDataSet(_DirectoryDataset):
             if isinstance(token, int) and self.id2token is not None:
                 assert token not in self.id2token
                 raise ValueError(
-                    'Utterance "{}": ID "{}" could not be found in id2token'
-                    "".format(utt_id, token)
+                    f"Utterance '{utt_id}': ID '{token}' could not be found in id2token"
                 )
         return utt_id, transcript
 
@@ -525,7 +485,7 @@ info about a SpectDataSet directory."""
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "dir", type=rdir, help="The directory to read token sequences from"
+        "dir", type=argcheck.as_dir, help="The directory to read token sequences from"
     )
     _add_common_arg(parser, "id2token")
     parser.add_argument(
@@ -714,7 +674,9 @@ directory."""
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "tg_dir", type=rdir, help="The directory containing the TextGrid files"
+        "tg_dir",
+        type=argcheck.as_dir,
+        help="The directory containing the TextGrid files",
     )
     _add_common_arg(parser, "token2id")
     parser.add_argument(
@@ -823,7 +785,7 @@ SpectDataSet directory."""
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "dir", type=rdir, help="The directory to read token sequences from"
+        "dir", type=argcheck.as_dir, help="The directory to read token sequences from"
     )
     _add_common_arg(parser, "id2token")
     parser.add_argument(
@@ -854,6 +816,7 @@ SpectDataSet directory."""
     )
     utt_group.add_argument(
         "--channel",
+        type=argcheck.is_token,
         default=config.DEFT_CTM_CHANNEL,
         help='If neither "--wc2utt" nor "--utt2wc" is specified, utterance '
         "IDs are treated as wavefile names and are given the value of this "
@@ -914,7 +877,7 @@ performing these computations."""
     )
     parser.add_argument(
         "dir",
-        type=rdir,
+        type=argcheck.as_dir,
         help="If the 'hyp' argument is not specified, this is the "
         "parent directory of two subdirectories, 'ref/' and 'hyp/', which "
         "contain the reference and hypothesis transcripts, respectively. If "
@@ -924,7 +887,7 @@ performing these computations."""
     parser.add_argument(
         "hyp",
         nargs="?",
-        type=rdir,
+        type=argcheck.as_dir,
         default=None,
         help="The hypothesis transcript directory",
     )
@@ -987,7 +950,7 @@ performing these computations."""
     )
     parser.add_argument(
         "--batch-size",
-        type=nat,
+        type=argcheck.as_nat,
         default=100,
         help="The number of error rates to compute at once. Reduce if you "
         "run into memory errors",
@@ -1233,7 +1196,7 @@ This command does not require WebDataset to be installed."""
         description=torch_spect_data_dir_to_wds.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("dir", type=rdir, help="The torch data directory")
+    parser.add_argument("dir", type=argcheck.as_dir, help="The torch data directory")
     parser.add_argument("tar_path", help="The path to store files to")
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
@@ -1249,14 +1212,14 @@ This command does not require WebDataset to be installed."""
     )
     parser.add_argument(
         "--max-samples-per-shard",
-        type=nat,
+        type=argcheck.as_nat,
         default=1e5,
         help="If sharding ('--shard' is specified), dictates the number of samples in "
         "each file.",
     )
     parser.add_argument(
         "--max-size-per-shard",
-        type=nat,
+        type=argcheck.as_nat,
         default=3e9,
         help="If sharding ('--shard' is specified), dictates the maximum size in bytes "
         "of each file.",
@@ -1291,10 +1254,6 @@ This command does not require WebDataset to be installed."""
     if options.shard:
         max_bytes = options.max_size_per_shard
         max_count = options.max_samples_per_shard
-        if max_bytes <= 0:
-            raise argparse.ArgumentTypeError("--max-size-per-shard must be positive")
-        if max_count <= 0:
-            raise argparse.ArgumentTypeError("--max-samples-per-shard must be positive")
         max_num_shards = (NN - 1) // max_count + 1
         max_shard = max(max_num_shards - 1, 1)
         pattern += f".{{shard:0{int(math.ceil(math.log(max_shard)))}d}}"
@@ -1368,7 +1327,7 @@ pickled, nested dictionary
 of the statistics of all groups.
 """,
     )
-    parser.add_argument("dir", type=rdir, help="The feature directory")
+    parser.add_argument("dir", type=argcheck.as_dir, help="The feature directory")
     parser.add_argument("out", help="Output path")
     _add_common_arg(parser, "--file-prefix")
     _add_common_arg(parser, "--file-suffix")
@@ -1510,7 +1469,9 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "ref_dir", type=rdir, help="The token sequence data directory (input)",
+        "ref_dir",
+        type=argcheck.as_dir,
+        help="The token sequence data directory (input)",
     )
     parser.add_argument(
         "ali_dir", help="The frame alignment data directory (output)",
@@ -1578,7 +1539,9 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "ali_dir", type=rdir, help="The frame alignment data directory (input)",
+        "ali_dir",
+        type=argcheck.as_dir,
+        help="The frame alignment data directory (input)",
     )
     parser.add_argument(
         "ref_dir", help="The token sequence data directory (output)",
@@ -1743,7 +1706,9 @@ directory."""
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "ref_dir", type=rdir, help="The token sequence data directory (input)"
+        "ref_dir",
+        type=argcheck.as_dir,
+        help="The token sequence data directory (input)",
     )
     _add_common_arg(parser, "id2token")
     parser.add_argument("tg_dir", help="The TextGrid directory (output)")
@@ -1767,7 +1732,7 @@ directory."""
     )
     parser.add_argument(
         "--precision",
-        type=nat0,
+        type=argcheck.as_nonnegi,
         default=config.DEFT_FLOAT_PRINT_PRECISION,
         help="Precision with which to save floating point values in TextGrid files",
     )
@@ -1914,7 +1879,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "in_dir", type=rdir, help="The torch data directory to chunk (input)"
+        "in_dir", type=argcheck.as_dir, help="The torch data directory to chunk (input)"
     )
     parser.add_argument(
         "out_dir", help="The torch data directory to store chunks (output)"
@@ -1934,7 +1899,7 @@ See the command "get-torch-spect-data-dir-info" for more info SpectDataSet direc
     )
     parser.add_argument(
         "--lobe-size",
-        type=nat0,
+        type=argcheck.as_nonnegi,
         default=0,
         help="Size of a side lobe of a slice. See SliceSpectData.",
     )
@@ -2120,7 +2085,9 @@ This command has a similar functionality to Kaldi's (https://github.com/kaldi-as
 subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
 """,
     )
-    parser.add_argument("src", type=rdir, help="The directory to extract from")
+    parser.add_argument(
+        "src", type=argcheck.as_dir, help="The directory to extract from"
+    )
     parser.add_argument("dest", help="The directory to extract to")
     style = parser.add_mutually_exclusive_group()
     style.add_argument(
@@ -2153,35 +2120,35 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     )
     criteria.add_argument(
         "--first-n",
-        type=nat0,
+        type=argcheck.as_nonnegi,
         metavar="N",
         default=None,
         help="Extract this number of utterances listed first by id",
     )
     criteria.add_argument(
         "--first-ratio",
-        type=closed01,
+        type=argcheck.as_closed01,
         metavar="R",
         default=None,
         help="Extract this ratio of utterances (rounding down) listed first by id",
     )
     criteria.add_argument(
         "--last-n",
-        type=nat0,
+        type=argcheck.as_nonnegi,
         metavar="N",
         default=None,
         help="Extract this number of utterances listed last by id",
     )
     criteria.add_argument(
         "--last-ratio",
-        type=closed01,
+        type=argcheck.as_closed01,
         metavar="R",
         default=None,
         help="Extract this ratio of utterances (rounding down) listed last by id",
     )
     criteria.add_argument(
         "--shortest-n",
-        type=nat0,
+        type=argcheck.as_nonnegi,
         metavar="N",
         default=None,
         help="Extract this number of utterances listed first by increasing length, "
@@ -2189,7 +2156,7 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     )
     criteria.add_argument(
         "--shortest-ratio",
-        type=closed01,
+        type=argcheck.as_closed01,
         metavar="R",
         default=None,
         help="Extract this ratio of utterances listed first by increasing length, "
@@ -2197,7 +2164,7 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     )
     criteria.add_argument(
         "--longest-n",
-        type=nat0,
+        type=argcheck.as_nonnegi,
         metavar="N",
         default=None,
         help="Extract this number of utterances listed first by decreasing length, "
@@ -2205,7 +2172,7 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     )
     criteria.add_argument(
         "--longest-ratio",
-        type=closed01,
+        type=argcheck.as_closed01,
         metavar="R",
         default=None,
         help="Extract this ratio of utterances listed first by decreasing length, "
@@ -2213,14 +2180,14 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
     )
     criteria.add_argument(
         "--rand-n",
-        type=nat0,
+        type=argcheck.as_nonnegi,
         metavar="N",
         default=None,
         help="Extract this number of utterances listed randomly",
     )
     criteria.add_argument(
         "--rand-ratio",
-        type=closed01,
+        type=argcheck.as_closed01,
         metavar="R",
         default=None,
         help="Extract this ratio of utterances listed randomly",
@@ -2254,9 +2221,7 @@ subset_data_dir.sh script, but defaults to hard links for cross-compatibility.
         feat_dir = options.src
     else:
         feat_dir = os.path.join(options.src, options.feat_subdir)
-        if not os.path.isdir(feat_dir):
-            print(f"'{feat_dir}' does not exist", file=sys.stderr)
-            return 1
+        argcheck.is_dir(feat_dir, name="feat_dir")
         if not os.path.isdir(os.path.join(options.src, options.ali_subdir)):
             options.ali_subdir = None
         if not os.path.isdir(os.path.join(options.src, options.ref_subdir)):
@@ -2395,7 +2360,7 @@ directory."""
         description=print_torch_ali_data_dir_length_moments.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("dir", type=rdir, help="The ali/ dir (input)")
+    parser.add_argument("dir", type=argcheck.as_dir, help="The ali/ dir (input)")
     parser.add_argument(
         "out",
         nargs="?",
@@ -2405,7 +2370,7 @@ directory."""
     )
     parser.add_argument(
         "--precision",
-        type=nat0,
+        type=argcheck.as_nonnegi,
         default=config.DEFT_FLOAT_PRINT_PRECISION,
         help="Precision with which to print stats",
     )
@@ -2502,7 +2467,7 @@ directory."""
         description=print_torch_ali_data_dir_length_moments.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("dir", type=rdir, help="The ref/ dir (input)")
+    parser.add_argument("dir", type=argcheck.as_dir, help="The ref/ dir (input)")
     parser.add_argument(
         "out",
         nargs="?",
@@ -2525,7 +2490,7 @@ directory."""
     )
     parser.add_argument(
         "--precision",
-        type=nat0,
+        type=argcheck.as_nonnegi,
         default=config.DEFT_FLOAT_PRINT_PRECISION,
         help="Precision with which to print stats",
     )

@@ -13,11 +13,11 @@
 # limitations under the License.
 
 from typing import Optional, Tuple, overload
-from typing_extensions import Literal
+from typing_extensions import Literal, get_args
 
 import torch
 
-from . import config
+from . import config, argcheck
 from ._compat import script, movedim
 from ._wrappers import functional_wrapper, proxy
 
@@ -135,19 +135,21 @@ class MeanVarianceNormalization(torch.nn.Module):
         std: Optional[torch.Tensor] = None,
         eps: float = config.TINY,
     ):
+        dim = argcheck.is_int(dim, "dim")
         if mean is not None:
-            if mean.ndim != 1 or not mean.numel():
-                raise ValueError("mean must be a nonempty vector if specified")
+            mean = argcheck.is_tensor(mean, "mean")
+            mean = argcheck.has_ndim(mean, 1, "mean")
+            mean = argcheck.is_nonempty(mean, "mean")
         if std is not None:
-            if std.ndim != 1 or not std.numel():
-                raise ValueError("std must be a nonempty vector if specified")
+            std = argcheck.is_tensor(std, "std")
+            std = argcheck.has_ndim(std, 1, "std")
+            std = argcheck.is_nonempty(std, "std")
             if mean is not None and mean.size(0) != std.size(0):
                 raise ValueError(
                     "mean and std must be of the same length if both specified, got "
                     f"{mean.size(0)} and {std.size(0)}, respectively"
                 )
-        if eps < 0:
-            raise ValueError(f"eps must be non-negative, got {eps}")
+        eps = argcheck.is_nonneg(eps, "eps")
         super().__init__()
         self.dim, self.eps = dim, eps
         self.register_buffer("mean", mean)
@@ -295,6 +297,9 @@ def feat_deltas(
     return x
 
 
+PadMode = Literal["replicate", "constant", "reflect", "circular"]
+
+
 class FeatureDeltas(torch.nn.Module):
     r"""Compute deltas of features
 
@@ -368,14 +373,14 @@ class FeatureDeltas(torch.nn.Module):
         concatenate: bool = True,
         order: int = 2,
         width: int = 2,
-        pad_mode: Literal["replicate", "constant", "reflect", "circular"] = "replicate",
+        pad_mode: PadMode = "replicate",
         value: float = config.DEFT_PAD_VALUE,
     ):
-        if pad_mode not in {"replicate", "constant", "reflect", "circular"}:
-            raise ValueError(
-                "Expected pad_mode to be one of 'replicate', 'constant', 'reflect', or "
-                f"'circular', got '{pad_mode}'"
-            )
+        dim = argcheck.is_int(dim, "dim")
+        time_dim = argcheck.is_int(time_dim, "time_dim")
+        concatenate = argcheck.is_bool(concatenate, "concatenate")
+        order = argcheck.is_nonnegi(order, "order")
+        pad_mode = argcheck.is_in(pad_mode, get_args(PadMode), pad_mode)
         super().__init__()
         self.register_buffer("filters", _feat_delta_filters(order, width))
         self.dim, self.time_dim, self.value = dim, time_dim, value
@@ -405,13 +410,17 @@ class FeatureDeltas(torch.nn.Module):
     __call__ = proxy(forward)
 
 
+Policy = Literal["fixed", "ali", "ref"]
+WindowType = Literal["symmetric", "causal", "future"]
+
+
 @overload
 def slice_spect_data(
     input: torch.Tensor,
     in_lens: Optional[torch.Tensor] = None,
     other_lens: Optional[torch.Tensor] = None,
-    policy: Literal["fixed", "ali", "ref"] = None,
-    window_type: Literal["symmmetric", "causal", "future"] = "symmetric",
+    policy: Policy = "fixed",
+    window_type: WindowType = "symmetric",
     valid_only: bool = True,
     lobe_size: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -430,7 +439,9 @@ def slice_spect_data(
     lobe_size: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if input.ndim < 2:
-        raise RuntimeError(f"Expected input to be at least 2-dimensional; got {input.ndim}")
+        raise RuntimeError(
+            f"Expected input to be at least 2-dimensional; got {input.ndim}"
+        )
     N, T = input.shape[:2]
     device = input.device
     if not T:
@@ -729,7 +740,7 @@ class SliceSpectData(torch.nn.Module):
         [[0, 2], [2, 5], [3, 7]]  # future, not valid_only
     """
 
-    __constants__ = ["policy", "window_type", "valid_only", "lobe_size"]
+    __constants__ = "policy", "window_type", "valid_only", "lobe_size"
 
     policy: str
     window_type: str
@@ -738,23 +749,16 @@ class SliceSpectData(torch.nn.Module):
 
     def __init__(
         self,
-        policy: Literal["fixed", "ali", "ref"] = "fixed",
-        window_type: Literal["symmetric", "causal", "future"] = "symmetric",
+        policy: Policy = "fixed",
+        window_type: WindowType = "symmetric",
         valid_only: bool = True,
         lobe_size: int = 0,
     ) -> None:
+        policy = argcheck.is_in(policy, get_args(Policy), "policy")
+        window_type = argcheck.is_in(window_type, get_args(WindowType), "window_type")
+        valid_only = argcheck.is_bool(valid_only, "valid_only")
+        lobe_size = argcheck.is_nonnegi(lobe_size, "lobe_size")
         super().__init__()
-        if policy not in {"fixed", "ali", "ref"}:
-            raise ValueError(
-                f"policy should be one of 'fixed', 'ali', or 'ref'. Got '{policy}'"
-            )
-        if window_type not in {"symmetric", "causal", "future"}:
-            raise ValueError(
-                "window_type should be one of 'symmetric', 'causal', or 'future'. "
-                f"Got '{window_type}'"
-            )
-        if lobe_size < 0:
-            raise ValueError(f"lobe_size should be non-negative, got {lobe_size}")
         self.policy, self.window_type, self.lobe_size = policy, window_type, lobe_size
         self.valid_only = valid_only
 
@@ -816,10 +820,14 @@ def chunk_token_sequences_by_slices(
     mask = mask & (refs[..., 1:] >= 0).all(2) & (refs[..., 2] >= refs[..., 1])
     if partial:
         # slice_start < ref_end and slice_end > ref_start
-        mask = mask & (slices[..., :1] < refs[..., 2]) & (slices[..., 1:] > refs[..., 1])
+        mask = (
+            mask & (slices[..., :1] < refs[..., 2]) & (slices[..., 1:] > refs[..., 1])
+        )
     else:
         # slice_start <= ref_start and slice_end >= ref_end
-        mask = mask & (slices[..., :1] <= refs[..., 1]) & (slices[..., 1:] >= refs[..., 2])
+        mask = (
+            mask & (slices[..., :1] <= refs[..., 1]) & (slices[..., 1:] >= refs[..., 2])
+        )
     chunked_lens = mask.long().sum(1)
     refs = refs[mask.unsqueeze(2).expand_as(refs)]
     mask = (chunked_lens.unsqueeze(1) > arange).unsqueeze(2).expand(N, R, 3)
@@ -894,9 +902,10 @@ class ChunkTokenSequencesBySlices(torch.nn.Module):
     retain: bool
 
     def __init__(self, partial: bool = False, retain: bool = False) -> None:
+        partial = argcheck.is_bool(partial, "partial")
+        retain = argcheck.is_bool(retain, "retain")
         super().__init__()
-        self.partial = partial
-        self.retain = retain
+        self.partial, self.retain = partial, retain
 
     def extra_repr(self) -> str:
         if self.partial and self.retain:

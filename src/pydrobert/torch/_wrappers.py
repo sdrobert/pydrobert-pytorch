@@ -33,8 +33,10 @@ pydrobert.torch.modules.{module_name}
     For a description of what this does, its inputs, and its outputs.
 """
 
+C = TypeVar("C", bound=Callable)
 
-def functional_wrapper(module_name: str):
+
+def functional_wrapper(module_name: str) -> Callable[[C], C]:
     def decorator(func):
         sig = signature(func)
         parameters = "\n".join(sig.parameters)
@@ -55,9 +57,6 @@ Returns
     decorator.__modname = module_name
 
     return decorator
-
-
-C = TypeVar("C", bound=Callable)
 
 
 def proxy(f: C) -> C:

@@ -18,7 +18,7 @@ from typing import Optional, Sequence, Tuple
 
 import torch
 
-from . import config
+from . import config, argcheck
 from .distributions import Density, StraightThrough, ConditionalStraightThrough
 from ._estimators import Estimator, FunctionOnSample
 from ._compat import logaddexp
@@ -72,8 +72,9 @@ class MonteCarloEstimator(Estimator, metaclass=abc.ABCMeta):
         mc_samples: int,
         is_log: bool = False,
     ) -> None:
-        if mc_samples <= 0:
-            raise ValueError(f"mc_samples must be a natural number, got {mc_samples}")
+        proposal = argcheck.is_a(proposal, torch.distributions.Distribution, "proposal")
+        mc_samples = argcheck.is_posi(mc_samples, "mc_samples")
+        is_log = argcheck.is_bool(is_log, "is_log")
         super().__init__(proposal, func, is_log)
         self.mc_samples = mc_samples
 
@@ -137,9 +138,9 @@ class DirectEstimator(MonteCarloEstimator):
         cv_mean: Optional[torch.Tensor] = None,
         is_log: bool = False,
     ):
+        cv_mean = argcheck.is_tensor(cv_mean, "cv_mean", True)
         super().__init__(proposal, func, mc_samples, is_log)
-        self.cv = cv
-        self.cv_mean = cv_mean
+        self.cv, self.cv_mean = cv, cv_mean
 
     def __call__(self) -> torch.Tensor:
         b = self.proposal.sample([self.mc_samples])
@@ -290,8 +291,7 @@ class StraightThroughEstimator(MonteCarloEstimator):
         mc_samples: int,
         is_log: bool = False,
     ) -> None:
-        if not isinstance(proposal, StraightThrough):
-            raise ValueError("proposal must be StraightThrough")
+        proposal = argcheck.is_a(proposal, StraightThrough, "proposal")
         super().__init__(proposal, func, mc_samples, is_log)
 
     def __call__(self) -> torch.Tensor:
@@ -382,6 +382,7 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
         self_normalize: bool = False,
         is_log: bool = False,
     ) -> None:
+        self_normalize = argcheck.is_bool(self_normalize, "self_normalize")
         super().__init__(proposal, func, mc_samples, is_log)
         self.density = density
         self.self_normalize = self_normalize
@@ -501,8 +502,7 @@ class RelaxEstimator(MonteCarloEstimator):
         cv_params: Sequence[torch.Tensor] = tuple(),
         is_log: bool = False,
     ) -> None:
-        if not isinstance(proposal, ConditionalStraightThrough):
-            raise ValueError(f"proposal must implement ConditionalStraightThrough")
+        proposal = argcheck.is_a(proposal, ConditionalStraightThrough, "proposal")
         proposal_params = tuple(proposal_params)
         cv_params = tuple(cv_params)
         if (len(proposal_params) > 0) != (len(cv_params) > 0):
@@ -510,9 +510,7 @@ class RelaxEstimator(MonteCarloEstimator):
                 "either both proposal_params and cv_params must be specified or neither"
             )
         super().__init__(proposal, func, mc_samples, is_log)
-        self.cv = cv
-        self.proposal_params = proposal_params
-        self.cv_params = cv_params
+        self.cv, self.proposal_params, self.cv_params = cv, proposal_params, cv_params
 
     def __call__(self) -> torch.Tensor:
         z = self.proposal.rsample([self.mc_samples])
@@ -650,9 +648,9 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
         initial_sample_tries: int = 1000,
         is_log: bool = False,
     ) -> None:
-        super().__init__(proposal, func, mc_samples, is_log)
-        if burn_in < 0 or burn_in >= mc_samples:
-            raise ValueError(f"burn_in must be between [0, mc_samples={mc_samples})")
+        burn_in = argcheck.is_nonnegi(burn_in, "burn_in")
+        mc_samples = argcheck.is_posi(mc_samples, "mc_samples")
+        argcheck.is_lt(burn_in, mc_samples, "burn_in", "mc_samples")
         if initial_sample is not None:
             sample_shape = self.proposal.batch_shape + self.proposal.event_shape
             if initial_sample.shape == sample_shape:
@@ -670,10 +668,9 @@ class IndependentMetropolisHastingsEstimator(MonteCarloEstimator):
             raise ValueError(
                 "initial_sample_tries must be positive when initial_sample is None"
             )
-        self.density = density
-        self.initial_sample = initial_sample
-        self.initial_sample_tries = initial_sample_tries
-        self.burn_in = burn_in
+        super().__init__(proposal, func, mc_samples, is_log)
+        self.density, self.initial_sample = density, initial_sample
+        self.initial_sample_tries, self.burn_in = initial_sample_tries, burn_in
 
     def find_initial_sample(self, tries: Optional[int] = None) -> torch.Tensor:
         """Find an initial sample by randomly sampling from the proposal"""
@@ -753,14 +750,14 @@ def _attach_grad(x: torch.tensor, g: torch.Tensor):
 
 class _RebarControlVariate(torch.nn.Module):
 
-    __constants__ = ["func", "start_temp", "start_eta"]
+    __constants__ = ("func", "start_temp", "start_eta")
     func: FunctionOnSample
     start_temp: float
     start_eta: float
 
     def __init__(self, func, start_temp: float = 0.1, start_eta: float = 1.0) -> None:
-        if start_temp <= 0:
-            raise ValueError(f"start_temp must be positive, got {start_temp}")
+        start_temp = argcheck.is_posf(start_temp, "start_temp")
+        start_eta = argcheck.is_float(start_eta, "start_eta")
         super().__init__()
         self.func = func
         self.start_temp = start_temp
