@@ -13,9 +13,10 @@
 # limitations under the License.
 
 import abc
+import warnings
 
 from typing import Any, Dict, Optional, Sequence, Tuple, Union, overload
-import warnings
+from bisect import insort
 
 import torch
 
@@ -882,10 +883,11 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             pointers[allocated] = len(prob_dict) + 1
             logs[allocated] = logs[X + G + allocated] = nan
             allocated += 1
-            keys = sorted(prob_dict.keys())
+            prob_list = []
+            while prob_dict:
+                insort(prob_list, prob_dict.popitem())
             children = dict()
-            for key in keys:
-                value = prob_dict[key]
+            for key, value in prob_list:
                 children[key] = allocated
                 ids[allocated - U] = key[-1]
                 if N == 1:
@@ -904,7 +906,6 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                 start -= 1
             N -= 1
             parents = children
-            prob_dict.clear()
         assert allocated == L - X
         # see if we can shrink the pointer size
         if len(pointers):
