@@ -615,7 +615,11 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
 
     @overload
     def __init__(
-        self, vocab_size: int, sos: int, prob_dicts: Optional[Sequence[dict]] = None
+        self,
+        vocab_size: int,
+        sos: int,
+        prob_dicts: Optional[Sequence[dict]] = None,
+        copy_dicts: bool = True,
     ):
         ...
 
@@ -624,9 +628,12 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         vocab_size: int,
         sos: int,
         prob_dicts: Optional[Sequence[dict]] = None,
+        copy_dicts: bool = True,
+        *,
         prob_list: Optional[Sequence[dict]] = None,
     ):
         sos = argcheck.is_int(sos, "sos")
+        copy_dicts = argcheck.is_bool(copy_dicts)
         if prob_list is not None:
             if prob_dicts is None:
                 warnings.warn(
@@ -655,7 +662,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         else:
             self.max_ngram = len(prob_dicts)
             self.max_ngram_nodes = -1  # changed by build_trie
-            logs, ids, pointers = self._build_trie(prob_dicts)
+            logs, ids, pointers = self._build_trie(prob_dicts, copy_dicts)
         self.register_buffer("logs", logs)
         self.register_buffer("ids", ids)
         self.register_buffer("pointers", pointers)
@@ -755,10 +762,11 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         self.logs = torch.empty_like(logs, device=self.logs.device)
         return super(LookupLanguageModel, self).load_state_dict(state_dict, **kwargs)
 
-    def _build_trie(self, prob_dicts):
+    def _build_trie(self, prob_dicts, copy_dicts):
         if not len(prob_dicts):
             raise ValueError("prob_dicts must contain at least unigrams")
-        prob_dicts = [prob_dict.copy() for prob_dict in prob_dicts]
+        if copy_dicts:
+            prob_dicts = [prob_dict.copy() for prob_dict in prob_dicts]
         total_entries, nan, inf = 0, float("nan"), float("inf")
         unigrams = set(range(self.vocab_size))
         if self.shift:
@@ -804,10 +812,16 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         if self.shift:
             prob_dicts[0][self.vocab_size] = prob_dicts[0].pop(self.sos)
             for n in range(1, self.max_ngram):
-                prob_dicts[n] = dict(
-                    (tuple(self.vocab_size if t == self.sos else t for t in k), v)
-                    for (k, v) in list(prob_dicts[n].items())
-                )
+                sos_keys = []
+                prob_dict = prob_dicts[n]
+                for key in prob_dict.keys():
+                    if self.sos in key:
+                        sos_keys.append(key)
+                while len(sos_keys):
+                    key = sos_keys.pop()
+                    key_ = tuple(self.vocab_size if k == self.sos else k for k in key)
+                    prob_dict[key_] = prob_dict.pop(key)
+
         N, G, V = self.max_ngram, self.max_ngram_nodes, self.vocab_size
         U, X = V + self.shift + (1 % N), total_entries - G + (N - 1)
         K, L = X + G - U, 2 * X + G
