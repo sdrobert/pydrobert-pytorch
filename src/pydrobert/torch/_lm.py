@@ -553,6 +553,9 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         are the log-probabilities of the keys. Lower order dictionaries' values are
         pairs of log-probability and log-backoff penalty. If `prob_dicts` is not
         specified, a unigram model with a uniform prior will be built
+    destructive
+        If :obj:`True`, allows initialization to modify `prob_dicts` directly instead
+        of making a fresh copy. Doing so can help reduce memory pressure
     
     Call Parameters
     ---------------
@@ -619,7 +622,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         vocab_size: int,
         sos: int,
         prob_dicts: Optional[Sequence[dict]] = None,
-        copy_dicts: bool = True,
+        destructive: bool = False,
     ):
         ...
 
@@ -628,12 +631,12 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         vocab_size: int,
         sos: int,
         prob_dicts: Optional[Sequence[dict]] = None,
-        copy_dicts: bool = True,
+        destructive: bool = True,
         *,
         prob_list: Optional[Sequence[dict]] = None,
     ):
         sos = argcheck.is_int(sos, "sos")
-        copy_dicts = argcheck.is_bool(copy_dicts)
+        destructive = argcheck.is_bool(destructive)
         if prob_list is not None:
             if prob_dicts is None:
                 warnings.warn(
@@ -662,7 +665,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         else:
             self.max_ngram = len(prob_dicts)
             self.max_ngram_nodes = -1  # changed by build_trie
-            logs, ids, pointers = self._build_trie(prob_dicts, copy_dicts)
+            logs, ids, pointers = self._build_trie(prob_dicts, destructive)
         self.register_buffer("logs", logs)
         self.register_buffer("ids", ids)
         self.register_buffer("pointers", pointers)
@@ -762,10 +765,10 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         self.logs = torch.empty_like(logs, device=self.logs.device)
         return super(LookupLanguageModel, self).load_state_dict(state_dict, **kwargs)
 
-    def _build_trie(self, prob_dicts, copy_dicts):
+    def _build_trie(self, prob_dicts, destructive):
         if not len(prob_dicts):
             raise ValueError("prob_dicts must contain at least unigrams")
-        if copy_dicts:
+        if not destructive:
             prob_dicts = [prob_dict.copy() for prob_dict in prob_dicts]
         total_entries, nan, inf = 0, float("nan"), float("inf")
         unigrams = set(range(self.vocab_size))
@@ -901,6 +904,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                 start -= 1
             N -= 1
             parents = children
+            prob_dict.clear()
         assert allocated == L - X
         # see if we can shrink the pointer size
         if len(pointers):

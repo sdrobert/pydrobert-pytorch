@@ -344,7 +344,9 @@ def test_lookup_language_model_nonuniform_idx(device):
                 dict_[key] = torch.randn((2,), device=device).tolist()
         prob_dicts.append(dict_)
     prob_dicts[0][sos] = (-99, 0)
-    lm = LookupLanguageModel(vocab_size, sos, prob_dicts=prob_dicts).to(device)
+    lm = LookupLanguageModel(
+        vocab_size, sos, prob_dicts=prob_dicts, destructive=True
+    ).to(device)
     hist = torch.randint(0, vocab_size, (S, B), device=device)
     exp = lm(hist)
     idx = torch.randint(0, S + 1, (B,), device=device)
@@ -360,7 +362,7 @@ def test_lookup_language_model_sos_context(device):
         {(0, 1): (0.01, -0.01), (0, 2): (0.02, -0.02)},
         {(0, 0, 1): 0.001},
     ]
-    lm = LookupLanguageModel(4, sos=0, prob_dicts=prob_dicts)
+    lm = LookupLanguageModel(4, sos=0, prob_dicts=prob_dicts, destructive=True)
     lm.to(device)
     # XXX(sdrobert): pad_sos_to_n has been removed now - it's always true
     # P(0|0, 0) = P(0) = -99
@@ -412,7 +414,9 @@ def test_lookup_language_model_republic():
     exp = torch.tensor(exp, device=device)
     assert exp.shape[0] == queries.shape[1]
     prob_dicts = parse_arpa_lm(arpa_file, token2id=token2id)
-    lm = LookupLanguageModel(vocab_size, sos=sos, prob_dicts=prob_dicts)
+    lm = LookupLanguageModel(
+        vocab_size, sos=sos, prob_dicts=prob_dicts, destructive=True
+    )
     lm = lm.to(device)
     log_probs = lm(queries)
     queries = torch.cat([queries, torch.full_like(queries[:1], eos)])
