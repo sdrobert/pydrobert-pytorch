@@ -802,10 +802,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             if is_last:
                 self.max_ngram_nodes = len(prob_dict)
         if self.shift:
-            prob_dicts[0] = dict(
-                (self.vocab_size, v) if k == self.sos else (k, v)
-                for (k, v) in list(prob_dicts[0].items())
-            )
+            prob_dicts[0][self.vocab_size] = prob_dicts[0].pop(self.sos)
             for n in range(1, self.max_ngram):
                 prob_dicts[n] = dict(
                     (tuple(self.vocab_size if t == self.sos else t for t in k), v)
