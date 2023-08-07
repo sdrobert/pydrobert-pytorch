@@ -372,51 +372,23 @@ class MixableSequentialLanguageModel(
 def _lookup_calc_idx_log_probs(
     hist: torch.Tensor,
     idx: torch.Tensor,
-    pointers: torch.Tensor,
+    offsets: torch.Tensor,
     ids: torch.Tensor,
-    logs: torch.Tensor,
-    shift: int,
+    logps: torch.Tensor,
+    logbs: torch.Tensor,
     sos: int,
     V: int,
     N: int,
     G: int,
 ) -> torch.Tensor:
-    # we produce two tries with the same node ids: one for logp and one for
-    # logb. Let N be the maximal n-gram. The children of the root are
-    # 1-grams, their children are 2-grams, etc. Thus, x-gram is synonymous
-    # for level x of the trie. The logb trie does not have N-gram children
-    # b/c there are no backoffs for the maximal n-gram.
-    #
-    # pointers is a flattened array of size X of pointers of internal
-    # nodes. They are only populated when N > 1. pointers is arranged in
-    # a breadth-first manner: levels = [
-    #   1-grams + 1; 2-grams + 1; ...; (N - 1)-grams + 1]
-    # pointers contain positive offsets from their current node to the
-    # first index of its children. The immediately subsequent pointer is
-    # the exclusive offset to the end of the range of children; if the
-    # values of the pointer and subsequent pointer are equal, the node has
-    # no children. The subsequent pointer is either the inclusive offset
-    # of the start of a sibling's children, or a dummy pointer (the +1s
-    # above) for the final child in a level.
-    #
-    # ids = [2-grams + 1; ...; N-grams], that is, remove the 1-grams
-    # level from pointers and add the N-grams level. Thus, to convert from
-    # a pointers index to an ids index, one need only subtract U
-    # (vocab_size + shift + 1 % N). id values correspond to the last token
-    # in a reverse n-gram produced by the path through the tree so far.
-    #
-    # logs = [
-    #   1-grams + 1; 2-grams + 1; ...; N-grams;
-    #   1-grams + 1; 2-grams + 1; ...; (N-1)-grams]. The first X values
-    # are the log-probabilities. Letting G be the number of N-gram nodes,
-    # the remaining X - G entries are the backoff probabilities
+    # see commented description in LookupLanguageMode for more info on this
     B: int = hist.size(1)
-    M, X = B * V, pointers.numel()
+    M, O = B * V, offsets.numel()
+    shift = 0 if (0 <= sos < V) else 1
     U = V + shift + (1 % N)
-    K, L = X + G - U, 2 * X + G
+    I, P = O + G + U, O + G
     device = hist.device
-    assert ids.numel() == K
-    assert logs.numel() == L
+    assert (ids.numel(), logps.numel(), logbs.numel()) == (I, P, O)
     if idx.numel() == 0:
         raise RuntimeError("idx cannot be empty")
     if idx.numel() == 1:
@@ -467,14 +439,13 @@ def _lookup_calc_idx_log_probs(
 
     if N == 1:
         # we're a unigram model, or we've only got unigram history
-        logs_t = logs[:G].unsqueeze(0).expand(B, G)
+        logs_t = logps[:G].unsqueeze(0).expand(B, G)
         return logs_t.gather(1, hist[-1])  # (B, V)
 
     # we're now definitely not a unigram model w/ non-empty history
     hist = hist.view(-1, M)  # pretend M is batch; reshape at end
     out = torch.zeros(M, dtype=torch.float, device=device)
-    running_mask = torch.full(out.shape, 1, dtype=torch.bool, device=device)
-    children = tokens = hist[0]
+    last_idxs = hist[-1]
     for Nn in range(N - 1):
         n = N - Nn
         offsets = pointers[children]  # (M,)
@@ -633,6 +604,78 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     max_ngram_nodes: int
     shift: int
 
+    # we follow [heafield2011] and earlier systems by constructing a reverse trie. E.g.
+    # if we have 3-grams for ('A', 'B', 'C'), ('A', 'B', 'D'), and ('B', 'B', 'C'), then
+    # part of our trie will be something like
+    #
+    # root -> {C -> B -> {A, B}}, {D -> B -> A}
+    #
+    # Unigram probabilities and unigram backoffs for "C" and "D" will be stored with the
+    # direct descendants of the root, probs/backoffs for the bigrams ('B', 'C') and
+    # ('B', 'D') with the level-2 nodes, and the trigram probs/backoffs with level 3.
+    #
+    # The label, log probability, and backoffs (for lower-order nodes) are stored in
+    # flat buffers "ids", "logps", and "logbs" respectively, with values accessible by
+    # index. Indices satisfy the following invariants:
+    #
+    # 1. The direct descendants of the root are the entire vocabulary, ordered 0...V
+    # 2. All nodes of level n occur before (in index) those of level n + 1
+    # 3. If two nodes i and j are on the same level and i < j, then all the direct
+    #    descendants of i (and thus all descendants of i) occur before those of j
+    #
+    # The order of direct descendants (after level 1) is unspecified unless sort=True,
+    # at which point they are sorted in ascending numeric order.
+    #
+    # Unigram nodes always occupy the first `vocab_size` indices. When the maximal order
+    # of the trie is > 1, the trie may be navigated with the buffer `offsets`. The value
+    # ``offsets[idx]`` contains the offset from the node indexed at `idx` to the first
+    # of its direct descendants, inclusive, i.e. ``child_idx = idx + offsets[idx]``.
+    # Since its sibling's descendants start at ``idx + 1 + offsets[idx
+    # + 1]``, that is also the exclusive upper bound of the direct descendants of `idx`.
+    # To make computations convenient, the final indexed node of each level is a dummy
+    # node which points to the dummy node in the subsequent level, ensuring
+    # ``offsets[idx + 1]`` exists for all real internal nodes.
+    #
+    # Any non-existent prefix of an n-gram will be assigned 0 probability, ensuring the
+    # number of unique prefixes of order n always matches the number of n-grams. offsets
+    # thus has the structure:
+    #
+    # offsets = [1-gram offsets + dummy] + [2-gram offsets + dummy] + ...
+    #                                [(max_order-1)-gram offsets + dummy] with a
+    # combined length of
+    #
+    # (# offsets) = max_order - 1 + sum_n^{(N-1)} (# n-grams)
+    #
+    # We don't need offsets for the max-order n-grams because they are leaves.
+    #
+    # "logb" has the same structure, but contains backoff log probabilities instead of
+    # offsets:
+    #
+    # logb = [1-gram backoffs + dummy] + [2-gram backoffs + dummy] + ...
+    #                                [(max_order-1)-gram backoffs + dummy]
+    #
+    # "logp" contains the log probabilities, including the maximal order:
+    #
+    # logp = [1-gram log-probs + dummy] + [2-gram log-probs + dummy] + ...
+    #                                [max_order-gram log-probs]
+    #
+    # with combined length of
+    #
+    # (# logps) = (# offsets) + (# max_order n-grams)
+    #
+    # no need to keep the final dummy.
+    #
+    # Finally, ids contains the labels of the nodes. It has structure
+    #
+    # ids = [2-gram ids + dummy] + [3-gram ids + dummy] + ... [max_order-gram ids]
+    #
+    # with combined length of
+    #
+    # (# ids) = (# logps) - (# 1-grams) - 1
+    #
+    # 1-gram ids can be easily inferred by invariant 1. This implies ``ids[idx]`` is
+    # actually the label of the node at ``idx + (vocab_size + 1)`` otherwise.
+
     # XXX(sdrobert): as discussed in [heafield2011], we could potentially speed
     # up computations by keeping track of prefix probs and storing them in
     # case of backoff. This makes sense in a serial case, when we can choose to
@@ -679,19 +722,21 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         else:
             self.shift = 0
         if prob_dicts is None:
-            logs = -torch.full(
+            logps = -torch.full(
                 (self.shift + vocab_size,), vocab_size, dtype=torch.float
             ).log()
-            ids = pointers = torch.tensor([], dtype=torch.uint8)
+            logbs = torch.tensor([], dtype=torch.float)
+            ids = offsets = torch.tensor([], dtype=torch.uint8)
             self.max_ngram = 1
             self.max_ngram_nodes = self.shift + vocab_size
         else:
             self.max_ngram = len(prob_dicts)
             self.max_ngram_nodes = -1  # changed by build_trie
-            logs, ids, pointers = self._build_trie(prob_dicts, destructive)
-        self.register_buffer("logs", logs)
+            logps, logbs, ids, offsets = self._build_trie(prob_dicts, destructive)
+        self.register_buffer("logps", logps)
+        self.register_buffer("logbs", logbs)
         self.register_buffer("ids", ids)
-        self.register_buffer("pointers", pointers)
+        self.register_buffer("offsets", offsets)
 
     def extra_repr(self) -> str:
         s = super(LookupLanguageModel, self).extra_repr()
@@ -739,56 +784,55 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         error_prefix = "Error(s) in loading state_dict for {}:\n".format(
             self.__class__.__name__
         )
-        missing_keys = {"pointers", "ids", "logs"} - set(state_dict)
+        missing_keys = {"offsets", "ids", "logps", "logbs"} - set(state_dict)
         if missing_keys:
             raise RuntimeError(
                 'Missing key(s) in state_dict: "{}".'.format('", "'.join(missing_keys))
             )
-        pointers = state_dict["pointers"]
-        ids = state_dict["ids"]
-        logs = state_dict["logs"]
-        if len(ids) and len(pointers):
+        offsets, ids = state_dict["offsets"], state_dict["ids"]
+        logps, logbs = state_dict["logps"], state_dict["logbs"]
+        if ids.numel() and offsets.numel():
             # n > 1
-            if len(pointers) < self.vocab_size + self.shift + 1:
+            U = self.vocab_size + self.shift + 1
+            if len(offsets) < U:
                 raise RuntimeError(
                     error_prefix + "Expected {} unigram probabilities, got {} "
                     "(vocab_size and sos must be correct!)".format(
-                        self.vocab_size + self.shift, len(pointers) - 1
+                        U - 1, len(offsets) - 1
                     )
                 )
-            X, K, L = len(pointers), len(ids), len(logs)
-            U = self.vocab_size + self.shift + 1
+            O, I, P = len(offsets), len(ids), len(logps)
             self.max_ngram = 1
             self.max_ngram_nodes = last_ptr = U - 1
             error = RuntimeError(
                 error_prefix + "buffer contains unexpected value (are you sure "
                 "you've set vocab_size and sos correctly?)"
             )
-            while last_ptr < len(pointers):
-                offset = pointers[last_ptr].item()
+            while last_ptr < len(offsets):
+                offset = offsets[last_ptr].item()
                 if offset <= 0:
                     raise error
                 last_ptr += offset
                 self.max_ngram_nodes = offset - 1
                 self.max_ngram += 1
-            # last_ptr should be X + G
-            if (last_ptr != K + U) or (last_ptr != L - X):
+            if last_ptr != O + self.max_ngram_nodes:
                 raise RuntimeError(error_prefix + "Unexpected buffer length")
         else:  # n == 1
-            if len(pointers) != len(ids):
+            if len(offsets) != len(ids):
                 raise RuntimeError(error_prefix + "Incompatible trie buffers")
-            if len(logs) != self.vocab_size + self.shift:
+            if len(logps) != self.vocab_size + self.shift:
                 raise RuntimeError(
                     error_prefix + "Expected {} unigram probabilities, got {} "
                     "(vocab_size and sos must be correct!)"
-                    "".format(self.vocab_size + self.shift, len(logs))
+                    "".format(self.vocab_size + self.shift, len(logps))
                 )
             self.max_ngram_nodes = self.vocab_size + self.shift
             self.max_ngram = 1
         # resize
-        self.pointers = torch.empty_like(pointers, device=self.pointers.device)
+        self.offsets = torch.empty_like(offsets, device=self.offsets.device)
         self.ids = torch.empty_like(ids, device=self.ids.device)
-        self.logs = torch.empty_like(logs, device=self.logs.device)
+        self.logps = torch.empty_like(logps, device=self.logps.device)
+        self.logbs = torch.empty_like(logbs, device=self.logbs.device)
         return super(LookupLanguageModel, self).load_state_dict(state_dict, **kwargs)
 
     def _build_trie(self, prob_dicts: ProbDicts, destructive: bool):
@@ -805,10 +849,6 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             is_last = n == self.max_ngram - 1
             if is_last and not prob_dict:
                 raise ValueError("Final element in prob_dicts must not be empty")
-            if is_last:
-                dummy_value = -inf
-            else:
-                dummy_value = -inf, 0.0
             if not n:
                 keys = set(prob_dict.keys())
                 if keys - unigrams:
@@ -816,6 +856,10 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                         "Unexpected unigrams in prob_dicts: {} (are these "
                         "ids?)".format(keys - unigrams)
                     )
+                if is_last:
+                    dummy_value = -inf
+                else:
+                    dummy_value = -inf, 0.0
                 prob_dict.update((key, dummy_value) for key in unigrams - keys)
             else:
                 for seq in prob_dict:
@@ -830,11 +874,11 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                             "are these ids?)"
                             "".format(n + 1, set(seq) - unigrams)
                         )
-                    prefix = seq[:-1]
-                    if len(prefix) == 1:
-                        prefix = prefix[0]
-                    if prefix not in prob_dicts[n - 1]:
-                        prob_dicts[n - 1][prefix] = -inf, 0.0
+                    suffix = seq[1:]
+                    if len(suffix) == 1:
+                        suffix = suffix[0]
+                    if suffix not in prob_dicts[n - 1]:
+                        prob_dicts[n - 1][suffix] = -inf, 0.0
             total_entries += len(prob_dict)
             if is_last:
                 self.max_ngram_nodes = len(prob_dict)
@@ -852,32 +896,32 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                     prob_dict[key_] = prob_dict.pop(key)
 
         N, G, V = self.max_ngram, self.max_ngram_nodes, self.vocab_size
-        U, X = V + self.shift + (1 % N), total_entries - G + (N - 1)
-        K, L = X + G - U, 2 * X + G
+        # U = # unigrams + dummy, O = # offsets or # logbs
+        # I = # ids, P = # logps
+        U, O = V + self.shift + (1 % N), total_entries - G + (N - 1)
+        I, P = O + G - U, O + G
         if N > 1:
-            # what's the maximum possible offset? It's the maximal possible
-            # distance between a parent and child, or an n-gram and an
-            # (n+1)-gram. Let the former have S nodes in the level, the latter
-            # T nodes. Let a, b, and c correspond to offsets of distinct paths
-            # through the trie and x be the dummy offset. The longest offset in
-            # pointers is produced as a value of b like this:
+            # what's the maximum possible offset? It's the maximal possible distance
+            # between a parent and child, or an n-gram and an (n-1)-gram. Let the former
+            # have S nodes in the level, the latter T nodes. Let a, b, and c correspond
+            # to offsets of distinct paths through the trie and x be the dummy offset.
+            # The longest offset in offsets is produced as a value of b like this:
             #
             #   abcccc...cxaaaa...bx
             #
-            # i.e. there are a lot of branches of a in (n+1) but only one
-            # parent, and there are a lot of branches of c in n but no
-            # descendants. The hop from b to x is of size S - 1, and the hop
-            # from x to the next b is of size T, so the worst potential hop is
-            # S + T - 1
+            # i.e. there are a lot of branches of a in (n+1) but only one parent, and
+            # there are a lot of branches of c in n but no descendants. The hop from b
+            # to x is of size S - 1, and the hop from x to the next b is of size T, so
+            # the worst potential hop is S + T - 1
             max_potential_offset = max(
                 len(prob_dicts[n]) + len(prob_dicts[n - 1]) - 1 for n in range(1, N)
             )
         else:
             max_potential_offset = 0  # no descendants
-        for pointer_type in (torch.uint8, torch.int16, torch.int32, torch.int64):
-            if torch.iinfo(pointer_type).max >= max_potential_offset:
+        for offset_type in (torch.uint8, torch.int16, torch.int32, torch.int64):
+            if torch.iinfo(offset_type).max >= max_potential_offset:
                 break
-        if torch.iinfo(pointer_type).max < max_potential_offset:
+        if torch.iinfo(offset_type).max < max_potential_offset:
             # should not happen
             raise ValueError("too many childen")
         for id_type in (torch.uint8, torch.int16, torch.int32, torch.int64):
@@ -886,62 +930,65 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         if torch.iinfo(id_type).max < U:
             # should never happen in a practical situation
             raise ValueError("vocab too large")
-        pointers = torch.zeros(X, dtype=pointer_type)
-        ids = torch.zeros(K, dtype=id_type)
-        logs = torch.zeros(L, dtype=torch.float)
+        offsets = torch.zeros(O, dtype=offset_type)
+        ids = torch.zeros(I, dtype=id_type)
+        logps = torch.zeros(P, dtype=torch.float)
+        logbs = torch.zeros(O, dtype=torch.float)
         prob_dict = prob_dicts.pop(0)
         unigram_values = [prob_dict[x] for x in range(U - 1 % N)]
         allocated = U - 1 % N
         if N == 1:
-            logs.copy_(torch.tensor(unigram_values, dtype=torch.float))
+            logps.copy_(torch.tensor(unigram_values, dtype=torch.float))
         else:
-            logs[:allocated].copy_(
+            logps[:allocated].copy_(
                 torch.tensor([x[0] for x in unigram_values], dtype=torch.float)
             )
-            logs[X + G : X + G + allocated].copy_(
+            logbs[:allocated].copy_(
                 torch.tensor([x[1] for x in unigram_values], dtype=torch.float)
             )
         del unigram_values
         parents = dict(((x,), x) for x in range(U - 1))
-        N -= 1
-        while N:
+        while prob_dicts:
             prob_dict = prob_dicts.pop(0)
             start = allocated
-            pointers[allocated] = len(prob_dict) + 1
-            logs[allocated] = logs[X + G + allocated] = nan
+            offsets[allocated] = len(prob_dict) + 1
+            logps[allocated] = logbs[allocated] = nan
             allocated += 1
-            prob_list = []
-            while prob_dict:
-                insort(prob_list, prob_dict.popitem())
             children = dict()
+            prob_list = []
+            # FIXME(sdrobert): the offset logic requires us to handle parents' children
+            # sequentially. Sorting ensures parents who were first earlier are first
+            # again. However, sorting this way is terribly slow
+            while prob_dict:
+                key, value = prob_dict.popitem()
+                insort(prob_list, (key[::-1], value))
             for key, value in prob_list:
                 children[key] = allocated
-                ids[allocated - U] = key[-1]
-                if N == 1:
-                    logs[allocated] = float(value)
+                ids[allocated - U] = int(key[-1])
+                if prob_dicts:
+                    logps[allocated] = float(value[0])
+                    logbs[allocated] = float(value[1])
                 else:
-                    logs[allocated] = float(value[0])
-                    logs[allocated + X + G] = float(value[1])
+                    logps[allocated] = float(value)
                 prefix = key[:-1]
                 parent = parents[prefix]
-                while parent >= 0 and not pointers[parent]:
-                    pointers[parent] = allocated - parent
+                while parent >= 0 and not offsets[parent]:
+                    offsets[parent] = allocated - parent
                     parent -= 1
                 allocated += 1
-            while not pointers[start - 1]:
-                pointers[start - 1] = pointers[start] + 1
+            while not offsets[start - 1]:
+                offsets[start - 1] = offsets[start] + 1
                 start -= 1
-            N -= 1
+            parents.clear()
             parents = children
-        assert allocated == L - X
-        # see if we can shrink the pointer size
-        if len(pointers):
-            max_offset = pointers.max().item()
-            for pointer_type in (torch.uint8, torch.int16, torch.int32, torch.int64):
-                if torch.iinfo(pointer_type).max >= max_offset:
+        # see if we can shrink the offset size
+        if len(offsets):
+            max_offset = offsets.max().item()
+            for offset_type in (torch.uint8, torch.int16, torch.int32, torch.int64):
+                if torch.iinfo(offset_type).max >= max_offset:
                     break
-            pointers = pointers.to(pointer_type)
-        return logs, ids, pointers
+            offsets = offsets.to(offset_type)
+        return logps, logbs, ids, offsets
 
     __call__ = proxy(SequentialLanguageModel.forward)
 

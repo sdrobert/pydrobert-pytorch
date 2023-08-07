@@ -116,127 +116,100 @@ class RNNLM(MixableSequentialLanguageModel):
 
 @pytest.mark.cpu
 @pytest.mark.parametrize(
-    "prob_dicts,pointers,ids,logs",
+    "prob_dicts",
     [
-        (
-            None,
-            torch.tensor([], dtype=torch.uint8),
-            torch.tensor([], dtype=torch.uint8),
-            -torch.tensor([5] * 5, dtype=torch.float).log(),
-        ),
-        (
-            [{0: 0.0, 1: 0.1, 4: 0.4}],
-            torch.tensor([], dtype=torch.uint8),
-            torch.tensor([], dtype=torch.uint8),
-            torch.tensor([0.0, 0.1, -INF, -INF, 0.4]),
-        ),
-        (
-            [
-                {1: (0.1, -0.1), 2: (0.2, -0.2), 3: (0.3, -0.3)},
-                {(1, 0): 1.0, (1, 1): 1.1, (3, 2): 3.3},
-            ],
-            torch.tensor([6, 5, 6, 5, 5, 4], dtype=torch.uint8),
-            torch.tensor([0, 1, 2], dtype=torch.uint8),
-            torch.tensor(
-                [
-                    -INF,
-                    0.1,
-                    0.2,
-                    0.3,
-                    -INF,
-                    NAN,  # logp 1-gram
-                    1.0,
-                    1.1,
-                    3.3,  # logp 2-gram
-                    0.0,
-                    -0.1,
-                    -0.2,
-                    -0.3,
-                    0.0,
-                    NAN,  # logb 1-gram
-                ]
-            ),
-        ),
-        (
-            [
-                {1: (0.1, -0.1), 2: (0.2, -0.2), 3: (0.3, -0.3), 4: (0.4, -0.4)},
-                {
-                    (1, 1): (1.1, -1.1),
-                    (2, 3): (2.3, -2.3),
-                    (2, 4): (2.4, -2.4),
-                    (4, 1): (4.1, -4.1),
-                },
-                {(0, 0, 1): 0.01, (0, 0, 2): 0.02, (4, 1, 4): 4.14},
-            ],
-            torch.tensor(
-                [
-                    6,
-                    6,
-                    6,
-                    7,
-                    6,
-                    6,  # 1-gram -> 2-gram
-                    6,
-                    7,
-                    6,
-                    5,
-                    4,
-                    4,  # 2-gram -> 3-gram
-                ],
-                dtype=torch.uint8,
-            ),
-            torch.tensor(
-                [0, 1, 3, 4, 1, 0, 1, 2, 4],  # 2-gram suffix  # 3-gram suffix
-                dtype=torch.uint8,
-            ),
-            torch.tensor(
-                [
-                    -INF,
-                    0.1,
-                    0.2,
-                    0.3,
-                    0.4,
-                    NAN,  # logp 1-gram
-                    -INF,
-                    1.1,
-                    2.3,
-                    2.4,
-                    4.1,
-                    NAN,  # logp 2-gram
-                    0.01,
-                    0.02,
-                    4.14,  # logp 3-gram
-                    0.0,
-                    -0.1,
-                    -0.2,
-                    -0.3,
-                    -0.4,
-                    NAN,  # logb 1-gram
-                    0.0,
-                    -1.1,
-                    -2.3,
-                    -2.4,
-                    -4.1,
-                    NAN,  # Logb 2-gram
-                ]
-            ),
-        ),
+        None,
+        [{0: 0.0, 1: 1.0, 4: 4.0}],
+        [
+            {1: (1.0, -1.0), 2: (2.0, -2.0), 3: (3.0, -3)},
+            {(1, 0): 1.1, (1, 1): 11.1, (3, 2): 23.1},
+        ],
+        [
+            {1: (1.0, -1.0), 2: (2.0, -2.0), 3: (3.0, -3.0), 4: (4.0, -4.0)},
+            {
+                (1, 1): (11.1, -11.1),
+                (2, 3): (32.1, -32.1),
+                (2, 4): (42.1, -42.1),
+                (4, 1): (14.1, -14.1),
+            },
+            {(0, 0, 1): 1.2, (0, 0, 2): 2.2, (4, 1, 4): 414.2, (3, 4, 1): 143.2},
+        ],
     ],
     ids=["deft", "unigram", "bigram", "trigram"],
 )
-def test_lookup_language_model_builds_trie(prob_dicts, pointers, ids, logs):
-    vocab_size = 5
+def test_lookup_language_model_builds_trie(prob_dicts):
+    vocab_size, N = 5, 0 if prob_dicts is None else len(prob_dicts)
     lm = LookupLanguageModel(vocab_size, 0, prob_dicts=prob_dicts)
-    assert lm.pointers.shape == pointers.shape
-    assert lm.ids.shape == ids.shape
-    assert lm.logs.shape == logs.shape
-    assert (lm.ids == ids).all()
-    assert (lm.pointers == pointers).all()
-    nan_mask = torch.isnan(lm.logs)
-    assert torch.isnan(lm.logs).eq(nan_mask).all()
-    assert torch.allclose(
-        logs.masked_select(~nan_mask), lm.logs.masked_select(~nan_mask)
-    )
+
+    class ReverseTrieNode(object):
+        def __init__(self, lprobs=(-INF, 0)):
+            try:
+                lprobs = float(lprobs[0]), float(lprobs[1])
+            except:
+                lprobs = float(lprobs)
+            self.children, self.lprobs = dict(), lprobs
+
+        def __repr__(self) -> str:
+            return self._str()
+
+        def _str(self, ws="  ") -> str:
+            if isinstance(self.lprobs, float):
+                s = f"{self.lprobs:.1f}"
+            else:
+                s = f"{self.lprobs[0]:.1f}, {self.lprobs[1]:.1f}"
+            if len(self.children):
+                c = f"\n{ws}".join(
+                    f"{k} -> {v._str(ws + '  ')}" for (k, v) in self.children.items()
+                )
+                s += f":\n{ws}{c}"
+            return s
+
+        def __getitem__(self, key):
+            if isinstance(key, int):
+                key = (key,)
+            if len(key):
+                return self.children[key[-1]][key[:-1]]
+            else:
+                return self.lprobs
+
+    root = ReverseTrieNode()
+    if N > 0:
+        if N == 1:
+            parents = [ReverseTrieNode(lprob) for lprob in lm.logps[:vocab_size]]
+        else:
+            parents = [
+                ReverseTrieNode(lprob)
+                for lprob in zip(lm.logps[:vocab_size], lm.logbs[:vocab_size])
+            ]
+            last_idxs = range(vocab_size)
+        root.children.update(enumerate(parents))
+        for n in range(2, N + 1):
+            children, idxs = [], []
+            for parent, last_idx in zip(parents, last_idxs):
+                left_idx = int(lm.offsets[last_idx]) + last_idx
+                right_idx = int(lm.offsets[last_idx + 1]) + last_idx + 1
+                for idx in range(left_idx, right_idx):
+                    id_ = int(lm.ids[idx - vocab_size - 1])
+                    logp = lm.logps[idx]
+                    if n == N:
+                        lprobs = logp
+                    else:
+                        lprobs = (logp, lm.logbs[idx])
+                    child = ReverseTrieNode(lprobs)
+                    parent.children[id_] = child
+                    children.append(child)
+                    idxs.append(idx)
+            parents, last_idxs = children, idxs
+
+        print(root)
+        for n, prob_dict in enumerate(prob_dicts):
+            for key, exp in prob_dict.items():
+                act = root[key]
+                if n == N - 1:
+                    assert np.isclose(exp, act), key
+                else:
+                    assert np.isclose(exp[0], act[0])
+                    assert np.isclose(exp[1], act[1])
 
 
 @pytest.mark.parametrize("N", [1, 2, 5])
@@ -440,32 +413,38 @@ def test_lookup_language_model_state_dict():
     def compare(assert_same):
         same_max_ngram = lm_a.max_ngram == lm_b.max_ngram
         same_max_ngram_nodes = lm_a.max_ngram_nodes == lm_b.max_ngram_nodes
-        same_pointers = len(lm_a.pointers) == len(lm_b.pointers)
-        if same_pointers:
-            same_pointers = (lm_a.pointers == lm_b.pointers).all()
+        same_offsets = len(lm_a.offsets) == len(lm_b.offsets)
+        if same_offsets:
+            same_offsets = (lm_a.offsets == lm_b.offsets).all()
         same_ids = len(lm_a.ids) == len(lm_b.ids)
         if same_ids:
             same_ids = (lm_a.ids == lm_b.ids).all()
-        same_logs = len(lm_a.logs) == len(lm_b.logs)
+        same_logs = len(lm_a.logps) == len(lm_b.logps)
+        same_logs &= len(lm_a.logbs) == len(lm_b.logbs)
         if same_logs:
-            nan_mask = torch.isnan(lm_a.logs)
-            assert (nan_mask == torch.isnan(lm_b.logs)).all()
+            nan_mask = torch.isnan(lm_a.logps)
             same_logs = torch.allclose(
-                lm_a.logs.masked_select(nan_mask.eq(0)),
-                lm_b.logs.masked_select(nan_mask.eq(0)),
+                lm_a.logps.masked_select(nan_mask.eq(0)),
+                lm_b.logps.masked_select(nan_mask.eq(0)),
                 atol=1e-5,
-            )
+            ) & (nan_mask == torch.isnan(lm_b.logps)).all()
+            nan_mask = torch.isnan(lm_a.logbs)
+            same_logs &= torch.allclose(
+                lm_a.logbs.masked_select(nan_mask.eq(0)),
+                lm_b.logbs.masked_select(nan_mask.eq(0)),
+                atol=1e-5,
+            ) & (nan_mask == torch.isnan(lm_b.logbs)).all()
         if assert_same:
             assert same_max_ngram
             assert same_max_ngram_nodes
-            assert same_pointers
+            assert same_offsets
             assert same_ids
             assert same_logs
         else:
             assert not (
                 same_max_ngram
                 and same_max_ngram_nodes
-                and same_pointers
+                and same_offsets
                 and same_ids
                 and same_logs
             )
