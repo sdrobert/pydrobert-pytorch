@@ -458,9 +458,10 @@ def _lookup_calc_idx_log_probs(
     if shift:
         hist = hist.masked_fill(hist.eq(sos), V)
         # hist = hist + shift
+    hist = hist.to(ids.dtype)
 
     # add the possible extensions to the history
-    cur_step = torch.arange(0, V, dtype=torch.long, device=device)
+    cur_step = vrange = torch.arange(V, dtype=torch.long, device=device)
     cur_step = cur_step.view(1, 1, V).expand(1, B, V)
     hist = torch.cat([hist.unsqueeze(2).expand(N - 1, B, V), cur_step], 0)
 
@@ -473,7 +474,6 @@ def _lookup_calc_idx_log_probs(
     hist = hist.view(-1, M)  # pretend M is batch; reshape at end
     out = torch.zeros(M, dtype=torch.float, device=device)
     running_mask = torch.full(out.shape, 1, dtype=torch.bool, device=device)
-    vrange = torch.arange(V, dtype=torch.int32, device=device)
     children = tokens = hist[0]
     for Nn in range(N - 1):
         n = N - Nn
