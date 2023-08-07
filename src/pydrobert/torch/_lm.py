@@ -654,7 +654,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         vocab_size: int,
         sos: int,
         prob_dicts: Optional[ProbDicts] = None,
-        destructive: bool = True,
+        destructive: bool = False,
         *,
         prob_list: Optional[ProbDicts] = None,
     ):
