@@ -15,14 +15,19 @@
 import abc
 import warnings
 
-from typing import Any, Dict, Optional, Sequence, Tuple, Union, overload
+from typing import Any, Dict, Optional, Sequence, Tuple, Union, overload, List
 from bisect import insort
 
 import torch
+import numpy as np
 
 from . import argcheck
 from ._compat import script
 from ._wrappers import proxy
+
+ProbDicts = List[
+    Dict[Union[np.signedinteger, Tuple[np.signedinteger, ...]], np.floating]
+]
 
 
 class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
@@ -46,7 +51,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     vocab_size
         The vocabulary size. Controls the size of the final output dimension,
         as well as what values of `hist` are considered in-vocabulary
-    
+
     Call Parameters
     ---------------
     hist : torch.Tensor
@@ -67,7 +72,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     -------
     log_probs : torch.Tensor or tuple of torch.Tensor
         The return value changes depending on whether `idx` was specified.
-        
+
         If `idx` was not specified, the distributions over the next token over all
         prefixes in `hist` are returned. `log_probs` is a tensor of shape ``(S + 1, N,
         vocab_size)`` where each ``log_probs[s, n, v]`` equals :math:`\log P(w^{(n)}_{s}
@@ -137,8 +142,8 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
         -------
         prev_ : Dict[str, torch.Tensor]
             The updated `prev`, populated with any additional information necessary to
-            calculating log probabilities. 
-        
+            calculating log probabilities.
+
         Warnings
         --------
         This method should be robust to repeated calls prior to computing log
@@ -153,7 +158,10 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def calc_idx_log_probs(
-        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor,
+        self,
+        hist: torch.Tensor,
+        prev: Dict[str, torch.Tensor],
+        idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Calculates log_prob_idx over types at prefix up to and excluding idx
 
@@ -419,7 +427,10 @@ def _lookup_calc_idx_log_probs(
             hist = torch.cat(
                 [
                     torch.full(
-                        (N - 1 - hist.size(0), B), sos, dtype=torch.long, device=device,
+                        (N - 1 - hist.size(0), B),
+                        sos,
+                        dtype=torch.long,
+                        device=device,
                     ),
                     hist,
                 ],
@@ -431,7 +442,10 @@ def _lookup_calc_idx_log_probs(
             hist = torch.cat(
                 [
                     torch.full(
-                        (N - 1 - min_idx, B), sos, dtype=torch.long, device=device,
+                        (N - 1 - min_idx, B),
+                        sos,
+                        dtype=torch.long,
+                        device=device,
                     ),
                     hist,
                 ],
@@ -485,7 +499,11 @@ def _lookup_calc_idx_log_probs(
                 logs_t = torch.where(
                     matches,
                     logs[all_children],
-                    torch.zeros(all_children.shape, dtype=logs.dtype, device=device,),
+                    torch.zeros(
+                        all_children.shape,
+                        dtype=logs.dtype,
+                        device=device,
+                    ),
                 ).sum(
                     1
                 )  # (M,)
@@ -498,7 +516,11 @@ def _lookup_calc_idx_log_probs(
                 running_mask = running_mask & next_step.eq(0)
                 new_backoff = step_mask & next_step.eq(0)
                 # add backoff for newly failed paths
-                out = torch.where(new_backoff, out + logs[X + G + children], out,)
+                out = torch.where(
+                    new_backoff,
+                    out + logs[X + G + children],
+                    out,
+                )
             else:
                 # we're not last. Update children
                 children = torch.where(
@@ -622,7 +644,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         self,
         vocab_size: int,
         sos: int,
-        prob_dicts: Optional[Sequence[dict]] = None,
+        prob_dicts: Optional[ProbDicts] = None,
         destructive: bool = False,
     ):
         ...
@@ -631,10 +653,10 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         self,
         vocab_size: int,
         sos: int,
-        prob_dicts: Optional[Sequence[dict]] = None,
+        prob_dicts: Optional[ProbDicts] = None,
         destructive: bool = True,
         *,
-        prob_list: Optional[Sequence[dict]] = None,
+        prob_list: Optional[ProbDicts] = None,
     ):
         sos = argcheck.is_int(sos, "sos")
         destructive = argcheck.is_bool(destructive)
@@ -692,7 +714,10 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         return dict()
 
     def calc_idx_log_probs(
-        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor,
+        self,
+        hist: torch.Tensor,
+        prev: Dict[str, torch.Tensor],
+        idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         return (
             _lookup_calc_idx_log_probs(
@@ -766,7 +791,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         self.logs = torch.empty_like(logs, device=self.logs.device)
         return super(LookupLanguageModel, self).load_state_dict(state_dict, **kwargs)
 
-    def _build_trie(self, prob_dicts, destructive):
+    def _build_trie(self, prob_dicts: ProbDicts, destructive: bool):
         if not len(prob_dicts):
             raise ValueError("prob_dicts must contain at least unigrams")
         if not destructive:
@@ -868,11 +893,13 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         unigram_values = [prob_dict[x] for x in range(U - 1 % N)]
         allocated = U - 1 % N
         if N == 1:
-            logs.copy_(torch.tensor(unigram_values))
+            logs.copy_(torch.tensor(unigram_values, dtype=torch.float))
         else:
-            logs[:allocated].copy_(torch.tensor([x[0] for x in unigram_values]))
+            logs[:allocated].copy_(
+                torch.tensor([x[0] for x in unigram_values], dtype=torch.float)
+            )
             logs[X + G : X + G + allocated].copy_(
-                torch.tensor([x[1] for x in unigram_values])
+                torch.tensor([x[1] for x in unigram_values], dtype=torch.float)
             )
         del unigram_values
         parents = dict(((x,), x) for x in range(U - 1))
@@ -891,10 +918,10 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                 children[key] = allocated
                 ids[allocated - U] = key[-1]
                 if N == 1:
-                    logs[allocated] = value
+                    logs[allocated] = float(value)
                 else:
-                    logs[allocated] = value[0]
-                    logs[allocated + X + G] = value[1]
+                    logs[allocated] = float(value[0])
+                    logs[allocated + X + G] = float(value[1])
                 prefix = key[:-1]
                 parent = parents[prefix]
                 while parent >= 0 and not pointers[parent]:
@@ -921,7 +948,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
 
 class ShallowFusionLanguageModel(SequentialLanguageModel):
     r"""Language model combining two language models with shallow fusion
-    
+
     Shallow fusion [gulcehre2015]_ combines the predictions of two language models
     by taking the weighted sum of their log probabilities:
 
@@ -944,7 +971,7 @@ class ShallowFusionLanguageModel(SequentialLanguageModel):
         their keys
     second_prefix
         Like `first_prefix`, but for `second`
-    
+
     Warnings
     --------
     This class does not (and cannot) support JIT.
@@ -1072,7 +1099,7 @@ class ExtractableShallowFusionLanguageModel(
     ShallowFusionLanguageModel, ExtractableSequentialLanguageModel
 ):
     """ShallowFusionLanguageModel which is also an ExtractableSequentialLanguageModel
-    
+
     Both `first` and `second` must be :class:`ExtractableSequentialLanguageModel`
     instances.
 
@@ -1113,7 +1140,7 @@ class MixableShallowFusionLanguageModel(
     ExtractableShallowFusionLanguageModel, MixableSequentialLanguageModel
 ):
     """ShallowFusionLanguageModel which is also a MixableSequentialLanguageModel
-    
+
     Both `first` and `second` must be :class:`ExtractableSequentialLanguageModel`
     instances.
 

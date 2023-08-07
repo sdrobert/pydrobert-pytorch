@@ -19,6 +19,7 @@ from typing import Dict, Tuple
 
 import torch
 import pytest
+import numpy as np
 
 from pydrobert.torch.modules import (
     LookupLanguageModel,
@@ -243,7 +244,7 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
     vocab_size, sos = 10, -1
     prob_dicts = []
     for n in range(1, N + 1):
-        max_ngrams = vocab_size ** n
+        max_ngrams = vocab_size**n
         has_ngram = torch.randint(2, (max_ngrams,), device=device).eq(1)
         dict_ = dict()
         last = n == N
@@ -323,7 +324,7 @@ def test_lookup_language_model_nonuniform_idx(device):
     vocab_size, sos = 10, -1
     prob_dicts = []
     for n in range(1, N + 1):
-        max_ngrams = vocab_size ** n
+        max_ngrams = vocab_size**n
         has_ngram = torch.randint(2, (max_ngrams,), device=device).eq(1)
         dict_ = dict()
         last = n == N
@@ -413,7 +414,7 @@ def test_lookup_language_model_republic():
             exp.append(float(line))
     exp = torch.tensor(exp, device=device)
     assert exp.shape[0] == queries.shape[1]
-    prob_dicts = parse_arpa_lm(arpa_file, token2id=token2id)
+    prob_dicts = parse_arpa_lm(arpa_file, token2id, np.float32)
     lm = LookupLanguageModel(
         vocab_size, sos=sos, prob_dicts=prob_dicts, destructive=True
     )
