@@ -334,7 +334,7 @@ def test_lookup_language_model_nonuniform_idx(device):
     ).to(device)
     hist = torch.randint(0, vocab_size, (S, B), device=device)
     exp = lm(hist)
-    assert not exp.isnan().any()
+    assert not torch.isnan(exp).any()
     idx = torch.randint(0, S + 1, (B,), device=device)
     exp = exp.gather(0, idx.view(1, B, 1).expand(1, B, vocab_size)).squeeze(0)
     act, _ = lm(hist, idx=idx)
