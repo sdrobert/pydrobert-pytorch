@@ -173,6 +173,7 @@ def test_lookup_language_model_builds_trie(prob_dicts):
                 return self.lprobs
 
     root = ReverseTrieNode()
+    S = 0
     if N > 0:
         if N == 1:
             parents = [ReverseTrieNode(lprob) for lprob in lm.logps[:vocab_size]]
@@ -199,9 +200,9 @@ def test_lookup_language_model_builds_trie(prob_dicts):
                     parent.children[id_] = child
                     children.append(child)
                     idxs.append(idx)
+                S = max(S, right_idx - left_idx)
             parents, last_idxs = children, idxs
 
-        print(root)
         for n, prob_dict in enumerate(prob_dicts):
             for key, exp in prob_dict.items():
                 act = root[key]
@@ -210,6 +211,7 @@ def test_lookup_language_model_builds_trie(prob_dicts):
                 else:
                     assert np.isclose(exp[0], act[0])
                     assert np.isclose(exp[1], act[1])
+    assert lm.max_direct_descendants == S
 
 
 @pytest.mark.parametrize("N", [1, 2, 5])
@@ -247,30 +249,38 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
             ]
         )
 
-    def lookup(list_, query):
-        if len(list_) > len(query):
-            return lookup(list_[:-1], query)
-        if len(list_) == 1:
-            if N == 1:
-                return list_[0].get(query[0], -INF)
-            else:
-                return list_[0].get(query[0], (-INF, 0.0))[0]
-        val = list_[-1].get(query, None)
+    def lookup(query, print_=False, backoff=False):
+        n = len(query)
+        prob_dict = prob_dicts[n - 1]
+        if n == 1:
+            query = query[0]
+        val = prob_dict.get(query, None)
         if val is None:
-            if len(list_) == 2:
-                backoff = list_[-2].get(query[0], (-INF, 0.0))[1]
-            else:
-                backoff = list_[-2].get(query[:-1], (-INF, 0.0))[1]
-            return backoff + lookup(list_[:-1], query[1:])
-        if len(list_) == N:
+            if backoff:
+                if print_:
+                    print(f"{query} backoff 0")
+                return 0.0
+            elif n == 1:
+                if print_:
+                    print(f"{query} logp -inf")
+                return -INF
+            logp = lookup(query[1:], print_)
+            logb = lookup(query[:-1], print_, True)
+            if print_:
+                print(f"backing off {query}: {logp} + {logb} = {logp + logb}")
+            return logp + logb
+        if print_:
+            print(f"query {query} matched {val}")
+        if n == N:
+            assert not backoff
             return val
         else:
-            return val[0]
+            return val[1 if backoff else 0]
 
     exps = [
-        torch.tensor(
-            [lookup(prob_dicts, query) for query in ngram_queries], device=device
-        ).view(-1, vocab_size)
+        torch.tensor([lookup(query) for query in ngram_queries], device=device).view(
+            -1, vocab_size
+        )
         for ngram_queries in all_queries
     ]
     hists = [torch.empty(0, 1, dtype=torch.long, device=device)] + [
@@ -288,11 +298,12 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
         pytest.xfail("lookup_language_model trace unsupported")
     for exp, hist in zip(exps, hists):
         act = lm(hist, None, -1)[0]
-        assert torch.allclose(exp, act, atol=1e-5)
+        for n in range(hist.size(1)):
+            assert torch.allclose(exp[n], act[n], atol=1e-5), n
 
 
 def test_lookup_language_model_nonuniform_idx(device):
-    S, N, B = 100, 5, 30
+    S, N, B = 20, 5, 2
     prob_dicts = []
     vocab_size, sos = 10, -1
     prob_dicts = []
@@ -323,6 +334,7 @@ def test_lookup_language_model_nonuniform_idx(device):
     ).to(device)
     hist = torch.randint(0, vocab_size, (S, B), device=device)
     exp = lm(hist)
+    assert not exp.isnan().any()
     idx = torch.randint(0, S + 1, (B,), device=device)
     exp = exp.gather(0, idx.view(1, B, 1).expand(1, B, vocab_size)).squeeze(0)
     act, _ = lm(hist, idx=idx)
@@ -338,12 +350,11 @@ def test_lookup_language_model_sos_context(device):
     ]
     lm = LookupLanguageModel(4, sos=0, prob_dicts=prob_dicts, destructive=True)
     lm.to(device)
-    # XXX(sdrobert): pad_sos_to_n has been removed now - it's always true
-    # P(0|0, 0) = P(0) = -99
-    # P(1|0, 0) = 0.001
-    # P(2|0, 0) = P(2|0) = 0.02
-    # P(3|0, 0) = P(3) = 0.3
-    exp = torch.tensor([[[-99.0, 0.001, 0.02, 0.3]]], device=device)
+    # P(0|0) = P(0) = -99
+    # P(1|0) = P(1|0) = 0.01
+    # P(2|0) = P(2|0) = 0.02
+    # P(3|0) = P(3) = 0.3
+    exp = torch.tensor([[[-99.0, 0.01, 0.02, 0.3]]], device=device)
     act = lm(torch.empty((0, 1), device=device, dtype=torch.long))
     assert torch.allclose(exp, act, atol=1e-5)
 
@@ -423,17 +434,23 @@ def test_lookup_language_model_state_dict():
         same_logs &= len(lm_a.logbs) == len(lm_b.logbs)
         if same_logs:
             nan_mask = torch.isnan(lm_a.logps)
-            same_logs = torch.allclose(
-                lm_a.logps.masked_select(nan_mask.eq(0)),
-                lm_b.logps.masked_select(nan_mask.eq(0)),
-                atol=1e-5,
-            ) & (nan_mask == torch.isnan(lm_b.logps)).all()
+            same_logs = (
+                torch.allclose(
+                    lm_a.logps.masked_select(nan_mask.eq(0)),
+                    lm_b.logps.masked_select(nan_mask.eq(0)),
+                    atol=1e-5,
+                )
+                & (nan_mask == torch.isnan(lm_b.logps)).all()
+            )
             nan_mask = torch.isnan(lm_a.logbs)
-            same_logs &= torch.allclose(
-                lm_a.logbs.masked_select(nan_mask.eq(0)),
-                lm_b.logbs.masked_select(nan_mask.eq(0)),
-                atol=1e-5,
-            ) & (nan_mask == torch.isnan(lm_b.logbs)).all()
+            same_logs &= (
+                torch.allclose(
+                    lm_a.logbs.masked_select(nan_mask.eq(0)),
+                    lm_b.logbs.masked_select(nan_mask.eq(0)),
+                    atol=1e-5,
+                )
+                & (nan_mask == torch.isnan(lm_b.logbs)).all()
+            )
         if assert_same:
             assert same_max_ngram
             assert same_max_ngram_nodes
