@@ -440,7 +440,7 @@ def test_lookup_language_model_state_dict():
                     lm_b.logps.masked_select(nan_mask.eq(0)),
                     atol=1e-5,
                 )
-                & (nan_mask == torch.isnan(lm_b.logps)).all()
+                & (nan_mask == torch.isnan(lm_b.logps)).all().item()
             )
             nan_mask = torch.isnan(lm_a.logbs)
             same_logs &= (
@@ -449,7 +449,7 @@ def test_lookup_language_model_state_dict():
                     lm_b.logbs.masked_select(nan_mask.eq(0)),
                     atol=1e-5,
                 )
-                & (nan_mask == torch.isnan(lm_b.logbs)).all()
+                & (nan_mask == torch.isnan(lm_b.logbs)).all().item()
             )
         if assert_same:
             assert same_max_ngram

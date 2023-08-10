@@ -435,6 +435,8 @@ def _lookup_calc_idx_log_probs(
     #
     # back:  C -> B -> A
     #                       = P(D|A, B, C)
+    #
+    # some additional, irritating details are commented on in the loop.
     vrange = torch.arange(V + 2, device=device, dtype=torch.long)
     hidx = torch.as_tensor(hidx, dtype=torch.long, device=device).expand(B)
     srange = vrange[:S]
@@ -486,7 +488,7 @@ def _lookup_calc_idx_log_probs(
         # print(n, "cur_backoffs", cur_backoffs[i])
         logps_desc = logps[desc[:M]]
         # print(n, "logps_desc", logps_desc[i])
-        is_finite = logps_desc.isfinite()
+        is_finite = torch.isfinite(logps_desc)
         # print(n, "is_finite", is_finite[i])
         hit_match = hit[:M] & hit_match
         # print(n, "hit", hit_match[i], hit[M + i])
