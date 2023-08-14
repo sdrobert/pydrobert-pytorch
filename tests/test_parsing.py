@@ -59,7 +59,7 @@ ngram 2=7
 """
     )
     file_.seek(0)
-    ngram_list = data.parse_arpa_lm(file_, ftype=ftype)
+    ngram_list = data.parse_arpa_lm(file_, to_base_e=False, ftype=ftype)
     assert len(ngram_list) == 2
     assert set(ngram_list[0]) == {
         "<unk>",
@@ -86,7 +86,7 @@ ngram 2=7
     assert abs(ngram_list[1][("cindy", "jean")] + 0.2553) < 1e-4
     file_.seek(0)
     token2id = dict((c, hash(c)) for c in ngram_list[0])
-    ngram_list = data.parse_arpa_lm(file_, token2id, ftype)
+    ngram_list = data.parse_arpa_lm(file_, token2id, False, ftype)
     assert set(ngram_list[0]) == set(token2id.values())
     file_.seek(0)
     file_.write(
@@ -103,7 +103,7 @@ ngram 10 = 1
 """
     )
     file_.seek(0)
-    ngram_list = data.parse_arpa_lm(file_, ftype=ftype)
+    ngram_list = data.parse_arpa_lm(file_, to_base_e=False, ftype=ftype)
     assert all(x == dict() for x in ngram_list[:-1])
     assert not ngram_list[9][tuple(str(x) for x in range(1, 11))]
     file_.seek(0)
@@ -122,7 +122,7 @@ ngram 1 = 1
     )
     file_.seek(0)
     with pytest.raises(IOError):
-        data.parse_arpa_lm(file_)
+        data.parse_arpa_lm(file_, to_base_e=False)
     file_.seek(0)
     file_.write(
         r"""\
@@ -133,7 +133,7 @@ Here's an empty one
 """
     )
     file_.seek(0)
-    assert data.parse_arpa_lm(file_) == []
+    assert data.parse_arpa_lm(file_, to_base_e=True) == []
 
 
 @pytest.mark.cpu

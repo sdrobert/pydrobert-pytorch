@@ -398,7 +398,7 @@ def test_lookup_language_model_republic():
             exp.append(float(line))
     exp = torch.tensor(exp, device=device)
     assert exp.shape[0] == queries.shape[1]
-    prob_dicts = parse_arpa_lm(arpa_file, token2id, np.float32)
+    prob_dicts = parse_arpa_lm(arpa_file, token2id, False, np.float32)
     lm = LookupLanguageModel(
         vocab_size, sos=sos, prob_dicts=prob_dicts, destructive=True
     )

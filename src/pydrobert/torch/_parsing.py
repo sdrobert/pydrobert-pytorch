@@ -14,6 +14,7 @@
 
 import re
 import warnings
+import math
 
 from typing import (
     Dict,
@@ -40,12 +41,13 @@ import pydrobert.torch.config as config
 from ._textgrid import TextGrid, TEXTTIER
 
 K = TypeVar("K", bound=Union[str, int, np.signedinteger])
-F = TypeVar("F", bound=Union[str, float, np.floating])
+F = TypeVar("F", bound=Union[float, np.floating])
 
 
 def parse_arpa_lm(
     file_: Union[TextIO, str],
     token2id: Optional[Dict[str, np.signedinteger]] = None,
+    to_base_e: bool = None,
     ftype: Type[F] = float,
     logger: Optional[Logger] = None,
 ) -> List[Dict[Union[K, Tuple[K, ...]], F]]:
@@ -82,8 +84,12 @@ def parse_arpa_lm(
     token2id
         A dictionary whose keys are token strings and values are ids. If set, tokens
         will be replaced with ids on read
+    to_base_e
+        ARPA files store log-probabilities and log-backoffs in base-10. This 
     ftype
         The floating-point type to store log-probabilities and backoffs as
+    logger
+        If specified, progress will be written to this logger at INFO level
 
     Returns
     -------
@@ -99,11 +105,23 @@ def parse_arpa_lm(
     
     Warnings
     --------
+    Version ``0.3.0`` and prior do not have the option `to_base_e`, always returning
+    values in log base 10. While this remains the default, it is deprecated and will
+    be removed in a later version.
+
     This function is not safe for JIT scripting or tracing.
     """
     if isinstance(file_, str):
         with open(file_) as f:
-            return parse_arpa_lm(f, token2id, ftype, logger)
+            return parse_arpa_lm(f, token2id, to_base_e, ftype, logger)
+    if to_base_e is None:
+        warnings.warn(
+            "The default of to_base_e will be changed to True in a later version. "
+            "Please manually specify this argument to suppress this warning"
+        )
+        to_base_e = False
+    norm = math.log10(math.e) if to_base_e else 1.0
+    norm = ftype(norm)
     if logger is None:
         print_ = lambda x: None
     else:
@@ -170,9 +188,9 @@ def parse_arpa_lm(
             if ngram == 1:
                 tokens = tokens[0]
             if ngram != len(ngram_counts):
-                dict_[tokens] = (ftype(logp), logb)
+                dict_[tokens] = (ftype(logp) / norm, logb / norm)
             else:
-                dict_[tokens] = ftype(logp)
+                dict_[tokens] = ftype(logp) / norm
     if line != "\\end\\":
         raise IOError("Could not find \\end\\ line")
     for ngram_m1, (ngram_count, dict_) in enumerate(zip(ngram_counts, prob_dicts)):
