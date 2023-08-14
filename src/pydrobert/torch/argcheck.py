@@ -14,8 +14,21 @@
 
 """Boilerplate for checking argument values
 
-These functions are intended for use primarily in :class:`torch.Module` definitions
-and are not :mod:`torch.jit` safe.
+There are two broad types of function defined in this submodule: ``is_*`` and ``as_*``.
+
+The ``is_*`` functions check if the passed value satisfies some requirement, usually
+being of some type. They are intended to check arguments being passed to objects
+(primarily :class:`torch.nn.Module` objects) on initialization. Some accept other types
+(e.g. :func:`is_float` accepts :class:`int`, :class:`np.integer`, and
+:class:`np.floating` in addition to :class:`float`) which will quietly be cast to the
+expected type before returning. Most other ``is_*`` functions check whether the value
+satisfies some condition (e.g. being a member of a collection, :func:`is_in`, or being
+positive, :func:`is_pos`). Some, e.g. :func:`is_nat`, combine type checks with
+conditions (:func:`is_int` and :func:`is_pos`).
+
+The ``as_*`` functions are more agressive, casting their first argument to the type
+immediately, then possibly checking a condition. They are intended primarly for use
+as the ``type`` argument in :func:`argparser.ArgumentParser.add_argument`.
 """
 
 import os
@@ -23,22 +36,55 @@ import string
 
 from typing import (
     Collection,
+    Concatenate,
     Optional,
     TypeVar,
     Callable,
     Any,
     Type,
     Union,
+    Protocol,
+    Generic,
+    cast,
 )
-from typing_extensions import overload, Literal, get_args
+from typing_extensions import overload, Literal, get_args, ParamSpec
 from pathlib import Path
 
 import torch
+import numpy as np
 
-V = TypeVar("V")
-NumLike = Union[torch.Tensor, float, int]
-N = TypeVar("N", *get_args(NumLike))
-StrPathLike = TypeVar("StrPathLike", str, os.PathLike, Path)
+V1 = TypeVar("V1")
+V2 = TypeVar("V2")
+NumLike = Union[torch.Tensor, float, int, np.floating, np.integer]
+N = TypeVar("N", bound=NumLike)
+P = ParamSpec("P")
+StrOrPathLike = Union[str, os.PathLike]
+
+
+class _IsCheck(Protocol[V1]):
+
+    # if allow_none is the literal "False" (also the default), we can narrow to the type
+    # of interest. If allow_none is true or is variable, we have to assume it's optional
+    @overload
+    def __call__(
+        self, val: V1, name: Optional[str] = None, allow_none: Literal[False] = False
+    ) -> V1:
+        ...
+
+    @overload
+    def __call__(
+        self, val: Optional[V1], name: Optional[str] = None, allow_none: bool = False
+    ) -> Optional[V1]:
+        ...
+
+
+def _is_check_allow_none(wrapped: Callable[..., V1]) -> _IsCheck[V1]:
+    def wrapper(val, name=None, allow_none=False):
+        if allow_none and val is None:
+            return val
+        return wrapped(val, name)
+
+    return wrapper
 
 
 def _nv(name: Optional[str], val: Any) -> str:
@@ -53,74 +99,63 @@ def _nv(name: Optional[str], val: Any) -> str:
         return f"{val}" if name is None else f"{name} ({val})"
 
 
-def _type_check_factory(t: Type[V], *ts: type):
+def _type_check_factory(t: Type[V1], *ts: type):
     ts = (t,) + ts
 
-    @overload
-    def _is_check(
-        val: t, name: Optional[str] = None, allow_none: Literal[False] = False
-    ) -> t:
-        ...
-
-    @overload
-    def _is_check(
-        val: Optional[t], name: Optional[str] = None, allow_none: Literal[True] = False
-    ) -> Optional[t]:
-        ...
-
-    def _is_check(val, name=None, allow_none=False):
-        if allow_none and val is None:
-            return None
-        if isinstance(val, _is_check.ts):
-            return val if isinstance(val, _is_check.t) else _is_check.t(val)
+    @_is_check_allow_none
+    def _is_check(val, name=None) -> t:
+        if isinstance(val, ts):
+            return val if (type(val) is t) else t(val)
         else:
-            tname = _is_check.t.__name__
+            tname = t.__name__
             x = "n" if tname.startswith(("a", "e", "i", "o", "u")) else ""
-            y = " or None" if allow_none else ""
-            raise ValueError(f"{_nv(name, val)} is not a{x} {tname}{y}")
-
-    _is_check.t, _is_check.ts = t, ts
+            raise ValueError(f"{_nv(name, val)} is not a{x} {tname}")
 
     return _is_check
 
 
 is_str = _type_check_factory(str)
-is_int = _type_check_factory(int)
-is_bool = _type_check_factory(bool, int, float)
-is_float = _type_check_factory(float, int)
+is_int = _type_check_factory(int, np.integer)
+is_bool = _type_check_factory(bool)
+is_float = _type_check_factory(float, int, np.integer, np.floating)
 is_tensor = _type_check_factory(torch.Tensor)
-is_pathlike = _type_check_factory(os.PathLike)
-is_path = _type_check_factory(Path)
+is_path = _type_check_factory(Path, *get_args(StrOrPathLike))
 
 
-@overload
-def is_numlike(
-    val: N, name: Optional[str] = None, allow_none: Literal[False] = False
-) -> N:
-    ...
-
-
-@overload
-def is_numlike(
-    val: Optional[N], name: Optional[str] = None, allow_none: Literal[True] = False,
-) -> Optional[N]:
-    ...
-
-
-def is_numlike(val, name=None, allow_none=False):
-    if allow_none and val is None:
-        return None
+@_is_check_allow_none
+def is_numlike(val, name=None) -> NumLike:
     if not isinstance(val, get_args(NumLike)):
         raise ValueError(f"{_nv(name, val)} is not num-like {get_args(N)}")
     return val
 
 
+@overload
 def is_token(
     val: str,
     name: Optional[str] = None,
     empty_okay: bool = False,
     whitespace: str = string.whitespace,
+    allow_none: Literal[False] = False,
 ) -> str:
+    ...
+
+
+@overload
+def is_token(
+    val: Optional[str],
+    name: Optional[str] = None,
+    empty_okay: bool = False,
+    whitespace: str = string.whitespace,
+    allow_none: bool = False,
+) -> Optional[str]:
+    ...
+
+
+def is_token(
+    val, name=None, empty_okay=False, whitespace=string.whitespace, allow_none=False
+):
+    if val is None and allow_none:
+        return val
     val = is_str(val, name)
     if not empty_okay and not len(val):
         raise ValueError(f"{_nv(name, val)} is empty")
@@ -133,18 +168,21 @@ def is_token(
 
 @overload
 def is_a(
-    val: V, t: Type[V], name: Optional[str] = None, allow_none: Literal[False] = False
-) -> V:
+    val: V1,
+    t: Type[V1],
+    name: Optional[str],
+    allow_none: Literal[False] = False,
+) -> V1:
     ...
 
 
 @overload
 def is_a(
-    val: Optional[V],
-    t: Type[V],
+    val: Optional[V1],
+    t: Type[V1],
     name: Optional[str] = None,
-    allow_none: Literal[True] = False,
-) -> Optional[V]:
+    allow_none: bool = False,
+) -> Optional[V1]:
     ...
 
 
@@ -160,21 +198,21 @@ def is_a(val, t, name=None, allow_none=False):
 
 @overload
 def is_in(
-    val: V,
-    collection: Collection[V],
+    val: V1,
+    collection: Collection[V1],
     name: Optional[str] = None,
     allow_none: Literal[False] = False,
-) -> V:
+) -> V1:
     ...
 
 
 @overload
 def is_in(
-    val: Optional[V],
-    collection: Collection[V],
+    val: Optional[V1],
+    collection: Collection[V1],
     name: Optional[str] = None,
-    allow_none: Literal[True] = False,
-) -> Optional[V]:
+    allow_none: bool = False,
+) -> Optional[V1]:
     ...
 
 
@@ -186,15 +224,8 @@ def is_in(val, collection, name=None, allow_none=False):
     return val
 
 
-def is_exactly(
-    val: V, other: V, name: Optional[str] = None, other_name: Optional[str] = None
-) -> V:
-    if val is not other:
-        raise ValueError(f"{_nv(name, val)} is not {_nv(other_name, other)}")
-    return val
-
-
-def is_pos(val: N, name: Optional[str] = None) -> N:
+@_is_check_allow_none
+def is_pos(val, name=None) -> NumLike:
     val_ = torch.as_tensor(is_numlike(val, name))
     if (val_ <= 0).any():
         x = "entirely " if val_.numel() > 1 else ""
@@ -202,7 +233,8 @@ def is_pos(val: N, name: Optional[str] = None) -> N:
     return val
 
 
-def is_neg(val: N, name: Optional[str] = None) -> N:
+@_is_check_allow_none
+def is_neg(val, name=None) -> NumLike:
     val_ = torch.as_tensor(is_numlike(val, name))
     if (val_ >= 0).any():
         x = "entirely " if val_.numel() > 1 else ""
@@ -210,7 +242,8 @@ def is_neg(val: N, name: Optional[str] = None) -> N:
     return val
 
 
-def is_nonpos(val: N, name: Optional[str] = None) -> N:
+@_is_check_allow_none
+def is_nonpos(val, name=None) -> NumLike:
     val_ = torch.as_tensor(is_numlike(val, name))
     if (val_ > 0).any():
         x = "entirely " if val_.numel() > 1 else ""
@@ -218,7 +251,8 @@ def is_nonpos(val: N, name: Optional[str] = None) -> N:
     return val
 
 
-def is_nonneg(val: N, name: Optional[str] = None) -> N:
+@_is_check_allow_none
+def is_nonneg(val: N, name=None) -> NumLike:
     val_ = torch.as_tensor(is_numlike(val, name))
     if (val_ < 0).any():
         x = "entirely " if val_.numel() > 1 else ""
@@ -226,9 +260,50 @@ def is_nonneg(val: N, name: Optional[str] = None) -> N:
     return val
 
 
-def is_equal(
-    val: N, other: NumLike, name: Optional[str] = None, other_name: Optional[str] = None
-) -> V:
+class _CompareProtocol(Protocol, Generic[V1, V2]):
+    @overload
+    def __call__(
+        self,
+        val: V1,
+        other: V2,
+        name: Optional[str] = None,
+        other_name: Optional[str] = None,
+        allow_none: Literal[False] = False,
+    ) -> V1:
+        ...
+
+    @overload
+    def __call__(
+        self,
+        val: Optional[V1],
+        other: V2,
+        name: Optional[str] = None,
+        other_name: Optional[str] = None,
+        allow_none: bool = False,
+    ) -> Optional[V1]:
+        ...
+
+
+def _compare_allow_none(
+    func: Callable[Concatenate[V1, V2, P], V1]
+) -> _CompareProtocol[V1, V2]:
+    def _allow_none(val, other, name=None, other_name=None, allow_none=False):
+        if val is None and allow_none:
+            return val
+        return func(val, other, name, other_name)
+
+    return _allow_none
+
+
+@_compare_allow_none
+def is_exactly(val: Any, other: Any, name=None, other_name=None) -> Any:
+    if val is not other:
+        raise ValueError(f"{_nv(name, val)} is not {_nv(other_name, other)}")
+    return val
+
+
+@_compare_allow_none
+def is_equal(val: NumLike, other: NumLike, name=None, other_name=None) -> NumLike:
     val_ = torch.as_tensor(is_numlike(val, name))
     other_ = torch.as_tensor(is_numlike(other, other_name), device=val_.device)
     if (val_ != other_).any():
@@ -239,12 +314,13 @@ def is_equal(
     return val
 
 
+@_compare_allow_none
 def is_lt(
-    val: N,
-    other: Union[float, int, torch.Tensor],
-    name: Optional[str] = None,
-    other_name: Optional[str] = None,
-) -> N:
+    val: NumLike,
+    other: NumLike,
+    name=None,
+    other_name=None,
+) -> NumLike:
     val_ = torch.as_tensor(is_numlike(val, name))
     other_ = torch.as_tensor(is_numlike(other, other_name), device=val_.device)
     if (val_ >= other_).any():
@@ -255,12 +331,13 @@ def is_lt(
     return val
 
 
+@_compare_allow_none
 def is_gt(
-    val: N,
-    other: Union[float, int, torch.Tensor],
+    val: NumLike,
+    other: NumLike,
     name: Optional[str] = None,
     other_name: Optional[str] = None,
-) -> N:
+) -> NumLike:
     val_ = torch.as_tensor(is_numlike(val, name))
     other_ = torch.as_tensor(is_numlike(other, other_name), device=val_.device)
     if (val_ <= other_).any():
@@ -271,12 +348,13 @@ def is_gt(
     return val
 
 
+@_compare_allow_none
 def is_lte(
-    val: N,
-    other: Union[float, int, torch.Tensor],
+    val: NumLike,
+    other: NumLike,
     name: Optional[str] = None,
     other_name: Optional[str] = None,
-) -> N:
+) -> NumLike:
     val_ = torch.as_tensor(is_numlike(val, name))
     other_ = torch.as_tensor(is_numlike(other, other_name), device=val_.device)
     if (val_ > other_).any():
@@ -288,12 +366,13 @@ def is_lte(
     return val
 
 
+@_compare_allow_none
 def is_gte(
-    val: N,
-    other: Union[float, int, torch.Tensor],
+    val: NumLike,
+    other: NumLike,
     name: Optional[str] = None,
     other_name: Optional[str] = None,
-) -> N:
+) -> NumLike:
     val_ = torch.as_tensor(is_numlike(val, name))
     other_ = torch.as_tensor(is_numlike(other, other_name), device=val_.device)
     if (val_ < other_).any():
@@ -305,8 +384,9 @@ def is_gte(
     return val
 
 
+@overload
 def is_btw(
-    val: N,
+    val: NumLike,
     left: NumLike,
     right: NumLike,
     name: Optional[str] = None,
@@ -314,7 +394,39 @@ def is_btw(
     right_name: Optional[str] = None,
     left_inclusive: bool = False,
     right_inclusive: bool = False,
-) -> N:
+    allow_none: Literal[False] = False,
+) -> NumLike:
+    ...
+
+
+@overload
+def is_btw(
+    val: Optional[NumLike],
+    left: NumLike,
+    right: NumLike,
+    name: Optional[str] = None,
+    left_name: Optional[str] = None,
+    right_name: Optional[str] = None,
+    left_inclusive: bool = False,
+    right_inclusive: bool = False,
+    allow_none: bool = False,
+) -> Optional[NumLike]:
+    ...
+
+
+def is_btw(
+    val,
+    left,
+    right,
+    name=None,
+    left_name=None,
+    right_name=None,
+    left_inclusive=False,
+    right_inclusive=False,
+    allow_none=False,
+):
+    if allow_none and val is None:
+        return val
     val_ = torch.as_tensor(is_numlike(val, name))
     try:
         if left_inclusive:
@@ -336,119 +448,152 @@ def is_btw(
     return val
 
 
+@overload
 def is_btw_open(
-    val: N,
+    val: NumLike,
     left: NumLike,
     right: NumLike,
     name: Optional[str] = None,
     left_name: Optional[str] = None,
     right_name: Optional[str] = None,
-) -> N:
-    return is_btw(val, left, right, name, left_name, right_name, False, False)
+    allow_none: Literal[False] = False,
+) -> NumLike:
+    ...
+
+
+@overload
+def is_btw_open(
+    val: Optional[NumLike],
+    left: NumLike,
+    right: NumLike,
+    name: Optional[str] = None,
+    left_name: Optional[str] = None,
+    right_name: Optional[str] = None,
+    allow_none: bool = False,
+) -> Optional[NumLike]:
+    ...
+
+
+def is_btw_open(
+    val,
+    left,
+    right,
+    name=None,
+    left_name=None,
+    right_name=None,
+    allow_none: bool = False,
+):
+    return is_btw(
+        val, left, right, name, left_name, right_name, False, False, allow_none
+    )
+
+
+@overload
+def is_btw_closed(
+    val: NumLike,
+    left: NumLike,
+    right: NumLike,
+    name: Optional[str] = None,
+    left_name: Optional[str] = None,
+    right_name: Optional[str] = None,
+    allow_none: Literal[False] = False,
+) -> NumLike:
+    ...
+
+
+@overload
+def is_btw_closed(
+    val: Optional[NumLike],
+    left: NumLike,
+    right: NumLike,
+    name: Optional[str] = None,
+    left_name: Optional[str] = None,
+    right_name: Optional[str] = None,
+    allow_none: bool = False,
+) -> Optional[NumLike]:
+    ...
 
 
 def is_btw_closed(
-    val: N,
-    left: NumLike,
-    right: NumLike,
-    name: Optional[str] = None,
-    left_name: Optional[str] = None,
-    right_name: Optional[str] = None,
-) -> N:
-    return is_btw(val, left, right, name, left_name, right_name, True, True)
+    val,
+    left,
+    right,
+    name=None,
+    left_name=None,
+    right_name=None,
+    allow_none=False,
+):
+    return is_btw(val, left, right, name, left_name, right_name, True, True, allow_none)
 
 
-def is_open01(val: N, name: Optional[str] = None) -> N:
-    return is_btw(val, 0, 1, name, None, None, False, False)
+def is_open01(val, name=None, allow_none=False):
+    return is_btw(val, 0, 1, name, None, None, False, False, allow_none)
 
 
-def is_closed01(val: N, name: Optional[str] = None) -> N:
-    return is_btw(val, 0, 1, name, None, None, True, True)
+is_open01 = cast(_IsCheck[NumLike], is_open01)
 
 
-def _numlike_special_factory(t: Type[N], *ts: Type[N]):
+def is_closed01(val, name=None, allow_none=False):
+    return is_btw(val, 0, 1, name, None, None, True, True, allow_none)
 
+
+is_closed01 = cast(_IsCheck[NumLike], is_closed01)
+
+
+def _numlike_special_factory(t: Type[N], *ts: type):
     _type_check = _type_check_factory(t, *ts)
 
-    def _pos_check(val: t, name: Optional[str] = None) -> t:
-        val = _pos_check.type_check(val, name)
+    @_is_check_allow_none
+    def _pos_check(val: t, name=None) -> t:
+        val = _type_check(val, name)
         return is_pos(val, name)
 
-    _pos_check.type_check = _type_check
-
-    def _neg_check(val: t, name: Optional[str] = None) -> t:
-        val = _neg_check.type_check(val, name)
+    @_is_check_allow_none
+    def _neg_check(val: t, name=None) -> t:
+        val = _type_check(val, name)
         return is_neg(val, name)
 
-    _neg_check.type_check = _type_check
-
-    def _nonpos_check(val: t, name: Optional[str] = None) -> t:
-        val = _nonpos_check.type_check(val, name)
+    @_is_check_allow_none
+    def _nonpos_check(val: t, name=None) -> t:
+        val = _type_check(val, name)
         return is_nonpos(val, name)
 
-    _nonpos_check.type_check = _type_check
-
-    def _nonneg_check(val: t, name: Optional[str] = None) -> t:
-        val = _nonneg_check.type_check(val, name)
+    @_is_check_allow_none
+    def _nonneg_check(val: t, name=None) -> t:
+        val = _type_check(val, name)
         return is_nonneg(val, name)
 
-    _nonneg_check.type_check = _type_check
-
-    def _equal_check(
-        val: t,
-        other: NumLike,
-        name: Optional[str] = None,
-        other_name: Optional[str] = None,
-    ) -> t:
-        val = _equal_check.type_check(val, name)
+    @_compare_allow_none
+    def _equal_check(val: t, other: NumLike, name=None, other_name=None) -> t:
+        val = _type_check(val, name)
         return is_equal(val, other, name, other_name)
 
-    _equal_check.type_check = _type_check
-
-    def _lt_check(
-        val: t,
-        other: NumLike,
-        name: Optional[str] = None,
-        other_name: Optional[str] = None,
-    ) -> t:
-        val = _lt_check.type_check(val, name)
+    @_compare_allow_none
+    def _lt_check(val: t, other: NumLike, name=None, other_name=None) -> t:
+        val = _type_check(val, name)
         return is_lt(val, other, name, other_name)
 
-    _lt_check.type_check = _type_check
-
+    @_compare_allow_none
     def _lte_check(
         val: t,
         other: NumLike,
-        name: Optional[str] = None,
-        other_name: Optional[str] = None,
+        name=None,
+        other_name=None,
     ) -> t:
-        val = _lte_check.type_check(val, name)
+        val = _type_check(val, name)
         return is_lte(val, other, name, other_name)
 
-    _lte_check.type_check = _type_check
-
-    def _gt_check(
-        val: t,
-        other: NumLike,
-        name: Optional[str] = None,
-        other_name: Optional[str] = None,
-    ) -> t:
-        val = _gt_check.type_check(val, name)
+    @_compare_allow_none
+    def _gt_check(val: t, other: NumLike, name=None, other_name=None) -> t:
+        val = _type_check(val, name)
         return is_gt(val, other, name, other_name)
 
-    _gt_check.type_check = _type_check
-
-    def _gte_check(
-        val: t,
-        other: NumLike,
-        name: Optional[str] = None,
-        other_name: Optional[str] = None,
-    ) -> t:
-        val = _gte_check.type_check(val, name)
+    @_compare_allow_none
+    def _gte_check(val: t, other: NumLike, name=None, other_name=None) -> t:
+        val = _type_check(val, name)
         return is_gte(val, other, name, other_name)
 
-    _gte_check.type_check = _type_check
-
+    @overload
     def _btw_check(
         val: t,
         left: NumLike,
@@ -458,8 +603,36 @@ def _numlike_special_factory(t: Type[N], *ts: Type[N]):
         right_name: Optional[str] = None,
         left_inclusive: bool = False,
         right_inclusive: bool = False,
+        allow_none: Literal[False] = False,
     ) -> t:
-        val = _btw_check.type_check(val, name)
+        ...
+
+    @overload
+    def _btw_check(
+        val: Optional[t],
+        left: NumLike,
+        right: NumLike,
+        name: Optional[str] = None,
+        left_name: Optional[str] = None,
+        right_name: Optional[str] = None,
+        left_inclusive: bool = False,
+        right_inclusive: bool = False,
+        allow_none: bool = False,
+    ) -> Optional[t]:
+        ...
+
+    def _btw_check(
+        val,
+        left,
+        right,
+        name=None,
+        left_name=None,
+        right_name=None,
+        left_inclusive=False,
+        right_inclusive=False,
+        allow_none=False,
+    ):
+        val = _type_check(val, name)
         return is_btw(
             val,
             left,
@@ -469,9 +642,32 @@ def _numlike_special_factory(t: Type[N], *ts: Type[N]):
             right_name,
             left_inclusive,
             right_inclusive,
+            allow_none,
         )
 
-    _btw_check.type_check = _type_check
+    @overload
+    def _btw_open_check(
+        val: t,
+        left: NumLike,
+        right: NumLike,
+        name: Optional[str] = None,
+        left_name: Optional[str] = None,
+        right_name: Optional[str] = None,
+        allow_none: Literal[False] = False,
+    ) -> t:
+        ...
+
+    @overload
+    def _btw_open_check(
+        val: Optional[t],
+        left: NumLike,
+        right: NumLike,
+        name: Optional[str] = None,
+        left_name: Optional[str] = None,
+        right_name: Optional[str] = None,
+        allow_none: bool = False,
+    ) -> Optional[t]:
+        ...
 
     def _btw_open_check(
         val: t,
@@ -480,11 +676,36 @@ def _numlike_special_factory(t: Type[N], *ts: Type[N]):
         name: Optional[str] = None,
         left_name: Optional[str] = None,
         right_name: Optional[str] = None,
+        allow_none=False,
     ) -> t:
-        val = _btw_open_check.type_check(val, name)
-        return is_btw_open(val, left, right, name, left_name, right_name, False, False)
+        val = _type_check(val, name)
+        return is_btw(
+            val, left, right, name, left_name, right_name, False, False, allow_none
+        )
 
-    _btw_open_check.type_check = _type_check
+    @overload
+    def _btw_closed_check(
+        val: t,
+        left: NumLike,
+        right: NumLike,
+        name: Optional[str] = None,
+        left_name: Optional[str] = None,
+        right_name: Optional[str] = None,
+        allow_none: Literal[False] = False,
+    ) -> t:
+        ...
+
+    @overload
+    def _btw_closed_check(
+        val: Optional[t],
+        left: NumLike,
+        right: NumLike,
+        name: Optional[str] = None,
+        left_name: Optional[str] = None,
+        right_name: Optional[str] = None,
+        allow_none: bool = False,
+    ) -> Optional[t]:
+        ...
 
     def _btw_closed_check(
         val: t,
@@ -493,23 +714,22 @@ def _numlike_special_factory(t: Type[N], *ts: Type[N]):
         name: Optional[str] = None,
         left_name: Optional[str] = None,
         right_name: Optional[str] = None,
+        allow_none=False,
     ) -> t:
-        val = _btw_closed_check.type_check(val, name)
-        return is_btw_closed(val, left, right, name, left_name, right_name, True, True)
+        val = _type_check(val, name)
+        return is_btw(
+            val, left, right, name, left_name, right_name, True, True, allow_none
+        )
 
-    _btw_closed_check.type_check = _type_check
-
-    def _open01_check(val: t, name: Optional[str] = None) -> t:
-        val = _open01_check.type_check(val, name)
+    @_is_check_allow_none
+    def _open01_check(val: t, name=None) -> t:
+        val = _type_check(val, name)
         return is_open01(val, name)
 
-    _open01_check.type_check = _type_check
-
-    def _closed01_check(val: t, name: Optional[str] = None) -> t:
-        val = _closed01_check.type_check(val, name)
+    @_is_check_allow_none
+    def _closed01_check(val: t, name=None) -> t:
+        val = _type_check(val, name)
         return is_nonneg(val, name)
-
-    _closed01_check.type_check = _type_check
 
     return (
         _pos_check,
@@ -544,7 +764,7 @@ def _numlike_special_factory(t: Type[N], *ts: Type[N]):
     is_btw_closedi,
     is_open01i,
     is_closed01i,
-) = _numlike_special_factory(int)
+) = _numlike_special_factory(int, np.integer)
 is_nat = is_posi
 (
     is_posf,
@@ -561,7 +781,7 @@ is_nat = is_posi
     is_btw_closedf,
     is_open01f,
     is_closed01f,
-) = _numlike_special_factory(float, int)
+) = _numlike_special_factory(float, np.floating, int, np.integer)
 (
     is_post,
     is_negt,
@@ -580,19 +800,41 @@ is_nat = is_posi
 ) = _numlike_special_factory(torch.Tensor)
 
 
-def is_file(val: StrPathLike, name: Optional[str] = None) -> StrPathLike:
+@_is_check_allow_none
+def is_file(val: StrOrPathLike, name: Optional[str] = None) -> StrOrPathLike:
     if not os.path.isfile(val):
         raise ValueError(f"{_nv(name, val)} is not a file")
     return val
 
 
-def is_dir(val: StrPathLike, name: Optional[str] = None) -> StrPathLike:
+@_is_check_allow_none
+def is_dir(val: StrOrPathLike, name: Optional[str] = None) -> StrOrPathLike:
     if not os.path.isdir(val):
         raise ValueError(f"{_nv(name, val)} is not a directory")
     return val
 
 
-def has_ndim(val: torch.Tensor, ndim: int, name: Optional[str] = None) -> torch.Tensor:
+@overload
+def has_ndim(
+    val: torch.Tensor,
+    ndim: int,
+    name: Optional[str] = None,
+    allow_none: Literal[False] = False,
+) -> torch.Tensor:
+    ...
+
+
+@overload
+def has_ndim(
+    val: Optional[torch.Tensor],
+    ndim: int,
+    name: Optional[str] = None,
+    allow_none: bool = False,
+) -> Optional[torch.Tensor]:
+    ...
+
+
+def has_ndim(val, ndim, name=None) -> torch.Tensor:
     if val.ndim != ndim:
         raise ValueError(
             f"Expected {_nv(name, val)} to have dimension {ndim}; got {val.ndim}"
@@ -600,18 +842,19 @@ def has_ndim(val: torch.Tensor, ndim: int, name: Optional[str] = None) -> torch.
     return val
 
 
-def is_nonempty(val: torch.Tensor, name: Optional[str] = None) -> torch.Tensor:
+@_is_check_allow_none
+def is_nonempty(val, name=None) -> torch.Tensor:
     if not val.numel():
         raise ValueError(f"Expected {_nv(name, val)} to be nonempty")
     return val
 
 
 def _cast_factory(
-    cast: Callable[[Any], V],
-    check: Optional[Callable[[V, Optional[str]], V]] = None,
+    cast: Callable[[Any], V1],
+    check: Optional[Callable[[V1, Optional[str]], V1]] = None,
     cast_name: Optional[str] = None,
 ):
-    def _cast(val: Any, name: Optional[str] = None) -> V:
+    def _cast(val: Any, name: Optional[str] = None) -> V1:
         try:
             val = cast(val)
         except:
@@ -633,6 +876,7 @@ as_str = _cast_factory(str)
 as_int = _cast_factory(int)
 as_bool = _cast_factory(bool)
 as_float = _cast_factory(float)
+as_tensor = _cast_factory(torch.as_tensor, cast_name="tensor")
 as_posf = _cast_factory(float, is_pos, cast_name="positive float")
 as_nat = _cast_factory(int, is_pos, cast_name="natural number")
 as_posi = _cast_factory(int, is_pos, cast_name="positive integer")
@@ -642,10 +886,6 @@ as_negf = _cast_factory(float, is_neg, cast_name="negative float")
 as_negi = _cast_factory(int, is_neg, cast_name="negative integer")
 as_nonposf = _cast_factory(float, is_nonpos, cast_name="non-positive float")
 as_nonposi = _cast_factory(int, is_nonpos, cast_name="non-positive integer")
-as_ltf = _cast_factory(float, is_lt)
-as_lti = _cast_factory(int, is_lt)
-as_gtf = _cast_factory(float, is_gt)
-as_gti = _cast_factory(int, is_gt)
 as_open01 = _cast_factory(float, is_open01, cast_name="float within (0, 1)")
 as_closed01 = _cast_factory(float, is_closed01, cast_name="float within [0, 1]")
 as_path = _cast_factory(Path)
