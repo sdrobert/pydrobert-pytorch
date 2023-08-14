@@ -594,11 +594,10 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
 
     Warnings
     --------
-    After 0.3.0, `prob_list` was renamed to `prob_dicts`. `prob_list` is deprecated
-
-    After 0.3.0, `sos` became no longer optional. `pad_sos_to_n` was removed as an
-    argument (implicitly true now). `eos` and `oov` were also removed as part of updates
-    to :obj:`SequentialLanguageModel`
+    After 0.3.0, `prob_list` was renamed to `prob_dicts`. `prob_list` is deprecated.
+    `sos` became no longer optional. `pad_sos_to_n` was removed as an argument
+    (implicitly true now). `eos` and `oov` were also removed as part of updates to
+    :obj:`SequentialLanguageModel`
 
     JIT scripting is possible with this module, but not tracing.
     """
