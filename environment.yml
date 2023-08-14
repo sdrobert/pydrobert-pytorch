@@ -16,3 +16,4 @@ dependencies:
   - pytest
   - webdataset
   - pydrobert-speech>=0.2.0
+  - ipython

@@ -29,6 +29,7 @@ from typing import (
     Union,
     Union,
 )
+from logging import Logger
 from collections import OrderedDict
 
 import torch
@@ -38,14 +39,15 @@ import pydrobert.torch.config as config
 
 from ._textgrid import TextGrid, TEXTTIER
 
-K = TypeVar("K", str, np.signedinteger)
-F = TypeVar("F", bound=np.floating)
+K = TypeVar("K", bound=Union[str, int, np.signedinteger])
+F = TypeVar("F", bound=Union[str, float, np.floating])
 
 
 def parse_arpa_lm(
     file_: Union[TextIO, str],
     token2id: Optional[Dict[str, np.signedinteger]] = None,
     ftype: Type[F] = float,
+    logger: Optional[Logger] = None,
 ) -> List[Dict[Union[K, Tuple[K, ...]], F]]:
     r"""Parse an ARPA statistical language model
 
@@ -101,8 +103,13 @@ def parse_arpa_lm(
     """
     if isinstance(file_, str):
         with open(file_) as f:
-            return parse_arpa_lm(f, token2id=token2id)
+            return parse_arpa_lm(f, token2id, ftype, logger)
+    if logger is None:
+        print_ = lambda x: None
+    else:
+        print_ = logger.info
     line = ""
+    print_("finding \\data\\ header")
     for line in file_:
         if line.strip() == "\\data\\":
             break
@@ -110,6 +117,7 @@ def parse_arpa_lm(
         raise IOError("Could not find \\data\\ line. Is this an ARPA file?")
     ngram_counts: List[Dict[int, int]] = []
     count_pattern = re.compile(r"^ngram\s+(\d+)\s*=\s*(\d+)$")
+    print_("finding n-gram counts")
     for line in file_:
         line = line.strip()
         if not line:
@@ -118,6 +126,7 @@ def parse_arpa_lm(
         if match is None:
             break
         n, count = (int(x) for x in match.groups())
+        print_(f"there are {count} {n}-grams")
         if len(ngram_counts) < n:
             ngram_counts.extend(0 for _ in range(n - len(ngram_counts)))
         ngram_counts[n - 1] = count

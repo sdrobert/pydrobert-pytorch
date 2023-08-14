@@ -15,8 +15,8 @@
 import abc
 import warnings
 
-from typing import Any, Dict, Optional, Sequence, Tuple, Union, overload, List
-from bisect import insort
+from typing import Any, Dict, Optional, Tuple, Union, overload, List
+from logging import Logger
 
 import torch
 import numpy as np
@@ -549,10 +549,13 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         in the dictionary of the highest order n-gram dictionaries (last in
         `prob_dicts`) are the log-probabilities of the keys. Lower order dictionaries'
         values are pairs of log-probability and log-backoff penalty. If `prob_dicts` is
-        not specified, a unigram model with a uniform prior will be built
+        not specified, a unigram model with a uniform prior will be built.
     destructive
         If :obj:`True`, allows initialization to modify `prob_dicts` directly instead
-        of making a fresh copy. Doing so can help reduce memory pressure
+        of making a fresh copy. Doing so can help reduce memory pressure.
+    logger
+        If specified, this logger will be used to report on the progress initializing
+        this module.
     
     Call Parameters
     ---------------
@@ -566,9 +569,9 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
 
     Notes
     -----
-    Initializing an instance from an `prob_dicts` is expensive. `prob_dicts` is converted
-    to a trie (something like [heafield2011]_) so that it takes up less space in memory,
-    which can take some time.
+    Initializing an instance from an `prob_dicts` is expensive. `prob_dicts` is
+    converted to a trie (something like [heafield2011]_) so that it takes up less space
+    in memory, which can take some time.
 
     Rather than re-initializing repeatedly, it is recommended you save and load this
     module's state dict. :func:`load_state_dict` as been overridden to support loading
@@ -692,6 +695,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         sos: int,
         prob_dicts: Optional[ProbDicts] = None,
         destructive: bool = False,
+        logger: Optional[Logger] = None,
     ):
         ...
 
@@ -701,6 +705,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         sos: int,
         prob_dicts: Optional[ProbDicts] = None,
         destructive: bool = False,
+        logger: Optional[Logger] = None,
         *,
         prob_list: Optional[ProbDicts] = None,
     ):
@@ -719,6 +724,8 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         super().__init__(vocab_size)
         self.sos = sos
         if prob_dicts is None:
+            if logger is not None:
+                logger.info("prob_dicts is empty; initializing uniform model")
             logps = -torch.full(
                 (self.shift + vocab_size,), vocab_size, dtype=torch.float
             ).log()
@@ -730,7 +737,9 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         else:
             self.max_ngram = len(prob_dicts)
             self.max_ngram_nodes = -1  # changed by build_trie
-            logps, logbs, ids, offsets = self._build_trie(prob_dicts, destructive)
+            logps, logbs, ids, offsets = self._build_trie(
+                prob_dicts, destructive, logger
+            )
             self.max_direct_descendants = self._infer_max_direct_descendants(offsets)
         self.register_buffer("logps", logps)
         self.register_buffer("logbs", logbs)
@@ -841,16 +850,24 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         return super(LookupLanguageModel, self).load_state_dict(state_dict, **kwargs)
 
     @torch.jit.unused
-    def _build_trie(self, prob_dicts: ProbDicts, destructive: bool):
+    def _build_trie(
+        self, prob_dicts: ProbDicts, destructive: bool, logger: Optional[Logger]
+    ):
+        if logger is None:
+            print_ = lambda x: None
+        else:
+            print_ = logger.info
         if not len(prob_dicts):
             raise ValueError("prob_dicts must contain at least unigrams")
         if not destructive:
+            print_("destructive not passed; copying prob_dicts")
             prob_dicts = [prob_dict.copy() for prob_dict in prob_dicts]
         total_entries, nan, inf = 0, float("nan"), float("inf")
         unigrams = set(range(self.vocab_size))
         if self.shift:
             unigrams.add(self.sos)
         for n in range(self.max_ngram - 1, -1, -1):
+            print_(f"checking prob_dict of order {n + 1}")
             prob_dict = prob_dicts[n]
             is_last = n == self.max_ngram - 1
             if is_last and not prob_dict:
@@ -884,11 +901,16 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                     if len(suffix) == 1:
                         suffix = suffix[0]
                     if suffix not in prob_dicts[n - 1]:
+                        print_(
+                            f"{suffix} is not an entry in order {n} prob_dict but is a "
+                            f"suffix of {seq}. Adding (-inf, 0.0)"
+                        )
                         prob_dicts[n - 1][suffix] = -inf, 0.0
             total_entries += len(prob_dict)
             if is_last:
                 self.max_ngram_nodes = len(prob_dict)
         if self.shift:
+            print_(f"mapping sos={self.sos} -> {self.vocab_size}")
             prob_dicts[0][self.vocab_size] = prob_dicts[0].pop(self.sos)
             for n in range(1, self.max_ngram):
                 sos_keys = []
@@ -936,6 +958,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         if torch.iinfo(id_type).max < U:
             # should never happen in a practical situation
             raise ValueError("vocab too large")
+        print_("Allocating 1-grams")
         offsets = torch.zeros(O, dtype=offset_type)
         ids = torch.zeros(I, dtype=id_type)
         logps = torch.zeros(P, dtype=torch.float)
@@ -954,6 +977,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             )
         del unigram_values
         parents = dict(((x,), x) for x in range(U - 1))
+        N = 2
         while prob_dicts:
             prob_dict = prob_dicts.pop(0)
             start = allocated
@@ -961,13 +985,10 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             logps[allocated] = logbs[allocated] = nan
             allocated += 1
             children = dict()
-            prob_list = []
-            # FIXME(sdrobert): the offset logic requires us to handle parents' children
-            # sequentially. Sorting ensures parents who were first earlier are first
-            # again. However, sorting this way is terribly slow
-            while prob_dict:
-                key, value = prob_dict.popitem()
-                insort(prob_list, (key[::-1], value))
+            print_(f"Sorting {N}-grams")
+            prob_list = sorted((key[::-1], value) for (key, value) in prob_dict.items())
+            prob_dict.clear()
+            print_(f"Allocating {N}-grams")
             for key, value in prob_list:
                 children[key] = allocated
                 ids[allocated - U] = int(key[-1])
@@ -987,12 +1008,14 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                 start -= 1
             parents.clear()
             parents = children
+            N += 1
         # see if we can shrink the offset size
         if len(offsets):
             max_offset = offsets.max().item()
             for offset_type in (torch.uint8, torch.int16, torch.int32, torch.int64):
                 if torch.iinfo(offset_type).max >= max_offset:
                     break
+            print_(f"Updating offset dtype to {offset_type}")
             offsets = offsets.to(offset_type)
         return logps, logbs, ids, offsets
 
