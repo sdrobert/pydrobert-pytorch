@@ -36,7 +36,6 @@ import string
 
 from typing import (
     Collection,
-    Concatenate,
     Optional,
     TypeVar,
     Callable,
@@ -47,7 +46,7 @@ from typing import (
     Generic,
     cast,
 )
-from typing_extensions import overload, Literal, get_args, ParamSpec
+from typing_extensions import overload, Literal, get_args, ParamSpec, Concatenate
 from pathlib import Path
 
 import torch
@@ -221,6 +220,20 @@ def is_in(val, collection, name=None, allow_none=False):
         return None
     if val not in collection:
         raise ValueError(f"{_nv(name, val)} is not one of {collection}")
+    return val
+
+
+@_is_check_allow_none
+def is_file(val: StrOrPathLike, name: Optional[str] = None) -> StrOrPathLike:
+    if not os.path.isfile(val):
+        raise ValueError(f"{_nv(name, val)} is not a file")
+    return val
+
+
+@_is_check_allow_none
+def is_dir(val: StrOrPathLike, name: Optional[str] = None) -> StrOrPathLike:
+    if not os.path.isdir(val):
+        raise ValueError(f"{_nv(name, val)} is not a directory")
     return val
 
 
@@ -798,20 +811,6 @@ is_nat = is_posi
     is_open01t,
     is_closed01t,
 ) = _numlike_special_factory(torch.Tensor)
-
-
-@_is_check_allow_none
-def is_file(val: StrOrPathLike, name: Optional[str] = None) -> StrOrPathLike:
-    if not os.path.isfile(val):
-        raise ValueError(f"{_nv(name, val)} is not a file")
-    return val
-
-
-@_is_check_allow_none
-def is_dir(val: StrOrPathLike, name: Optional[str] = None) -> StrOrPathLike:
-    if not os.path.isdir(val):
-        raise ValueError(f"{_nv(name, val)} is not a directory")
-    return val
 
 
 @overload

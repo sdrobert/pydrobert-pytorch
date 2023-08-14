@@ -106,6 +106,12 @@ def test_is_type(check, val, exp):
         (argcheck.is_gte, torch.full((5,), np.inf), (10_000,), True),
         (argcheck.is_gte, 1, (1.0,), True),
         (argcheck.is_gte, 0, (torch.arange(2),), False),
+        (argcheck.is_btw, 30.5, (0.1, np.inf), True),
+        (argcheck.is_btw, 30.5, (0.1, -np.inf), False),
+        (argcheck.is_btw_open, 1, (0.999, 1.001), True),
+        (argcheck.is_btw_open, 1, (0.999, 1), False),
+        (argcheck.is_btw_closed, 1, (1, 1), True),
+        (argcheck.is_btw_closed, 1.001, (1, 1), False),
     ],
 )
 def test_comparative(check, val, rest, good):
