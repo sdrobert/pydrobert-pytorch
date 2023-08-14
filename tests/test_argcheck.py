@@ -123,3 +123,43 @@ def test_comparative(check, val, rest, good):
         with pytest.raises(ValueError):
             check(val, *rest)
     assert check(None, *rest, allow_none=True) is None
+
+
+@pytest.mark.parametrize(
+    "check,val,exp",
+    [
+        (argcheck.as_str, 1, "1"),
+        (argcheck.as_int, "1", 1),
+        (argcheck.as_int, "1.1", None),
+        (argcheck.as_bool, 0, False),
+        (argcheck.as_bool, -1, True),
+        (argcheck.as_tensor, 0.0, torch.tensor(0.0)),
+        (argcheck.as_tensor, (0, 1), torch.arange(2)),
+        (argcheck.as_tensor, "foo", None),
+        (argcheck.as_posf, "3e10", 3e10),
+        (argcheck.as_nat, "100", 100),
+        (argcheck.as_nat, "1.0", None),
+        (argcheck.as_nat, "0", None),
+        (argcheck.as_nonnegi, "0", 0),
+        (argcheck.as_nonnegi, "-1", None),
+        (argcheck.as_open01, "-1", None),
+        (argcheck.as_open01, "1e-5", 1e-5),
+        (argcheck.as_closed01, "0", 0.0),
+        (argcheck.as_path, ".", Path(".")),
+        (argcheck.as_path_file, ".", None),
+        (argcheck.as_path_dir, __file__, None),
+        (argcheck.as_dir, Path("."), "."),
+        (argcheck.as_file, __file__, __file__),
+    ],
+)
+def test_as(check, val, exp):
+    if exp is None:
+        with pytest.raises(TypeError):
+            check(val)
+    else:
+        act = check(val)
+        assert type(exp) is type(act)
+        if isinstance(act, torch.Tensor):
+            assert (exp == act).all()
+        else:
+            assert exp == act

@@ -864,16 +864,15 @@ def _cast_factory(
     def _cast(val: Any, name: Optional[str] = None) -> V1:
         try:
             val = cast(val)
+            if check is not None:
+                val = check(val, name)
         except:
             suf = "n" if _cast.__name__.startswith(("a", "e", "i", "o", "u")) else ""
             raise TypeError(
-                f"Could not cast {_nv(name, val)} as a{suf} {_cast.__name__}"
+                f"Could not cast {_nv(name, val)} as a{suf} {cast.__name__}"
             )
-        if _cast.check is not None:
-            val = _cast.check(val, name)
         return val
 
-    _cast.check = check
     _cast.__name__ = cast.__name__ if cast_name is None else cast_name
 
     return _cast
