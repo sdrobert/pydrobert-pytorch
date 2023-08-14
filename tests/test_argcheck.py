@@ -112,6 +112,8 @@ def test_is_type(check, val, exp):
         (argcheck.is_btw_open, 1, (0.999, 1), False),
         (argcheck.is_btw_closed, 1, (1, 1), True),
         (argcheck.is_btw_closed, 1.001, (1, 1), False),
+        (argcheck.has_ndim, torch.empty(1, 2, 3), (3,), True),
+        (argcheck.has_ndim, torch.empty(0), (3,), False),
     ],
 )
 def test_comparative(check, val, rest, good):

@@ -42,11 +42,17 @@ from typing import (
     Any,
     Type,
     Union,
-    Protocol,
     Generic,
     cast,
 )
-from typing_extensions import overload, Literal, get_args, ParamSpec, Concatenate
+from typing_extensions import (
+    overload,
+    Literal,
+    get_args,
+    ParamSpec,
+    Concatenate,
+    Protocol,
+)
 from pathlib import Path
 
 import torch
@@ -833,7 +839,9 @@ def has_ndim(
     ...
 
 
-def has_ndim(val, ndim, name=None) -> torch.Tensor:
+def has_ndim(val, ndim, name=None, allow_none=False) -> torch.Tensor:
+    if allow_none and val is None:
+        return val
     if val.ndim != ndim:
         raise ValueError(
             f"Expected {_nv(name, val)} to have dimension {ndim}; got {val.ndim}"
