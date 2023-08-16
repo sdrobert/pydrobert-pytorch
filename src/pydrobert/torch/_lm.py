@@ -1,4 +1,4 @@
-# Copyright 2022 Sean Robertson
+# Copyright 2023 Sean Robertson
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,17 @@ import numpy as np
 from . import argcheck
 from ._compat import script
 from ._wrappers import proxy
+
+try:
+    from sortedcontainers import SortedList
+
+    def insort_left(sl: SortedList, x):
+        sl.add(x)
+
+except ImportError:
+    from bisect import insort_left
+
+    SortedList = list
 
 ProbDicts = List[
     Dict[Union[np.signedinteger, Tuple[np.signedinteger, ...]], np.floating]
@@ -945,8 +956,16 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             )
         else:
             max_potential_offset = 0  # no descendants
-        for offset_type in (torch.uint8, torch.int16, torch.int32, torch.int64):
-            if torch.iinfo(offset_type).max >= max_potential_offset:
+        offset_type = offset_type_ = int  # for type checker
+        offset_imax = float("inf")
+        for offset_type, offset_type_ in (
+            (torch.uint8, np.uint8),
+            (torch.int16, np.int16),
+            (torch.int32, np.int32),
+            (torch.int64, np.int64),
+        ):
+            offset_imax = torch.iinfo(offset_type).max
+            if offset_imax >= max_potential_offset:
                 break
         if torch.iinfo(offset_type).max < max_potential_offset:
             # should not happen
@@ -964,7 +983,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         logbs = torch.zeros(O, dtype=torch.float)
         prob_dict = prob_dicts.pop(0)
         unigram_values = [prob_dict[x] for x in range(U - 1 % N)]
-        allocated = U - 1 % N
+        last_start, allocated = 0, U - 1 % N
         if N == 1:
             logps.copy_(torch.tensor(unigram_values, dtype=torch.float))
         else:
@@ -975,7 +994,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                 torch.tensor([x[1] for x in unigram_values], dtype=torch.float)
             )
         del unigram_values
-        parents = dict(((x,), x) for x in range(U - 1))
+        parents = dict(((x,), offset_type_(x)) for x in range(U - 1))
         N = 2
         while prob_dicts:
             prob_dict = prob_dicts.pop(0)
@@ -985,11 +1004,15 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             allocated += 1
             children = dict()
             print_(f"Sorting {N}-grams")
-            prob_list = sorted((key[::-1], value) for (key, value) in prob_dict.items())
-            prob_dict.clear()
+            prob_list = SortedList()
+            while prob_dict:
+                key, value = prob_dict.popitem()
+                insort_left(prob_list, (key[::-1], value))
             print_(f"Allocating {N}-grams")
-            for key, value in prob_list:
-                children[key] = allocated
+            while prob_list:
+                key, value = prob_list.pop(0)
+                assert 0 <= (allocated - start) <= offset_imax
+                children[key] = offset_type_(allocated - start)
                 ids[allocated - U] = int(key[-1])
                 if prob_dicts:
                     logps[allocated] = float(value[0])
@@ -997,16 +1020,17 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
                 else:
                     logps[allocated] = float(value)
                 prefix = key[:-1]
-                parent = parents[prefix]
+                parent = parents[prefix] + last_start
                 while parent >= 0 and not offsets[parent]:
                     offsets[parent] = allocated - parent
                     parent -= 1
                 allocated += 1
-            while not offsets[start - 1]:
-                offsets[start - 1] = offsets[start] + 1
-                start -= 1
+            for i in range(start, -1, -1):
+                if offsets[i - 1]:
+                    break
+                offsets[i - 1] = offsets[i] + 1
             parents.clear()
-            parents = children
+            parents, last_start = children, start
             N += 1
         # see if we can shrink the offset size
         if len(offsets):
