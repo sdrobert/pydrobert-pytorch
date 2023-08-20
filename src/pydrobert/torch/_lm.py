@@ -26,7 +26,7 @@ from ._compat import script
 from ._wrappers import proxy
 
 try:
-    from sortedcontainers import SortedList
+    from sortedcontainers import SortedList  # type: ignore
 
     def insort_left(sl: SortedList, x):
         sl.add(x)
@@ -393,8 +393,26 @@ def _lookup_calc_idx_log_probs(
     G: int,
     S: int,
 ) -> torch.Tensor:
-    # see commented description in LookupLanguageMode for more info on the structure
-    # of offsets, ids, logps, and logbs
+    # see commented description in LookupLanguageMode for more info on the structure of
+    # offsets, ids, logps, and logbs
+    #
+    # Follow two paths: one the full n-gram and the other its (n-1)-gram prefix -- the n
+    # and p paths respectively. If the p path completes, take the last logp. If the p
+    # path fails, take the last logp it didn't fail at and start accumulating logbs from
+    # the last on b path.
+    #
+    # Example: N = 4, N-gram = A B C D (note: unigrams always exist)
+    #
+    # match: D -x | v back:  C -> B -> A = P(D)B(C)B(B, C)B(A, B, C)
+    #
+    # match: D -> C -x | v back:  C -> B -> A = P(D|C)B(B, C)B(A, B, C)
+    #
+    # match: D -> C -> B -x | v back:  C -> B -> A = P(D|B,C)B(A, B, C)
+    #
+    # match: D -> C -> B -> A
+    #
+    # back:  C -> B -> A = P(D|A, B, C)
+    #
     B: int = hist.size(1)
     M, O = B * V, offsets.numel()
     shift = 0 if (0 <= sos < V) else 1
@@ -409,120 +427,67 @@ def _lookup_calc_idx_log_probs(
         # a unigram model doesn't rely on hist at all, so we bypass all the crap below
         return last_logps.expand(B, V)
 
-    # add an sos to the beginning of the history
-    hist = torch.cat(
-        [torch.full((1, B), sos, device=device, dtype=torch.long), hist],
-        0,
-    )
+    hidx_min = int(hidx.min().item())
+    rem = (N - 1) - hidx_min
+    if rem > 0:
+        # N.B. Some models require padding to the full context width with SOSes; others
+        # don't. In the latter case, padding should be harmless: the b path will always
+        # hit said padding before the p path, yielding backoffs of 0
+        hist = torch.cat([torch.full((rem, B), sos, device=device), hist])
+        hidx, hidx_min, rem = hidx + rem, hidx_min + rem, 0
+    if hidx.numel() == 1:
+        # hidx_min is hidx
+        hist = hist[-rem:hidx_min]
+    else:
+        range_ = torch.arange(hist.size(0), device=device)
+        mask = (hidx.unsqueeze(1) - N < range_) & (hidx.unsqueeze(1) > range_)
+        hist = hist.T.masked_select(mask).view(B, N - 1).T
+    assert hist.shape == (N - 1, B), (N - 1, B, hist.shape)
     if shift:
         hist = hist.masked_fill(hist.eq(sos), V)
     hist = hist.to(ids.dtype)
 
-    # Follow two paths: one the full n-gram and the other its (n-1)-gram prefix. If the
-    # first completes, take the last logp. If the first fails, take the last logp it
-    # didn't fail at and start accumulating logbs from the last on the second path.
-    #
-    # Example: N = 4, N-gram = A B C D (note: unigrams always exist)
-    #
-    # match: D -x
-    #        |
-    #        v
-    # back:  C -> B -> A
-    #                       = P(D)B(C)B(B, C)B(A, B, C)
-    #
-    # match: D -> C -x
-    #             |
-    #             v
-    # back:  C -> B -> A
-    #                       = P(D|C)B(B, C)B(A, B, C)
-    #
-    # match: D -> C -> B -x
-    #                  |
-    #                  v
-    # back:  C -> B -> A
-    #                       = P(D|B,C)B(A, B, C)
-    #
-    # match: D -> C -> B -> A
-    #
-    # back:  C -> B -> A
-    #                       = P(D|A, B, C)
-    #
-    # some additional, irritating details are commented on in the loop.
-    vrange = torch.arange(V + 2, device=device, dtype=torch.long)
+    vrange = torch.arange(V + 1, device=device, dtype=torch.long)
     hidx = torch.as_tensor(hidx, dtype=torch.long, device=device).expand(B)
     srange = vrange[:S]
-    desc = torch.cat(
-        [
-            vrange[:V].repeat(B),  # match (M,)
-            hist.gather(0, hidx.unsqueeze(0))
-            .long()
-            .flatten()
-            .repeat_interleave(V),  # back (M,)
-        ]
-    )  # (2M,)
-    assert desc.shape == (2 * M,)
-    # i = min(3 * B + 4, M - 1)
-    # print("hist", hist[..., i // V])
-    # print("N", N, "B", B)
-    # print("hidx", hidx[i // V])
-    # print(-1, "desc", desc[i], desc[M + i])
+    desc = torch.cat([vrange[:V].repeat(B), hist[-1]])  # (M + B,)
     last_logps = last_logps.repeat(B)  # (M,)
-    last_backoffs = logbs[desc[M:]]
-    hit_match = torch.ones(M, device=device, dtype=torch.bool)
-    # print(-1, "logps", last_logps[i])
-    # print(-1, "last_backoffs", last_backoffs[i])
-
-    for n in range(N - 1):
-        hidx_n = torch.stack([hidx - n, hidx - n - 1], 0)  # (2, B)
-        done = (vrange[:2] == (N - n - 1)).unsqueeze(1) | (hidx_n < 0)
-        done = done.repeat_interleave(V)  # (2M,)
-        assert done.shape == (2 * M,)
-        # print(n, "done", done[i], done[i + M], n, N, N - n - 1)
-        hidx_n = hidx_n.clamp_min(0)
-        hist_n = hist.gather(0, hidx_n).flatten().repeat_interleave(V)
-        # print(n, "hist_n", int(hist_n[i]), int(hist_n[M + i]))
-        desc_starts = offsets[desc].long() + desc
-        desc_ends = offsets[desc + 1].long() + desc + 1
-        # print(n, "desc_starts", desc_starts[i], desc_starts[M + i])
-        # print(n, "desc_ends", desc_ends[i], desc_ends[M + i])
+    last_backoffs = logbs[desc[M:]].repeat_interleave(V)  # (M,)
+    found = torch.ones(M + B, device=device, dtype=torch.bool)
+    for n in range(1, N):
+        hist_n = torch.cat([hist[-n].repeat_interleave(V), hist[-min(n + 1, N - 1)]])
+        desc_starts = offsets[desc].long() + desc  # (M + B,)
+        desc_ends = offsets[desc + 1].long() + desc + 1  # (M + B,)
         # there can't be more than S direct descendants per node
-        pos_desc = desc_starts.unsqueeze(1) + srange  # (2M, S)
-        assert (desc_ends <= pos_desc[..., -1] + 1).all()
-        extend_mask = desc_ends.unsqueeze(1) > pos_desc  # (2M, S)
-        extend_mask = extend_mask & (
-            hist_n.unsqueeze(1) == ids[pos_desc.clamp_max(P - 1) - U].long()
-        )
-        hit = extend_mask.any(1)
-        desc = torch.where(done, desc, pos_desc.masked_fill(~extend_mask, 0).sum(1))
-        # print(n, "desc", desc[i], desc[M + i], O - 1, P - 1)
-        cur_backoffs = logbs[desc[M:]].masked_fill(~hit[M:], 0.0)
-        # print(n, "cur_backoffs", cur_backoffs[i])
+        pos_desc = desc_starts.unsqueeze(1) + srange  # (M + B, S)
+        extend_mask = desc_ends.unsqueeze(1) > pos_desc
+        ids_ = ids[pos_desc.clamp_max(P - 1) - U]  # (M + B, S)
+        extend_mask = extend_mask & (hist_n.unsqueeze(1) == ids_)
+        found = extend_mask.any(1) & found  # (M + B,)
+        desc = torch.where(found, pos_desc.masked_fill(~extend_mask, 0).sum(1), desc)
         logps_desc = logps[desc[:M]]
-        # print(n, "logps_desc", logps_desc[i])
-        is_finite = torch.isfinite(logps_desc)
-        # print(n, "is_finite", is_finite[i])
-        hit_match = hit[:M] & hit_match
-        # print(n, "hit", hit_match[i], hit[M + i])
-        cur_logps = torch.where(is_finite, logps_desc, last_logps)
-        cur_logps = torch.where(
-            hit_match, cur_logps, last_logps + cur_backoffs + last_backoffs
-        )
-        last_logps = torch.where(
-            done[:M],
-            last_logps,
-            cur_logps,
-        )
-        last_backoffs = last_backoffs.masked_fill(is_finite, 0.0)
-        last_backoffs = torch.where(
-            done[M:],
-            last_backoffs,
-            cur_backoffs + last_backoffs,
-        ).masked_fill(~hit_match, 0.0)
-        # print(n, "logps", last_logps[i])
-        # print(n, "logbs", last_backoffs[i])
+        if n == N - 1:
+            cur_backoffs = torch.zeros_like(last_backoffs)
+        else:
+            cur_backoffs = (
+                logbs[desc[M:].clamp_max(O - 1)]
+                .masked_fill(~found[M:], 0.0)
+                .repeat_interleave(V)
+            )
 
-    last_logps = last_logps + last_backoffs
-    # print("final", last_logps[i])
+        # Following Heafield's thesis, an infinite lprob indicates that this node is
+        # invalid, but it has children which could be valid. In this case, we treat the
+        # node as a backoff, but still treat the node as 'found'. That way, a later
+        # found node could overwrite the logp value.
+        clobber_logp = torch.isfinite(logps_desc) & found[:M]
+        cur_logps = torch.where(
+            clobber_logp, logps_desc, last_logps + cur_backoffs + last_backoffs
+        )
+        last_backoffs = cur_backoffs.masked_fill(~clobber_logp, 0.0)
+
+        last_logps = torch.where(
+            (hidx >= n).repeat_interleave(V), cur_logps, last_logps
+        )
 
     return last_logps.view(B, V)
 
@@ -802,6 +767,48 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
             ),
             prev,
         )
+
+    @torch.jit.export
+    def calc_full_log_probs(
+        self,
+        hist: torch.Tensor,
+        prev: Dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        return self.calc_full_log_probs_chunked(hist, prev, 1)
+
+    @torch.jit.export
+    def calc_full_log_probs_chunked(
+        self,
+        hist: torch.Tensor,
+        prev: Dict[str, torch.Tensor],
+        chunk_size: int = 32,
+    ) -> torch.Tensor:
+        T, B = hist.shape
+        N, V = self.max_ngram, self.vocab_size
+        Nm1, device = min(T, N - 1), hist.device
+        hist = hist.contiguous()
+        hist_ = idx_ = log_probs_ = hist  # for torchscript
+        if chunk_size < 1:
+            raise ValueError(f"expected chunk_size to be positive; got {chunk_size}")
+
+        log_probs = [torch.empty(0, B, V, device=device)]
+        for idx_ in torch.arange(Nm1, device=hist.device):
+            log_probs_ = self.calc_idx_log_probs(hist, prev, idx_)[0]
+            log_probs.append(log_probs_.unsqueeze(0))
+
+        if Nm1 < T + 1:
+            idx_ = torch.tensor(Nm1, dtype=torch.long, device=device)
+            for t in range(Nm1, T + 1, chunk_size):
+                T_rest = min(chunk_size, T + 1 - t)
+                hist_ = hist.as_strided((Nm1, T_rest * B), (B, 1), B * (t - Nm1))
+                log_probs_ = self.calc_idx_log_probs(hist_, prev, idx_)[0]
+                log_probs_ = log_probs_.view(T_rest, B, V)
+                log_probs.append(log_probs_)
+
+        log_probs_ = torch.cat(log_probs, 0)
+        assert log_probs_.size(0) == T + 1, (log_probs_.size(0), T + 1)
+
+        return log_probs_
 
     def load_state_dict(self, state_dict: dict, **kwargs) -> None:
         error_prefix = "Error(s) in loading state_dict for {}:\n".format(

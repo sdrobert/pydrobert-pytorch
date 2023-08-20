@@ -216,10 +216,10 @@ def test_lookup_language_model_builds_trie(prob_dicts):
 
 @pytest.mark.parametrize("N", [1, 2, 5])
 def test_lookup_language_model_log_probs(device, N, jit_type):
-    vocab_size, sos = 10, -1
+    V, sos = 10, -1
     prob_dicts = []
     for n in range(1, N + 1):
-        max_ngrams = vocab_size**n
+        max_ngrams = V**n
         has_ngram = torch.randint(2, (max_ngrams,), device=device).eq(1)
         dict_ = dict()
         last = n == N
@@ -228,8 +228,8 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
                 continue
             key = []
             for _ in range(n):
-                key.append(idx % vocab_size)
-                idx //= vocab_size
+                key.append(idx % V)
+                idx //= V
             if n == 1:
                 key = key[0]
             else:
@@ -240,13 +240,10 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
                 dict_[key] = torch.randn((2,), device=device).tolist()
         prob_dicts.append(dict_)
     # we're not going to pad anything
-    all_queries = [[(x,) for x in range(vocab_size)]]
+    all_queries = [[(x,) for x in range(V)]]
     for _ in range(2, N + 1):
         all_queries.append(
-            [
-                x + (y,)
-                for (x, y) in itertools.product(all_queries[-1], range(vocab_size))
-            ]
+            [x + (y,) for (x, y) in itertools.product(all_queries[-1], range(V))]
         )
 
     def lookup(query, print_=False, backoff=False):
@@ -277,9 +274,12 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
         else:
             return val[1 if backoff else 0]
 
+    # print(all_queries[1][3 * V + 4])
+    # lookup(all_queries[1][3 * V + 4], True)
+
     exps = [
         torch.tensor([lookup(query) for query in ngram_queries], device=device).view(
-            -1, vocab_size
+            -1, V
         )
         for ngram_queries in all_queries
     ]
@@ -291,18 +291,22 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
     # the sos shouldn't matter -- it isn't in the lookup table. The lm will
     # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
     # be 0
-    lm = LookupLanguageModel(vocab_size, sos, prob_dicts=prob_dicts).to(device)
+    lm = LookupLanguageModel(V, sos, prob_dicts=prob_dicts).to(device)
     if jit_type == "script":
         lm = torch.jit.script(lm)
     elif jit_type == "trace":
         pytest.xfail("lookup_language_model trace unsupported")
-    for exp, hist in zip(exps, hists):
+    for n, (exp, hist) in enumerate(zip(exps, hists)):
+        B = hist.size(1)
+        assert exp.shape == (B, V), n
         act = lm(hist, None, -1)[0]
-        for n in range(hist.size(1)):
-            assert torch.allclose(exp[n], act[n], atol=1e-5), n
+        assert act.shape == exp.shape
+        for b in range(B):
+            assert torch.allclose(exp[b], act[b], atol=1e-5), (n, b)
 
 
-def test_lookup_language_model_nonuniform_idx(device):
+@pytest.mark.parametrize("chunk_size", [1, 5])
+def test_lookup_language_model_nonuniform_idx(device, chunk_size):
     S, N, B = 20, 5, 2
     prob_dicts = []
     vocab_size, sos = 10, -1
@@ -333,7 +337,7 @@ def test_lookup_language_model_nonuniform_idx(device):
         vocab_size, sos, prob_dicts=prob_dicts, destructive=True
     ).to(device)
     hist = torch.randint(0, vocab_size, (S, B), device=device)
-    exp = lm(hist)
+    exp = lm.calc_full_log_probs_chunked(hist, dict(), chunk_size)
     assert not torch.isnan(exp).any()
     idx = torch.randint(0, S + 1, (B,), device=device)
     exp = exp.gather(0, idx.view(1, B, 1).expand(1, B, vocab_size)).squeeze(0)
@@ -350,11 +354,11 @@ def test_lookup_language_model_sos_context(device):
     ]
     lm = LookupLanguageModel(4, sos=0, prob_dicts=prob_dicts, destructive=True)
     lm.to(device)
-    # P(0|0) = P(0) = -99
-    # P(1|0) = P(1|0) = 0.01
-    # P(2|0) = P(2|0) = 0.02
-    # P(3|0) = P(3) = 0.3
-    exp = torch.tensor([[[-99.0, 0.01, 0.02, 0.3]]], device=device)
+    # P(0|0, 0) = P(0) = -99
+    # P(1|0, 0) = P(1|0, 0) = 0.001
+    # P(2|0, 0) = P(2|0) = 0.02
+    # P(3|0, 0) = P(3) = 0.3
+    exp = torch.tensor([[[-99.0, 0.001, 0.02, 0.3]]], device=device)
     act = lm(torch.empty((0, 1), device=device, dtype=torch.long))
     assert torch.allclose(exp, act, atol=1e-5)
 
