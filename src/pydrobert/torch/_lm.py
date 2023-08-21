@@ -31,6 +31,7 @@ try:
     def insort_left(sl: SortedList, x):
         sl.add(x)
 
+
 except ImportError:
     from bisect import insort_left
 
@@ -169,10 +170,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def calc_idx_log_probs(
-        self,
-        hist: torch.Tensor,
-        prev: Dict[str, torch.Tensor],
-        idx: torch.Tensor,
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Calculates log_prob_idx over types at prefix up to and excluding idx
 
@@ -433,7 +431,9 @@ def _lookup_calc_idx_log_probs(
         # N.B. Some models require padding to the full context width with SOSes; others
         # don't. In the latter case, padding should be harmless: the b path will always
         # hit said padding before the p path, yielding backoffs of 0
-        hist = torch.cat([torch.full((rem, B), sos, device=device), hist])
+        hist = torch.cat(
+            [torch.full((rem, B), sos, dtype=torch.long, device=device), hist]
+        )
         hidx, hidx_min, rem = hidx + rem, hidx_min + rem, 0
     if hidx.numel() == 1:
         # hidx_min is hidx
@@ -561,6 +561,8 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     >>> lm = LookupLanguageModel(vocab_size, sos)  # fast!
     >>> lm.load_state_dict(state_dict)
 
+    In addition, while this module does not 
+
     See Also
     --------
     pydrobert.util.parse_arpa_lm
@@ -578,7 +580,13 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     JIT scripting is possible with this module, but not tracing.
     """
 
-    __constants__ = ("vocab_size", "sos", "max_ngram", "max_ngram_nodes")
+    __constants__ = (
+        "vocab_size",
+        "sos",
+        "max_ngram",
+        "max_ngram_nodes",
+        "max_direct_descendants",
+    )
 
     sos: int
     max_ngram: int
@@ -656,12 +664,6 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     #
     # 1-gram ids can be easily inferred by invariant 1. This implies ``ids[idx]`` is
     # actually the label of the node at ``idx + (vocab_size + 1)`` otherwise.
-
-    # XXX(sdrobert): as discussed in [heafield2011], we could potentially speed
-    # up computations by keeping track of prefix probs and storing them in
-    # case of backoff. This makes sense in a serial case, when we can choose to
-    # explore or not explore a path. In a massively parallel environment, I'm
-    # not sure it's worth the effort...
 
     @overload
     def __init__(
@@ -746,10 +748,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         return 0 if (0 <= self.sos < self.vocab_size) else 1
 
     def calc_idx_log_probs(
-        self,
-        hist: torch.Tensor,
-        prev: Dict[str, torch.Tensor],
-        idx: torch.Tensor,
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         return (
             _lookup_calc_idx_log_probs(
@@ -770,18 +769,13 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
 
     @torch.jit.export
     def calc_full_log_probs(
-        self,
-        hist: torch.Tensor,
-        prev: Dict[str, torch.Tensor],
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor],
     ) -> torch.Tensor:
         return self.calc_full_log_probs_chunked(hist, prev, 1)
 
     @torch.jit.export
     def calc_full_log_probs_chunked(
-        self,
-        hist: torch.Tensor,
-        prev: Dict[str, torch.Tensor],
-        chunk_size: int = 32,
+        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], chunk_size: int = 1,
     ) -> torch.Tensor:
         T, B = hist.shape
         N, V = self.max_ngram, self.vocab_size
