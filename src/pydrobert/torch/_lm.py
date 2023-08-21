@@ -777,9 +777,17 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     ) -> torch.Tensor:
         """Computes full log probabilities in chunks
         
-        This method has the same signature and interpretation as
+        This method has the same interpretation and return value as
         :func:`calc_full_log_probs`, but with an additional optional argument
-        `chunk_size`. Because
+        `chunk_size` to control the number of distributions over tokens to compute
+        simultaneously.
+        
+        Because the distribution over the current token does not depend on any prior
+        state, it is possible to compute all token distributions simultaneously. While
+        faster, it is also much more memory-intensive to do so (especially so for large
+        vocabularies). `chunk_size` provides a lever for this trade-off. Note that
+        the computation of token distributions is always parallelized across the
+        batch dimension.
 
         Parameters
         ----------
@@ -797,11 +805,11 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         hist = hist.contiguous()
         hist_ = idx_ = log_probs_ = hist  # for torchscript
         if chunk_size < 1:
-            raise ValueError(f"expected chunk_size to be positive; got {chunk_size}")
+            raise RuntimeError(f"expected chunk_size to be positive; got {chunk_size}")
 
         log_probs = [torch.empty(0, B, V, device=device)]
         for idx_ in torch.arange(Nm1, device=hist.device):
-            log_probs_ = self.calc_idx_log_probs(hist, prev, idx_)[0]
+            log_probs_ = self.calc_idx_log_probs(hist[:idx_], prev, idx_)[0]
             log_probs.append(log_probs_.unsqueeze(0))
 
         if Nm1 < T + 1:
