@@ -450,7 +450,7 @@ def _lookup_calc_idx_log_probs(
     vrange = torch.arange(V + 1, device=device, dtype=torch.long)
     hidx = torch.as_tensor(hidx, dtype=torch.long, device=device).expand(B)
     srange = vrange[:S]
-    desc = torch.cat([vrange[:V].repeat(B), hist[-1]])  # (M + B,)
+    desc = torch.cat([vrange[:V].repeat(B), hist[-1].long()])  # (M + B,)
     last_logps = last_logps.repeat(B)  # (M,)
     last_backoffs = logbs[desc[M:]].repeat_interleave(V)  # (M,)
     found = torch.ones(M + B, device=device, dtype=torch.bool)
@@ -560,8 +560,6 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     >>> # save state dict, quit, startup, then reload state dict
     >>> lm = LookupLanguageModel(vocab_size, sos)  # fast!
     >>> lm.load_state_dict(state_dict)
-
-    In addition, while this module does not 
 
     See Also
     --------
@@ -777,6 +775,22 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     def calc_full_log_probs_chunked(
         self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], chunk_size: int = 1,
     ) -> torch.Tensor:
+        """Computes full log probabilities in chunks
+        
+        This method has the same signature and interpretation as
+        :func:`calc_full_log_probs`, but with an additional optional argument
+        `chunk_size`. Because
+
+        Parameters
+        ----------
+        hist
+        prev
+        chunk_size
+
+        Returns
+        -------
+        log_probs : torch.Tensor
+        """
         T, B = hist.shape
         N, V = self.max_ngram, self.vocab_size
         Nm1, device = min(T, N - 1), hist.device
