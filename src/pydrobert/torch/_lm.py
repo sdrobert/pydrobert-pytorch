@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import abc
+from typing_extensions import Literal
 import warnings
 
 from typing import Any, Dict, Optional, Tuple, Union, overload, List
@@ -103,11 +104,12 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
     Notes
     -----
     When this module is scripted, its return type will be :class:`typing.Any`. This
-    reflects the fact that either `warped` is returned on its own (a tensor) or both
-    `warped_` and `flow` (a tuple). Use :func:`torch.jit.isinstance` for type refinement
-    in subsequent scripting. Tracing will infer the correct type. Alternatively, one can
-    use the methods :func:`update_input`, :func:`calc_idx_log_probs`, and
-    :func:`calc_full_log_probs` to avoid ambiguity in the return type altogether.
+    reflects the fact that either `log_probs` is returned on its own (a tensor) or both
+    `log_probs` and `prev` (a tuple). Use :func:`torch.jit.isinstance` for type
+    refinement in subsequent scripting. Tracing will infer the correct type.
+    Alternatively, one can use the methods :func:`update_input`,
+    :func:`calc_idx_log_probs`, and :func:`calc_full_log_probs` to avoid ambiguity in
+    the return type altogether.
 
     This module has changed considerably since version 0.3.0. The primary changes are a)
     to replace the boolean switch `full` with `idx`; b) the inclusion of the `prev`
@@ -217,6 +219,25 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
             log_probs_idx, prev = self.calc_idx_log_probs(hist, prev, idx)
             log_probs.append(log_probs_idx)
         return torch.stack(log_probs, 0)
+
+    @overload
+    def forward(
+        self,
+        hist: torch.Tensor,
+        prev: Dict[str, torch.Tensor] = dict(),
+        *,
+        idx: Union[int, torch.Tensor],
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        ...
+
+    @overload
+    def forward(
+        self,
+        hist: torch.Tensor,
+        prev: Dict[str, torch.Tensor] = dict(),
+        idx: Literal[None] = None,
+    ) -> torch.Tensor:
+        ...
 
     @overload
     def forward(
