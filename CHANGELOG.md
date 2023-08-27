@@ -4,6 +4,7 @@
 
 - Added `pydrobert.torch.argcheck` and standardized module argument checking a
   bit.
+- Added `environment.yml` for local dev.
 - `LookupLanguageModel` has been refactored and reimplemented. It is no longer
   compatible with previous versions of the model.
 - `parse_arpa` has been enhanced: it can handle log-probs in scientific
