@@ -3,8 +3,14 @@
 ## v0.4.0
 
 - Added `pydrobert.torch.argcheck` and standardized module argument checking a
-  bit
-- `parse_arpa` can handle log-probs in scientific notation (e.g. `1e4`)
+  bit.
+- `LookupLanguageModel` has been refactored and reimplemented. It is no longer
+  compatible with previous versions of the model.
+- `parse_arpa` has been enhanced: it can handle log-probs in scientific
+  notation (e.g. `1e4`), conversion from (implicitly) log-base-10 to log-base-e
+  probabilities; and storing log probabilities as Numpy floating-point types.
+- `LookupLanguageModel` and `parse_arpa` now have an optional logger argument
+  to log progress building the trie and parsing the file, respectively.
 - Added `best_is_train` flag to `TrainingController.update_for_epoch`
 - Refactored `get-torch-spect-data-dir-info` to be faster
 - `subset-torch-spect-data-dir` command has been added

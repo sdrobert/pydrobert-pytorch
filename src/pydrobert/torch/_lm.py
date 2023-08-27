@@ -525,8 +525,8 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         Pr(w_t|w_{t-1},\ldots,w_{t-(N-1)}) = \begin{cases}
             Entry(w_{t-(N-1)}, w_{t-(N-1)+1}, \ldots, w_t)
                 & \text{if } Entry(w_{t-(N-1)}, \ldots) > 0 \\
-            Backoff(w_{t-(N-1)}, \ldots, w_{t-1})
-            Pr(w_t|w_{t-1},\ldots,w_{t-(N-1)+1}) & \text{else}
+            Backoff(w_{t-(N-1)}, \ldots, w_{t-1}) Pr(w_t|w_{t-1},\ldots,w_{t-(N-1)+1}) &
+            \text{else}
         \end{cases}
 
     Missing entries are assumed to have value 0 and missing backoff penalties are
@@ -534,8 +534,7 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
 
     Parameters
     ----------
-    vocab_size
-    sos
+    vocab_size sos
         The start of sequence token. If specified, any prefix with fewer tokens than the
         maximum order of n-grams minus 1 will be prepended up to that length with this
         token.
@@ -548,27 +547,28 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         values are pairs of log-probability and log-backoff penalty. If `prob_dicts` is
         not specified, a unigram model with a uniform prior will be built.
     destructive
-        If :obj:`True`, allows initialization to modify `prob_dicts` directly instead
-        of making a fresh copy. Doing so can help reduce memory pressure.
+        If :obj:`True`, allows initialization to modify `prob_dicts` directly instead of
+        making a fresh copy. Doing so can help reduce memory pressure.
     logger
         If specified, this logger will be used to report on the progress initializing
         this module.
-    
-    Call Parameters
-    ---------------
-    hist : torch.Tensor
-    prev : Dict[str, torch.Tensor], optional
-    idx : Optional[Union[int, torch.Tensor]], optional
 
-    Returns
-    -------
-    log_probs : torch.Tensor or tuple of torch.Tensor
+    Warnings
+    --------
+    This class differs considerably from its `0.3.0` version. `prob_list` was renamed to
+    `prob_dicts`; `prob_list` is deprecated. `sos` became no longer optional.
+    `pad_sos_to_n` was removed as an argument (implicitly true now). `eos` and `oov`
+    were also removed as part of updates to :obj:`SequentialLanguageModel`. Finally, the
+    underlying buffers of this model have changed in structure and name, invalidating
+    any old saved state dictionaries.
+
+    JIT scripting is possible with this module, but not tracing.
 
     Notes
     -----
     Initializing an instance from an `prob_dicts` is expensive. `prob_dicts` is
-    converted to a trie (something like [heafield2011]_) so that it takes up less space
-    in memory, which can take some time.
+    converted to a reverse trie (something like [heafield2011]_) so that it takes up
+    less space in memory, which can take some time.
 
     Rather than re-initializing repeatedly, it is recommended you save and load this
     module's state dict. :func:`load_state_dict` as been overridden to support loading
@@ -584,19 +584,11 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
 
     See Also
     --------
+    SequentialLanguageModel
+        A general description of language models, including call parameters
     pydrobert.util.parse_arpa_lm
-        How to read a pretrained table of n-gram probabilities into
-        `prob_dicts`. The parameter `token2id` should be specified to ensure
-        id-based keys.
-
-    Warnings
-    --------
-    After 0.3.0, `prob_list` was renamed to `prob_dicts`. `prob_list` is deprecated.
-    `sos` became no longer optional. `pad_sos_to_n` was removed as an argument
-    (implicitly true now). `eos` and `oov` were also removed as part of updates to
-    :obj:`SequentialLanguageModel`
-
-    JIT scripting is possible with this module, but not tracing.
+        How to read a pretrained table of n-gram probabilities into `prob_dicts`. The
+        parameter `token2id` should be specified to ensure id-based keys.
     """
 
     __constants__ = (
