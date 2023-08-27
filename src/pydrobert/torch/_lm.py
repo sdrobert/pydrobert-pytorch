@@ -620,13 +620,11 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
     # flat buffers "ids", "logps", and "logbs" respectively, with values accessible by
     # index. Indices satisfy the following invariants:
     #
-    # 1. The direct descendants of the root are the entire vocabulary, ordered 0...V
+    # 1. The direct descendants of the root are the entire vocabulary, sorted by id
     # 2. All nodes of level n occur before (in index) those of level n + 1
-    # 3. If two nodes i and j are on the same level and i < j, then all the direct
+    # 3. Direct descendants of a node are sorted by id
+    # 4. If two nodes i and j are on the same level and i < j, then all the direct
     #    descendants of i (and thus all descendants of i) occur before those of j
-    #
-    # The order of direct descendants (after level 1) is unspecified unless sort=True,
-    # at which point they are sorted in ascending numeric order.
     #
     # Unigram nodes always occupy the first `vocab_size` indices. When the maximal order
     # of the trie is > 1, the trie may be navigated with the buffer `offsets`. The value
