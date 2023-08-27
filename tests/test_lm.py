@@ -19,6 +19,7 @@ from typing import Dict, Tuple
 
 import torch
 import pytest
+import numpy as np
 
 from pydrobert.torch.modules import (
     LookupLanguageModel,
@@ -115,135 +116,110 @@ class RNNLM(MixableSequentialLanguageModel):
 
 @pytest.mark.cpu
 @pytest.mark.parametrize(
-    "prob_dicts,pointers,ids,logs",
+    "prob_dicts",
     [
-        (
-            None,
-            torch.tensor([], dtype=torch.uint8),
-            torch.tensor([], dtype=torch.uint8),
-            -torch.tensor([5] * 5, dtype=torch.float).log(),
-        ),
-        (
-            [{0: 0.0, 1: 0.1, 4: 0.4}],
-            torch.tensor([], dtype=torch.uint8),
-            torch.tensor([], dtype=torch.uint8),
-            torch.tensor([0.0, 0.1, -INF, -INF, 0.4]),
-        ),
-        (
-            [
-                {1: (0.1, -0.1), 2: (0.2, -0.2), 3: (0.3, -0.3)},
-                {(1, 0): 1.0, (1, 1): 1.1, (3, 2): 3.3},
-            ],
-            torch.tensor([6, 5, 6, 5, 5, 4], dtype=torch.uint8),
-            torch.tensor([0, 1, 2], dtype=torch.uint8),
-            torch.tensor(
-                [
-                    -INF,
-                    0.1,
-                    0.2,
-                    0.3,
-                    -INF,
-                    NAN,  # logp 1-gram
-                    1.0,
-                    1.1,
-                    3.3,  # logp 2-gram
-                    0.0,
-                    -0.1,
-                    -0.2,
-                    -0.3,
-                    0.0,
-                    NAN,  # logb 1-gram
-                ]
-            ),
-        ),
-        (
-            [
-                {1: (0.1, -0.1), 2: (0.2, -0.2), 3: (0.3, -0.3), 4: (0.4, -0.4)},
-                {
-                    (1, 1): (1.1, -1.1),
-                    (2, 3): (2.3, -2.3),
-                    (2, 4): (2.4, -2.4),
-                    (4, 1): (4.1, -4.1),
-                },
-                {(0, 0, 1): 0.01, (0, 0, 2): 0.02, (4, 1, 4): 4.14},
-            ],
-            torch.tensor(
-                [
-                    6,
-                    6,
-                    6,
-                    7,
-                    6,
-                    6,  # 1-gram -> 2-gram
-                    6,
-                    7,
-                    6,
-                    5,
-                    4,
-                    4,  # 2-gram -> 3-gram
-                ],
-                dtype=torch.uint8,
-            ),
-            torch.tensor(
-                [0, 1, 3, 4, 1, 0, 1, 2, 4],  # 2-gram suffix  # 3-gram suffix
-                dtype=torch.uint8,
-            ),
-            torch.tensor(
-                [
-                    -INF,
-                    0.1,
-                    0.2,
-                    0.3,
-                    0.4,
-                    NAN,  # logp 1-gram
-                    -INF,
-                    1.1,
-                    2.3,
-                    2.4,
-                    4.1,
-                    NAN,  # logp 2-gram
-                    0.01,
-                    0.02,
-                    4.14,  # logp 3-gram
-                    0.0,
-                    -0.1,
-                    -0.2,
-                    -0.3,
-                    -0.4,
-                    NAN,  # logb 1-gram
-                    0.0,
-                    -1.1,
-                    -2.3,
-                    -2.4,
-                    -4.1,
-                    NAN,  # Logb 2-gram
-                ]
-            ),
-        ),
+        None,
+        [{0: 0.0, 1: 1.0, 4: 4.0}],
+        [
+            {1: (1.0, -1.0), 2: (2.0, -2.0), 3: (3.0, -3)},
+            {(1, 0): 1.1, (1, 1): 11.1, (3, 2): 23.1},
+        ],
+        [
+            {1: (1.0, -1.0), 2: (2.0, -2.0), 3: (3.0, -3.0), 4: (4.0, -4.0)},
+            {
+                (1, 1): (11.1, -11.1),
+                (2, 3): (32.1, -32.1),
+                (2, 4): (42.1, -42.1),
+                (4, 1): (14.1, -14.1),
+            },
+            {(0, 0, 1): 1.2, (0, 0, 2): 2.2, (4, 1, 4): 414.2, (3, 4, 1): 143.2},
+        ],
     ],
     ids=["deft", "unigram", "bigram", "trigram"],
 )
-def test_lookup_language_model_builds_trie(prob_dicts, pointers, ids, logs):
-    vocab_size = 5
+def test_lookup_language_model_builds_trie(prob_dicts):
+    vocab_size, N = 5, 0 if prob_dicts is None else len(prob_dicts)
     lm = LookupLanguageModel(vocab_size, 0, prob_dicts=prob_dicts)
-    assert lm.pointers.shape == pointers.shape
-    assert lm.ids.shape == ids.shape
-    assert lm.logs.shape == logs.shape
-    assert (lm.ids == ids).all()
-    assert (lm.pointers == pointers).all()
-    nan_mask = torch.isnan(lm.logs)
-    assert torch.isnan(lm.logs).eq(nan_mask).all()
-    assert torch.allclose(
-        logs.masked_select(~nan_mask), lm.logs.masked_select(~nan_mask)
-    )
+
+    class ReverseTrieNode(object):
+        def __init__(self, lprobs=(-INF, 0)):
+            try:
+                lprobs = float(lprobs[0]), float(lprobs[1])
+            except:
+                lprobs = float(lprobs)
+            self.children, self.lprobs = dict(), lprobs
+
+        def __repr__(self) -> str:
+            return self._str()
+
+        def _str(self, ws="  ") -> str:
+            if isinstance(self.lprobs, float):
+                s = f"{self.lprobs:.1f}"
+            else:
+                s = f"{self.lprobs[0]:.1f}, {self.lprobs[1]:.1f}"
+            if len(self.children):
+                c = f"\n{ws}".join(
+                    f"{k} -> {v._str(ws + '  ')}" for (k, v) in self.children.items()
+                )
+                s += f":\n{ws}{c}"
+            return s
+
+        def __getitem__(self, key):
+            if isinstance(key, int):
+                key = (key,)
+            if len(key):
+                return self.children[key[-1]][key[:-1]]
+            else:
+                return self.lprobs
+
+    root = ReverseTrieNode()
+    S = 0
+    if N > 0:
+        if N == 1:
+            parents = [ReverseTrieNode(lprob) for lprob in lm.logps[:vocab_size]]
+        else:
+            parents = [
+                ReverseTrieNode(lprob)
+                for lprob in zip(lm.logps[:vocab_size], lm.logbs[:vocab_size])
+            ]
+            last_idxs = range(vocab_size)
+        root.children.update(enumerate(parents))
+        for n in range(2, N + 1):
+            children, idxs = [], []
+            for parent, last_idx in zip(parents, last_idxs):
+                left_idx = int(lm.offsets[last_idx]) + last_idx
+                right_idx = int(lm.offsets[last_idx + 1]) + last_idx + 1
+                for idx in range(left_idx, right_idx):
+                    id_ = int(lm.ids[idx - vocab_size - 1])
+                    logp = lm.logps[idx]
+                    if n == N:
+                        lprobs = logp
+                    else:
+                        lprobs = (logp, lm.logbs[idx])
+                    child = ReverseTrieNode(lprobs)
+                    parent.children[id_] = child
+                    children.append(child)
+                    idxs.append(idx)
+                S = max(S, right_idx - left_idx)
+            parents, last_idxs = children, idxs
+
+        for n, prob_dict in enumerate(prob_dicts):
+            for key, exp in prob_dict.items():
+                act = root[key]
+                if n == N - 1:
+                    assert np.isclose(exp, act), key
+                else:
+                    assert np.isclose(exp[0], act[0])
+                    assert np.isclose(exp[1], act[1])
+    assert lm.max_direct_descendants == S
 
 
 @pytest.mark.parametrize("N", [1, 2, 5])
 def test_lookup_language_model_log_probs(device, N, jit_type):
-    vocab_size, sos = 10, -1
+    V, sos = 10, -1
     prob_dicts = []
     for n in range(1, N + 1):
-        max_ngrams = vocab_size ** n
+        max_ngrams = V**n
         has_ngram = torch.randint(2, (max_ngrams,), device=device).eq(1)
         dict_ = dict()
         last = n == N
@@ -252,8 +228,8 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
                 continue
             key = []
             for _ in range(n):
-                key.append(idx % vocab_size)
-                idx //= vocab_size
+                key.append(idx % V)
+                idx //= V
             if n == 1:
                 key = key[0]
             else:
@@ -264,39 +240,47 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
                 dict_[key] = torch.randn((2,), device=device).tolist()
         prob_dicts.append(dict_)
     # we're not going to pad anything
-    all_queries = [[(x,) for x in range(vocab_size)]]
+    all_queries = [[(x,) for x in range(V)]]
     for _ in range(2, N + 1):
         all_queries.append(
-            [
-                x + (y,)
-                for (x, y) in itertools.product(all_queries[-1], range(vocab_size))
-            ]
+            [x + (y,) for (x, y) in itertools.product(all_queries[-1], range(V))]
         )
 
-    def lookup(list_, query):
-        if len(list_) > len(query):
-            return lookup(list_[:-1], query)
-        if len(list_) == 1:
-            if N == 1:
-                return list_[0].get(query[0], -INF)
-            else:
-                return list_[0].get(query[0], (-INF, 0.0))[0]
-        val = list_[-1].get(query, None)
+    def lookup(query, print_=False, backoff=False):
+        n = len(query)
+        prob_dict = prob_dicts[n - 1]
+        if n == 1:
+            query = query[0]
+        val = prob_dict.get(query, None)
         if val is None:
-            if len(list_) == 2:
-                backoff = list_[-2].get(query[0], (-INF, 0.0))[1]
-            else:
-                backoff = list_[-2].get(query[:-1], (-INF, 0.0))[1]
-            return backoff + lookup(list_[:-1], query[1:])
-        if len(list_) == N:
+            if backoff:
+                if print_:
+                    print(f"{query} backoff 0")
+                return 0.0
+            elif n == 1:
+                if print_:
+                    print(f"{query} logp -inf")
+                return -INF
+            logp = lookup(query[1:], print_)
+            logb = lookup(query[:-1], print_, True)
+            if print_:
+                print(f"backing off {query}: {logp} + {logb} = {logp + logb}")
+            return logp + logb
+        if print_:
+            print(f"query {query} matched {val}")
+        if n == N:
+            assert not backoff
             return val
         else:
-            return val[0]
+            return val[1 if backoff else 0]
+
+    # print(all_queries[1][3 * V + 4])
+    # lookup(all_queries[1][3 * V + 4], True)
 
     exps = [
-        torch.tensor(
-            [lookup(prob_dicts, query) for query in ngram_queries], device=device
-        ).view(-1, vocab_size)
+        torch.tensor([lookup(query) for query in ngram_queries], device=device).view(
+            -1, V
+        )
         for ngram_queries in all_queries
     ]
     hists = [torch.empty(0, 1, dtype=torch.long, device=device)] + [
@@ -307,23 +291,28 @@ def test_lookup_language_model_log_probs(device, N, jit_type):
     # the sos shouldn't matter -- it isn't in the lookup table. The lm will
     # back off to B(<sos>_) Pr(_rest), and B(<sos>_) will not exist and thus
     # be 0
-    lm = LookupLanguageModel(vocab_size, sos, prob_dicts=prob_dicts).to(device)
+    lm = LookupLanguageModel(V, sos, prob_dicts=prob_dicts).to(device)
     if jit_type == "script":
         lm = torch.jit.script(lm)
     elif jit_type == "trace":
         pytest.xfail("lookup_language_model trace unsupported")
-    for exp, hist in zip(exps, hists):
+    for n, (exp, hist) in enumerate(zip(exps, hists)):
+        B = hist.size(1)
+        assert exp.shape == (B, V), n
         act = lm(hist, None, -1)[0]
-        assert torch.allclose(exp, act, atol=1e-5)
+        assert act.shape == exp.shape
+        for b in range(B):
+            assert torch.allclose(exp[b], act[b], atol=1e-5), (n, b)
 
 
-def test_lookup_language_model_nonuniform_idx(device):
-    S, N, B = 100, 5, 30
+@pytest.mark.parametrize("chunk_size", [1, 5])
+def test_lookup_language_model_nonuniform_idx(device, chunk_size):
+    S, N, B = 20, 5, 2
     prob_dicts = []
     vocab_size, sos = 10, -1
     prob_dicts = []
     for n in range(1, N + 1):
-        max_ngrams = vocab_size ** n
+        max_ngrams = vocab_size**n
         has_ngram = torch.randint(2, (max_ngrams,), device=device).eq(1)
         dict_ = dict()
         last = n == N
@@ -344,9 +333,12 @@ def test_lookup_language_model_nonuniform_idx(device):
                 dict_[key] = torch.randn((2,), device=device).tolist()
         prob_dicts.append(dict_)
     prob_dicts[0][sos] = (-99, 0)
-    lm = LookupLanguageModel(vocab_size, sos, prob_dicts=prob_dicts).to(device)
+    lm = LookupLanguageModel(
+        vocab_size, sos, prob_dicts=prob_dicts, destructive=True
+    ).to(device)
     hist = torch.randint(0, vocab_size, (S, B), device=device)
-    exp = lm(hist)
+    exp = lm.calc_full_log_probs_chunked(hist, dict(), chunk_size)
+    assert not torch.isnan(exp).any()
     idx = torch.randint(0, S + 1, (B,), device=device)
     exp = exp.gather(0, idx.view(1, B, 1).expand(1, B, vocab_size)).squeeze(0)
     act, _ = lm(hist, idx=idx)
@@ -360,11 +352,10 @@ def test_lookup_language_model_sos_context(device):
         {(0, 1): (0.01, -0.01), (0, 2): (0.02, -0.02)},
         {(0, 0, 1): 0.001},
     ]
-    lm = LookupLanguageModel(4, sos=0, prob_dicts=prob_dicts)
+    lm = LookupLanguageModel(4, sos=0, prob_dicts=prob_dicts, destructive=True)
     lm.to(device)
-    # XXX(sdrobert): pad_sos_to_n has been removed now - it's always true
     # P(0|0, 0) = P(0) = -99
-    # P(1|0, 0) = 0.001
+    # P(1|0, 0) = P(1|0, 0) = 0.001
     # P(2|0, 0) = P(2|0) = 0.02
     # P(3|0, 0) = P(3) = 0.3
     exp = torch.tensor([[[-99.0, 0.001, 0.02, 0.3]]], device=device)
@@ -411,8 +402,10 @@ def test_lookup_language_model_republic():
             exp.append(float(line))
     exp = torch.tensor(exp, device=device)
     assert exp.shape[0] == queries.shape[1]
-    prob_dicts = parse_arpa_lm(arpa_file, token2id=token2id)
-    lm = LookupLanguageModel(vocab_size, sos=sos, prob_dicts=prob_dicts)
+    prob_dicts = parse_arpa_lm(arpa_file, token2id, False, np.float32)
+    lm = LookupLanguageModel(
+        vocab_size, sos=sos, prob_dicts=prob_dicts, destructive=True
+    )
     lm = lm.to(device)
     log_probs = lm(queries)
     queries = torch.cat([queries, torch.full_like(queries[:1], eos)])
@@ -435,32 +428,44 @@ def test_lookup_language_model_state_dict():
     def compare(assert_same):
         same_max_ngram = lm_a.max_ngram == lm_b.max_ngram
         same_max_ngram_nodes = lm_a.max_ngram_nodes == lm_b.max_ngram_nodes
-        same_pointers = len(lm_a.pointers) == len(lm_b.pointers)
-        if same_pointers:
-            same_pointers = (lm_a.pointers == lm_b.pointers).all()
+        same_offsets = len(lm_a.offsets) == len(lm_b.offsets)
+        if same_offsets:
+            same_offsets = (lm_a.offsets == lm_b.offsets).all()
         same_ids = len(lm_a.ids) == len(lm_b.ids)
         if same_ids:
             same_ids = (lm_a.ids == lm_b.ids).all()
-        same_logs = len(lm_a.logs) == len(lm_b.logs)
+        same_logs = len(lm_a.logps) == len(lm_b.logps)
+        same_logs &= len(lm_a.logbs) == len(lm_b.logbs)
         if same_logs:
-            nan_mask = torch.isnan(lm_a.logs)
-            assert (nan_mask == torch.isnan(lm_b.logs)).all()
-            same_logs = torch.allclose(
-                lm_a.logs.masked_select(nan_mask.eq(0)),
-                lm_b.logs.masked_select(nan_mask.eq(0)),
-                atol=1e-5,
+            nan_mask = torch.isnan(lm_a.logps)
+            same_logs = (
+                torch.allclose(
+                    lm_a.logps.masked_select(nan_mask.eq(0)),
+                    lm_b.logps.masked_select(nan_mask.eq(0)),
+                    atol=1e-5,
+                )
+                & (nan_mask == torch.isnan(lm_b.logps)).all().item()
+            )
+            nan_mask = torch.isnan(lm_a.logbs)
+            same_logs &= (
+                torch.allclose(
+                    lm_a.logbs.masked_select(nan_mask.eq(0)),
+                    lm_b.logbs.masked_select(nan_mask.eq(0)),
+                    atol=1e-5,
+                )
+                & (nan_mask == torch.isnan(lm_b.logbs)).all().item()
             )
         if assert_same:
             assert same_max_ngram
             assert same_max_ngram_nodes
-            assert same_pointers
+            assert same_offsets
             assert same_ids
             assert same_logs
         else:
             assert not (
                 same_max_ngram
                 and same_max_ngram_nodes
-                and same_pointers
+                and same_offsets
                 and same_ids
                 and same_logs
             )

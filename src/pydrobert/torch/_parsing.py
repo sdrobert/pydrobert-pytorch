@@ -14,18 +14,23 @@
 
 import re
 import warnings
+import math
 
 from typing import (
     Dict,
-    Tuple,
-    Optional,
-    List,
-    TextIO,
-    Union,
     Iterable,
-    Sequence,
+    List,
     Mapping,
+    Optional,
+    Sequence,
+    TextIO,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+    Union,
 )
+from logging import Logger
 from collections import OrderedDict
 
 import torch
@@ -35,8 +40,17 @@ import pydrobert.torch.config as config
 
 from ._textgrid import TextGrid, TEXTTIER
 
+K = TypeVar("K", bound=Union[str, int, np.signedinteger])
+F = TypeVar("F", bound=Union[float, np.floating])
 
-def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) -> list:
+
+def parse_arpa_lm(
+    file_: Union[TextIO, str],
+    token2id: Optional[Dict[str, np.signedinteger]] = None,
+    to_base_e: bool = None,
+    ftype: Type[F] = float,
+    logger: Optional[Logger] = None,
+) -> List[Dict[Union[K, Tuple[K, ...]], F]]:
     r"""Parse an ARPA statistical language model
 
     An `ARPA language model <https://cmusphinx.github.io/wiki/arpaformat/>`__
@@ -70,6 +84,12 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
     token2id
         A dictionary whose keys are token strings and values are ids. If set, tokens
         will be replaced with ids on read
+    to_base_e
+        ARPA files store log-probabilities and log-backoffs in base-10. This 
+    ftype
+        The floating-point type to store log-probabilities and backoffs as
+    logger
+        If specified, progress will be written to this logger at INFO level
 
     Returns
     -------
@@ -85,19 +105,37 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
     
     Warnings
     --------
+    Version ``0.3.0`` and prior do not have the option `to_base_e`, always returning
+    values in log base 10. While this remains the default, it is deprecated and will
+    be removed in a later version.
+
     This function is not safe for JIT scripting or tracing.
     """
     if isinstance(file_, str):
         with open(file_) as f:
-            return parse_arpa_lm(f, token2id=token2id)
+            return parse_arpa_lm(f, token2id, to_base_e, ftype, logger)
+    if to_base_e is None:
+        warnings.warn(
+            "The default of to_base_e will be changed to True in a later version. "
+            "Please manually specify this argument to suppress this warning"
+        )
+        to_base_e = False
+    norm = math.log10(math.e) if to_base_e else 1.0
+    norm = ftype(norm)
+    if logger is None:
+        print_ = lambda x: None
+    else:
+        print_ = logger.info
     line = ""
+    print_("finding \\data\\ header")
     for line in file_:
         if line.strip() == "\\data\\":
             break
     if line.strip() != "\\data\\":
         raise IOError("Could not find \\data\\ line. Is this an ARPA file?")
-    ngram_counts = []
+    ngram_counts: List[Dict[int, int]] = []
     count_pattern = re.compile(r"^ngram\s+(\d+)\s*=\s*(\d+)$")
+    print_("finding n-gram counts")
     for line in file_:
         line = line.strip()
         if not line:
@@ -106,10 +144,11 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
         if match is None:
             break
         n, count = (int(x) for x in match.groups())
+        print_(f"there are {count} {n}-grams")
         if len(ngram_counts) < n:
             ngram_counts.extend(0 for _ in range(n - len(ngram_counts)))
         ngram_counts[n - 1] = count
-    prob_dicts = [dict() for _ in ngram_counts]
+    prob_dicts: List[Dict[Union[K, Tuple[K, ...]], F]] = [dict() for _ in ngram_counts]
     ngram_header_pattern = re.compile(r"^\\(\d+)-grams:$")
     ngram_entry_pattern = re.compile(r"^(-?\d+(?:\.\d+)?(?:[Ee]-?\d+)?)\s+(.*)$")
     while line != "\\end\\":
@@ -133,10 +172,10 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
             tokens = tuple(rest.strip().split())
             # IRSTLM and SRILM allow for implicit backoffs on non-final
             # n-grams, but final n-grams must not have backoffs
-            logb = 0.0
+            logb = ftype(0.0)
             if len(tokens) == ngram + 1 and ngram < len(prob_dicts):
                 try:
-                    logb = float(tokens[-1])
+                    logb = ftype(tokens[-1])
                     tokens = tokens[:-1]
                 except ValueError:
                     pass
@@ -149,16 +188,14 @@ def parse_arpa_lm(file_: Union[TextIO, str], token2id: Optional[dict] = None) ->
             if ngram == 1:
                 tokens = tokens[0]
             if ngram != len(ngram_counts):
-                dict_[tokens] = (float(logp), logb)
+                dict_[tokens] = (ftype(logp) / norm, logb / norm)
             else:
-                dict_[tokens] = float(logp)
+                dict_[tokens] = ftype(logp) / norm
     if line != "\\end\\":
         raise IOError("Could not find \\end\\ line")
     for ngram_m1, (ngram_count, dict_) in enumerate(zip(ngram_counts, prob_dicts)):
         if len(dict_) != ngram_count:
-            raise IOError(
-                "Expected {} {}-grams, got {}".format(ngram_count, ngram_m1, len(dict_))
-            )
+            raise IOError(f"Expected {ngram_count} {ngram_m1}-grams, got {len(dict_)}")
     return prob_dicts
 
 
@@ -538,15 +575,15 @@ def read_textgrid(
     fill_token: Optional[str] = None,
 ) -> Tuple[List[Tuple[str, float, float]], float, float]:
     """Read TextGrid file as a transcription
-    
+
     TextGrid is the transcription format of
     `Praat <https://www.fon.hum.uva.nl/praat/>`_.
 
     Parameters
     ----------
-    tg 
+    tg
         The TextGrid file. Will open if `tg` is a path.
-    tier_id 
+    tier_id
         Either the name of the tier (first occurence) or the index of the tier to
         extract.
     fill_token
@@ -623,7 +660,7 @@ def write_textgrid(
     precision: int = config.DEFT_FLOAT_PRINT_PRECISION,
 ) -> None:
     """Write a transcription as a TextGrid file
-    
+
     TextGrid is the transcription format of
     `Praat <https://www.fon.hum.uva.nl/praat/>`_.
 

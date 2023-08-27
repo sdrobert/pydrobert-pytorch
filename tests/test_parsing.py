@@ -17,12 +17,16 @@ from tempfile import SpooledTemporaryFile
 
 import pytest
 import torch
+import numpy as np
 
 import pydrobert.torch.data as data
 
 
 @pytest.mark.cpu
-def test_parse_arpa_lm():
+@pytest.mark.parametrize(
+    "ftype", [float, np.float32, np.float64], ids=["pyfloat", "f32", "f64"]
+)
+def test_parse_arpa_lm(ftype):
     file_ = SpooledTemporaryFile(mode="w+")
     file_.write(
         r"""\
@@ -55,7 +59,7 @@ ngram 2=7
 """
     )
     file_.seek(0)
-    ngram_list = data.parse_arpa_lm(file_)
+    ngram_list = data.parse_arpa_lm(file_, to_base_e=False, ftype=ftype)
     assert len(ngram_list) == 2
     assert set(ngram_list[0]) == {
         "<unk>",
@@ -75,13 +79,14 @@ ngram 2=7
         ("jean", "</s>"),
         ("jean", "wood"),
     }
+    assert isinstance(ngram_list[0]["<unk>"][0], ftype)
     assert abs(ngram_list[0]["cindy"][0] + 0.6990) < 1e-4
     assert abs(ngram_list[0]["pittsburgh"][0] + 0.6990) < 1e-4
     assert abs(ngram_list[0]["jean"][1] + 0.1973) < 1e-4
     assert abs(ngram_list[1][("cindy", "jean")] + 0.2553) < 1e-4
     file_.seek(0)
     token2id = dict((c, hash(c)) for c in ngram_list[0])
-    ngram_list = data.parse_arpa_lm(file_, token2id=token2id)
+    ngram_list = data.parse_arpa_lm(file_, token2id, False, ftype)
     assert set(ngram_list[0]) == set(token2id.values())
     file_.seek(0)
     file_.write(
@@ -98,7 +103,7 @@ ngram 10 = 1
 """
     )
     file_.seek(0)
-    ngram_list = data.parse_arpa_lm(file_)
+    ngram_list = data.parse_arpa_lm(file_, to_base_e=False, ftype=ftype)
     assert all(x == dict() for x in ngram_list[:-1])
     assert not ngram_list[9][tuple(str(x) for x in range(1, 11))]
     file_.seek(0)
@@ -117,7 +122,7 @@ ngram 1 = 1
     )
     file_.seek(0)
     with pytest.raises(IOError):
-        data.parse_arpa_lm(file_)
+        data.parse_arpa_lm(file_, to_base_e=False)
     file_.seek(0)
     file_.write(
         r"""\
@@ -128,7 +133,7 @@ Here's an empty one
 """
     )
     file_.seek(0)
-    assert data.parse_arpa_lm(file_) == []
+    assert data.parse_arpa_lm(file_, to_base_e=True) == []
 
 
 @pytest.mark.cpu
@@ -321,7 +326,13 @@ last A 0.0 10.0111 hullo
     "transcript,token2id,unk,skip_frame_times,exp",
     [
         ([], None, None, False, torch.LongTensor(0, 3)),
-        ([1, 2, 3, 4], None, None, True, torch.LongTensor([1, 2, 3, 4]),),
+        (
+            [1, 2, 3, 4],
+            None,
+            None,
+            True,
+            torch.LongTensor([1, 2, 3, 4]),
+        ),
         (
             [1, ("a", 4, 10), "a", 3],
             {"a": 2},

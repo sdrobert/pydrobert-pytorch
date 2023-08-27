@@ -1,0 +1,16 @@
+name: pydrobert-torch
+
+channels:
+  - sdrobert
+  - pytorch
+  - conda-forge
+
+dependencies:
+  - pytorch
+  - python
+  - pytorch-lightning>=1.7
+  - pydrobert-param>=0.4.0
+  - pytest
+  - webdataset
+  - pydrobert-speech>=0.2.0
+  - ipython
