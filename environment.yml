@@ -1,7 +1,4 @@
-# Micromamba environment file
-# https://marketplace.visualstudio.com/items?itemName=corker.vscode-micromamba
-
-name: default
+name: pydrobert-torch
 
 channels:
   - sdrobert

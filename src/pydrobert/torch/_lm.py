@@ -32,7 +32,6 @@ try:
     def insort_left(sl: SortedList, x):
         sl.add(x)
 
-
 except ImportError:
     from bisect import insort_left
 
@@ -172,7 +171,10 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def calc_idx_log_probs(
-        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor,
+        self,
+        hist: torch.Tensor,
+        prev: Dict[str, torch.Tensor],
+        idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Calculates log_prob_idx over types at prefix up to and excluding idx
 
@@ -759,7 +761,10 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
         return 0 if (0 <= self.sos < self.vocab_size) else 1
 
     def calc_idx_log_probs(
-        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], idx: torch.Tensor,
+        self,
+        hist: torch.Tensor,
+        prev: Dict[str, torch.Tensor],
+        idx: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         return (
             _lookup_calc_idx_log_probs(
@@ -780,21 +785,26 @@ class LookupLanguageModel(MixableSequentialLanguageModel):
 
     @torch.jit.export
     def calc_full_log_probs(
-        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor],
+        self,
+        hist: torch.Tensor,
+        prev: Dict[str, torch.Tensor],
     ) -> torch.Tensor:
         return self.calc_full_log_probs_chunked(hist, prev, 1)
 
     @torch.jit.export
     def calc_full_log_probs_chunked(
-        self, hist: torch.Tensor, prev: Dict[str, torch.Tensor], chunk_size: int = 1,
+        self,
+        hist: torch.Tensor,
+        prev: Dict[str, torch.Tensor],
+        chunk_size: int = 1,
     ) -> torch.Tensor:
         """Computes full log probabilities in chunks
-        
+
         This method has the same interpretation and return value as
         :func:`calc_full_log_probs`, but with an additional optional argument
         `chunk_size` to control the number of distributions over tokens to compute
         simultaneously.
-        
+
         Because the distribution over the current token does not depend on any prior
         state, it is possible to compute all token distributions simultaneously. While
         faster, it is also much more memory-intensive to do so (especially so for large
