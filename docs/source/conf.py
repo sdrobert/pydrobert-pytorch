@@ -111,7 +111,7 @@ html_context = {
     "github_user": "sdrobert", # Username
     "github_repo": "pydrobert-pytorch", # Repo name
     "github_version": "master", # Version
-    "conf_py_path": "docs/source/", # Path in the checkout to the docs root
+    "conf_py_path": "/docs/source/", # Path in the checkout to the docs root
 }
 
 def docstring_handler(app, what, name, obj, options, lines):
