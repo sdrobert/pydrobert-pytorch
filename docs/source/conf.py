@@ -36,7 +36,6 @@ language = "en"
 extensions = [
     "myst_parser",
     "sphinx.ext.autodoc",
-    "sphinx.ext.autosectionlabel",
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
     "sphinx.ext.napoleon",
@@ -107,12 +106,13 @@ ipython_colours = {
 }
 
 html_context = {
-    "display_github": True, # Integrate GitHub
-    "github_user": "sdrobert", # Username
-    "github_repo": "pydrobert-pytorch", # Repo name
-    "github_version": "master", # Version
-    "conf_py_path": "/docs/source/", # Path in the checkout to the docs root
+    "display_github": True,  # Integrate GitHub
+    "github_user": "sdrobert",  # Username
+    "github_repo": "pydrobert-pytorch",  # Repo name
+    "github_version": "master",  # Version
+    "conf_py_path": "/docs/source/",  # Path in the checkout to the docs root
 }
+
 
 def docstring_handler(app, what, name, obj, options, lines):
     if "Params" in name.split(".")[-1]:

@@ -124,7 +124,7 @@ class SequentialLanguageModel(torch.nn.Module, metaclass=abc.ABCMeta):
 
     See Also
     --------
-    Language Modelling and Decoding
+    :ref:`lm`
         For a tutorial on how to build and use a language model.
     """
 

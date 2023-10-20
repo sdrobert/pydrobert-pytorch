@@ -2,13 +2,21 @@
    :parser: myst_parser.sphinx_
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Contents:
+   :glob:
+   :caption: Tutorials
 
-   advanced_attention
+   tutorials/*
+
+.. toctree::
+   :caption: API
+   :maxdepth: 2
+
+   api/pydrobert/torch
+
+.. toctree::
+   :caption: Other
+
    cli
-   lm
-   modules
    references
 
 Indices and tables

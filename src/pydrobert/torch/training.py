@@ -264,7 +264,8 @@ class TrainingStateController(object):
 
     Parameters
     ----------
-    params state_csv_path
+    params
+    state_csv_path
         A path to where training state information is stored. It stores in
         comma-separated-values format the following information. Note that stored values
         represent the state *after* updates due to epoch results, such as the learning
@@ -391,7 +392,15 @@ class TrainingStateController(object):
             int(math.log10(max(params.early_stopping_patience, 1))) + 1
         )
         self.fmt_dict["rlr_resume_cd"] = "{{:0{}d}}".format(
-            int(math.log10(max(params.reduce_lr_cooldown, params.reduce_lr_burnin, 1,)))
+            int(
+                math.log10(
+                    max(
+                        params.reduce_lr_cooldown,
+                        params.reduce_lr_burnin,
+                        1,
+                    )
+                )
+            )
             + 1
         )
         self.fmt_dict["rlr_patience_cd"] = "{{:0{}d}}".format(
@@ -439,7 +448,7 @@ class TrainingStateController(object):
         }
         self.cache_hist[0].update(dict((key, None) for key in self.user_entry_types))
         if self.params.log10_learning_rate is not None:
-            self.cache_hist[0]["lr"] = 10 ** self.params.log10_learning_rate
+            self.cache_hist[0]["lr"] = 10**self.params.log10_learning_rate
         if self.state_csv_path is None:
             return
         self._barrier()
@@ -656,7 +665,7 @@ class TrainingStateController(object):
             self._init_seed_and_model(model)
             if self.params.log10_learning_rate is not None:
                 for param_group in optimizer.param_groups:
-                    param_group["lr"] = 10 ** self.params.log10_learning_rate
+                    param_group["lr"] = 10**self.params.log10_learning_rate
             # there is no public API for resetting the state dictionary, so
             # we create a new instance as best as possible and copy the state
             # over from there. Note that settings like weight decay are already
@@ -967,7 +976,7 @@ class TrainingStateController(object):
             if not info["rlr_patience_cd"]:
                 old_lr = info["lr"]
                 new_lr = old_lr * self.params.reduce_lr_factor
-                rlr_epsilon = 10 ** self.params.reduce_lr_log10_epsilon
+                rlr_epsilon = 10**self.params.reduce_lr_log10_epsilon
                 if old_lr - new_lr > rlr_epsilon:
                     info["lr"] = new_lr
                     for param_group in optimizer.param_groups:
