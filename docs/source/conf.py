@@ -41,6 +41,7 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.napoleon",
     "sphinx_autodoc_typehints",
+    "sphinx_rtd_theme",
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -81,11 +82,11 @@ intersphinx_mapping = {
 
 # -- Options for HTML output -------------------------------------------------
 
-on_rtd = os.environ.get("READTHEDOCS") == "True"
-if on_rtd:
-    html_theme = "default"
-else:
-    html_theme = "sphinx_rtd_theme"
+# on_rtd = os.environ.get("READTHEDOCS") == "True"
+# if on_rtd:
+#     html_theme = "default"
+# else:
+html_theme = "sphinx_rtd_theme"
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
@@ -105,6 +106,13 @@ ipython_colours = {
     (param.ipython.cyan % " ").split()[1],
 }
 
+html_context = {
+    "display_github": True, # Integrate GitHub
+    "github_user": "sdrobert", # Username
+    "github_repo": "pydrobert-pytorch", # Repo name
+    "github_version": "master", # Version
+    "conf_py_path": "docs/source/", # Path in the checkout to the docs root
+}
 
 def docstring_handler(app, what, name, obj, options, lines):
     if "Params" in name.split(".")[-1]:
