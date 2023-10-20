@@ -2,7 +2,7 @@ docutils>=0.17
 myst-parser
 param
 pydrobert-param>=0.4.0
-sphinx_rtd_theme>=0.5
+sphinx-rtd-theme>=0.5
 sphinx-autodoc-typehints
 Sphinx>=4.4
 typing_extensions

@@ -1,3 +1,5 @@
+.. _lm:
+
 Language Modelling and Decoding
 ===============================
 
@@ -374,8 +376,7 @@ to the :class:`RNNLM` above is to turn it into a encoder-decoder architecture.
 An encoder-decoder, a mainstay in Neural Machine Translation (NMT) [cho2014]_
 and ASR [chan2016]_, is effectively an RNN LM which conditions the token
 sequence on some input `in_` via attention. More about attention is discussed
-in :ref:`Advanced Attention and Transformer Networks`. Here's an
-implementation:
+in :ref:`advanced-attn`. Here's an implementation:
 
 .. code-block:: python
 

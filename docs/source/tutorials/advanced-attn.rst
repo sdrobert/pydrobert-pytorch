@@ -1,5 +1,7 @@
-Advanced Attention and Transformer Networks
-===========================================
+.. _advanced-attn:
+
+Attention and Transformer Networks
+==================================
 
 This document is a supplement for advanced usage of
 :class:`pydrobert.torch.modules.GlobalSoftAttention`, such as for Transformer

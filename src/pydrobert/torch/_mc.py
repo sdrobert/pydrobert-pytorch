@@ -339,7 +339,7 @@ class ImportanceSamplingEstimator(MonteCarloEstimator):
 
     .. math::
 
-        \nabla v \approx \nabla \sum_{n=1}^N \omega_n f\left(b^{(n)}.
+        \nabla v \approx \nabla \sum_{n=1}^N \omega_n f\left(b^{(n)}\right).
 
     The self-normalized estimate is biased but with decreasing bias (assuming the
     proposal dominates) as :math:`N \to \infty`. This property holds even if :math:`P`

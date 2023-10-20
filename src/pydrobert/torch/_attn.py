@@ -125,7 +125,7 @@ class GlobalSoftAttention(torch.nn.Module, metaclass=abc.ABCMeta):
 
     See Also
     --------
-    :ref:`Advanced Attention and Transformer Networks`
+    :ref:`advanced-attn`
         :class:`GlobalSoftAttention` is compatible with a variety of inputs.
         This tutorial gives a toy transformer network to illustrate
         broadcasting semantics.

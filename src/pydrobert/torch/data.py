@@ -47,7 +47,6 @@ from ._dataloaders import (
     SpectDataLoaderParams,
     SpectEvaluationDataLoader,  # deprecated
     SpectTrainingDataLoader,  # deprecated
-    OnUnevenDistributed,
 )
 from ._parsing import (
     parse_arpa_lm,
@@ -100,7 +99,6 @@ __all__ = [
 
 
 def import_and_deprecate(cls):
-
     from . import _dataloaders
 
     old_name = cls.__name__
