@@ -160,7 +160,7 @@ def test_lit_spect_data_module_argparse(temp_dir, populate_lit_dir):
     args = ["--read-data-json", cfg]
     namespace = parser.parse_args(args)
     dm = plightning.LitSpectDataModule.from_argparse_args(namespace)
-    assert dm.params.pprint() == params.pprint()
+    assert dm.params.param.pprint() == params.param.pprint()
     dm.prepare_data()
     dm.setup()
     assert len(dm.train_dataloader()) == tNN // tN
@@ -171,11 +171,10 @@ def test_lit_spect_data_module_argparse(temp_dir, populate_lit_dir):
     args += ["--predict-dir", f"{temp_dir}/data/test"]
     namespace = parser.parse_args(args)
     dm = plightning.LitSpectDataModule.from_argparse_args(namespace)
-    assert dm.params.pprint() != params.pprint()
+    assert dm.params.param.pprint() != params.param.pprint()
     dm.prepare_data()
     dm.setup()
     assert len(dm.train_dataloader()) == tNN // tN
     assert len(dm.val_dataloader()) == VNN // tN
     assert len(dm.test_dataloader()) == TNN // TN
     assert len(dm.predict_dataloader()) == TNN // TN
-

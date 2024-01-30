@@ -2,6 +2,7 @@
 
 ## v0.4.0
 
+- Support `param` version 2
 - Added `pydrobert.torch.argcheck` and standardized module argument checking a
   bit.
 - Added `environment.yml` for local dev.
