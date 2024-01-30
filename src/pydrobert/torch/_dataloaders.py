@@ -155,14 +155,14 @@ class EpochRandomSampler(AbstractEpochSampler):
         - :obj:`'uneven'` allow some processes to yield fewer samples.
         - :obj:`'ignore'` ignore the distributed context. Each process will yield all
           samples.
-    
+
     Warnings
     --------
     The default means of seeding the shuffler changed from version 0.3. Previously the
     shuffler was seeded on each epoch with the value ``base_seed + epoch``. The change
     means training a network in this version will yield different results from that
     trained in version 0.3 even if `base_seed` is the same.
-    
+
     The change was made because, if repeated experiments were seeded sequentially, then
     the ``n``-th epoch of the ``m``-th run would see samples in the same order as the
     ``m``-th epoch of the ``n``-th run. Thus, repeated trials were unintentionally
@@ -226,9 +226,9 @@ class EpochSequentialSampler(AbstractEpochSampler):
         - :obj:`'uneven'` allow some processes to yield fewer samples.
         - :obj:`'ignore'` ignore the distributed context. Each process will yield all
           samples.
-        
+
         See the below note for more information.
-    
+
     Notes
     -----
     The following note regards how the sampler handles :mod:`torch.distributed`.
@@ -240,7 +240,7 @@ class EpochSequentialSampler(AbstractEpochSampler):
     non-distributed codebase (e.g. with
     :class:`pydrobert.torch.training.TraningStateController`). Distributed sequential
     sampling may still be appropriate otherwise when ordering does not matter, such as
-    when an evaluation metric is computed in aggregate. 
+    when an evaluation metric is computed in aggregate.
 
     When in a distributed environment and `on_uneven_distributed` is not :obj:`'ignore'`
     process ``r`` of ``W`` processes will be responsible for samples ``[r, r + W, r +
@@ -249,7 +249,7 @@ class EpochSequentialSampler(AbstractEpochSampler):
     samples are yielded by exactly one process. Assuming the quantity of interest is an
     average over all samples, computing the average per process and then that averaged
     over processes should yield the same results.
-    
+
     When ``W`` does not divide ``N`` and `on_uneven_distributed` is :obj:`'uneven'`, all
     samples will be yielded by exactly one process but not all processes will yield the
     same number of samples. Averaging must be performed with specialized logic; see
@@ -279,7 +279,7 @@ H = TypeVar("H", bound=Hashable)
 
 class BucketBatchSampler(_BaseSampler):
     """Batch samples into buckets, yielding as soon as the bucket is full
-    
+
     Parameters
     ----------
     sampler
@@ -294,20 +294,20 @@ class BucketBatchSampler(_BaseSampler):
         If :obj:`True`, any batches which are incomplete (smaller than the bucket's
         batch size) at the end of an epoch will be discarded. Otherwise, the incomplete
         batches will be yielded in the order of their bucket ids' hashes.
-    
+
     Yields
     ------
     batch : list of int
         A list of indices from `sampler` all belonging to the same bucket. The batch is
         yielded as soon as it is full (or the epoch has ended with `drop_incomplete` set
         to :obj:`False`).
-    
+
     Warnings
     --------
     :class:`BucketBatchSampler` has no :func:`__len__` method. Correctly determining the
     length of the batched sampler requires knowledge of which indices of `sampler` are
     being iterated over which can only be determined by iterating over the `sampler`.
-    
+
     Examples
     --------
 
@@ -367,7 +367,10 @@ class DataLoaderParams(param.Parameterized):
     """
 
     batch_size = param.Integer(
-        10, bounds=(1, None), softbounds=(5, 10), doc="Number of elements in a batch.",
+        10,
+        bounds=(1, None),
+        softbounds=(5, 10),
+        doc="Number of elements in a batch.",
     )
     drop_last = param.Boolean(
         False,
@@ -420,7 +423,7 @@ class DynamicLengthDataLoaderParams(DataLoaderParams):
 
 class LangDataLoaderParams(LangDataParams, DynamicLengthDataLoaderParams):
     """Parameters for a :class:`LangDataLoader`
-    
+
     This implements the :class:`pydrobert.param.optuna.TunableParameterized` interface.
     """
 
@@ -457,7 +460,7 @@ def lang_seq_to_batch(
     Tuple[torch.Tensor, torch.Tensor, Tuple[str, ...]],
 ]:
     """Convert a sequence of reference sequences to a batch
-    
+
     This function is used to collate sequences of elements from a :class:`LangDataSet`
     into batches.
 
@@ -466,7 +469,7 @@ def lang_seq_to_batch(
     seq
         A finite-length (``N``) sequence of either just `ref_n` or tuples ``ref_n,
         utt_n``, where
-        
+
         - `ref_n` is a tensor of size ``(R_n[, 3])`` representing reference token
           sequences and optionally their frame shifts. Either all `ref_n` must contain
           the frame shift info (the ``3`` dimension) or none of them.
@@ -475,24 +478,21 @@ def lang_seq_to_batch(
         If :obj:`True`, the batch dimension ``N`` comes before the sequence dimension
         ``R`` in `refs`.
     sort
-        If :obj:`True`, the elements of `seq` are ordered in descending order of
-        ``R_n`` before being batched.
+        If :obj:`True`, the elements of `seq` are ordered in descending order of ``R_n``
+        before being batched.
     has_uttids
         Whether `utt_n` is part of the input values and `uttids` is part of the output
         values.
-    
+
     Returns
     -------
-    batch
-        A tuple containing the following elements:
-
-        1. `refs`, a tensor of shape ``(max_n R_n, N[, 3])``
-            containing the right-padded sequences ``[ref_1, ref_2, ..., ref_N]``. 
-            Padded with :const:`pydrobert.torch.config.INDEX_PAD_VALUE`.
-        2. `ref_sizes`, a tensor of shape ``(N,)`` containing the sequence ``[R_1, R_2,
-           ..., R_N]``.
-        3. `uttids` (if `has_uttids` is :obj:`True`), an ``N``-tuple of the utterance
-           ids.
+    batch : tuple
+        A tuple of ``refs, ref_sizes[, uttids]``, where: `refs` is a tensor of shape
+        ``(max_n R_n, N[, 3])`` containing the right-padded sequences ``[ref_1, ref_2,
+        ..., ref_N]`` and padded with :const:`pydrobert.torch.config.INDEX_PAD_VALUE`;
+        `ref_sizes` is a tensor of shape ``(N,)`` containing the sequence ``[R_1, R_2,
+        ..., R_N]``; and `uttids` (if `has_uttids` is :obj:`True`), is an ``N``-tuple of
+        strings matching the utterance ids.
     """
     if sort and has_uttids:
         seq = sorted(seq, key=lambda x: x[0].size(0), reverse=True)
@@ -570,10 +570,10 @@ class LangDataLoader(torch.utils.data.DataLoader):
         Additional keyword arguments to initialize :class:`LangDataSet` and
         :class:`torch.utils.data.DataLoader`. The former is only relevant when
         `data` is a path.
-    
+
     Yields
     ------
-    batch : Union[torch.Tensor, Tuple[torch.Tensor]]
+    batch : Union[tuple, torch.Tensor]
         A tuple ``refs, ref_lens[, utt_ids]``, with the presence of `utt_ids` dependent
         on `suppress_uttids` in the underlying :class:`LangDataSet` is :obj:`True`). See
         :func:`lang_seq_to_batch` for more information on the elements.
@@ -627,7 +627,11 @@ class LangDataLoader(torch.utils.data.DataLoader):
         if isinstance(data, LangDataSet):
             dataset = data
         else:
-            dataset = LangDataSet(data, params=data_params, **ds_kwargs,)
+            dataset = LangDataSet(
+                data,
+                params=data_params,
+                **ds_kwargs,
+            )
         utt_sampler_kwargs = {"init_epoch": argcheck.is_int(init_epoch, "init_epoch")}
         if params.drop_last:
             utt_sampler_kwargs["on_uneven_distributed"] = "drop"
@@ -647,7 +651,10 @@ class LangDataLoader(torch.utils.data.DataLoader):
                 params.size_batch_by_length,
             )
             batch_sampler = BucketBatchSampler(
-                utt_sampler, idx2bucket, bucket2size, params.drop_last,
+                utt_sampler,
+                idx2bucket,
+                bucket2size,
+                params.drop_last,
             )
         else:
             batch_sampler = torch.utils.data.BatchSampler(
@@ -663,7 +670,10 @@ class LangDataLoader(torch.utils.data.DataLoader):
 
     def collate_fn(self, seq):
         return lang_seq_to_batch(
-            seq, self.batch_first, self.sort_batch, not self.dataset.suppress_uttids,
+            seq,
+            self.batch_first,
+            self.sort_batch,
+            not self.dataset.suppress_uttids,
         )
 
     def __len__(self) -> int:
@@ -814,7 +824,7 @@ def spect_seq_to_batch(
     -------
     batch
         A tuple containing the following elements:
-        
+
         1. `feats`, a tensor of shape ``(max_n T_n, N, F)`` containing the right-padded
            sequences ``[feat_1, feat_2, ..., feat_N]``. Padded with zeros.
         2. `alis` (if `has_alis` is :obj:`True`), either :obj:`None` or a tensor of
@@ -822,7 +832,7 @@ def spect_seq_to_batch(
            ali_2, ... ali_N]``. Padded with
            :const:`pydrobert.torch.config.INDEX_PAD_VALUE`.
         3. `refs`, either :obj:`None` or a tensor of shape ``(max_n R_n, N[, 3])``
-            containing the right-padded sequences ``[ref_1, ref_2, ..., ref_N]``. 
+            containing the right-padded sequences ``[ref_1, ref_2, ..., ref_N]``.
             Padded with :const:`pydrobert.torch.config.INDEX_PAD_VALUE`.
         4. `feat_sizes`, a tensor of shape ``(N,)`` containing the sequence ``[T_1, T_2,
            ..., T_N]``.
@@ -942,13 +952,13 @@ class SpectDataLoader(torch.utils.data.DataLoader):
         Additional keyword arguments to initialize :class:`SpectDataSet` and
         :class:`torch.utils.data.DataLoader`. The former is only relevant when
         `data` is a path.
-    
+
     Warnings
     --------
     :class:`SpectDataLoader` uses the default :obj:`True` for `suppress_alis` and
     `tokens_only` while the current, deprecated default used by :class:`SpectDataSet`
     is :obj:`False`.
-    
+
     Yields
     ------
     batch
@@ -1064,7 +1074,10 @@ class SpectDataLoader(torch.utils.data.DataLoader):
                 params.size_batch_by_length,
             )
             batch_sampler = BucketBatchSampler(
-                utt_sampler, idx2bucket, bucket2size, params.drop_last,
+                utt_sampler,
+                idx2bucket,
+                bucket2size,
+                params.drop_last,
             )
         else:
             batch_sampler = torch.utils.data.BatchSampler(
@@ -1237,7 +1250,7 @@ def context_window_seq_to_batch(
         2. `ali_n`, either :obj:`None` or a tensor of shape ``(T_n,)`` representing
            per-window alignment ids.
         3. `uttid_n` (if :obj:`has_refs` is :obj:`True`), the utterance id.
-    
+
     has_uttids
         Whether `utt_n` is part of the input values and both `window_sizes` and `uttids`
         are part of the output values.
@@ -1336,14 +1349,14 @@ class ContextWindowDataLoader(torch.utils.data.DataLoader):
         Additional keyword arguments to initialize :class:`ContextWindowDataSet` and
         :class:`torch.utils.data.DataLoader`. The former is only relevant when `data` is
         a path.
-    
+
     Yields
     ------
     batch
         A tuple ``windows, alis[, window_sizes, uttids]``, with `window_sizes` and
         `uttids` included if `suppress_uttids` is :obj:`False`. See
         :func:`context_window_seq_to_batch` for more information on the elements.
-    
+
     Warnings
     --------
     This class does not currently support :mod:`torch.distributed`. Each process will
@@ -1533,4 +1546,3 @@ class ContextWindowEvaluationDataLoader(ContextWindowDataLoader):
             suppress_uttids=suppress_uttids,
             **kwargs,
         )
-

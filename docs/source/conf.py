@@ -70,10 +70,12 @@ napoleon_custom_sections = [
 
 intersphinx_mapping = {
     "numpy": ("https://docs.scipy.org/doc/numpy/", None),
+    "param": ("https://param.holoviz.org/", None),
     "pydrobert.kaldi": ("https://pydrobert-kaldi.readthedocs.io/en/latest", None),
     "pydrobert.param": ("https://pydrobert-param.readthedocs.io/en/latest", None),
     "pydrobert.speech": ("https://pydrobert-speech.readthedocs.io/en/latest", None),
     "python": ("https://docs.python.org/", None),
+    "pytorch_lightning": ("https://lightning.ai/docs/pytorch/stable/", None),
     "torch": ("https://pytorch.org/docs/stable/", None),
 }
 
