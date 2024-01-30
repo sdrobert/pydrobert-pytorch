@@ -18,7 +18,11 @@ import abc
 
 from pathlib import PurePath
 from typing import Dict, Optional, TypeVar, Generic, Type, Union
-from typing_extensions import Literal, get_args
+
+try:
+    from typing import Literal, get_args
+except ImportError:
+    from typing_extensions import Literal, get_args
 
 import torch
 import param
@@ -267,7 +271,7 @@ DL = TypeVar("DL", bound=torch.utils.data.DataLoader)
 Partition = Literal["train", "val", "test", "predict"]
 
 
-class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL], metaclass=abc.ABCMeta):
+class LitDataModule(pl.LightningDataModule, Generic[P, DS, DL]):
     """An ABC handling DataLoader parameterizations and partitions for lightning"""
 
     pclass: Type[LitDataModuleParams[P]]

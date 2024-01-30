@@ -6,3 +6,7 @@ sphinx-rtd-theme>=0.5
 sphinx-autodoc-typehints
 Sphinx>=4.4
 typing_extensions
+numpy
+lightning
+-f https://download.pytorch.org/whl/cpu/torch_stable.html
+torch

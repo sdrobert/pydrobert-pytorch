@@ -14,3 +14,7 @@ dependencies:
   - webdataset
   - pydrobert-speech>=0.2.0
   - ipython
+  - sphinx
+  - myst-parser
+  - sphinx-autodoc-typehints
+  - sphinx_rtd_theme
