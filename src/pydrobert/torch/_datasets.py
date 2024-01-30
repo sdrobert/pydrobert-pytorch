@@ -30,7 +30,7 @@ class LangDataParams(param.Parameterized):
 
     subset_ids = param.List(
         [],
-        class_=str,
+        item_type=str,
         bounds=None,
         doc="A list of utterance ids. If non-empty, the data set will be "
         "revalidateed to these utterances",
